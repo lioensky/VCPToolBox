@@ -229,6 +229,17 @@ pub(crate) struct SenseOutput {
     pub(crate) transitions_truncated: bool,
 }
 
+type StateKey = (Option<usize>, usize);
+
+/// Propagation states in key order (previous node, node). Energy sums and the
+/// first state to reach a node must not follow HashMap iteration order, which
+/// depends on the randomly seeded hasher.
+fn ordered_states(states: &HashMap<StateKey, SpikeState>) -> Vec<&SpikeState> {
+    let mut ordered: Vec<&SpikeState> = states.values().collect();
+    ordered.sort_unstable_by_key(|state| (state.previous_index, state.node_index));
+    ordered
+}
+
 fn fir_weights(config: &SenseConfig) -> Vec<f64> {
     let gamma = config.fir_gamma.clamp(0.05, 0.95);
     let mut weights: Vec<f64> = (0..=config.max_safe_hops)
@@ -380,7 +391,7 @@ pub(crate) fn sense_with_context(
         return Err("dynamicWormholeThreshold must be finite and in [0,1]".into());
     }
     let weights = fir_weights(&config);
-    let mut active: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
+    let mut active: HashMap<StateKey, SpikeState> = HashMap::new();
     let mut accumulated: HashMap<usize, f64> = HashMap::new();
     let mut provenance: HashMap<usize, Provenance> = HashMap::new();
     let mut edge_flows: HashMap<(usize, usize), EdgeFlow> = HashMap::new();
@@ -443,10 +454,10 @@ pub(crate) fn sense_with_context(
 
     for hop in 0..config.max_safe_hops {
         if let Some(ctx) = context.as_deref_mut() { ctx.prepare(artifact, &active, &config)?; }
-        let mut next: HashMap<(Option<usize>, usize), SpikeState> = HashMap::new();
+        let mut next: HashMap<StateKey, SpikeState> = HashMap::new();
         let mut hop_transitions = Vec::new();
 
-        for spike in active.values() {
+        for spike in ordered_states(&active) {
             if spike.energy < config.firing_threshold || spike.momentum < 0.0 {
                 continue;
             }
@@ -600,11 +611,16 @@ pub(crate) fn sense_with_context(
 
         if next.len() > config.max_propagation_states.max(100) {
             let mut retained: Vec<SpikeState> = next.into_values().collect();
+            // Equal energies keep the state with the smaller key, independent of input order.
             retained.sort_by(|left, right| {
                 right
                     .energy
                     .partial_cmp(&left.energy)
                     .unwrap_or(Ordering::Equal)
+                    .then_with(|| {
+                        (left.previous_index, left.node_index)
+                            .cmp(&(right.previous_index, right.node_index))
+                    })
             });
             let limit = config.max_propagation_states.max(100);
             state_truncations += retained.len().saturating_sub(limit);
@@ -641,7 +657,7 @@ pub(crate) fn sense_with_context(
 
         let mut node_energy: HashMap<usize, f64> = HashMap::new();
         let mut in_flight = 0.0;
-        for spike in next.values() {
+        for spike in ordered_states(&next) {
             *node_energy.entry(spike.node_index).or_default() += spike.energy;
             in_flight += spike.energy;
             provenance
@@ -952,5 +968,73 @@ mod dynamic_wormhole_tests {
         assert_eq!(ctx.diagnostics.sql_batches, batches);
         assert_eq!(serde_json::to_value(first.edges).unwrap(),
             serde_json::to_value(second.edges).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod deterministic_order_tests {
+    use super::*;
+
+    /// 400 nodes with 12 out-edges each. Weights come from three values, so many
+    /// propagation states tie in energy when the state cap cuts them.
+    fn graph() -> NativeArtifact {
+        let (nodes, degree) = (400usize, 12usize);
+        let mut state = 20261023u64;
+        let mut draw = move |n: usize| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as usize % n
+        };
+        let (mut targets, mut weights) = (Vec::new(), Vec::new());
+        for source in 0..nodes {
+            let mut row = Vec::new();
+            while row.len() < degree {
+                let target = draw(nodes);
+                if target != source && !row.contains(&target) { row.push(target); }
+            }
+            for target in row {
+                targets.push(target);
+                weights.push([0.2, 0.3, 0.45][draw(3)]);
+            }
+        }
+        NativeArtifact {
+            node_ids: (1..=nodes as i64).collect(),
+            node_index: (1..=nodes as i64).enumerate().map(|(i, id)| (id, i)).collect(),
+            row_offsets: (0..=nodes).map(|i| i * degree).collect(),
+            targets,
+            weights,
+            ..NativeArtifact::default()
+        }.prepared()
+    }
+
+    fn run(graph: &NativeArtifact) -> (String, usize) {
+        let output = sense_typed(graph, "test", SenseInput {
+            query_id: None,
+            seeds: [1, 2, 3, 4].map(|id| SenseSeed { id, energy: 1.0, source_type: "seed".into() }).into(),
+            config: SenseConfig {
+                max_safe_hops: 4, base_momentum: 4.0, firing_threshold: 0.0,
+                minimum_injected_current: 0.0, max_neighbors_per_node: 12,
+                max_propagation_states: 100, max_transition_records: 4096,
+                ..SenseConfig::default()
+            },
+        }).unwrap();
+        let truncations = output.diagnostics.state_truncations;
+        let mut value = serde_json::to_value(output).unwrap();
+        value["diagnostics"]["elapsedMs"] = serde_json::Value::Null;
+        // serde_json writes the shortest round-trip form: equal text means equal bits.
+        (value.to_string(), truncations)
+    }
+
+    #[test]
+    fn same_input_is_bit_identical_under_different_hash_seeds() {
+        let graph = graph();
+        // Every thread draws its own random HashMap keys.
+        let runs: Vec<(String, usize)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8).map(|_| scope.spawn(|| run(&graph))).collect();
+            handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+        });
+        assert!(runs[0].1 > 0, "the state cap must cut tied states");
+        for other in &runs[1..] {
+            assert!(other.0 == runs[0].0, "output depends on the HashMap hash seed");
+        }
     }
 }
