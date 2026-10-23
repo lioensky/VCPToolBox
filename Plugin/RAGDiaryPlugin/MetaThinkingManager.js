@@ -117,6 +117,26 @@ class MetaThinkingManager {
             let bestChain = 'default';
             let maxSimilarity = -1;
 
+            let routingVector = queryVector;
+            if (typeof userContent === 'string' && userContent.includes('[附加文件:')) {
+                const corePrompt = userContent
+                    .replace(/\[附加文件:[\s\S]*?\[\/附加文件结束:[^\]]*\]/g, '')
+                    .trim();
+                if (corePrompt.length >= 2 && corePrompt.length < userContent.length * 0.5 && typeof this.ragPlugin.getEmbedding === 'function') {
+                    try {
+                        const coreVec = await this.ragPlugin.getEmbedding(corePrompt);
+                        if (Array.isArray(coreVec) && coreVec.length === queryVector.length) {
+                            routingVector = this.ragPlugin._getWeightedAverageVector(
+                                [coreVec, queryVector],
+                                [0.75, 0.25]
+                            ) || queryVector;
+                        }
+                    } catch (err) {
+                        console.warn('[MetaThinkingManager][Auto] 提取主干意图向量失败，回退至完整 queryVector:', err.message);
+                    }
+                }
+            }
+
             const themeEntries = Object.entries(this.metaChainThemeVectors);
             if (themeEntries.length === 0) {
                 console.log(`[MetaThinkingManager][Auto] 未加载任何主题向量，将使用默认主题。`);
@@ -126,7 +146,7 @@ class MetaThinkingManager {
                 // 🌟 白名单/黑名单过滤
                 if (autoWhitelist && !autoWhitelist.includes(themeName)) continue;
                 if (autoBlacklist && autoBlacklist.includes(themeName)) continue;
-                const similarity = this.ragPlugin.cosineSimilarity(queryVector, themeVector);
+                const similarity = this.ragPlugin.cosineSimilarity(routingVector, themeVector);
                 if (similarity > maxSimilarity) {
                     maxSimilarity = similarity;
                     bestChain = themeName;

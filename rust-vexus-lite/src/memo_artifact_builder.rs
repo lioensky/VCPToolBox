@@ -804,7 +804,7 @@ fn run_build(
     }
 
     let snapshot_gate = crate::publication_gate::acquire_read(db_path, &["*".into()])?;
-    let (rows, fact, anchor_gain, residual_sig, database_generation, dependencies) =
+    let (rows, fact, anchor_gain, residual_sig, database_generation, dependencies, (bipartite, bip_fp)) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
             let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
@@ -829,6 +829,10 @@ fn run_build(
             let dependencies = crate::storage::DerivedDependencies::capture(
                 readonly, crate::storage::MEMO_ARTIFACT_DEPENDENCIES,
             )?;
+            let bip_fp = crate::rivermemo_topology_v3::BipartiteHypergraphIndex::compute_fingerprint(readonly);
+            let bipartite = Arc::new(
+                crate::rivermemo_topology_v3::BipartiteHypergraphIndex::build_from_connection(readonly),
+            );
             Ok((
                 rows,
                 fact,
@@ -836,6 +840,7 @@ fn run_build(
                 residual_sig,
                 database_generation,
                 dependencies,
+                (bipartite, bip_fp),
             ))
         })?;
     drop(snapshot_gate);
@@ -900,7 +905,10 @@ fn run_build(
         48,
     );
 
-    let native = build_native_artifact(&transport, inbound, anchor_gain, wormholes, &provenance);
+    let mut native_inner = (*build_native_artifact(&transport, inbound, anchor_gain, wormholes, &provenance)).clone();
+    native_inner.bipartite = Some(bipartite);
+    native_inner.bipartite_fingerprint = Some(bip_fp);
+    let native = Arc::new(native_inner);
     drop(transport);
     let published_at = now_ms();
     let metadata = json!({
@@ -1280,6 +1288,14 @@ mod fact_dependency_tests {
         let status: Value = serde_json::from_str(&manifest.compute().unwrap()).unwrap();
         assert_eq!(status["trainingTagCount"], 2);
         assert_eq!(status["changedTagCount"], 1);
+        with_registered_read_transaction(&db, |connection| {
+            let loaded = crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &runtime, connection, &built.artifact_sig,
+            )?;
+            let bip = loaded.bipartite.as_ref().expect("resident bipartite index");
+            assert_eq!(bip.file_to_tags.get(&1).cloned().unwrap_or_default(), vec![(1, 1), (2, 2)]);
+            Ok(())
+        }).unwrap();
         storage.submit_write(|tx| {
             tx.execute_batch(
                 "UPDATE file_tags SET position=3 WHERE tag_id=2;
@@ -1290,9 +1306,16 @@ mod fact_dependency_tests {
         let status: Value = serde_json::from_str(&manifest.compute().unwrap()).unwrap();
         assert_eq!(status["changedTagCount"], 2, "count unique Tags, not mutations");
         with_registered_read_transaction(&db, |connection| {
-            crate::rivermemo_topology_v3::load_artifact_with_connection(
+            let loaded = crate::rivermemo_topology_v3::load_artifact_with_connection(
                 &runtime, connection, &built.artifact_sig,
-            ).map(|_| ())
+            )?;
+            let bip = loaded.bipartite.as_ref().expect("refreshed resident bipartite index");
+            assert_eq!(
+                bip.file_to_tags.get(&1).cloned().unwrap_or_default(),
+                vec![(2, 3)],
+                "hot-state resident bipartite index must immediately reflect deleted tag 1 and moved tag 2 -> pos 3"
+            );
+            Ok(())
         }).unwrap();
         storage.submit_write(|tx| {
             tx.execute("UPDATE kbm_runtime_meta SET value='0' WHERE key='memo_tag_facts'", [])

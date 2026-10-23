@@ -133,7 +133,49 @@ struct PipelineConfig {
     normal_tag_threshold: f64,
     epa_gate_mode: String,
     #[serde(default)]
+    experiment_preset: Option<String>,
+    #[serde(default = "default_true")]
+    enable_v8_extensions: bool,
+    #[serde(default = "default_true")]
+    enable_twisted_transfer_kernel: bool,
+    #[serde(default = "default_true")]
+    enable_oblique_bridge_retention: bool,
+    #[serde(default = "default_true")]
+    enable_orthogonal_dipole_query: bool,
+    #[serde(default)]
     spike_routing: SenseConfig,
+}
+
+impl PipelineConfig {
+    pub(crate) fn apply_experiment_preset(&mut self) {
+        if let Some(preset) = self.experiment_preset.as_deref() {
+            match preset.trim().to_ascii_lowercase().as_str() {
+                "6167e64" | "mainline" | "v7" | "v7_legacy" | "legacy" | "baseline" | "all_off" | "off" => {
+                    self.enable_v8_extensions = false;
+                    self.enable_twisted_transfer_kernel = false;
+                    self.enable_oblique_bridge_retention = false;
+                    self.enable_orthogonal_dipole_query = false;
+                }
+                "v8_5" | "v8.5" => {
+                    self.enable_v8_extensions = true;
+                    self.enable_twisted_transfer_kernel = true;
+                    self.enable_oblique_bridge_retention = true;
+                    self.enable_orthogonal_dipole_query = false;
+                }
+                "v9" | "v9_full" | "dual_ledger" => {
+                    self.enable_v8_extensions = true;
+                    self.enable_twisted_transfer_kernel = true;
+                    self.enable_oblique_bridge_retention = true;
+                    self.enable_orthogonal_dipole_query = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for PipelineConfig {
@@ -165,6 +207,11 @@ impl Default for PipelineConfig {
             tech_tag_threshold: 0.08,
             normal_tag_threshold: 0.015,
             epa_gate_mode: "backgroundRelative".into(),
+            experiment_preset: None,
+            enable_v8_extensions: true,
+            enable_twisted_transfer_kernel: true,
+            enable_oblique_bridge_retention: true,
+            enable_orthogonal_dipole_query: true,
             spike_routing: SenseConfig::default(),
         }
     }
@@ -493,45 +540,287 @@ struct PyramidOutput {
     features: PyramidFeatures,
 }
 
+/// Load the global manifold mean vector \mathbf{m} from the decoded EPA basis cache if available,
+/// reusing `cached_epa_basis` so base64 decoding is never repeated per query stage.
+fn load_epa_mean(connection: &Connection, dimension: usize) -> Option<Vec<f32>> {
+    let raw = connection
+        .query_row(
+            "SELECT value FROM kv_store WHERE key = 'epa_basis_cache'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()?;
+    let cached = EPA_BASIS.lock().ok().and_then(|slot| {
+        slot.as_ref()
+            .filter(|basis| basis.dimension == dimension && basis.raw == raw)
+            .cloned()
+    });
+    let decoded = match cached {
+        Some(basis) => basis,
+        None => {
+            let basis = Arc::new(decode_epa_basis(raw, dimension)?);
+            if let Ok(mut slot) = EPA_BASIS.lock() {
+                *slot = Some(basis.clone());
+            }
+            basis
+        }
+    };
+    let mean_energy: f64 = decoded.mean.iter().map(|&v| (v as f64) * (v as f64)).sum();
+    if mean_energy > 1e-9 {
+        Some(decoded.mean.clone())
+    } else {
+        None
+    }
+}
+
+#[allow(dead_code)]
 fn orthogonal_projection(
     query: &[f32],
     tags: &[PyramidTagWork],
     dimension: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
-    let mut basis: Vec<Vec<f64>> = Vec::with_capacity(tags.len());
+    let mut cumulative_basis = Vec::new();
+    orthogonal_projection_with_mean_and_history(query, tags, dimension, None, &mut cumulative_basis)
+}
+
+#[allow(dead_code)]
+fn orthogonal_projection_with_mean(
+    query: &[f32],
+    tags: &[PyramidTagWork],
+    dimension: usize,
+    mean: Option<&[f32]>,
+) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
+    let mut cumulative_basis = Vec::new();
+    orthogonal_projection_with_mean_and_history(query, tags, dimension, mean, &mut cumulative_basis)
+}
+
+/// Rank-Deficient & Near-Collinear Safe Moore-Penrose Löwdin Orthogonal Projection:
+/// Builds the full m \times m Gram overlap matrix G = V^T V across ALL valid candidate vectors
+/// (including exact duplicates or near-collinear pairs) and computes its spectral decomposition
+/// G = U \Lambda U^T via cyclic Jacobi sweeps.
+/// Both the subspace projection p = V G^+ V^T q and the symmetric contribution vector
+/// c_sym = G^{+1/2} V^T q use the exact same eigenvalue cutoff \lambda_k > \tau, guaranteeing:
+///   1) Strict permutation invariance even for identical/rank-deficient tags (A == B => c_A == c_B);
+///   2) Exact Parseval energy identity ||p||_2^2 \equiv ||c_sym||_2^2 with zero near-collinear leakage!
+fn orthogonal_projection_with_mean_and_history(
+    query: &[f32],
+    tags: &[PyramidTagWork],
+    dimension: usize,
+    mean: Option<&[f32]>,
+    cumulative_basis: &mut Vec<Vec<f64>>,
+) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
+    let prior_len = cumulative_basis.len();
+    let mut active_indices: Vec<usize> = Vec::with_capacity(tags.len());
+    let mut unit_vectors: Vec<Vec<f64>> = Vec::with_capacity(tags.len());
     let mut coefficients = vec![0.0; tags.len()];
+
     for (index, tag) in tags.iter().enumerate() {
-        let mut vector: Vec<f64> = tag.vector.iter().map(|value| *value as f64).collect();
-        for unit in &basis {
-            let projection = vector
-                .iter()
-                .zip(unit.iter())
-                .map(|(left, right)| left * right)
-                .sum::<f64>();
-            for offset in 0..dimension {
-                vector[offset] -= projection * unit[offset];
+        let mut vector: Vec<f64> = if let Some(m) = mean {
+            if m.len() == dimension && tag.vector.len() == dimension {
+                tag.vector
+                    .iter()
+                    .zip(m.iter())
+                    .map(|(&v, &mv)| (v - mv) as f64)
+                    .collect()
+            } else {
+                tag.vector.iter().map(|value| *value as f64).collect()
+            }
+        } else {
+            tag.vector.iter().map(|value| *value as f64).collect()
+        };
+        if vector.len() != dimension {
+            continue;
+        }
+        let orig_norm = vector.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if orig_norm <= 1e-12 {
+            continue;
+        }
+        for v in &mut vector {
+            *v /= orig_norm;
+        }
+        // Project out components lying in strictly prior pyramid levels' subspaces Q_{0..l-1}
+        // while keeping all current-level candidates (including duplicates) on equal footing!
+        if prior_len > 0 {
+            for _pass in 0..2 {
+                for prev_unit in &cumulative_basis[..prior_len] {
+                    let proj = vector
+                        .iter()
+                        .zip(prev_unit.iter())
+                        .map(|(left, right)| left * right)
+                        .sum::<f64>();
+                    for offset in 0..dimension {
+                        vector[offset] -= proj * prev_unit[offset];
+                    }
+                }
+            }
+            let post_prior_norm = vector.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if post_prior_norm <= 1e-9 {
+                continue;
+            }
+            for v in &mut vector {
+                *v /= post_prior_norm;
             }
         }
-        if normalize(&mut vector) {
-            coefficients[index] = query
-                .iter()
-                .zip(vector.iter())
-                .map(|(left, right)| (*left as f64) * right)
-                .sum::<f64>()
-                .abs();
-            basis.push(vector);
+        active_indices.push(index);
+        unit_vectors.push(vector);
+    }
+
+    let m = unit_vectors.len();
+    if m == 0 {
+        return (vec![0.0f32; dimension], query.to_vec(), coefficients);
+    }
+    if m == 1 {
+        let u = &unit_vectors[0];
+        let signed = query
+            .iter()
+            .zip(u.iter())
+            .map(|(&q, &uv)| (q as f64) * uv)
+            .sum::<f64>();
+        coefficients[active_indices[0]] = signed.abs();
+        let mut projection = vec![0.0f32; dimension];
+        for offset in 0..dimension {
+            projection[offset] = (signed * u[offset]) as f32;
+        }
+        let residual = query
+            .iter()
+            .zip(projection.iter())
+            .map(|(source, explained)| source - explained)
+            .collect();
+        cumulative_basis.push(u.clone());
+        return (projection, residual, coefficients);
+    }
+
+    // Build full m x m symmetric overlap matrix G = V^T V and right-hand side b = V^T q
+    let mut g_mat = vec![vec![0.0f64; m]; m];
+    let mut b_vec = vec![0.0f64; m];
+    for i in 0..m {
+        let vi = &unit_vectors[i];
+        b_vec[i] = query
+            .iter()
+            .zip(vi.iter())
+            .map(|(&q, &uv)| (q as f64) * uv)
+            .sum::<f64>();
+        g_mat[i][i] = 1.0;
+        for j in (i + 1)..m {
+            let vj = &unit_vectors[j];
+            let dot_ij = vi.iter().zip(vj.iter()).map(|(a, b)| a * b).sum::<f64>();
+            g_mat[i][j] = dot_ij;
+            g_mat[j][i] = dot_ij;
         }
     }
 
+    // Cyclic Jacobi eigendecomposition of symmetric positive semi-definite G (m x m)
+    let mut eig_vecs = vec![vec![0.0f64; m]; m];
+    for i in 0..m {
+        eig_vecs[i][i] = 1.0;
+    }
+    for _sweep in 0..16 {
+        let mut max_off = 0.0f64;
+        for p in 0..m {
+            for q in (p + 1)..m {
+                max_off = max_off.max(g_mat[p][q].abs());
+            }
+        }
+        if max_off < 1e-14 {
+            break;
+        }
+        for p in 0..m {
+            for q in (p + 1)..m {
+                let apq = g_mat[p][q];
+                if apq.abs() < 1e-15 {
+                    continue;
+                }
+                let app = g_mat[p][p];
+                let aqq = g_mat[q][q];
+                let tau = (aqq - app) / (2.0 * apq);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let sn = t * c;
+                g_mat[p][p] = app - t * apq;
+                g_mat[q][q] = aqq + t * apq;
+                g_mat[p][q] = 0.0;
+                g_mat[q][p] = 0.0;
+                for r in 0..m {
+                    if r != p && r != q {
+                        let arp = g_mat[r][p];
+                        let arq = g_mat[r][q];
+                        g_mat[r][p] = c * arp - sn * arq;
+                        g_mat[p][r] = g_mat[r][p];
+                        g_mat[r][q] = sn * arp + c * arq;
+                        g_mat[q][r] = g_mat[r][q];
+                    }
+                    let vrp = eig_vecs[r][p];
+                    let vrq = eig_vecs[r][q];
+                    eig_vecs[r][p] = c * vrp - sn * vrq;
+                    eig_vecs[r][q] = sn * vrp + c * vrq;
+                }
+            }
+        }
+    }
+
+    // Unified scale-aware spectral rank threshold \tau:
+    // Both projection p = \sum_{\lambda_k > \tau} (\phi_k^T q) \phi_k and symmetric contributions
+    // c_sym = U diag(\lambda_k^{-1/2}) U^T b use the exact same retained eigenmodes!
+    let max_eig = (0..m).map(|k| g_mat[k][k]).fold(0.0f64, f64::max);
+    let eig_cutoff = (max_eig * 1e-9).max(1e-10);
+    let mut mode_signed = vec![0.0f64; m];
+    for col in 0..m {
+        let lambda = g_mat[col][col];
+        if lambda > eig_cutoff {
+            let mut dot_ub = 0.0;
+            for row in 0..m {
+                dot_ub += eig_vecs[row][col] * b_vec[row];
+            }
+            mode_signed[col] = dot_ub / lambda.sqrt();
+            // Build orthonormal eigen-basis vector \phi_col = \lambda^{-1/2} V u_col for cumulative_basis
+            let inv_sqrt = 1.0 / lambda.sqrt();
+            let mut phi = vec![0.0f64; dimension];
+            for row in 0..m {
+                let weight = eig_vecs[row][col] * inv_sqrt;
+                if weight.abs() > 1e-15 {
+                    for (out, &v_val) in phi.iter_mut().zip(unit_vectors[row].iter()) {
+                        *out += weight * v_val;
+                    }
+                }
+            }
+            let phi_norm = phi.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if phi_norm > 1e-12 {
+                for v in &mut phi {
+                    *v /= phi_norm;
+                }
+                cumulative_basis.push(phi);
+            }
+        }
+    }
+
+    // Symmetric contribution vector c_sym = U mode_signed, and dual weights w = G^+ b = U (\lambda^{-1/2} mode_signed)
+    let mut dual_weights = vec![0.0f64; m];
+    for row in 0..m {
+        let mut sym_val = 0.0;
+        let mut dual_val = 0.0;
+        for col in 0..m {
+            let lambda = g_mat[col][col];
+            if lambda > eig_cutoff {
+                let u_rc = eig_vecs[row][col];
+                sym_val += u_rc * mode_signed[col];
+                dual_val += u_rc * (mode_signed[col] / lambda.sqrt());
+            }
+        }
+        coefficients[active_indices[row]] = sym_val.abs();
+        dual_weights[row] = dual_val;
+    }
+
     let mut projection = vec![0.0f32; dimension];
-    for unit in &basis {
-        let coefficient = query
-            .iter()
-            .zip(unit.iter())
-            .map(|(left, right)| (*left as f64) * right)
-            .sum::<f64>();
-        for offset in 0..dimension {
-            projection[offset] += (coefficient * unit[offset]) as f32;
+    for (row, u_vec) in unit_vectors.iter().enumerate() {
+        let w = dual_weights[row];
+        if w.abs() > 1e-15 {
+            for offset in 0..dimension {
+                projection[offset] += (w * u_vec[offset]) as f32;
+            }
         }
     }
     let residual = query
@@ -550,25 +839,33 @@ fn analyze_handshakes(
     if tags.is_empty() {
         return HandshakeFeatures::default();
     }
-    let mut directions = Vec::with_capacity(tags.len());
+    let limit = tags.len().min(5);
+    let mut directions = Vec::with_capacity(limit);
     let mut average = vec![0.0f64; dimension];
-    for tag in tags.iter_mut() {
-        let mut direction = vec![0.0f64; dimension];
+    for (idx, tag) in tags.iter_mut().enumerate() {
         let mut magnitude_squared = 0.0;
         for offset in 0..dimension {
             let delta = (query[offset] - tag.vector[offset]) as f64;
-            direction[offset] = delta;
             magnitude_squared += delta * delta;
         }
         let distance = magnitude_squared.sqrt();
         tag.handshake_magnitude = distance;
-        if distance > 1e-9 {
+        let inv_dist = if distance > 1e-9 { 1.0 / distance } else { 0.0 };
+        if idx < limit {
+            let mut direction = vec![0.0f64; dimension];
+            if inv_dist > 0.0 {
+                for offset in 0..dimension {
+                    let unit_delta = ((query[offset] - tag.vector[offset]) as f64) * inv_dist;
+                    direction[offset] = unit_delta;
+                    average[offset] += unit_delta;
+                }
+            }
+            directions.push(direction);
+        } else if inv_dist > 0.0 {
             for offset in 0..dimension {
-                direction[offset] /= distance;
-                average[offset] += direction[offset];
+                average[offset] += ((query[offset] - tag.vector[offset]) as f64) * inv_dist;
             }
         }
-        directions.push(direction);
     }
     for value in &mut average {
         *value /= tags.len() as f64;
@@ -667,26 +964,66 @@ fn analyze_pyramid_with_pool(
         ));
     }
 
+    // Direction 1 (Intrinsic Centered Tangent-Space Pyramid):
+    // Keep `residual` initialized to `query` so Level-0 HNSW lookup and initial norm `original_energy`
+    // match the raw index space 100%; for deep orthogonal residuals (level >= 1), evaluate cosine
+    // in the centered tangent space \mathcal{T}_{\mathbf{m}} (\mathbf{v}_i - \mathbf{m}) so the 36.5%
+    // common-mode cone bias does not inflate the denominator and crush deep similarity!
+    let epa_mean = if config.enable_v8_extensions {
+        load_epa_mean(connection, dimension)
+    } else {
+        None
+    };
     let mut residual = query.to_vec();
     let mut levels_output = Vec::new();
     let mut levels_work = Vec::new();
     let mut residuals = Vec::new();
     let mut total_explained = 0.0;
+    let mut seen_pyramid_ids: HashSet<u64> = HashSet::new();
+    let mut cumulative_basis: Vec<Vec<f64>> = Vec::new();
     for level in 0..config.max_levels.clamp(1, 8) {
+        let top_k = config.pyramid_top_k.clamp(1, 128);
         let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+        let (ef_opt, excl_opt) = if level == 0 {
+            (None, None)
+        } else {
+            (Some(512), Some(&seen_pyramid_ids))
+        };
         let matches = guard
-            .search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
+            .search_sql_excluding(connection, None, &residual, top_k, ef_opt, excl_opt)
             .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
         if matches.is_empty() {
             break;
         }
-        let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64).collect();
+        let ids: Vec<i64> = matches.iter().map(|(id, _)| {
+            seen_pyramid_ids.insert(*id);
+            *id as i64
+        }).collect();
         drop(guard);
         ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
         let mut tags = Vec::new();
+        let res_norm = magnitude(&residual);
         for id in &ids {
             let Some(vector) = tag_vectors.get(id).cloned() else { continue };
-            let similarity = cosine(&residual, &vector);
+            let raw_sim = cosine(&residual, &vector);
+            let similarity = if let (Some(ref m), true) = (&epa_mean, level >= 1) {
+                // Intrinsic tangent-space cosine: \cos(\mathbf{r}_l, \mathbf{v}_i - \mathbf{m})
+                let mut dot_val = 0.0f64;
+                let mut v_centered_sq = 0.0f64;
+                for i in 0..dimension {
+                    let vc = (vector[i] - m[i]) as f64;
+                    dot_val += (residual[i] as f64) * vc;
+                    v_centered_sq += vc * vc;
+                }
+                let denom = res_norm * v_centered_sq.sqrt();
+                if denom > 1e-12 {
+                    raw_sim.max(dot_val / denom)
+                } else {
+                    raw_sim
+                }
+            } else {
+                raw_sim
+            };
             tags.push(PyramidTagWork {
                 id: *id,
                 name: String::new(),
@@ -705,8 +1042,15 @@ fn analyze_pyramid_with_pool(
         }
 
         let current_energy = magnitude(&residual).powi(2);
+        let proj_mean = if level >= 1 { epa_mean.as_deref() } else { None };
         let (projection, next_residual, coefficients) =
-            orthogonal_projection(&residual, &tags, dimension);
+            orthogonal_projection_with_mean_and_history(
+                &residual,
+                &tags,
+                dimension,
+                proj_mean,
+                &mut cumulative_basis,
+            );
         for (tag, coefficient) in tags.iter_mut().zip(coefficients.iter()) {
             tag.contribution = *coefficient;
         }
@@ -736,8 +1080,22 @@ fn analyze_pyramid_with_pool(
         if config.spike_routing.dynamic_wormholes {
             residuals.push(residual.clone());
         }
+        // V8.5 Spectral Tikhonov Oblique Bridge Retention:
+        // When handing residual over to level + 1 in high-dimensional spaces (dimension >= 64),
+        // retain 16% of the oblique bridge component so semi-orthogonal transition concepts
+        // (~60-70 deg to L0) are not completely annihilated before level 1 search!
+        let handover_residual: Vec<f32> =
+            if config.enable_oblique_bridge_retention && dimension >= 64 && level == 0 {
+                residual
+                    .iter()
+                    .zip(projection.iter())
+                    .map(|(&r, &p)| r - 0.84 * p)
+                    .collect()
+            } else {
+                next_residual
+            };
         levels_work.push(tags);
-        residual = next_residual;
+        residual = handover_residual;
         if residual_energy / original_energy < config.min_energy_ratio.clamp(0.0, 1.0) {
             break;
         }
@@ -840,6 +1198,23 @@ fn gate_tags(
     let mut seen = HashSet::new();
     let mut gated = Vec::new();
     for (level, tags) in levels.iter().enumerate() {
+        let proj_mag = pyramid
+            .levels
+            .get(level)
+            .map(|l| l.projection_magnitude)
+            .unwrap_or(0.0);
+        let max_contrib = tags
+            .iter()
+            .map(|t| positive(t.contribution))
+            .fold(0.0, f64::max);
+        // When Löwdin S^{-1/2} distributes subspace energy across K correlated tags,
+        // rescale the gating amplitude so the lead tag reaches `proj_mag` (preserving
+        // Sense Hop-1 firing potential) while keeping Löwdin's permutation-invariant ratios!
+        let lowdin_gate_scale = if config.enable_v8_extensions && proj_mag > max_contrib && max_contrib > 1e-9 {
+            (proj_mag / max_contrib).min(2.2)
+        } else {
+            1.0
+        };
         for tag in tags {
             if tag.id <= 0 || !seen.insert(tag.id) {
                 continue;
@@ -869,8 +1244,16 @@ fn gate_tags(
                     penalty
                 };
             }
-            let layer_gain = config.layer_decay.clamp(0.0, 1.0).powi(level as i32);
-            let weight = positive(tag.contribution) * layer_gain * language_gain * core_gain;
+            let base_layer_gain = config.layer_decay.clamp(0.0, 1.0).powi(level as i32);
+            // V8 Stratified Deep-Layer Source Quota:
+            // Prevent Level 0 from monopolizing >95% of initial seed current when Level >= 1
+            // discovers high-coherence tangent-space concepts.
+            let layer_gain = if config.enable_v8_extensions && level >= 1 && relevance > 0.15 {
+                base_layer_gain.max(0.45 * (0.65_f64).powi((level - 1) as i32))
+            } else {
+                base_layer_gain
+            };
+            let weight = positive(tag.contribution) * lowdin_gate_scale * layer_gain * language_gain * core_gain;
             if weight > 0.0 {
                 gated.push(GatedTag {
                     id: tag.id,
@@ -890,6 +1273,7 @@ struct FusionTag {
     name: String,
     weight: f64,
     is_core: bool,
+    norm: f64,
     vector: Arc<[f32]>,
 }
 
@@ -1021,7 +1405,8 @@ fn fuse_observation_with_pool(
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
         let Some(vector) = tag_vectors.get(&tag.id).cloned() else { continue };
-        if magnitude(&vector) > 1e-12 {
+        let norm = magnitude(&vector);
+        if norm > 1e-12 {
             vectors.push(FusionTag {
                 id: tag.id,
                 name: if tag.name.is_empty() {
@@ -1031,6 +1416,7 @@ fn fuse_observation_with_pool(
                 },
                 weight: tag.weight,
                 is_core: tag.is_core,
+                norm,
                 vector,
             });
         }
@@ -1040,7 +1426,11 @@ fn fuse_observation_with_pool(
     let mut ghost_id = -1i64;
     let mut accepted_ghosts = 0usize;
     for ghost in ghost_tags {
-        if ghost.vector.len() != dimension || magnitude(&ghost.vector) <= 1e-12 {
+        if ghost.vector.len() != dimension {
+            continue;
+        }
+        let norm = magnitude(&ghost.vector);
+        if norm <= 1e-12 {
             continue;
         }
         vectors.push(FusionTag {
@@ -1053,6 +1443,7 @@ fn fuse_observation_with_pool(
                     1.0
                 },
             is_core: ghost.is_core,
+            norm,
             vector: Arc::from(ghost.vector.clone()),
         });
         ghost_id -= 1;
@@ -1073,9 +1464,10 @@ fn fuse_observation_with_pool(
     let threshold = config.deduplication_threshold.clamp(-1.0, 1.0);
     let mut selected: Vec<FusionTag> = Vec::new();
     for candidate in vectors {
-        let redundant_index = selected
-            .iter()
-            .position(|existing| cosine(&candidate.vector, &existing.vector) > threshold);
+        let redundant_index = selected.iter().position(|existing| {
+            let denom = candidate.norm * existing.norm;
+            denom > 1e-12 && (dot(&candidate.vector, &existing.vector) / denom) > threshold
+        });
         if let Some(index) = redundant_index {
             selected[index].weight += candidate.weight * 0.2;
             selected[index].is_core |= candidate.is_core;
@@ -1172,6 +1564,7 @@ struct DualFieldOutput {
     transfer_domain_ids: Vec<i64>,
     local_vector: Vec<f32>,
     transfer_vector: Vec<f32>,
+    transfer_basin_vectors: Vec<Vec<f32>>,
     diagnostics: DualFieldDiagnostics,
 }
 
@@ -1195,8 +1588,27 @@ fn apply_transport(
 /// `apply_transport` for both fields in one pass over the CSR. Every output
 /// position receives the same additions in the same order as two separate
 /// passes, and each field keeps its own zero-mass skip.
+fn apply_transport_with_weights(
+    artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    weights: &[f64],
+    input: &[f64],
+    output: &mut [f64],
+) {
+    output.fill(0.0);
+    for source in 0..artifact.node_ids.len() {
+        let mass = input[source];
+        if mass == 0.0 {
+            continue;
+        }
+        for cursor in artifact.row_offsets[source]..artifact.row_offsets[source + 1] {
+            output[artifact.targets[cursor]] += mass * positive(weights[cursor]);
+        }
+    }
+}
+
 fn apply_transport_pair(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
+    transfer_weights: &[f64],
     local: &[f64],
     transfer: &[f64],
     local_output: &mut [f64],
@@ -1213,13 +1625,12 @@ fn apply_transport_pair(
             continue;
         }
         for cursor in artifact.row_offsets[source]..artifact.row_offsets[source + 1] {
-            let weight = positive(artifact.weights[cursor]);
             let target = artifact.targets[cursor];
             if local_active {
-                local_output[target] += local_mass * weight;
+                local_output[target] += local_mass * positive(artifact.weights[cursor]);
             }
             if transfer_active {
-                transfer_output[target] += transfer_mass * weight;
+                transfer_output[target] += transfer_mass * positive(transfer_weights[cursor]);
             }
         }
     }
@@ -1481,8 +1892,11 @@ fn project_supported_fields(
     pool: &mut TagVectorPool,
     diagnostics: &mut DualFieldDiagnostics,
 ) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
-    project_basin_fields(connection, artifact, fields, domains, dimension, limit,
-        river_ids, &[], pool, diagnostics)
+    let (local, transfer, _) = project_basin_fields(
+        connection, artifact, fields, domains, dimension, limit,
+        river_ids, &[], pool, diagnostics,
+    )?;
+    Ok((local, transfer))
 }
 
 fn project_basin_fields(
@@ -1496,7 +1910,7 @@ fn project_basin_fields(
     basins: &[crate::memo_projection::Basin],
     pool: &mut TagVectorPool,
     diagnostics: &mut DualFieldDiagnostics,
-) -> std::result::Result<(Vec<f32>, Vec<f32>), String> {
+) -> std::result::Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>), String> {
     let supports = crate::memo_projection::grow(artifact, fields, domains, river_ids, basins, limit)?;
     let selected = supports.ids;
     let support_diagnostics = |f: usize| {
@@ -1553,9 +1967,55 @@ fn project_basin_fields(
     }
     [diagnostics.local_selected_mass_ratio, diagnostics.transfer_selected_mass_ratio] = selected_ratios;
     [diagnostics.local_projected_mass_ratio, diagnostics.transfer_projected_mass_ratio] = projected_ratios;
+
+    // V8 Multi-Basin Dipole Projection (ColBERT / Poly-Encoder Max-Sim Prototypes):
+    // Instead of collapsing multiple orthogonal transfer basins into a single centroid vector
+    // (where orthogonal cross-domain directions cancel each other out), compute up to 4
+    // basin-specific unit transfer prototype vectors so readout can take max-sim across poles.
+    let mut transfer_basin_vectors: Vec<Vec<f32>> = Vec::new();
+    if basins.len() > 1 && !selected[1].is_empty() {
+        let selected_transfer_set: HashSet<i64> = selected[1].iter().copied().collect();
+        let mut ranked_basins: Vec<&crate::memo_projection::Basin> = basins.iter().collect();
+        ranked_basins.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for basin in ranked_basins.into_iter().take(4) {
+            let mut pole = vec![0.0f64; dimension];
+            let mut pole_mass = 0.0f64;
+            for &id in &basin.inner {
+                if !selected_transfer_set.contains(&id) {
+                    continue;
+                }
+                let Some(&index) = artifact.node_index.get(&id) else { continue };
+                let mass = positive(fields[1][index]);
+                if mass <= 0.0 {
+                    continue;
+                }
+                let Some(vector) = pool.get(&id) else { continue };
+                pole_mass += mass;
+                for (out, value) in pole.iter_mut().zip(vector.iter()) {
+                    *out += *value as f64 * mass;
+                }
+            }
+            if pole_mass > 1e-12 {
+                for out in &mut pole {
+                    *out /= pole_mass;
+                }
+                normalize(&mut pole);
+                transfer_basin_vectors.push(pole.into_iter().map(|v| v as f32).collect());
+            }
+        }
+    }
+
     let [local, transfer] = outputs;
-    Ok((local.into_iter().map(|v| v as f32).collect(),
-        transfer.into_iter().map(|v| v as f32).collect()))
+    Ok((
+        local.into_iter().map(|v| v as f32).collect(),
+        transfer.into_iter().map(|v| v as f32).collect(),
+        transfer_basin_vectors,
+    ))
 }
 
 #[cfg(test)]
@@ -1567,7 +2027,7 @@ fn solve_dual_fields(
     config: &PipelineConfig,
 ) -> std::result::Result<DualFieldOutput, String> {
     solve_dual_fields_with_pool(artifact, connection, source_entries, dimension, config,
-        &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>(), &[])
+        &mut TagVectorPool::new(), &source_entries.iter().map(|entry| entry.0).collect::<Vec<_>>(), &[], &[])
 }
 
 fn solve_dual_fields_with_pool(
@@ -1579,6 +2039,7 @@ fn solve_dual_fields_with_pool(
     pool: &mut TagVectorPool,
     river_ids: &[i64],
     basins: &[crate::memo_projection::Basin],
+    node_resonances: &[f64],
 ) -> std::result::Result<DualFieldOutput, String> {
     let solve_started = Instant::now();
     let mut source = vec![0.0f64; artifact.node_ids.len()];
@@ -1596,6 +2057,7 @@ fn solve_dual_fields_with_pool(
             transfer_domain_ids: Vec::new(),
             local_vector: vec![0.0; dimension],
             transfer_vector: vec![0.0; dimension],
+            transfer_basin_vectors: Vec::new(),
             diagnostics: DualFieldDiagnostics {
                 iterations: 0,
                 local_converged: true,
@@ -1626,26 +2088,118 @@ fn solve_dual_fields_with_pool(
     let mut transfer_residual = f64::INFINITY;
     let mut iterations = 0;
 
+    // Potential-Guided Row-Normalized Transfer Kernel:
+    // Reweights outgoing transitions toward high-resonance residual targets and low-triangle
+    // bridge edges while preserving each node's outbound row sum.
+    let has_global_wormhole_resonance = config.enable_twisted_transfer_kernel
+        && node_resonances.len() == artifact.node_ids.len()
+        && node_resonances.iter().any(|&r| r > 0.0);
+    let transfer_weights_cow: std::borrow::Cow<'_, [f64]> = if has_global_wormhole_resonance {
+        const GRADIENT_TILT_BETA: f64 = 2.5;
+        const WORMHOLE_COUPLE_GAMMA: f64 = 0.85;
+        let mut mod_w = artifact.weights.clone();
+        for src_idx in 0..artifact.node_ids.len() {
+            let start = artifact.row_offsets[src_idx];
+            let end = artifact.row_offsets[src_idx + 1];
+            if start >= end {
+                continue;
+            }
+            let r_u = node_resonances[src_idx].clamp(0.0, 1.0);
+            let mut orig_sum = 0.0;
+            let mut mod_sum = 0.0;
+            let mut row_changed = false;
+            for cursor in start..end {
+                let w = positive(artifact.weights[cursor]);
+                orig_sum += w;
+                let dst_idx = artifact.targets[cursor];
+                let r_v = node_resonances[dst_idx].clamp(0.0, 1.0);
+                if r_v > 0.0 && w > 0.0 {
+                    // Heuristic Potential-Gradient & Wormhole-Coupled Tilted Kernel:
+                    // 1) Potential gradient rectification (r_v - 0.45 * r_u)_+ prevents high-resonance
+                    //    hubs from back-flowing into lower-resonance generic neighbors.
+                    // 2) True structural wormhole edges (`edge_is_wormhole`) receive explicit
+                    //    cross-domain tunneling amplification when target resonance r_v is active.
+                    // 3) Triangle-overlap bridge factor (`edge_ricci_bridge`) dampens intra-clique loops.
+                    let grad_potential = (r_v - 0.45 * r_u).max(0.0);
+                    let is_wh = artifact
+                        .edge_is_wormhole
+                        .get(cursor)
+                        .copied()
+                        .unwrap_or(false);
+                    let ricci_bridge = artifact
+                        .edge_ricci_bridge
+                        .get(cursor)
+                        .copied()
+                        .unwrap_or(1.0);
+                    let wh_bonus = if is_wh {
+                        WORMHOLE_COUPLE_GAMMA * (r_u.max(0.15) * r_v).sqrt()
+                    } else {
+                        0.25 * (ricci_bridge - 0.5).max(0.0) * (r_u.max(0.20) * r_v).sqrt()
+                    };
+                    let h_val = (GRADIENT_TILT_BETA * grad_potential * (0.65 + 0.35 * ricci_bridge) + wh_bonus).exp();
+                    let mw = w * h_val;
+                    mod_w[cursor] = mw;
+                    mod_sum += mw;
+                    row_changed = true;
+                } else {
+                    mod_w[cursor] = w;
+                    mod_sum += w;
+                }
+            }
+            if row_changed && mod_sum > 1e-12 && orig_sum > 0.0 {
+                let scale = orig_sum / mod_sum;
+                for cursor in start..end {
+                    mod_w[cursor] *= scale;
+                }
+            }
+        }
+        std::borrow::Cow::Owned(mod_w)
+    } else {
+        std::borrow::Cow::Borrowed(&artifact.weights)
+    };
+    let transfer_weights: &[f64] = transfer_weights_cow.as_ref();
+
     for iteration in 1..=config.field_max_iterations.max(1) {
         iterations = iteration;
         // The fields are independent; while both move, one CSR pass serves both.
         if !local_converged && !transfer_converged {
-            apply_transport_pair(artifact, &local, &transfer,
-                &mut propagated_local, &mut propagated_transfer);
+            apply_transport_pair(
+                artifact,
+                transfer_weights,
+                &local,
+                &transfer,
+                &mut propagated_local,
+                &mut propagated_transfer,
+            );
         } else if !local_converged {
             apply_transport(artifact, &local, &mut propagated_local);
         } else if !transfer_converged {
-            apply_transport(artifact, &transfer, &mut propagated_transfer);
+            apply_transport_with_weights(
+                artifact,
+                transfer_weights,
+                &transfer,
+                &mut propagated_transfer,
+            );
         }
         if !local_converged {
-            local_residual = relax_field(&source, &propagated_local, local_alpha,
-                &local, &mut next_local);
+            local_residual = relax_field(
+                &source,
+                &propagated_local,
+                local_alpha,
+                &local,
+                &mut next_local,
+            );
             local_converged = local_residual <= config.local_tolerance.max(1e-15);
             std::mem::swap(&mut local, &mut next_local);
         }
         if !transfer_converged {
-            transfer_residual = relax_field(&source, &propagated_transfer, transfer_alpha,
-                &transfer, &mut next_transfer);
+            transfer_residual = relax_field(
+                &source,
+                &propagated_transfer,
+                transfer_alpha,
+                &transfer,
+                &mut next_transfer,
+            );
             transfer_converged = transfer_residual <= config.transfer_tolerance.max(1e-15);
             std::mem::swap(&mut transfer, &mut next_transfer);
         }
@@ -1654,6 +2208,35 @@ fn solve_dual_fields_with_pool(
         }
     }
 
+    // Post-hoc Steady-State Total Mass Calibration under Non-Uniform Node Leakage:
+    // Row-normalized reweighting can alter steady-state total mass when shifting flow between a
+    // continuing branch and a terminal sink. Rescaling `transfer` (and its step residual under
+    // the correspondingly scaled source `scale * source`) aligns total steady-state mass with
+    // the untwisted baseline while preserving relative node rankings and domain ratios.
+    if has_global_wormhole_resonance {
+        let mut base_trf = source.clone();
+        let mut next_base = vec![0.0; source.len()];
+        let mut prop_base = vec![0.0; source.len()];
+        for _ in 1..=config.field_max_iterations.max(1) {
+            apply_transport(artifact, &base_trf, &mut prop_base);
+            let res = relax_field(&source, &prop_base, transfer_alpha, &base_trf, &mut next_base);
+            std::mem::swap(&mut base_trf, &mut next_base);
+            if res <= config.transfer_tolerance.max(1e-15) {
+                break;
+            }
+        }
+        let base_mass = field_mass(&base_trf);
+        let cur_mass = field_mass(&transfer);
+        if base_mass > 1e-12 && cur_mass > 1e-12 {
+            let scale = base_mass / cur_mass;
+            for v in &mut transfer {
+                *v *= scale;
+            }
+            if transfer_residual.is_finite() {
+                transfer_residual *= scale;
+            }
+        }
+    }
     let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;
     let domain_started = Instant::now();
     let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
@@ -1687,7 +2270,7 @@ fn solve_dual_fields_with_pool(
         ..DualFieldDiagnostics::default()
     };
     let project_started = Instant::now();
-    let (local_vector, transfer_vector) = project_basin_fields(
+    let (local_vector, transfer_vector, transfer_basin_vectors) = project_basin_fields(
         connection, artifact, [&local, &transfer],
         [&local_domain_ids, &transfer_domain_ids], dimension,
         config.max_field_projection_nodes, river_ids, basins, pool, &mut projection)?;
@@ -1700,6 +2283,7 @@ fn solve_dual_fields_with_pool(
         transfer_domain_ids,
         local_vector,
         transfer_vector,
+        transfer_basin_vectors,
         diagnostics: DualFieldDiagnostics {
             iterations,
             local_converged,
@@ -1781,6 +2365,8 @@ fn run_pipeline_with_connection(
     let total_started = Instant::now();
     let mut input: PipelineInput = serde_json::from_str(input_json)
         .map_err(|error| format!("invalid unified Memo pipeline input JSON: {}", error))?;
+    input.config.apply_experiment_preset();
+    input.config.apply_experiment_preset();
     input.query_vector = query_vector.to_vec();
     if input.query_vector.len() != dimensions {
         return Err(format!(
@@ -1849,8 +2435,9 @@ fn run_pipeline_with_connection(
     for (level, tags) in level_tags.iter().enumerate() {
         for tag in tags { seed_levels.entry(tag.id).or_insert(level); }
     }
-    let mut wormholes = DynamicWormholeContext::new(
-        connection, &mut tag_vectors, residuals, seed_levels,
+    let epa_mean = load_epa_mean(connection, dimensions);
+    let mut wormholes = DynamicWormholeContext::new_with_mean(
+        connection, &mut tag_vectors, residuals, seed_levels, epa_mean,
     );
     for (layer, tags) in level_tags.iter().enumerate() {
         for tag in tags { wormholes.reuse_score(layer, tag.id, tag.similarity); }
@@ -1866,7 +2453,27 @@ fn run_pipeline_with_connection(
         Some(&mut wormholes),
     )?;
     let sensing_diagnostics = observation.diagnostics.clone();
+    let wh_threshold = input.config.spike_routing.dynamic_wormhole_threshold;
+    let has_deep_residuals = wormholes.residuals.len() > 1;
+    let mut global_node_resonances = wormholes.extract_global_node_resonances(
+        artifact.node_ids.len(),
+        wh_threshold,
+    );
     drop(wormholes);
+    // Also illuminate multi-hop global CSR nodes discovered by deeper pyramid layers (level >= 1)
+    if has_deep_residuals {
+        for tags in level_tags.iter().skip(1) {
+            for tag in tags {
+                if tag.similarity >= wh_threshold {
+                    if let Some(&node_idx) = artifact.node_index.get(&tag.id) {
+                        if tag.similarity > global_node_resonances[node_idx] {
+                            global_node_resonances[node_idx] = tag.similarity;
+                        }
+                    }
+                }
+            }
+        }
+    }
     let sensing_ms = sensing_started.elapsed().as_secs_f64() * 1000.0;
 
     let fusion_started = Instant::now();
@@ -1893,9 +2500,44 @@ fn run_pipeline_with_connection(
         &mut tag_vectors,
         &observation.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
         &crate::memo_projection::seed_basins(&observation, artifact),
+        &global_node_resonances,
     )?;
 
-    let enhanced_vector_f32: Vec<f32> = enhanced_vector.iter().map(|value| *value as f32).collect();
+    // V8.5 Orthogonal Transfer-Dipole Enhanced Query Vector:
+    // Blend the component of `dual_fields.transfer_vector` that is strictly orthogonal to `enhanced_vector`
+    // (bounded by 0.18 amplitude) so stage-1 KNN retrieval actively pulls in cross-domain bridge candidates
+    // before stage-2 readout even begins!
+    let mut enhanced_f64 = enhanced_vector.clone();
+    if input.config.enable_orthogonal_dipole_query
+        && dual_fields.transfer_vector.len() == dimensions
+        && dimensions >= 64
+    {
+        let trf_f64: Vec<f64> = dual_fields.transfer_vector.iter().map(|&x| x as f64).collect();
+        let trf_norm = trf_f64.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if trf_norm > 1e-12 {
+            let parallel: f64 = enhanced_f64
+                .iter()
+                .zip(trf_f64.iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            let mut ortho_trf: Vec<f64> = trf_f64
+                .iter()
+                .zip(enhanced_f64.iter())
+                .map(|(&t, &e)| t - parallel * e)
+                .collect();
+            let ortho_norm = ortho_trf.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if ortho_norm > 1e-9 {
+                for v in &mut ortho_trf {
+                    *v /= ortho_norm;
+                }
+                for (e, &ot) in enhanced_f64.iter_mut().zip(ortho_trf.iter()) {
+                    *e += 0.18 * ot;
+                }
+                normalize(&mut enhanced_f64);
+            }
+        }
+    }
+    let enhanced_vector_f32: Vec<f32> = enhanced_f64.iter().map(|value| *value as f32).collect();
     let observation_handle = runtime.store_query_observation(
         artifact_sig,
         observation,
@@ -1903,6 +2545,7 @@ fn run_pipeline_with_connection(
         enhanced_vector_f32.clone(),
         dual_fields.local_vector.clone(),
         dual_fields.transfer_vector.clone(),
+        dual_fields.transfer_basin_vectors.clone(),
         dual_fields.local_field.clone(),
         dual_fields.transfer_field.clone(),
         dual_fields.local_domain_ids.clone(),
@@ -2209,6 +2852,294 @@ mod audit_gate_tests {
         assert!((output.levels[0].projection_magnitude - 1.0).abs() < 1e-6);
         assert!((output.levels[0].residual_magnitude - 2.0).abs() < 1e-6);
         assert!((output.total_explained_energy - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inspiration_a_and_b_exclude_peeled_tags_and_conserve_global_wormhole_row_mass() {
+        use crate::rivermemo_topology_v3::NativeArtifact;
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);"
+        ).unwrap();
+        let rows = [
+            (1_i64, "main-axis", [1.0_f32, 0.0, 0.0]),
+            (2_i64, "secondary-inspiration", [0.0_f32, 1.0, 0.0]),
+            (3_i64, "tertiary-bridge", [0.0_f32, 0.0, 1.0]),
+        ];
+        let index = crate::VexusIndex::new(3, 16).unwrap();
+        for (id, name, vec) in rows {
+            let bytes: Vec<u8> = vec.iter().flat_map(|v| v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO tags VALUES (?1,?2,?3)", rusqlite::params![id, name, bytes]).unwrap();
+            index.index.write().unwrap().add(id as u64, &vec).unwrap();
+        }
+        let config = PipelineConfig {
+            max_levels: 3,
+            pyramid_top_k: 1,
+            min_energy_ratio: 0.01,
+            ..PipelineConfig::default()
+        };
+        let query = [0.8_f32, 0.5, 0.3];
+        connection.execute_batch("BEGIN").unwrap();
+        let (pyramid, _) = analyze_pyramid(&index.index, &connection, &query, 3, &config).unwrap();
+        connection.execute_batch("COMMIT").unwrap();
+        // Inspiration A: each level peels a strictly distinct orthogonal tag without repeating Level 0!
+        assert_eq!(pyramid.levels.len(), 3);
+        assert_eq!(pyramid.levels[0].tags[0].id, 1);
+        assert_eq!(pyramid.levels[1].tags[0].id, 2);
+        assert_eq!(pyramid.levels[2].tags[0].id, 3);
+        assert!((pyramid.total_explained_energy - 1.0).abs() < 1e-5);
+
+        // Inspiration B: global wormhole transfer field strictly conserves total mass while steering toward resonant target
+        let artifact = NativeArtifact {
+            node_ids: vec![1, 2, 3],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2)]),
+            row_offsets: vec![0, 2, 2, 2],
+            targets: vec![1, 2],
+            weights: vec![0.475, 0.475],
+            ..NativeArtifact::default()
+        }.prepared();
+        let mut pool = TagVectorPool::new();
+        let plain = solve_dual_fields_with_pool(
+            &artifact, &connection, &[(1, 1.0)], 3, &config, &mut pool, &[1], &[], &[0.0, 0.0, 0.0],
+        ).unwrap();
+        let steered = solve_dual_fields_with_pool(
+            &artifact, &connection, &[(1, 1.0)], 3, &config, &mut pool, &[1], &[], &[0.0, 0.0, 0.8],
+        ).unwrap();
+        // Total scalar mass is 100% identical (zero artificial energy injection!),
+        // while transfer mass shifts from non-resonant node 2 to resonant wormhole node 3.
+        assert!((plain.diagnostics.transfer_mass - steered.diagnostics.transfer_mass).abs() < 1e-12);
+        assert!(( plain.diagnostics.local_mass - steered.diagnostics.local_mass).abs() < 1e-12);
+        let t3_plain = plain.transfer_field.iter().find(|(id, _)| *id == 3).unwrap().1;
+        let t3_steered = steered.transfer_field.iter().find(|(id, _)| *id == 3).unwrap().1;
+        assert!(t3_steered > t3_plain * 1.4);
+
+        // Audit Counterexample P2-7: Non-uniform leakage graph (node 2 propagates to 4, while node 3 is a dead-end sink).
+        // Shifting outbound mass from continuing branch 2 to terminal sink 3 must still preserve global steady-state transfer_mass!
+        let leaky_artifact = NativeArtifact {
+            node_ids: vec![1, 2, 3, 4],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2), (4, 3)]),
+            row_offsets: vec![0, 2, 3, 3, 3],
+            targets: vec![1, 2, 3], // 1 -> 2 (idx 1), 1 -> 3 (idx 2), and 2 -> 4 (idx 3); node 3 has 0 outbound edges!
+            weights: vec![0.475, 0.475, 0.95],
+            ..NativeArtifact::default()
+        }
+        .prepared();
+        let leaky_plain = solve_dual_fields_with_pool(
+            &leaky_artifact,
+            &connection,
+            &[(1, 1.0)],
+            3,
+            &config,
+            &mut pool,
+            &[1],
+            &[],
+            &[0.0, 0.0, 0.0, 0.0],
+        )
+        .unwrap();
+        let leaky_steered = solve_dual_fields_with_pool(
+            &leaky_artifact,
+            &connection,
+            &[(1, 1.0)],
+            3,
+            &config,
+            &mut pool,
+            &[1],
+            &[],
+            &[0.0, 0.0, 0.9, 0.0],
+        )
+        .unwrap();
+        assert!(
+            (leaky_plain.diagnostics.transfer_mass - leaky_steered.diagnostics.transfer_mass).abs() < 1e-12,
+            "Steady-state transfer mass under non-uniform leakage must remain invariant: plain={} vs steered={}",
+            leaky_plain.diagnostics.transfer_mass,
+            leaky_steered.diagnostics.transfer_mass
+        );
+    }
+
+    #[test]
+    fn theoretical_optima_lowdin_invariance_tangent_centering_and_renyi2_wavepacket_firing() {
+        use crate::rivermemo_topology_v3::NativeArtifact;
+        // 1. Löwdin S^{-1/2} Symmetric Orthogonalization:
+        // Verify strict permutation invariance (reordering correlated tags yields identical contributions)
+        // and exact energy conservation (\sum c_sym^2 == \sum c_GS^2 == ||projection||^2).
+        let q = [0.85_f32, 0.50, 0.15];
+        let tag_a = PyramidTagWork {
+            id: 1,
+            name: "a".into(),
+            vector: Arc::from(vec![1.0_f32, 0.2, 0.0]),
+            similarity: 0.9,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let tag_b = PyramidTagWork {
+            id: 2,
+            name: "b".into(),
+            vector: Arc::from(vec![0.6_f32, 0.8, 0.0]),
+            similarity: 0.8,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let (proj_ab, res_ab, coeff_ab) =
+            orthogonal_projection(&q, &[tag_a.clone(), tag_b.clone()], 3);
+        let (proj_ba, res_ba, coeff_ba) =
+            orthogonal_projection(&q, &[tag_b, tag_a], 3);
+        // Permutation-invariant contributions: tag_a gets identical contribution whether ranked 1st or 2nd!
+        assert!((coeff_ab[0] - coeff_ba[1]).abs() < 1e-10);
+        assert!((coeff_ab[1] - coeff_ba[0]).abs() < 1e-10);
+        // Subspace residual and total explained energy are preserved to machine precision
+        for i in 0..3 {
+            assert!((proj_ab[i] - proj_ba[i]).abs() < 1e-6);
+            assert!((res_ab[i] - res_ba[i]).abs() < 1e-6);
+        }
+        let proj_energy: f64 = proj_ab.iter().map(|&x| (x as f64) * (x as f64)).sum();
+        let lowdin_energy: f64 = coeff_ab.iter().map(|&c| c * c).sum();
+        assert!((proj_energy - lowdin_energy).abs() < 1e-10);
+
+        // 1b. Audit Counterexample P2-5: Rank-deficient / identical duplicate tags must remain
+        // strictly permutation-invariant (each gets 1/sqrt(2), never [1.0, 0.0] order monopoly).
+        let dup_a = PyramidTagWork {
+            id: 10,
+            name: "dup_a".into(),
+            vector: Arc::from(vec![1.0_f32, 0.0, 0.0]),
+            similarity: 1.0,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let dup_b = PyramidTagWork {
+            id: 11,
+            name: "dup_b".into(),
+            vector: Arc::from(vec![1.0_f32, 0.0, 0.0]),
+            similarity: 1.0,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let (_, _, dup_ab) = orthogonal_projection(&[1.0_f32, 0.0, 0.0], &[dup_a.clone(), dup_b.clone()], 3);
+        let (_, _, dup_ba) = orthogonal_projection(&[1.0_f32, 0.0, 0.0], &[dup_b, dup_a], 3);
+        assert!((dup_ab[0] - dup_ab[1]).abs() < 1e-10, "Duplicate tags must share contribution equally: {:?}", dup_ab);
+        assert!((dup_ab[0] - dup_ba[1]).abs() < 1e-10);
+        assert!((dup_ab[0] * dup_ab[0] + dup_ab[1] * dup_ab[1] - 1.0).abs() < 1e-10);
+
+        // 1c. Audit Counterexample P1-2: Near-collinear tags v1=(1,0,0), v2=(1,1e-6,0), q=(0,1,0)
+        // must use unified spectral rank threshold so ||projection||^2 == ||c_sym||^2 (zero mismatch!).
+        let col_1 = PyramidTagWork {
+            id: 21,
+            name: "col_1".into(),
+            vector: Arc::from(vec![1.0_f32, 0.0, 0.0]),
+            similarity: 0.0,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let col_2 = PyramidTagWork {
+            id: 22,
+            name: "col_2".into(),
+            vector: Arc::from(vec![1.0_f32, 1e-6, 0.0]),
+            similarity: 1e-6,
+            contribution: 0.0,
+            handshake_magnitude: 0.0,
+        };
+        let (col_proj, _, col_coeff) = orthogonal_projection(&[0.0_f32, 1.0, 0.0], &[col_1, col_2], 3);
+        let col_proj_energy: f64 = col_proj.iter().map(|&x| (x as f64) * (x as f64)).sum();
+        let col_coeff_energy: f64 = col_coeff.iter().map(|&c| c * c).sum();
+        assert!(
+            (col_proj_energy - col_coeff_energy).abs() < 1e-6,
+            "Near-collinear projection energy ({}) and Löwdin contribution energy ({}) must never diverge!",
+            col_proj_energy,
+            col_coeff_energy
+        );
+
+        // 2. Rényi-2 L2 Wavepacket Firing Potential vs L1 Mass Conservation:
+        // Hub node 1 has 16 neighbors with L1 weight 0.95 / 16 = 0.059375 each.
+        // Under pure L1 energy, Hop 1 energy at neighbor 2 is 0.25 * 0.059375 * 0.25 = 0.0037 < 0.10 (extinguished!).
+        // Under Rényi-2 L2 wavepacket normalization (row_l2 = 0.95 / 4 = 0.2375, l2_amp = 0.25),
+        // with seed energy 0.65 and base_decay 0.65, L1 energy is 0.65 * 0.059375 * 0.65 = 0.025 < 0.10,
+        // while L2 firing_potential is 0.65 * 0.25 * 0.65 = 0.1056 >= 0.10, unlocking Hop 2 -> node 20!
+        let mut node_ids: Vec<i64> = (1..=20).collect();
+        let mut targets: Vec<usize> = (1..=16).collect(); // node 1 connects to indices 1..=16 (IDs 2..=17)
+        let mut weights: Vec<f64> = vec![0.95 / 16.0; 16];
+        // Node 2 (index 1) connects to node 20 (index 19) with weight 0.90
+        targets.push(19);
+        weights.push(0.90);
+        let mut row_offsets = vec![0usize; 21];
+        row_offsets[0] = 0;
+        row_offsets[1] = 16;
+        for r in 2..=20 {
+            row_offsets[r] = 17;
+        }
+        let artifact = NativeArtifact {
+            node_index: node_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect(),
+            node_ids: std::mem::take(&mut node_ids),
+            row_offsets,
+            targets,
+            weights,
+            ..NativeArtifact::default()
+        }
+        .prepared();
+
+        let sense_out = sense_typed(
+            &artifact,
+            "renyi2-test",
+            SenseInput {
+                query_id: None,
+                seeds: vec![SenseSeed {
+                    id: 1,
+                    energy: 0.65,
+                    source_type: "seed".into(),
+                }],
+                config: SenseConfig {
+                    max_safe_hops: 2,
+                    firing_threshold: 0.10,
+                    base_decay: 0.65,
+                    minimum_injected_current: 0.005,
+                    ..SenseConfig::default()
+                },
+            },
+        )
+        .unwrap();
+        // Node 20 (at Hop 2) is successfully reached because Node 2's L2 wavepacket potential crossed 0.10!
+        let node20 = sense_out.nodes.iter().find(|n| n.id == 20);
+        assert!(node20.is_some(), "Rényi-2 L2 wavepacket potential must enable Hop-2 propagation from high-degree hub");
+        assert_eq!(node20.unwrap().hop, 2);
+
+        // 2b. Audit Counterexample P1-3: 1 -> 2 -> 3 -> 4 chain with weak single outbound edges w=0.001.
+        // At Hop 2 (node 3), L1 energy is 0.000729 <= minimum_injected_current (0.01),
+        // while L2 wavepacket potential is 0.81 >= firing_threshold (0.10).
+        // The per-hop termination check must NOT break early at Hop 2; node 4 at Hop 3 must be reached!
+        let chain_artifact = NativeArtifact {
+            node_ids: vec![1, 2, 3, 4],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2), (4, 3)]),
+            row_offsets: vec![0, 1, 2, 3, 3],
+            targets: vec![1, 2, 3],
+            weights: vec![0.001, 0.001, 0.001],
+            ..NativeArtifact::default()
+        }
+        .prepared();
+        let chain_out = sense_typed(
+            &chain_artifact,
+            "audit-p1-3-chain",
+            SenseInput {
+                query_id: None,
+                seeds: vec![SenseSeed {
+                    id: 1,
+                    energy: 900.0,
+                    source_type: "seed".into(),
+                }],
+                config: SenseConfig {
+                    max_safe_hops: 3,
+                    base_momentum: 4.0,
+                    firing_threshold: 0.10,
+                    base_decay: 0.90,
+                    minimum_injected_current: 0.01,
+                    ..SenseConfig::default()
+                },
+            },
+        )
+        .unwrap();
+        let node4 = chain_out.nodes.iter().find(|n| n.id == 4);
+        assert!(
+            node4.is_some(),
+            "Wavepacket frontier with potential 0.81 >= 0.10 must not be terminated early at Hop 2!"
+        );
+        assert_eq!(node4.unwrap().hop, 3);
     }
 
     #[test]
@@ -2562,5 +3493,53 @@ mod projection_budget_tests {
             assert!(serde_json::from_value::<PipelineConfig>(
                 serde_json::json!({"maxFieldProjectionNodes": value})).is_err());
         }
+    }
+
+    #[test]
+    fn v9_torture_directed_cycle_plus_dead_end_sink_conserves_mass_without_nan() {
+        use super::{solve_dual_fields_with_pool, Connection, TagVectorPool};
+        use std::collections::HashSet;
+        // Pathological graph: 1 -> 2 -> 3 -> 1 (directed 3-cycle with high resonance) + 1 -> 4 (dead-end sink)
+        let artifact = NativeArtifact {
+            node_ids: vec![1, 2, 3, 4],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2), (4, 3)]),
+            row_offsets: vec![0, 2, 3, 4, 4],
+            targets: vec![1, 3, 2, 0],
+            weights: vec![0.5, 0.5, 1.0, 1.0],
+            wormhole_edges: HashSet::from([(2, 3)]),
+            ..NativeArtifact::default()
+        }
+        .prepared();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT, vector BLOB);").unwrap();
+        for id in 1..=4 {
+            let v: Vec<u8> = [1.0f32, 0.0, 0.0, 0.0].iter().flat_map(|f| f.to_ne_bytes()).collect();
+            conn.execute("INSERT INTO tags (id, name, vector) VALUES (?1, ?2, ?3)", rusqlite::params![id, format!("t{id}"), v]).unwrap();
+        }
+        let mut cfg_off = PipelineConfig::default();
+        cfg_off.enable_twisted_transfer_kernel = false;
+        let mut cfg_on = PipelineConfig::default();
+        cfg_on.enable_twisted_transfer_kernel = true;
+
+        let resonances = vec![0.0, 0.95, 0.95, 0.0];
+        let mut pool_off = TagVectorPool::new();
+        let out_off = solve_dual_fields_with_pool(
+            &artifact, &conn, &[(1, 1.0)], 4, &cfg_off, &mut pool_off, &[1, 2, 3, 4], &[], &resonances,
+        ).unwrap();
+        let mut pool_on = TagVectorPool::new();
+        let out_on = solve_dual_fields_with_pool(
+            &artifact, &conn, &[(1, 1.0)], 4, &cfg_on, &mut pool_on, &[1, 2, 3, 4], &[], &resonances,
+        ).unwrap();
+
+        let mass_off: f64 = out_off.transfer_field.iter().map(|x| x.1).sum();
+        let mass_on: f64 = out_on.transfer_field.iter().map(|x| x.1).sum();
+        assert!(mass_on.is_finite() && mass_off.is_finite());
+        assert!(
+            (mass_on - mass_off).abs() < 1e-9,
+            "Directed cycle + dead-end sink must conserve total steady-state transfer mass: off={} vs on={}",
+            mass_off,
+            mass_on
+        );
     }
 }
