@@ -192,7 +192,7 @@ fn add_edge(matrix: &mut HashMap<i64, HashMap<i64, f64>>, source: i64, target: i
 }
 
 /// Unit vectors of one build snapshot, keyed by Tag ID.
-trait UnitVectors {
+trait UnitVectors: Sync {
     fn unit_vector(&self, id: i64) -> Option<&[f64]>;
 }
 
@@ -231,6 +231,52 @@ fn cooccurrence_tag_ids(rows: &[FileTag]) -> Vec<i64> {
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+/// Enumerate pairs in first-occurrence order, retaining operand orientation.
+/// The set is used only for membership, never for iteration or arithmetic.
+fn semantic_pairs(rows: &[FileTag]) -> Vec<(i64, i64)> {
+    let mut seen = HashSet::new();
+    let mut pairs = Vec::new();
+    let mut offset = 0;
+    while offset < rows.len() {
+        let mut end = offset + 1;
+        while end < rows.len() && rows[end].file_id == rows[offset].file_id {
+            end += 1;
+        }
+        let tags = &rows[offset..end];
+        if (2..=100).contains(&tags.len()) {
+            for (i, left) in tags.iter().enumerate() {
+                for right in &tags[i + 1..] {
+                    let key = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
+                    if left.tag_id != right.tag_id && seen.insert(key) {
+                        pairs.push((left.tag_id, right.tag_id));
+                    }
+                }
+            }
+        }
+        offset = end;
+    }
+    pairs
+}
+
+fn configured_build_threads(value: Option<&str>, available: usize) -> usize {
+    value.and_then(|text| text.parse::<usize>().ok()).filter(|&n| n > 0)
+        .unwrap_or_else(|| available.clamp(1, 8))
+}
+
+fn evaluate_pair_gains(
+    pairs: &[(i64, i64)],
+    gain: &(impl Fn(i64, i64) -> f64 + Sync),
+    threads: usize,
+) -> Vec<f64> {
+    if threads > 1 && !pairs.is_empty() {
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+            use rayon::prelude::*;
+            return pool.install(|| pairs.par_iter().map(|&(a, b)| gain(a, b)).collect());
+        }
+    }
+    pairs.iter().map(|&(a, b)| gain(a, b)).collect()
 }
 
 fn build_fact_matrix(
@@ -287,7 +333,15 @@ fn build_fact_matrix(
     // One gain per unordered Tag pair. `dot` multiplies the same two vectors in
     // the same index order whichever comes first, so the stored value has the
     // bits every later file would compute. Bounded by the number of fact pairs.
-    let mut pair_gains: HashMap<(i64, i64), f64> = HashMap::new();
+    let pair_gains: HashMap<(i64, i64), f64> = if semantic_enabled {
+        let pairs = semantic_pairs(rows);
+        let available = std::thread::available_parallelism().map_or(1, usize::from);
+        let threads = configured_build_threads(std::env::var("VCP_MEMO_BUILD_THREADS").ok().as_deref(), available);
+        let gains = evaluate_pair_gains(&pairs, &semantic_gain, threads);
+        pairs.into_iter().zip(gains).map(|((a, b), gain)| ((a.min(b), a.max(b)), gain)).collect()
+    } else {
+        HashMap::new()
+    };
     let mut matrix = HashMap::new();
     let mut offset = 0usize;
     while offset < rows.len() {
@@ -307,8 +361,7 @@ fn build_fact_matrix(
                     }
                     let semantic = if semantic_enabled {
                         let pair = (left.tag_id.min(right.tag_id), left.tag_id.max(right.tag_id));
-                        *pair_gains.entry(pair)
-                            .or_insert_with(|| semantic_gain(left.tag_id, right.tag_id))
+                        pair_gains[&pair]
                     } else {
                         1.0
                     };
@@ -1074,5 +1127,44 @@ mod bounded_workspace_tests {
         }
         let plain = build_fact_matrix(&rows, &NoVectors, &HashMap::new(), &json!({})).unwrap();
         assert!(!plain.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod parallel_gain_tests {
+    use super::*;
+    #[test]
+    fn thread_setting_defaults_and_invalid_values() {
+        for text in [None, Some(""), Some("0"), Some("-1"), Some("oops"), Some("99999999999999999999999999")] {
+            assert_eq!(configured_build_threads(text, 20), 8);
+            assert_eq!(configured_build_threads(text, 2), 2);
+        }
+        assert_eq!(configured_build_threads(Some("1"), 20), 1);
+        assert_eq!(configured_build_threads(Some("2"), 20), 2);
+        assert_eq!(configured_build_threads(Some("8"), 20), 8);
+        assert_eq!(configured_build_threads(None, 0), 1);
+    }
+    #[test]
+    fn first_operand_order_duplicates_and_file_limits() {
+        let mut rows = vec![FileTag{file_id:1,tag_id:3,position:1},FileTag{file_id:1,tag_id:1,position:2},
+            FileTag{file_id:1,tag_id:3,position:3},FileTag{file_id:2,tag_id:1,position:1},
+            FileTag{file_id:2,tag_id:3,position:2},FileTag{file_id:3,tag_id:9,position:1}];
+        rows.extend((0..101).map(|i|FileTag{file_id:4,tag_id:100+i,position:i}));
+        assert_eq!(semantic_pairs(&rows), vec![(3,1)]);
+        assert!(semantic_pairs(&[]).is_empty());
+    }
+    #[test]
+    fn parallel_gains_match_sequential_bits_at_one_two_eight_threads() {
+        let pairs: Vec<_> = (1..=1200).map(|i|(i,i+1)).collect();
+        let gain = |a:i64,b:i64| {
+            let left: Vec<_> = (0..3072).map(|i|((a+i) as f64*0.013).sin()).collect();
+            let right: Vec<_> = (0..3072).map(|i|((b+i) as f64*0.017).cos()).collect();
+            crate::memo_geometry::dot(&left,&right)
+        };
+        let expected: Vec<_> = pairs.iter().map(|&(a,b)|gain(a,b).to_bits()).collect();
+        for n in [1,2,8] {
+            let actual: Vec<_> = evaluate_pair_gains(&pairs,&gain,n).into_iter().map(f64::to_bits).collect();
+            assert_eq!(actual,expected);
+        }
     }
 }
