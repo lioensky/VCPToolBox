@@ -1,0 +1,39 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "NativeSync",
+  "version": "0.1.0",
+  "displayName": "VCPChat Native Sync Service",
+  "description": "Message-level native sync using an isolated SQLite central journal; disabled without explicit configuration.",
+  "author": "AGENTS OS",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "native-sync.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "hasApiRoutes": true,
+  "configSchema": {
+    "NativeSyncEnabled": "boolean",
+    "NativeSyncDataDir": "string",
+    "NativeMobileEnabled": "boolean",
+    "NativeMobileOrigin": "string",
+    "NativeMobileTopics": "string",
+    "NativeMobilePwaDir": "string",
+    "NativeMobileStartDelayMs": "integer",
+    "NativeMobileMaxConcurrency": "integer",
+    "NativeMobileExecutionTimeoutMs": "integer",
+    "NativeMobileBackendUrl": "string",
+    "NativeMobileKeyExchangeEnabled": "boolean",
+    "NativeMobileSessionHours": "integer"
+  },
+  "capabilities": {
+    "services": [
+      {
+        "serviceName": "NativeHistorySync",
+        "description": "Authenticated Push/Pull/status; legacy native-client wire paths and namespaced service routes."
+      }
+    ]
+  }
+}

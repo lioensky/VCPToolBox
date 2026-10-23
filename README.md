@@ -250,4 +250,10 @@ VCP 的代码主体，由 8 个 AI Agent 在人类引导下协同完成。
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lioensky/VCPToolBox)
 
+## NativeSync 与 VCP Mobile（可选）
+
+[NativeSync Service Plugin](Plugin/NativeSync/README.md) 提供消息级 SQLite 日志、显式授权话题同步和轻量文本 PWA，复用现有 Agent/模型执行链。
+默认关闭；启用需 Node.js 24+、独立数据目录以及受保护的同源 HTTPS 移动入口。它不迁移已有全部历史，也不替换原有单机聊天或 Rust 数据服务。
+配置、构建、恢复语义和隔离测试命令见插件文档。
+
 ---

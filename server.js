@@ -553,6 +553,12 @@ else console.log('未加载任何全局上下文转换规则。');
 
 const app = express();
 app.set('trust proxy', true); // 新增：信任代理，以便正确解析 X-Forwarded-For 头，解决本地IP识别为127.0.0.1的问题
+// Mobile requests use scoped sessions; the plugin enforces HTTPS and Origin.
+app.use('/mobile', (req, res) => {
+    const mobile = pluginManager.getServiceModule('NativeSync');
+    if (!mobile?.handleMobile) return res.status(503).json({ error: { code: 'MOBILE_DISABLED' } });
+    return mobile.handleMobile(req, res);
+});
 app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请求，方便本地文件调试
 
 // 在路由决策之前解析请求体，以便 req.body 可用
@@ -850,34 +856,7 @@ app.use('/AdminPanel', (req, res) => {
 
 
 // General API authentication (Bearer token) - This was the original one, now adminAuth handles its paths
-app.use((req, res, next) => {
-    // Skip bearer token check for admin panel API and static files, as they use basic auth or no auth
-    if (req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel')) {
-        return next();
-    }
-
-    const imageServicePathRegex = /^\/pw=[^/]+\/images\//;
-    if (imageServicePathRegex.test(req.path)) {
-        return next();
-    }
-
-    // Add a similar check for the FileServer plugin path
-    const fileServicePathRegex = /^\/pw=[^/]+\/files\//;
-    if (fileServicePathRegex.test(req.path)) {
-        return next();
-    }
-
-    // Skip bearer token check for plugin callbacks
-    if (req.path.startsWith('/plugin-callback')) {
-        return next();
-    }
-
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
-        return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
-    }
-    next();
-});
+app.use(require('./modules/apiBearerAuth')(serverKey));
 
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
@@ -1565,7 +1544,11 @@ async function startServer() {
     await import('node-fetch');
     console.log('[Server] node-fetch 模块预热完毕，准备处理请求。');
 
-    server = app.listen(port, () => {
+    // Optional loopback binding for an isolated/private host; default unchanged.
+    const bindHost = process.env.SERVER_BIND_HOST?.trim() || undefined;
+    if (bindHost !== undefined && bindHost !== '127.0.0.1') throw new Error('SERVER_BIND_HOST_MUST_BE_LOOPBACK_IPV4');
+    server = app.listen(port, bindHost, () => {
+        pluginManager.getServiceModule('NativeSync')?.setExecutionEndpoint?.({ url: `http://127.0.0.1:${server.address().port}/v1/chat/completions`, key: serverKey });
         console.log(`中间层服务器正在监听端口 ${port}`);
         console.log(`API 服务器地址: ${apiUrl}`);
 
@@ -1628,6 +1611,7 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
     shutdownReason = reason;
     shutdownStartedAt = Date.now();
     serverLifecycleState = SERVER_LIFECYCLE.DRAINING;
+    pluginManager.getServiceModule('NativeSync')?.beginDrain?.();
 
     console.log(`[Server] Initiating graceful shutdown. reason=${reason}, exitCode=${exitCode}`);
     console.log(`[Server][ShutdownTrace] Phase 0/10 - shutdown requested. activeRequests=${activeRequests.size}`);

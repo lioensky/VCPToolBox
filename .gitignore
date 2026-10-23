@@ -323,3 +323,6 @@ Plugin/VCPQQBotServer/bot-node-sdk-main
 
 # Local native artifact archives; retain outside disposable build caches.
 /.vcp-native-archive/
+
+# Optional NativeSync PWA build output
+/Plugin/NativeSync/mobile-dist/

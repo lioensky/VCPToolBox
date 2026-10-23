@@ -1,0 +1,38 @@
+[
+  {
+    "sourceCommit": "be828e4429639539773629c3a6568d7275cf7e9f",
+    "source": "modules/services/nativeSync/centralStore.js",
+    "sourceByteSha256": "e050f5c7bb6dd6ecb64f97a07aa8f76e2ea919b733309164ba577dbfbe960864",
+    "destination": "sync/centralStore.js",
+    "adaptation": "R10_POST_REVIEW_P1_FIX: pull scans a bounded global window, filters device topic scope before message parsing, and reports the actual scanned nextSeq; schema and apply unchanged; newline normalization possible",
+    "sourceRepository": "https://github.com/JENN2046/VCPChat",
+    "destinationNormalizedLfSha256": "905e53ea09c126631b76c64fd303ed32d889273119e100a053bf31a755b32f8c"
+  },
+  {
+    "sourceCommit": "be828e4429639539773629c3a6568d7275cf7e9f",
+    "source": "modules/services/nativeSync/protocol.js",
+    "sourceByteSha256": "889545f6424ef4072299e85795a4cbd11d58503736c102aaaaf7f86a669c702e",
+    "destination": "sync/protocol.js",
+    "adaptation": "require paths only",
+    "sourceRepository": "https://github.com/JENN2046/VCPChat",
+    "destinationNormalizedLfSha256": "62fe7045d91bae38533be546ea671f2159e928961326876b98e35acb78f97446"
+  },
+  {
+    "sourceCommit": "be828e4429639539773629c3a6568d7275cf7e9f",
+    "source": "VCPDistributedServer/Plugin/VCPMobileSync/sync/canonical.js",
+    "sourceByteSha256": "388d514fdd5f5451a707987ca31de3391da52e12d99c39d16d032fa749e3f3d3",
+    "destination": "sync/canonical/canonical.js",
+    "adaptation": "require paths only",
+    "sourceRepository": "https://github.com/JENN2046/VCPChat",
+    "destinationNormalizedLfSha256": "4421dc2c11f7211d22d5d8e9ee6fe32cc7a19b4c83068a66d8d3dfd95c405672"
+  },
+  {
+    "sourceCommit": "be828e4429639539773629c3a6568d7275cf7e9f",
+    "source": "VCPDistributedServer/Plugin/VCPMobileSync/core/hash.js",
+    "sourceByteSha256": "88bd3d0a901c0555813309eb6a9ba6a9fc6b00fc48df4b8894bcde05bb36dbb2",
+    "destination": "sync/canonical/hash.js",
+    "adaptation": "none; newline normalization possible",
+    "sourceRepository": "https://github.com/JENN2046/VCPChat",
+    "destinationNormalizedLfSha256": "1d8accca65491332f2462cc8c735998444be782dfd59e7933195155a09489d37"
+  }
+]
