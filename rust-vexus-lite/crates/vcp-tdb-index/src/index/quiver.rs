@@ -476,6 +476,18 @@ impl ConcurrentFlatAdj {
         }
     }
 
+    /// 不加锁、不分配地读一行邻居，调用方按 neighbors_raw 的规则跳过无效值。
+    /// 只能在没有任何线程写邻接表的阶段调用（确定性构图的选边阶段）。
+    fn neighbors_frozen(&self, node: u32) -> &[u32] {
+        self.check_node(node);
+        let base = node as usize * self.stride;
+        unsafe {
+            let deg = (*self.data[base].get() as usize).min(self.stride - 1);
+            // UnsafeCell<u32> 与 u32 布局相同，一行在内存里连续；指针取自整个切片。
+            std::slice::from_raw_parts((self.data.as_ptr() as *const u32).add(base + 1), deg)
+        }
+    }
+
     /// 邻接表单节点容量（不含度数槽）
     #[inline(always)]
     fn capacity(&self) -> usize {
@@ -586,6 +598,30 @@ impl ExperimentalBuildView<'_> {
         ef: usize,
         visited: &mut Bitset,
     ) -> Vec<(NonNanF32, u32)> {
+        self.beam_search_l0_by(q_sig, entry, ef, visited, |node| {
+            self.adj.neighbors_locked(node, self.locks)
+        })
+    }
+
+    /// 无锁版本：只在确定性构图的选边阶段调用，此时没有线程写邻接表。
+    fn beam_search_l0_frozen(
+        &self,
+        q_sig: &Bq2Signature,
+        entry: u32,
+        ef: usize,
+        visited: &mut Bitset,
+    ) -> Vec<(NonNanF32, u32)> {
+        self.beam_search_l0_by(q_sig, entry, ef, visited, |node| self.adj.neighbors_frozen(node))
+    }
+
+    fn beam_search_l0_by<R: AsRef<[u32]>>(
+        &self,
+        q_sig: &Bq2Signature,
+        entry: u32,
+        ef: usize,
+        visited: &mut Bitset,
+        neighbors: impl Fn(u32) -> R,
+    ) -> Vec<(NonNanF32, u32)> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
 
@@ -605,17 +641,19 @@ impl ExperimentalBuildView<'_> {
                 break;
             }
 
-            let nbs = self.adj.neighbors_locked(cur, self.locks);
+            let nbs = neighbors(cur);
+            // 与 neighbors_raw 相同：跳过空槽和越界值（加锁读取时已经过滤）。
+            let valid = |nb: u32| nb != EMPTY_NB && (nb as usize) < self.n;
 
             // 批量预取未访问邻居的 BQ 签名
-            for &nb in &nbs {
-                if !visited.test(nb as usize) {
+            for &nb in nbs.as_ref() {
+                if valid(nb) && !visited.test(nb as usize) {
                     self.sigs.prefetch_sig(nb as usize);
                 }
             }
 
-            for nb in nbs {
-                if visited.test(nb as usize) {
+            for &nb in nbs.as_ref() {
+                if !valid(nb) || visited.test(nb as usize) {
                     continue;
                 }
                 visited.set(nb as usize);
@@ -711,7 +749,30 @@ impl ExperimentalBuildView<'_> {
                 .add(&self.profile.beam_ns, t.elapsed().as_nanos() as u64);
         }
         let t_fwd = if prof { Some(Instant::now()) } else { None };
-        let mut candidates: Vec<(u32, u32)> = candidates_sym
+        let selected = self.select_from_candidates(idx, candidates_sym);
+        self.adj
+            .set_neighbors_locked_fast(idx, &selected, self.locks);
+        if let Some(t) = t_fwd {
+            self.profile
+                .add(&self.profile.fwd_ns, t.elapsed().as_nanos() as u64);
+        }
+
+        for &nb in &selected {
+            let (_guard, wait_ns) = self.locks.lock_timed(nb);
+            self.profile.add(&self.profile.rev_wait_ns, wait_ns);
+            let t_work = if prof { Some(Instant::now()) } else { None };
+            self.add_reverse_edge_raw(nb, idx);
+            if let Some(t) = t_work {
+                self.profile
+                    .add(&self.profile.rev_work_ns, t.elapsed().as_nanos() as u64);
+            }
+        }
+        self.profile.nodes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 由束搜索结果和确定性随机采样组成候选，按 Vamana 规则选出 idx 的出边。
+    fn select_from_candidates(&self, idx: u32, found: Vec<(NonNanF32, u32)>) -> Vec<u32> {
+        let mut candidates: Vec<(u32, u32)> = found
             .into_iter()
             .filter(|&(_, id)| id != idx)
             .map(|(_, id)| (self.sigs.distance(idx as usize, id as usize, self.dim), id))
@@ -741,30 +802,44 @@ impl ExperimentalBuildView<'_> {
             candidates.push((self.sigs.distance(idx as usize, 0, self.dim), 0));
         }
 
-        let selected =
-            QuIVer::vamana_select(self.sigs, idx, &candidates, self.m0, self.dim, self.alpha);
-        self.adj
-            .set_neighbors_locked_fast(idx, &selected, self.locks);
-        if let Some(t) = t_fwd {
-            self.profile
-                .add(&self.profile.fwd_ns, t.elapsed().as_nanos() as u64);
-        }
+        QuIVer::vamana_select(self.sigs, idx, &candidates, self.m0, self.dim, self.alpha)
+    }
 
-        let cap = self.adj.capacity();
-        for &nb in &selected {
-            let (_guard, wait_ns) = self.locks.lock_timed(nb);
-            self.profile.add(&self.profile.rev_wait_ns, wait_ns);
-            let t_work = if prof { Some(Instant::now()) } else { None };
-
-            // 惰性剪枝：邻居表未满则直接追加(O(deg))，仅当容量用尽才触发一次完整剪枝。
-            // 邻接表 stride=m0*2+1 留有 2× headroom，使昂贵的 vamana_select(O(deg²))
-            // 从"每条反向边都跑"降为"约每 m0 条才跑一次"，砍掉构图主成本。
-            // eager=true 时恢复旧的"每条边全量剪枝"行为，用于 recall A/B 对照。
-            if self.eager {
+    /// 把反向边 nb→idx 加进 nb 的邻居表。调用方必须独占 nb 这一行：
+    /// 持有它的锁，或者在确定性构图的提交阶段负责这一行。
+    fn add_reverse_edge_raw(&self, nb: u32, idx: u32) {
+        // 惰性剪枝：邻居表未满则直接追加(O(deg))，仅当容量用尽才触发一次完整剪枝。
+        // 邻接表 stride=m0*2+1 留有 2× headroom，使昂贵的 vamana_select(O(deg²))
+        // 从"每条反向边都跑"降为"约每 m0 条才跑一次"，砍掉构图主成本。
+        // eager=true 时恢复旧的"每条边全量剪枝"行为，用于 recall A/B 对照。
+        if self.eager {
+            let mut current = self.adj.neighbors_raw(nb);
+            if !current.contains(&idx) {
+                current.push(idx);
+            }
+            let mut nb_candidates: Vec<(u32, u32)> = current
+                .into_iter()
+                .filter(|&n| n != nb)
+                .map(|n| (self.sigs.distance(nb as usize, n as usize, self.dim), n))
+                .collect();
+            nb_candidates.sort_unstable_by_key(|&(_, id)| id);
+            nb_candidates.dedup_by_key(|&mut (_, id)| id);
+            nb_candidates.sort_unstable_by_key(|&(d, _)| d);
+            let pruned = QuIVer::vamana_select(
+                self.sigs,
+                nb,
+                &nb_candidates,
+                self.m0,
+                self.dim,
+                self.alpha,
+            );
+            self.adj.set_neighbors_raw(nb, &pruned);
+        } else if !self.adj.contains_raw(nb, idx) {
+            if self.adj.degree_raw(nb) < self.adj.capacity() {
+                self.adj.push_neighbor_raw(nb, idx);
+            } else {
                 let mut current = self.adj.neighbors_raw(nb);
-                if !current.contains(&idx) {
-                    current.push(idx);
-                }
+                current.push(idx);
                 let mut nb_candidates: Vec<(u32, u32)> = current
                     .into_iter()
                     .filter(|&n| n != nb)
@@ -782,38 +857,85 @@ impl ExperimentalBuildView<'_> {
                     self.alpha,
                 );
                 self.adj.set_neighbors_raw(nb, &pruned);
-            } else if !self.adj.contains_raw(nb, idx) {
-                if self.adj.degree_raw(nb) < cap {
-                    self.adj.push_neighbor_raw(nb, idx);
-                } else {
-                    let mut current = self.adj.neighbors_raw(nb);
-                    current.push(idx);
-                    let mut nb_candidates: Vec<(u32, u32)> = current
-                        .into_iter()
-                        .filter(|&n| n != nb)
-                        .map(|n| (self.sigs.distance(nb as usize, n as usize, self.dim), n))
-                        .collect();
-                    nb_candidates.sort_unstable_by_key(|&(_, id)| id);
-                    nb_candidates.dedup_by_key(|&mut (_, id)| id);
-                    nb_candidates.sort_unstable_by_key(|&(d, _)| d);
-                    let pruned = QuIVer::vamana_select(
-                        self.sigs,
-                        nb,
-                        &nb_candidates,
-                        self.m0,
-                        self.dim,
-                        self.alpha,
-                    );
-                    self.adj.set_neighbors_raw(nb, &pruned);
-                }
-            }
-
-            if let Some(t) = t_work {
-                self.profile
-                    .add(&self.profile.rev_work_ns, t.elapsed().as_nanos() as u64);
             }
         }
+    }
+
+    /// 确定性构图的选边：在冻结的图上为 idx 选出边，不写邻接表。
+    fn select_frozen(&self, idx: u32, visited: &mut Bitset) -> Vec<u32> {
+        if idx == 0 {
+            return Vec::new();
+        }
+
+        let prof = self.profile.enabled;
+        let my_sig = self.sigs.get_sig(idx as usize);
+        let t_beam = if prof { Some(Instant::now()) } else { None };
+        let found = self.beam_search_l0_frozen(&my_sig, 0, self.ef, visited);
+        if let Some(t) = t_beam {
+            self.profile
+                .add(&self.profile.beam_ns, t.elapsed().as_nanos() as u64);
+        }
+        let t_fwd = if prof { Some(Instant::now()) } else { None };
+        let selected = self.select_from_candidates(idx, found);
+        if let Some(t) = t_fwd {
+            self.profile
+                .add(&self.profile.fwd_ns, t.elapsed().as_nanos() as u64);
+        }
         self.profile.nodes.fetch_add(1, Ordering::Relaxed);
+        selected
+    }
+
+    /// 确定性的分轮并行构图：同样的输入，不论线程数和调度，建出同一张图。
+    /// 每轮分两步：
+    /// 1. 选边：本轮全部节点并行地在同一张冻结的图上选出边，这一步不写邻接表，
+    ///    所以本轮节点互相看不到对方的边（原来能看到哪些取决于线程调度）；
+    /// 2. 提交：先按节点顺序写各节点自己的出边（与 connect_node_fast 一样整行覆盖），
+    ///    再把反向边按目标节点分组；每个目标节点只由一个任务按源节点从小到大处理，
+    ///    结果与按节点顺序逐条加入相同。
+    /// 选边和反向边的规则都与 connect_node_fast 相同。
+    fn build_rounds_deterministic(&self, chunk: usize) {
+        let mut reverse: Vec<(u32, u32)> = Vec::new();
+        let mut start = 0;
+        while start < self.n {
+            let end = (start + Self::round_len(start, chunk)).min(self.n);
+            let selected: Vec<Vec<u32>> = (start..end)
+                .into_par_iter()
+                .map_init(
+                    || Bitset::new(self.n),
+                    |visited, i| self.select_frozen(i as u32, visited),
+                )
+                .collect();
+
+            reverse.clear();
+            for (idx, neighbors) in (start as u32..).zip(&selected) {
+                if idx != 0 {
+                    self.adj.set_neighbors_raw(idx, neighbors);
+                }
+                reverse.extend(neighbors.iter().map(|&nb| (nb, idx)));
+            }
+            // (目标, 源) 两两不同，排序后的顺序唯一。
+            reverse.sort_unstable();
+            let prof = self.profile.enabled;
+            reverse.par_chunk_by(|a, b| a.0 == b.0).for_each(|edges| {
+                let t_work = if prof { Some(Instant::now()) } else { None };
+                for &(nb, idx) in edges {
+                    self.add_reverse_edge_raw(nb, idx);
+                }
+                if let Some(t) = t_work {
+                    self.profile
+                        .add(&self.profile.rev_work_ns, t.elapsed().as_nanos() as u64);
+                }
+            });
+            start = end;
+        }
+    }
+
+    /// 从节点 start 开始的这一轮有多少个节点。前 chunk 个节点按 1、1、2、4……翻倍，
+    /// 每轮不超过已经插入的节点数：第一轮如果一次放 chunk 个，它们在冻结的图里
+    /// 只能看到入口，出边几乎都落在随机采样到的后续节点上，这些反向边会在
+    /// 那些节点插入时被整行覆盖，节点可能没有入边。之后每轮 chunk 个，与原来相同。
+    fn round_len(start: usize, chunk: usize) -> usize {
+        start.clamp(1, chunk)
     }
 
     /// 构图后 final-prune：把惰性追加导致 deg>m0 的节点并行收敛到 m0。
@@ -2461,21 +2583,9 @@ impl QuIVer {
         };
 
         let t_build = Instant::now();
-        let chunk = 256usize;
-        let rounds = n.div_ceil(chunk);
-        for round in 0..rounds {
-            let start = round * chunk;
-            let end = ((round + 1) * chunk).min(n);
-            (start..end).into_par_iter().for_each(|i| {
-                let prof = profile.enabled;
-                let t_bs = if prof { Some(Instant::now()) } else { None };
-                let mut visited = Bitset::new(n);
-                if let Some(t) = t_bs {
-                    profile.add(&profile.bitset_ns, t.elapsed().as_nanos() as u64);
-                }
-                view.connect_node_fast(i as u32, &mut visited);
-            });
-        }
+        // VCP-PATCH: select edges on a frozen graph per round and commit them in
+        // node order, so the graph no longer depends on threads or scheduling.
+        view.build_rounds_deterministic(256);
         // final-prune：把惰性追加导致 deg>m0 的节点并行收敛到 m0
         (0..n as u32)
             .into_par_iter()
@@ -4008,6 +4118,190 @@ mod tests {
         for (id, _) in &results2 {
             assert!(*id >= n as u64 / 2, "已删除节点不应出现在结果中");
         }
+    }
+
+    /// 每 16 个连续 ID 属于同一簇：同一轮里的近邻在选边时互相看不见。
+    fn make_clustered_vectors(n: usize, dim: usize, seed: u64) -> Vec<f32> {
+        let centers = make_random_vectors(n / 16 + 1, dim, seed);
+        let noise = make_random_vectors(n, dim, seed ^ 0x5DEE_CE66);
+        let mut vecs = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let center = &centers[(i / 16) * dim..(i / 16 + 1) * dim];
+            vecs.extend((0..dim).map(|j| center[j] + 0.6 * noise[i * dim + j]));
+        }
+        vecs
+    }
+
+    fn bq_store_of(vectors: &[f32], dim: usize) -> Bq2Store {
+        let mut store = Bq2Store::new(dim);
+        for row in vectors.chunks_exact(dim) {
+            store.push_from_vector(row);
+        }
+        store
+    }
+
+    #[test]
+    fn 确定性构图与线程数和重复次数无关() {
+        let (n, dim) = (1500, 96);
+        let vectors = make_clustered_vectors(n, dim, 31);
+        let ids: Vec<u64> = (1..=n as u64).collect();
+        let slots: Vec<usize> = (0..n).collect();
+        let build = |threads: usize| {
+            let mut graph = QuIVer::new(dim, &QuIVerConfig::default());
+            let store = bq_store_of(&vectors, dim);
+            rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
+                .install(|| graph.batch_build_from_store(&ids, &slots, store));
+            let mut bytes = Vec::new();
+            graph.write_to(&mut bytes).unwrap();
+            bytes
+        };
+        let reference = build(1);
+        for threads in [1, 2, 3, 8] {
+            for _ in 0..2 {
+                assert!(build(threads) == reference, "{threads} 线程建出的图与单线程不同");
+            }
+        }
+    }
+
+    #[test]
+    fn 确定性构图的并行提交等于按节点顺序逐条提交() {
+        let (n, dim) = (1100, 64);
+        let vectors = make_clustered_vectors(n, dim, 47);
+        let ids: Vec<u64> = (1..=n as u64).collect();
+        let slots: Vec<usize> = (0..n).collect();
+        let config = QuIVerConfig::default();
+        let mut graph = QuIVer::new(dim, &config);
+        let store = bq_store_of(&vectors, dim);
+        rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap()
+            .install(|| graph.batch_build_from_store(&ids, &slots, store));
+
+        // 参照：同样分轮、同样的冻结图选边，但一个线程按节点顺序逐条提交反向边。
+        let sigs = bq_store_of(&vectors, dim);
+        let shape = QuIVer::new(dim, &config);
+        let adj = ConcurrentFlatAdj::new(n, shape.layer0.stride);
+        let locks = StripedSpinLocks::new(n, shape.m0);
+        let profile = BuildProfile::new();
+        let view = ExperimentalBuildView {
+            adj: &adj, n, dim, m0: shape.m0, ef: shape.ef_construction, alpha: shape.alpha,
+            sigs: &sigs, locks: &locks, profile: &profile, eager: false,
+        };
+        let mut visited = Bitset::new(n);
+        let mut start = 0;
+        while start < n {
+            let end = (start + ExperimentalBuildView::round_len(start, 256)).min(n);
+            let selected: Vec<Vec<u32>> =
+                (start..end).map(|i| view.select_frozen(i as u32, &mut visited)).collect();
+            for (idx, neighbors) in (start as u32..).zip(&selected) {
+                if idx != 0 {
+                    adj.set_neighbors_raw(idx, neighbors);
+                }
+            }
+            for (idx, neighbors) in (start as u32..).zip(&selected) {
+                for &nb in neighbors {
+                    view.add_reverse_edge_raw(nb, idx);
+                }
+            }
+            start = end;
+        }
+        for node in 0..n as u32 {
+            view.final_prune(node);
+        }
+        let mut expected = FlatAdj::new(shape.layer0.stride);
+        adj.freeze_into_flat(&mut expected);
+        assert!(graph.layer0.data == expected.data);
+        graph.validate_layer0();
+    }
+
+    #[test]
+    fn 确定性构图前几轮的节点也有入边() {
+        // 第一轮如果一次放 256 个节点，它们在冻结的图里只看得到入口，出边大多落在
+        // 随机采样到的后续节点上，这些反向边在那些节点插入时被整行覆盖，会留下
+        // 没有入边的节点（不翻倍分轮时这组数据里节点 213 就是）。
+        let (n, dim, topics) = (20000, 256, 1000);
+        let mut state = 1u64;
+        let mut gauss = || {
+            let mut next = || {
+                state = state.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let (u, v) = (next().max(1e-300), next());
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        };
+        let unit = |v: Vec<f64>| {
+            let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            v.into_iter().map(|x| x / norm).collect::<Vec<f64>>()
+        };
+        let shared = unit((0..dim).map(|_| gauss()).collect());
+        let centers: Vec<Vec<f64>> = (0..topics).map(|_| unit((0..dim).map(|_| gauss()).collect())).collect();
+        let scale = 1.0 / (dim as f64).sqrt();
+        let mut store = Bq2Store::new(dim);
+        for i in 0..n {
+            let mut sigma = gauss();
+            sigma = 0.35 + 0.75 * (sigma.abs() / 4.0).min(1.0);
+            let row: Vec<f32> = unit((0..dim).map(|j| {
+                0.5 * shared[j] + centers[i % topics][j] + sigma * gauss() * scale
+            }).collect()).into_iter().map(|x| x as f32).collect();
+            store.push_from_vector(&row);
+        }
+        let ids: Vec<u64> = (1..=n as u64).collect();
+        let slots: Vec<usize> = (0..n).collect();
+        let mut graph = QuIVer::new(dim, &QuIVerConfig::default());
+        graph.batch_build_from_store(&ids, &slots, store);
+        let mut indegree = vec![0usize; n];
+        for node in 0..n as u32 {
+            for &nb in graph.layer0.neighbors(node) {
+                indegree[nb as usize] += 1;
+            }
+        }
+        let orphans: Vec<usize> = (1..n).filter(|&node| indegree[node] == 0).collect();
+        assert!(orphans.is_empty(), "没有入边的节点：{orphans:?}");
+        assert_eq!(graph.reachable_node_count(), n);
+    }
+
+    #[test]
+    fn 确定性构图的分轮从一个节点起翻倍() {
+        let mut starts = Vec::new();
+        let mut start = 0;
+        while start < 1100 {
+            starts.push(start);
+            start += ExperimentalBuildView::round_len(start, 256);
+        }
+        assert_eq!(starts, [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024]);
+    }
+
+    #[test]
+    fn 确定性构图找到同一轮里的同簇近邻() {
+        let (n, dim) = (1500, 96);
+        let vectors = make_clustered_vectors(n, dim, 59);
+        let ids: Vec<u64> = (1..=n as u64).collect();
+        let slots: Vec<usize> = (0..n).collect();
+        let config = QuIVerConfig::default();
+        let mut graph = QuIVer::new(dim, &config);
+        graph.rebuild_from_cold_slots(&ids, &slots, &config, |slot, row| {
+            row.extend_from_slice(&vectors[slot * dim..(slot + 1) * dim]);
+            true
+        }).unwrap();
+        let search = QuIVerSearchConfig { top_k: 10, ef_search: 128, rerank_limit: Some(64) };
+        let (mut hits, mut total) = (0, 0);
+        for query in (0..n).step_by(7) {
+            let row = &vectors[query * dim..(query + 1) * dim];
+            let mut exact: Vec<(f32, u64)> = (0..n)
+                .map(|i| (cosine_sim(row, &vectors[i * dim..(i + 1) * dim]), i as u64 + 1))
+                .collect();
+            exact.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let found = graph.search(row, |slot, out| {
+                out.clear();
+                out.extend_from_slice(&vectors[slot * dim..(slot + 1) * dim]);
+                true
+            }, &search);
+            assert_eq!(found[0].0, query as u64 + 1);
+            hits += found.iter().filter(|(id, _)| exact[..10].iter().any(|e| e.1 == *id)).count();
+            total += 10;
+        }
+        assert!(hits as f64 >= 0.95 * total as f64, "Recall@10 = {}", hits as f64 / total as f64);
     }
 
     #[test]
