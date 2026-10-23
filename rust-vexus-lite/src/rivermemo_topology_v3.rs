@@ -559,6 +559,8 @@ pub(crate) struct MemoRuntime {
     query_cache_order: Mutex<VecDeque<String>>,
     query_cache_capacity: usize,
     query_cache_ttl: Duration,
+    /// 冷加载排队：同时冷加载的查询只解码一次，其余等它发布后直接复用。
+    cold_load: Mutex<()>,
 }
 
 impl MemoRuntime {
@@ -571,6 +573,7 @@ impl MemoRuntime {
             query_cache_order: Mutex::new(VecDeque::new()),
             query_cache_capacity: 256,
             query_cache_ttl: Duration::from_secs(5 * 60),
+            cold_load: Mutex::new(()),
         }
     }
 
@@ -879,37 +882,39 @@ fn decode_artifact(
         ));
     }
 
-    let payload: Value = serde_json::from_slice(&raw)
+    let mut payload: Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("decode RiverMemo artifact JSON failed: {}", error))?;
+    drop(raw);
 
+    // 大数组从解析树里取出（take）而不是复制，转换后各自释放。
     let transport = payload
-        .get("sharedTransport")
+        .get_mut("sharedTransport")
         .ok_or_else(|| "RiverMemo artifact has no sharedTransport".to_string())?;
     let node_ids: Vec<i64> = serde_json::from_value(
         transport
-            .get("nodeIds")
-            .cloned()
+            .get_mut("nodeIds")
+            .map(Value::take)
             .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport nodeIds failed: {}", error))?;
     let row_offsets_u64: Vec<u64> = serde_json::from_value(
         transport
-            .get("rowOffsets")
-            .cloned()
+            .get_mut("rowOffsets")
+            .map(Value::take)
             .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport rowOffsets failed: {}", error))?;
     let targets_u64: Vec<u64> = serde_json::from_value(
         transport
-            .get("targetIndices")
-            .cloned()
+            .get_mut("targetIndices")
+            .map(Value::take)
             .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport targets failed: {}", error))?;
     let weights: Vec<f64> = serde_json::from_value(
         transport
-            .get("weights")
-            .cloned()
+            .get_mut("weights")
+            .map(Value::take)
             .unwrap_or(Value::Array(Vec::new())),
     )
     .map_err(|error| format!("decode transport weights failed: {}", error))?;
@@ -1029,10 +1034,10 @@ fn decode_artifact(
     }
 
     let mut provenance = HashMap::new();
-    if let Some(edges) = payload
-        .get("provenanceView")
-        .and_then(|value| value.get("edges"))
-        .and_then(Value::as_array)
+    if let Some(Value::Array(edges)) = payload
+        .get_mut("provenanceView")
+        .and_then(|value| value.get_mut("edges"))
+        .map(Value::take)
     {
         for edge in edges {
             let Some(parts) = edge.as_array() else {
@@ -1120,6 +1125,12 @@ pub(crate) fn load_artifact_with_connection(
         return Ok(artifact);
     }
 
+    // 同时冷加载的查询在这里排队：第一个解码并发布，后面的再查一次就命中，
+    // 不再各自解码一份。锁里没有数据，所以持锁线程 panic 后照常取锁。
+    let _cold_load = runtime.cold_load.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(artifact) = runtime.get(artifact_sig)? {
+        return Ok(artifact);
+    }
     // 解码和校验在写锁外完成；连接由 StorageEngine Read Pool 提供。
     let staging = decode_artifact(connection, artifact_sig)?;
     runtime.publish(artifact_sig, staging.clone())?;
@@ -3265,6 +3276,129 @@ mod validation_index_regression_tests {
         writer.execute("UPDATE kbm_runtime_meta SET value='0' WHERE key='memo_tag_facts'", []).unwrap();
         assert_eq!(load_artifact_with_connection(&runtime, &reader, "fixture").err().unwrap(), CONFLICT);
         drop(writer); drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cold_load_tests {
+    use super::*;
+    use std::io::Write;
+
+    const NODES: i64 = 3000;
+
+    /// A valid payload: a ring CSR with 8 edges per node and two provenance
+    /// contributions per edge.
+    fn payload(with_provenance: bool) -> Value {
+        let mut row_offsets = vec![0_u64];
+        let mut targets = Vec::new();
+        let mut weights = Vec::new();
+        for source in 0..NODES {
+            for step in 1..=8 {
+                targets.push(((source + step) % NODES) as u64);
+                weights.push(0.1 + 0.2 / step as f64);
+            }
+            row_offsets.push(targets.len() as u64);
+        }
+        let mut value = serde_json::json!({
+            "schema": "rivermemo-persisted-artifact-v2",
+            "artifact": {"maxInbound": 0.1 + 0.2},
+            "sharedTransport": {
+                "nodeIds": (1..=NODES).collect::<Vec<_>>(),
+                "rowOffsets": row_offsets,
+                "targetIndices": targets,
+                "weights": weights,
+            },
+            "anchorGainView": [[1, 1.5], [2, 0.75]],
+            "inboundMassView": [[2, 0.7], [3, 1e-310]],
+            "wormholeView": ["1:2", "2:3"],
+        });
+        if with_provenance {
+            value["provenanceView"] = serde_json::json!({"edges": (1..=NODES).map(|id| serde_json::json!(
+                [format!("{}:{}", id, id % NODES + 1), [[id, 0.5], [id + 1, 0.1 + 0.2]]]
+            )).collect::<Vec<_>>()});
+        }
+        value
+    }
+
+    fn store(connection: &Connection, payload: &Value) {
+        let raw = serde_json::to_vec(payload).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&raw).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE rivermemo_artifacts(
+                artifact_sig TEXT PRIMARY KEY, schema_version TEXT, algorithm_version TEXT,
+                payload_codec TEXT, payload_checksum TEXT, payload BLOB, status TEXT);
+             CREATE TABLE kbm_artifact_dependencies(
+                artifact_sig TEXT, dependency_key TEXT, dependency_version TEXT,
+                PRIMARY KEY(artifact_sig,dependency_key));
+             CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_artifact_dependencies VALUES
+                ('fixture','memo_tag_facts','7'),('fixture','derived_geometry','11');
+             INSERT INTO kbm_runtime_meta VALUES ('memo_tag_facts','7'),('derived_geometry','11');"
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO rivermemo_artifacts VALUES('fixture','rivermemo-persisted-artifact-v2',
+                'memo.native-artifact-v2-binary','gzip-json-v1',?1,?2,'ready')",
+            rusqlite::params![format!("{:x}", Sha256::digest(&raw)), encoder.finish().unwrap()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn decoded_arrays_keep_their_values() {
+        for with_provenance in [true, false] {
+            let connection = Connection::open_in_memory().unwrap();
+            store(&connection, &payload(with_provenance));
+            let artifact = decode_artifact(&connection, "fixture").unwrap();
+            assert_eq!(artifact.node_ids, (1..=NODES).collect::<Vec<_>>());
+            assert_eq!(artifact.row_offsets.len(), NODES as usize + 1);
+            assert_eq!(artifact.targets.len(), 8 * NODES as usize);
+            let mut weights: Vec<u64> = artifact.weights.iter().map(|weight| weight.to_bits()).collect();
+            weights.sort_unstable();
+            weights.dedup();
+            let mut expected: Vec<u64> = (1..=8).map(|step| (0.1 + 0.2 / step as f64).to_bits()).collect();
+            expected.sort_unstable();
+            assert_eq!(weights, expected);
+            assert_eq!(artifact.max_inbound.to_bits(), (0.1 + 0.2_f64).to_bits());
+            assert_eq!(artifact.inbound.get(&3).map(|value| value.to_bits()), Some(1e-310_f64.to_bits()));
+            assert_eq!(artifact.anchor_gain.get(&2), Some(&0.75));
+            assert!(artifact.wormhole_edges.contains(&(2, 3)));
+            if with_provenance {
+                assert_eq!(artifact.provenance.len(), NODES as usize);
+                assert_eq!(artifact.provenance.get(&(NODES, 1)), Some(&vec![(NODES, 0.5), (NODES + 1, 0.1 + 0.2)]));
+            } else {
+                assert!(artifact.provenance.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_cold_loads_share_one_decode() {
+        let path = std::env::temp_dir().join(format!(
+            "cold-load-{}-{}.sqlite", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_nanos()).unwrap_or(0),
+        ));
+        store(&Connection::open(&path).unwrap(), &payload(true));
+        let runtime = MemoRuntime::new();
+        const THREADS: usize = 8;
+        for round in 0..4 {
+            runtime.clear().unwrap();
+            let barrier = std::sync::Barrier::new(THREADS);
+            let loaded: Vec<Arc<NativeArtifact>> = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..THREADS).map(|_| scope.spawn(|| {
+                    let connection = Connection::open(&path).unwrap();
+                    barrier.wait();
+                    load_artifact_with_connection(&runtime, &connection, "fixture").unwrap()
+                })).collect();
+                workers.into_iter().map(|worker| worker.join().unwrap()).collect()
+            });
+            // A query that decoded on its own would return its own allocation.
+            let active = runtime.get("fixture").unwrap().unwrap();
+            for artifact in &loaded {
+                assert!(Arc::ptr_eq(artifact, &active), "round {round}: more than one decode");
+            }
+            assert_eq!(active.provenance.len(), NODES as usize);
+        }
         std::fs::remove_file(path).unwrap();
     }
 }
