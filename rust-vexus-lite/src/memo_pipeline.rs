@@ -147,7 +147,7 @@ impl Default for PipelineConfig {
             transfer_alpha: 0.55,
             field_max_iterations: 80,
             local_push_epsilon: 1e-7,
-            transfer_push_epsilon: 1e-8,
+            transfer_push_epsilon: 2e-7,
             local_tolerance: 1e-9,
             transfer_tolerance: 1e-9,
             local_mass_ratio: 0.8,
@@ -1251,12 +1251,15 @@ fn field_mass(field: &[f64]) -> f64 {
     field.iter().map(|value| positive(*value)).sum()
 }
 
+/// `unreached` is mass the field will still gain but does not hold yet (see
+/// `push_field`); the cut-off is taken against the complete total.
 fn effective_domain(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     field: &[f64],
+    unreached: f64,
     ratio: f64,
 ) -> Vec<i64> {
-    let total = field_mass(field);
+    let total = field_mass(field) + unreached;
     if total <= 0.0 {
         return Vec::new();
     }
@@ -1577,16 +1580,24 @@ fn solve_dual_fields(
 /// Synchronous residual push in node-ID order. Arrivals wait until the next round.
 /// For a nonnegative substochastic transport, compensation leaves L1 error at
 /// most alpha * sum(residual), apart from floating-point rounding.
+///
+/// The last value is the mass the leftover residual would still add after that
+/// compensation, nearly all of it on small tail nodes. `build_transport` scales
+/// every row with edges to the same outbound mass m, so residual r on such a node grows to
+/// (1 - alpha) r / (1 - alpha m) in total; a node without edges stops at
+/// (1 - alpha) r. Walks that reach rows without edges grow less, so this bounds
+/// the true tail from above.
 fn push_field(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     source: &[f64], alpha: f64, epsilon: f64,
-) -> (Vec<f64>, usize, f64) {
+) -> (Vec<f64>, usize, f64, f64) {
     let mut residual = source.to_vec();
     let mut estimate = vec![0.0; source.len()];
     let mut incoming = vec![0.0; source.len()];
     let mut order: Vec<usize> = (0..source.len()).collect();
     order.sort_unstable_by_key(|&i| artifact.node_ids[i]);
     let mut rounds = 0;
+    let mut row_mass = 0.0f64;
     loop {
         incoming.fill(0.0);
         let mut active = false;
@@ -1596,17 +1607,28 @@ fn push_field(
             active = true;
             residual[i] = 0.0;
             estimate[i] += (1.0 - alpha) * mass;
+            let mut row = 0.0;
             for cursor in artifact.row_offsets[i]..artifact.row_offsets[i + 1] {
-                incoming[artifact.targets[cursor]] += alpha * mass * positive(artifact.weights[cursor]);
+                let weight = positive(artifact.weights[cursor]);
+                row += weight;
+                incoming[artifact.targets[cursor]] += alpha * mass * weight;
             }
+            row_mass = row_mass.max(row);
         }
         if !active { break; }
         rounds += 1;
         for i in 0..residual.len() { residual[i] += incoming[i]; }
     }
     let remaining = field_mass(&residual);
-    for i in 0..estimate.len() { estimate[i] += (1.0 - alpha) * residual[i]; }
-    (estimate, rounds, remaining)
+    let growth = (1.0 - alpha) * alpha * row_mass / (1.0 - alpha * row_mass).max(f64::MIN_POSITIVE);
+    let mut unreached = 0.0;
+    for i in 0..estimate.len() {
+        estimate[i] += (1.0 - alpha) * residual[i];
+        if artifact.row_offsets[i] < artifact.row_offsets[i + 1] {
+            unreached += growth * residual[i];
+        }
+    }
+    (estimate, rounds, remaining, unreached)
 }
 
 // Invalid thresholds use the original solver, as does an explicit zero.
@@ -1615,7 +1637,7 @@ fn push_enabled(epsilon: f64) -> bool { epsilon.is_finite() && epsilon > 0.0 }
 fn solve_field_values(
     artifact: &crate::rivermemo_topology_v3::NativeArtifact,
     source: &[f64], local_alpha: f64, transfer_alpha: f64, config: &PipelineConfig,
-) -> (Vec<f64>, Vec<f64>, usize, bool, bool, f64, f64) {
+) -> (Vec<f64>, Vec<f64>, usize, bool, bool, f64, f64, [f64; 2]) {
     let mut local = source.to_vec();
     let mut transfer = source.to_vec();
     let mut local_converged = false;
@@ -1623,15 +1645,17 @@ fn solve_field_values(
     let mut local_residual = f64::INFINITY;
     let mut transfer_residual = f64::INFINITY;
     let mut iterations = 0;
+    // Mass each field has yet to gain; zero for the full iteration.
+    let mut unreached = [0.0; 2];
 
     let mut push_rounds = 0;
     if push_enabled(config.local_push_epsilon) {
-        (local, push_rounds, local_residual) = push_field(artifact, source, local_alpha, config.local_push_epsilon);
+        (local, push_rounds, local_residual, unreached[0]) = push_field(artifact, source, local_alpha, config.local_push_epsilon);
         local_converged = true;
     }
     if push_enabled(config.transfer_push_epsilon) {
         let rounds;
-        (transfer, rounds, transfer_residual) = push_field(artifact, source, transfer_alpha, config.transfer_push_epsilon);
+        (transfer, rounds, transfer_residual, unreached[1]) = push_field(artifact, source, transfer_alpha, config.transfer_push_epsilon);
         push_rounds = push_rounds.max(rounds);
         transfer_converged = true;
     }
@@ -1669,7 +1693,7 @@ fn solve_field_values(
     }
 
     }
-    (local, transfer, iterations.max(push_rounds), local_converged, transfer_converged, local_residual, transfer_residual)
+    (local, transfer, iterations.max(push_rounds), local_converged, transfer_converged, local_residual, transfer_residual, unreached)
 }
 
 fn solve_dual_fields_with_pool(
@@ -1717,13 +1741,13 @@ fn solve_dual_fields_with_pool(
     let local_alpha = config.local_alpha.clamp(0.0, 0.999999);
     let transfer_alpha = config.transfer_alpha.clamp(0.0, 0.999999);
     let (local, transfer, iterations, local_converged, transfer_converged,
-        local_residual, transfer_residual) = solve_field_values(
+        local_residual, transfer_residual, unreached) = solve_field_values(
             artifact, &source, local_alpha, transfer_alpha, config);
 
     let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;
     let domain_started = Instant::now();
-    let local_domain_ids = effective_domain(artifact, &local, config.local_mass_ratio);
-    let transfer_domain_ids = effective_domain(artifact, &transfer, config.transfer_mass_ratio);
+    let local_domain_ids = effective_domain(artifact, &local, unreached[0], config.local_mass_ratio);
+    let transfer_domain_ids = effective_domain(artifact, &transfer, unreached[1], config.transfer_mass_ratio);
     // Scalar retention is independent of projection K. Keep meaningful tails for
     // path potentials/tail penalties, and always preserve support/river nodes.
     let mut retained: Vec<i64> = local_domain_ids.iter().chain(&transfer_domain_ids)
@@ -2700,6 +2724,35 @@ mod local_push_tests {
             let b=original_field_values(&g,&source,0.15,0.55,&c);
             assert_eq!(bits(&a.0),bits(&b.0)); assert_eq!(bits(&a.1),bits(&b.1));
             assert_eq!((a.2,a.3,a.4,a.5.to_bits(),a.6.to_bits()),(b.2,b.3,b.4,b.5.to_bits(),b.6.to_bits()));
+            assert_eq!(a.7,[0.0;2]);
+        }
+    }
+    #[test]
+    fn unreached_mass_completes_the_total() {
+        // Every row with edges carries 0.95, as build_transport writes it.
+        let uniform=crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![1,2,3,4],
+            node_index: HashMap::from([(1,0),(2,1),(3,2),(4,3)]),
+            row_offsets: vec![0,2,3,5,6], targets: vec![1,2,2,0,3,0],
+            weights: vec![0.5,0.45,0.95,0.3,0.65,0.95],
+            ..Default::default()
+        };
+        let c=PipelineConfig { local_tolerance:1e-15, transfer_tolerance:1e-15, field_max_iterations:1000, ..Default::default() };
+        for (g,exact_total) in [(uniform,true),(graph(),false)] {
+            for source in [vec![1.0,0.0,0.0,0.0],vec![0.25,0.25,0.25,0.25]] {
+                for alpha in [0.15,0.55] {
+                    let exact=field_mass(&original_field_values(&g,&source,alpha,alpha,&c).0);
+                    let (field,_,remaining,unreached)=push_field(&g,&source,alpha,1e-3);
+                    let pushed=field_mass(&field);
+                    assert!(remaining>0.0 && exact-pushed>1e-6, "{exact} {pushed}");
+                    if exact_total {
+                        assert!((pushed+unreached-exact).abs()<=1e-12, "{exact} {pushed} {unreached}");
+                    } else {
+                        // Rows without edges or below the largest row mass only grow less.
+                        assert!(pushed+unreached>=exact-1e-12, "{exact} {pushed} {unreached}");
+                    }
+                }
+            }
         }
     }
     #[test]
@@ -2707,7 +2760,7 @@ mod local_push_tests {
         let g=graph();
         for source in [vec![1.0,0.0,0.0,0.0],vec![0.0;4],vec![0.0,0.0,0.0,1.0]] {
             for (alpha,eps) in [(0.15,1e-7),(0.55,1e-8)] {
-                let (actual, rounds, remaining)=push_field(&g,&source,alpha,eps);
+                let (actual, rounds, remaining, unreached)=push_field(&g,&source,alpha,eps);
                 let c=PipelineConfig { local_tolerance:1e-15, transfer_tolerance:1e-15, field_max_iterations:1000, ..Default::default() };
                 let exact=original_field_values(&g,&source,alpha,alpha,&c).0;
                 let error:f64=actual.iter().zip(exact).map(|(a,b)|(a-b).abs()).sum();
@@ -2716,7 +2769,7 @@ mod local_push_tests {
                 for _ in 0..5 {
                     let again=push_field(&g,&source,alpha,eps);
                     assert_eq!(bits(&actual),bits(&again.0));
-                    assert_eq!((rounds,remaining.to_bits()),(again.1,again.2.to_bits()));
+                    assert_eq!((rounds,remaining.to_bits(),unreached.to_bits()),(again.1,again.2.to_bits(),again.3.to_bits()));
                 }
             }
         }
@@ -2724,7 +2777,7 @@ mod local_push_tests {
     #[test]
     fn epsilon_json_defaults_and_independent_selection() {
         let c:PipelineConfig=serde_json::from_str("{}").unwrap();
-        assert_eq!((c.local_push_epsilon,c.transfer_push_epsilon),(1e-7,1e-8));
+        assert_eq!((c.local_push_epsilon,c.transfer_push_epsilon),(1e-7,2e-7));
         let c:PipelineConfig=serde_json::from_str(r#"{"localPushEpsilon":0,"transferPushEpsilon":1e-8}"#).unwrap();
         let source=[1.0,0.0,0.0,0.0]; let g=graph();
         let a=solve_field_values(&g,&source,0.15,0.55,&c);
