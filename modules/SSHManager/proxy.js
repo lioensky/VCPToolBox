@@ -281,6 +281,62 @@ class SSHManagerProxy {
         return logs;
     }
 
+    // === 虚拟终端 API (v2.0) ===
+
+    async openTerminal(hostId, terminalId = 'default', options = {}) {
+        const result = await this._call('openTerminal', { hostId, terminalId, options }, 30000);
+        if (result && result.error) {
+            throw createRpcError(result.error);
+        }
+        return {
+            hostId,
+            terminalId,
+            stats: result ? result.stats : null,
+            run: (command, runOptions = {}) => this._call(
+                'runTerminalCommand',
+                { hostId, terminalId, command, options: runOptions },
+                Math.max(15000, (Number(runOptions.timeout) || 30000) + 10000)
+            ),
+            close: () => this.closeTerminal(hostId, terminalId)
+        };
+    }
+
+    async sendTerminalKey(hostId, terminalId, key, repeat = 1) {
+        const result = await this._call('sendTerminalKey', {
+            hostId,
+            terminalId,
+            key,
+            repeat
+        });
+        return result;
+    }
+
+    async writeTerminal(hostId, terminalId, text, submit = true) {
+        return this._call('writeTerminal', { hostId, terminalId, text, submit });
+    }
+
+    getTerminalVisible(hostId, terminalId, lines = 20) {
+        return this._call('getTerminalVisible', { hostId, terminalId, lines }).then(
+            (result) => (result && Object.prototype.hasOwnProperty.call(result, 'output')
+                ? result.output
+                : null)
+        );
+    }
+
+    listTerminals() {
+        return this._call('listTerminals');
+    }
+
+    isTerminalBusy(hostId, terminalId = 'default') {
+        return this._call('isTerminalBusy', { hostId, terminalId }).then(
+            (result) => Boolean(result && result.busy)
+        );
+    }
+
+    async closeTerminal(hostId, terminalId = 'default') {
+        return this._call('closeTerminal', { hostId, terminalId });
+    }
+
     _log(msg) {
         const entry = `[${new Date().toISOString()}] [SSHManagerProxy] ${msg}`;
         logInfo(entry);
