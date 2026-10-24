@@ -409,6 +409,47 @@ test('点歌默认常规播放，八种中英文演出模式确定性映射', as
     assert.equal(decisions.length, 0);
 });
 
+test('获取音乐内容原生映射到分布式 MusicController，无需主要内容或模型裁决', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const expressions = [
+        '获取音乐内容。',
+        '请获取当前歌曲的歌词。',
+        '{日用工具} 查看正在播放的音乐信息。',
+        '{音乐播放} 查询歌词。',
+        '{日用工具} `MusicController` 获取音乐内容。',
+        '{日用工具} `MusicController` [getCurrentLyrics]',
+        '{日用工具} 获取音乐内容【当前歌曲】[星诞]'
+    ];
+    for (const expression of expressions) {
+        const calls = await planner.plan(expression, { maid: 'Nova' });
+        assert.equal(calls.length, 1, expression);
+        assert.equal(calls[0].name, 'MusicController', expression);
+        assert.deepEqual(calls[0].args, {
+            command: 'getCurrentLyrics',
+            maid: 'Nova'
+        }, expression);
+        assert.equal(calls[0].jev.thirdParty, undefined);
+    }
+    assert.equal(decisions.length, 0);
+});
+
+test('音乐内容查询不会误识别主要负载，也不会放宽其他工具的必填内容', async () => {
+    const { planner } = makePlanner();
+    const [song] = await planner.plan('播放【获取音乐内容】');
+    assert.deepEqual(song.args, { command: 'playSong', songname: '获取音乐内容' });
+
+    const [memo] = await planner.plan('主动回忆【获取当前歌曲的歌词】');
+    assert.equal(memo.name, 'LightMemo');
+    assert.equal(memo.args.query, '获取当前歌曲的歌词');
+
+    await assert.rejects(planner.plan('{日用工具} 播放'), /缺少主要内容/);
+    await assert.rejects(planner.plan('{日用工具} `SciCalculator` 获取音乐内容'), /缺少主要内容/);
+    await assert.rejects(planner.plan('{联网搜索} 获取音乐内容'), /缺少主要内容/);
+
+    const [explicitMemo] = await planner.plan('{日用工具} `LightMemo` 获取音乐内容【音乐知识】');
+    assert.equal(explicitMemo.name, 'LightMemo');
+});
+
 test('大量并发规划保持调用参数隔离且全部使用确定性模板', async () => {
     const { planner, decisions } = makePlanner({ configured: true });
     const stageModes = ['流光', '云阶', '心象', '凝彩', '商籁', '镜台', '浮名', '星诞'];
