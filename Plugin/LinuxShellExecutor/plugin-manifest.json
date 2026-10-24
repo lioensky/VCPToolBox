@@ -1,12 +1,12 @@
 {
   "manifestVersion": "1.0.0",
   "name": "LinuxShellExecutor",
-  "version": "1.2.0",
+  "version": "2.1.0",
   "displayName": "Linux Shell 安全执行器",
-  "description": "Linux Shell 命令执行器（⚠️ 已爆破：安全防护全层移除）。",
+  "description": "Linux Shell 命令执行器。次世代 v2.1.0：多机并发广播、超时无损脱钩、虚拟终端 Channel 隔离与交互穿透；hostId 使用逗号分隔字符串；执行前统一经过黑名单/白名单/灰名单/AST 授权管线与审计。",
   "author": "VCP Team",
   "pluginType": "hybridservice",
-  "requiresAdmin": false,
+  "requiresAdmin": true,
   "entryPoint": {
     "type": "nodejs",
     "script": "LinuxShellExecutor.js",
@@ -14,7 +14,7 @@
   },
   "communication": {
     "protocol": "direct",
-    "timeout": 60000
+    "timeout": 90000
   },
   "dependencies": {
     "npm": [
@@ -26,8 +26,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "LinuxShellExecutor",
-        "description": "在安全沙箱中执行 Linux Shell 命令，支持本地和远程 SSH 执行。\n\n🆕 v1.1.7 审计加固版:\n- 异步闭环：修复 isLongRunning 逻辑，确保 yum/apt/tail 等指令真实托管。\n- 资产引导修复：修正 Discovery 状态透传，引导 hostId 自动发现。\n- 授权码逃逸：管理员验证码 (requireAdmin) 可授权执行灰名单命令及不在任何名单中的未知命令；黑名单、特殊操作符硬护栏、AST 及白名单路径限制不可绕过。\n- 鲁棒性增强：分号(;)、后台&、子shell $() 被硬护栏禁止且不可绕过；普通命令的 && / || / 重定向受白名单 forbiddenCharacters 限制；预设(preset:)模板内可使用 &&；管道(|)正常支持；全局输出截断防护。\n\n参数:\n- command (字符串, 必需): 要执行的 Shell 命令，或 preset:预设名?参数 格式。\n- hostId (字符串, 可选): 目标主机ID，默认 'local'。\n- isLongRunning (布尔, 可选): 是否为长待机指令，设为 true 时任务将转入后台并返回 taskId。\n- requireAdmin (字符串, 可选): 用户提交的管理员验证码（6位）。用于灰名单授权、未知命令授权逃逸、write/danger 预设确认。黑名单/特殊操作符/AST/白名单路径限制不可通过验证码绕过。另：doubleConfirm (布尔, 可选) 为二次确认标志，灰名单 critical 风险(reboot/shutdown/init)与 danger 预设必需。\n- timeout (数字, 可选): 超时时间（毫秒）。\n- outputFormat (字符串, 可选): 输出格式 'raw'|'formatted'|'json'。\n\n⚠️ 命令编写规范:\n- 禁用 ; 作为分隔符（安全层拦截）\n- 多命令链式：使用 &&（如 cmd1 && cmd2）\n- 引号内分号合法：grep \"pattern;\" file\n\n授权码执行示例:\n\n\n长待机指令调用:\n\n\n列出主机列表:\n",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」unknown-tool --args「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」yum install -y nginx「末」,\nisLongRunning:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listHosts「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "在 Linux 主机上执行 Shell 命令，支持本地与多机 SSH 并发执行、超时后台脱钩、虚拟终端交互。\n\n🆕 v2.1.0 次世代架构:\n- 多机广播：hostId 使用逗号分隔字符串（如 \"local,nas,server\"）或标签（@dev / tag:linux），基于 Promise.allSettled 并发分发与故障隔离；不再支持数组形式。\n- 统一回显：命令、任务与终端结果收敛为 <host> [status, meta]: + 代码块，不再返回嵌套 JSON。\n- 超时无损挂机：命令超过 timeout（默认 30000ms）不杀进程、不断连接，自动转入后台脱钩运行并返回 taskId。\n- 任务哨兵：目标机 /tmp/vcp_{taskId}.log + .json 原子回执，支持 queryTask / listTasks / cancelTask。\n- 虚拟终端：显式 terminalId 时启用持久 PTY/SSH Channel，支持 sendKey（Ctrl+C 等）、pasteText（stdin 注入）、queryVisible（滑动缓冲区）。\n- 自动升轨：默认终端阻塞时自动派生 default_sub_* 子 Channel，避免长命令卡死后续指令。\n\n安全管控（所有执行入口统一校验）:\n- 提权前置拦截：sudo / su / pkexec / doas 直接拒绝。\n- 特殊操作符：;、后台 &、$() 与反引号禁止；&& / || 按安全级别放行。\n- 黑名单 → 白名单（免费放行）→ 灰名单（requireAdmin 验证码，critical 需 doubleConfirm）→ 未知命令（需有效验证码逃逸）。\n- AST 语义分析：命令注入 / 路径遍历 / 编码载荷 / 网络外泄 / 提权等 critical 风险直接拒绝。\n- 审计：maximum 级别写入 logs/audit；拦截事件始终记录。\n- 预设命令：preset:name 为管理员在 presets.json 维护的可信模板，跳过黑白灰名单、特殊操作符与 AST，仅保留提权前置拦截与 preset securityLevel 验证。内置 checkMemory / checkCpu / checkDiskUsage / checkPorts / checkProcesses 等，可用 listPresets 查看完整列表。\n\n参数:\n- command (字符串): 要执行的 Shell 命令，或 preset:预设名?参数。执行类 Action 必需。\n- hostId (字符串, 可选): 逗号分隔的目标主机 ID，例如 \"local,nas,server\"；也支持 @tag / tag:xxx 标签；默认 hosts.json 的 defaultHost（通常 local）。\n- terminalId (字符串, 可选): 虚拟终端 ID。显式指定时命令在持久终端中前台运行，可用 sendKey/pasteText/queryVisible 交互；不指定则走脱钩执行通道。\n- timeout (数字, 可选): 同步等待阈值（毫秒），默认 30000，最大 55000。超时后自动脱钩。\n- isLongRunning (布尔, 可选): 为 true 时立即转入后台脱钩运行，不进行同步等待。\n- interactive (布尔, 可选): 显式 terminalId 时是否启用交互终端，默认 true。\n- forceNewChannel (布尔, 可选): 强制派生新的子终端 Channel。\n- securityLevel (字符串, 可选): basic | standard | high | maximum；默认取主机配置或 DEFAULT_SECURITY_LEVEL。\n- requireAdmin (字符串, 可选): 用户提交的管理员验证码（6位），用于灰名单与未知命令授权。\n- doubleConfirm (布尔, 可选): critical 灰名单 / 高危预设的二次确认标志。\n- outputFormat (字符串, 可选): 兼容旧参数，'raw'|'formatted'|'json'。\n\n任务与终端 Action:\n- action=\"queryTask\" + taskId: 查询任务状态并返回尾部日志；lines 控制行数。\n- action=\"listTasks\" + hostId/status/limit: 列出登记任务。\n- action=\"cancelTask\" + taskId: 终止后台任务并清理哨兵文件。\n- action=\"runInTerminal\" + command + hostId + terminalId: 在虚拟终端中启动命令并立即返回 running。\n- action=\"sendKey\" / \"sendInteractiveKey\" + terminalId + key: 注入按键（ctrl+c, ctrl+d, ctrl+z, enter, esc, tab, up/down/left/right 等），repeat 控制次数。\n- action=\"pasteText\" / \"pasteInteractiveText\" + terminalId + text + submit: 写入 stdin 文本，submit 默认 true 追加回车。\n- action=\"queryVisible\" + terminalId 或 taskId: 查看终端最近 N 行输出/任务日志尾部。\n- action=\"listTerminals\": 列出活跃虚拟终端。\n- action=\"listHosts\" | \"testConnection\" | \"getStatus\" | \"listPresets\": 管理类查询。\n\n多机示例:\nhostId:「始」local, k8s「末」\ncommand:「始」uname -srm「末」\n\n灰名单授权示例:\ncommand:「始」systemctl restart nginx「末」\nrequireAdmin:「始」123456「末」\n\n超时脱钩后查询:\naction:「始」queryTask「末」\ntaskId:「始」task_local_1729836000_a1b2「末」\nlines:「始」20「末」\n\n交互中断:\naction:「始」sendInteractiveKey「末」\nhostId:「始」local「末」\nterminalId:「始」debug-term「末」\nkey:「始」ctrl+c「末」\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」uname -srm「末」,\nhostId:「始」local, arch-shiyi「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」queryTask「末」,\ntaskId:「始」task_local_1729836000_a1b2「末」,\nlines:「始」20「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」sendInteractiveKey「末」,\nhostId:「始」local「末」,\nterminalId:「始」debug-term「末」,\nkey:「始」ctrl+c「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

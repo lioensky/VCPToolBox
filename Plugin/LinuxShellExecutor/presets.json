@@ -253,6 +253,74 @@
             ],
             "outputFormat": "merged",
             "timeout": 60000
+        },
+
+        "checkMemory": {
+            "description": "内存占用检查 - 内存、Swap 与 Top 内存进程",
+            "category": "system",
+            "securityLevel": "read",
+            "commands": [
+                "echo '=== 内存概览 ===' && free -h",
+                "echo '=== Swap 使用 ===' && swapon --show 2>/dev/null || echo '未启用 Swap'",
+                "echo '=== Top 15 内存进程 ===' && ps aux --sort=-%mem | head -16",
+                "echo '=== 内存详情 ===' && head -12 /proc/meminfo"
+            ],
+            "outputFormat": "merged",
+            "timeout": 30000
+        },
+
+        "checkCpu": {
+            "description": "CPU 占用检查 - CPU 信息、平均负载与 Top CPU 进程",
+            "category": "performance",
+            "securityLevel": "read",
+            "commands": [
+                "echo '=== CPU 信息 ===' && lscpu | head -25",
+                "echo '=== 平均负载 ===' && uptime && cat /proc/loadavg",
+                "echo '=== top 快照 ===' && top -bn1 | head -20",
+                "echo '=== Top 15 CPU 进程 ===' && ps aux --sort=-%cpu | head -16"
+            ],
+            "outputFormat": "merged",
+            "timeout": 30000
+        },
+
+        "checkDiskUsage": {
+            "description": "磁盘占用速查 - 分区使用率、inode 与常见目录大小",
+            "category": "storage",
+            "securityLevel": "read",
+            "commands": [
+                "echo '=== 分区使用率 ===' && df -h",
+                "echo '=== inode 使用率 ===' && df -i",
+                "echo '=== 常见目录占用 ===' && du -sh /var/log /var/cache /tmp 2>/dev/null | sort -hr"
+            ],
+            "outputFormat": "merged",
+            "timeout": 30000
+        },
+
+        "checkPorts": {
+            "description": "端口与连接检查 - 监听端口与 Established 连接",
+            "category": "network",
+            "securityLevel": "read",
+            "commands": [
+                "echo '=== 监听 TCP/UDP 端口 ===' && ss -tuln",
+                "echo '=== Established 连接 ===' && ss -tn state established",
+                "echo '=== 监听进程 Top 20 ===' && lsof -i -P -n 2>/dev/null | head -20 || echo 'lsof 不可用'"
+            ],
+            "outputFormat": "merged",
+            "timeout": 30000
+        },
+
+        "checkProcesses": {
+            "description": "进程速查 - 进程总数、Top CPU/内存进程与僵尸进程",
+            "category": "system",
+            "securityLevel": "read",
+            "commands": [
+                "echo '=== 进程总数 ===' && ps -e --no-headers | wc -l",
+                "echo '=== Top 15 CPU 进程 ===' && ps aux --sort=-%cpu | head -16",
+                "echo '=== Top 15 内存进程 ===' && ps aux --sort=-%mem | head -16",
+                "echo '=== 僵尸进程 ===' && ps -eo stat,pid,cmd | awk '$1 ~ /^Z/ {print}' | head -20"
+            ],
+            "outputFormat": "merged",
+            "timeout": 30000
         }
     },
     
