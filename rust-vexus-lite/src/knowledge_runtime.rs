@@ -2164,6 +2164,44 @@ impl NativeRiverQueryTask {
     fn compute_with_connection(&mut self, connection: &rusqlite::Connection) -> Result<String> {
         let total_started = std::time::Instant::now();
 
+        // Multi-Pole Stage-1 ANN Beam Injection (gated by config.enableGrassmannSubspaceReadout):
+        // Extract up to 2 orthogonal transfer basin poles from the active MemoQueryObservation
+        // and append them as bounded supplemental ANN queries (weight 0.78 / 0.72).
+        if let Ok(plan_val) = serde_json::from_str::<serde_json::Value>(&self.river_input_json) {
+            let preset_disables_v9 = plan_val
+                .get("config")
+                .and_then(|c| c.get("experimentPreset"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|p| {
+                    matches!(
+                        p.trim().to_ascii_lowercase().as_str(),
+                        "v8_5" | "v8.5" | "baseline" | "legacy" | "v7" | "mainline" | "off"
+                    )
+                });
+            let enable_multipole = !preset_disables_v9
+                && plan_val
+                    .get("config")
+                    .and_then(|c| c.get("enableGrassmannSubspaceReadout"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+            if enable_multipole {
+                if let Some(handle) = plan_val.get("observationHandle").and_then(|v| v.as_str()) {
+                    if let Ok(obs) = self.runtime.get_query_observation(handle, &self.artifact_sig) {
+                        for (pole_idx, pole) in obs.transfer_basin_vectors.iter().take(2).enumerate() {
+                            if pole.len() == self.ann_task.dimension
+                                && self.ann_task.supplemental_queries.len() < 16
+                            {
+                                self.ann_task.supplemental_queries.push(pole.clone());
+                                self.ann_task
+                                    .supplemental_weights
+                                    .push(if pole_idx == 0 { 0.78 } else { 0.72 });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 复用已验证的原生 ANN/合并/语义去重实现。此处只在 Rust 内解析其
         // 小型 ID/分数结果，不发生 N-API resolve，也不携带向量跨边界。
         let ann_payload = self.ann_task.compute_with_connection(Some(connection))?;
@@ -2446,7 +2484,6 @@ impl NativeKnowledgeRuntime {
                 Error::from_reason("NativeKnowledgeRuntime storage lock poisoned".to_string())
             })
     }
-
     /// Separate ABI gate: older binaries must never interpret external-only plans
     /// as legacy coupled Memo queries.
     #[napi]

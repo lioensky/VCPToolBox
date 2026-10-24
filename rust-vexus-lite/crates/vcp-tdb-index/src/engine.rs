@@ -245,7 +245,21 @@ impl TdbIndex {
     /// Query routing using authoritative host originals, not snapshot vectors.
     /// The caller must freeze the source for the duration of this query.
     pub fn search_with_source<F>(
-        &self, query: &[f32], k: usize, ef: Option<usize>, mut fill: F,
+        &self, query: &[f32], k: usize, ef: Option<usize>, fill: F,
+    ) -> io::Result<Vec<(u64, f32)>>
+    where
+        F: FnMut(u64, &mut Vec<f32>) -> bool,
+    {
+        self.search_with_source_excluding(query, k, ef, None, fill)
+    }
+
+    pub fn search_with_source_excluding<F>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: Option<usize>,
+        exclude: Option<&HashSet<u64>>,
+        mut fill: F,
     ) -> io::Result<Vec<(u64, f32)>>
     where
         F: FnMut(u64, &mut Vec<f32>) -> bool,
@@ -255,17 +269,31 @@ impl TdbIndex {
         }
         let k = k.min(self.len());
         if k == 0 { return Ok(Vec::new()); }
+        let excluded = |id: u64| exclude.is_some_and(|set| set.contains(&id));
+        let extra = exclude.map_or(0, HashSet::len);
+        let search_k = k.saturating_add(extra).min(self.len());
         let mut output: Vec<(u64, f32)> = if let Some(graph) = &self.graph {
-            let config = QuIVerSearchConfig {
-                top_k: k, ef_search: ef.unwrap_or(128).max(k),
-                rerank_limit: Some(64_usize.max(k)),
+            let config = if exclude.is_none() {
+                QuIVerSearchConfig {
+                    top_k: k,
+                    ef_search: ef.unwrap_or(128).max(k),
+                    rerank_limit: Some(64.max(k)),
+                }
+            } else {
+                let ef_val = ef.unwrap_or(128).max(search_k.saturating_mul(2));
+                let rerank_val = ef.map_or(64_usize, |e| e / 2).max(64).max(search_k);
+                QuIVerSearchConfig {
+                    top_k: search_k,
+                    ef_search: ef_val,
+                    rerank_limit: Some(rerank_val),
+                }
             };
             let candidates = graph.search(query, |slot, output| {
                 self.ids.get(slot).is_some_and(|id| *id != 0 && fill(*id, output))
             }, &config);
             let mut row = Vec::with_capacity(self.dimension);
             candidates.into_iter().filter_map(|(id, _)| {
-                if !self.contains(id) { return None; }
+                if !self.contains(id) || excluded(id) { return None; }
                 row.clear();
                 fill(id, &mut row).then(|| (id, cosine(query, &row)))
             }).collect()
@@ -274,8 +302,9 @@ impl TdbIndex {
             let mut heap = BinaryHeap::with_capacity(k);
             let mut row = Vec::with_capacity(self.dimension);
             for &id in &self.ids {
+                if id == 0 || excluded(id) { continue; }
                 row.clear();
-                if id != 0 && fill(id, &mut row) {
+                if fill(id, &mut row) {
                     let candidate = RankedRow { id, score: cosine(query, &row) };
                     if heap.len() < k {
                         heap.push(candidate);
@@ -287,7 +316,7 @@ impl TdbIndex {
             }
             heap.into_iter().map(|row| (row.id, row.score)).collect()
         };
-        output.retain(|(id, score)| self.contains(*id) && score.is_finite());
+        output.retain(|(id, score)| self.contains(*id) && !excluded(*id) && score.is_finite());
         output.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         output.truncate(k);
         Ok(output)

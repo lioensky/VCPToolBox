@@ -143,6 +143,18 @@ impl RetrievalIndex {
         query: &[f32],
         k: usize,
     ) -> io::Result<Vec<(u64, f32)>> {
+        self.search_sql_excluding(connection, diary, query, k, None, None)
+    }
+
+    pub(crate) fn search_sql_excluding(
+        &self,
+        connection: &rusqlite::Connection,
+        diary: Option<&str>,
+        query: &[f32],
+        k: usize,
+        ef: Option<usize>,
+        exclude: Option<& std::collections::HashSet<u64>>,
+    ) -> io::Result<Vec<(u64, f32)>> {
         if connection.is_autocommit() {
             return Err(io::Error::other("SQL retrieval requires an active read transaction"));
         }
@@ -155,7 +167,7 @@ impl RetrievalIndex {
         let mut statement = connection.prepare_cached(sql).map_err(io::Error::other)?;
         let dimension = self.dimensions();
         let mut source_error = None;
-        let result = self.core().search_with_source(query, k, None, |id, output| {
+        let result = self.core().search_with_source_excluding(query, k, ef, exclude, |id, output| {
             use rusqlite::OptionalExtension;
             output.clear();
             let bytes = statement.query_row(
