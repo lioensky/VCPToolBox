@@ -910,15 +910,7 @@
             ].filter(Boolean).map(pageCore.normalizeText);
             let best = 0;
             for (const value of values) {
-                if (value === expected) best = Math.max(best, 1);
-                else if (value.includes(expected) || expected.includes(value)) {
-                    best = Math.max(best, Math.min(expected.length, value.length) / Math.max(expected.length, value.length));
-                } else {
-                    const targetParts = new Set(expected.split(/\s+/));
-                    const valueParts = new Set(value.split(/\s+/));
-                    const overlap = [...targetParts].filter(part => valueParts.has(part)).length;
-                    best = Math.max(best, overlap / Math.max(targetParts.size, valueParts.size, 1));
-                }
+                best = Math.max(best, pageCore.computeTextSimilarity(expected, value));
             }
             return best;
         }
@@ -972,7 +964,9 @@
             // 只有原始引用断连或签名漂移时才进入恢复。Shadow DOM 元素的 CSS 路径
             // 只在其原始 root 内有意义，绝不能拿到顶层 document 中全局匹配。
             const originalRoot = entry.element?.getRootNode?.();
-            const queryRoot = originalRoot && typeof originalRoot.querySelectorAll === 'function'
+            const queryRoot = originalRoot &&
+                (originalRoot === documentObject || originalRoot.host) &&
+                typeof originalRoot.querySelectorAll === 'function'
                 ? originalRoot
                 : documentObject;
             const candidates = [];
@@ -1020,10 +1014,11 @@
                     requestedHandle,
                     candidateCount: valid.length,
                     scoreMargin: valid[0].validation.score - valid[1].validation.score,
-                    queryRootType: queryRoot === documentObject ? 'document' : 'shadow-root'
+                    queryRootType: queryRoot === documentObject ? 'document' : 'shadow-root',
+                    candidates: dehydrateCandidates(valid.map(item => ({ element: item.element, score: item.validation.score })))
                 });
             }
-            entry.element = valid[0].element;
+            if (options.readOnly !== true) entry.element = valid[0].element;
             return {
                 element: valid[0].element,
                 entry,
@@ -1037,6 +1032,34 @@
                 signatureValid: true,
                 recoveryUsed: true
             };
+        }
+
+        // Register without taking a new snapshot: arbitration must not expire the caller's context.
+        function ensureHandle(element) {
+            const existing = registry.get(element.getAttribute('data-vcp-snapshot-handle'));
+            if (existing?.element === element && existing.documentGeneration === documentGeneration &&
+                existing.snapshotId === snapshotId) return existing.strictHandle;
+            const signature = pageCore.createElementSignature(element);
+            const ordinal = new Set(registry.values()).size + 1;
+            const strictHandle = `vcp-h-${documentGeneration}-${snapshotId}-${ordinal}-${signature.hash}`;
+            registry.set(strictHandle, {
+                element, strictHandle, handleId: strictHandle, signature,
+                documentGeneration, snapshotId, locatorHints: pageCore.createLocatorHints(element)
+            });
+            element.setAttribute('data-vcp-snapshot-handle', strictHandle);
+            return strictHandle;
+        }
+
+        function dehydrateCandidates(items) {
+            return items.slice(0, 8).map(({ element, score }) => {
+                const signature = pageCore.createElementSignature(element);
+                return {
+                    handleId: ensureHandle(element), tagName: signature.tagName, role: signature.role,
+                    label: signature.accessibleName.slice(0, 160), text: signature.text,
+                    placeholder: signature.placeholder.slice(0, 160),
+                    containerKind: signature.containerKind, viewportZone: signature.viewportZone, score
+                };
+            });
         }
 
         function createPersistentTarget(target, options = {}) {
@@ -1058,7 +1081,8 @@
                         return matches.length === 1 && matches[0] === element;
                     } catch { return false; }
                 });
-            if (!selectors.length) {
+            const elementSignature = pageCore.createElementSignature(element);
+            if (!selectors.length && !elementSignature.tagName) {
                 throw structuredError('TARGET_NOT_FOUND', '目标没有可唯一定位的持久化选择器', {
                     candidateCount: 0
                 });
@@ -1075,6 +1099,7 @@
                 tagName: element.tagName.toLowerCase(),
                 selectors,
                 attributes: signature,
+                signature: elementSignature,
                 text: pageCore.isInputLikeElement(element)
                     ? null : pageCore.normalizeAttribute(element.textContent).slice(0, 160),
             };
@@ -1084,7 +1109,8 @@
             if (target.version !== 1 || target.origin !== new URL(documentObject.URL).origin) {
                 throw structuredError('SKILL_TARGET_CONTEXT_MISMATCH', 'Skill 目标页面来源或定位版本不匹配');
             }
-            if (!Array.isArray(target.selectors) || !target.selectors.length || target.selectors.length > 16) {
+            if (!Array.isArray(target.selectors) || target.selectors.length > 16 ||
+                (!target.selectors.length && !target.signature)) {
                 throw structuredError('INVALID_REQUEST', 'Skill 定位信息无效');
             }
             const candidates = new Set();
@@ -1103,20 +1129,46 @@
                     candidates.add(element);
                 }
             }
-            if (candidates.size === 0) {
-                throw structuredError('TARGET_NOT_FOUND', 'Skill 持久化目标未找到匹配元素（0 matches）', {
-                    candidateCount: 0
-                });
+            if (candidates.size === 1) {
+                const element = [...candidates][0];
+                return {
+                    element, handleId: ensureHandle(element), source: 'skill-persistent',
+                    confidence: 1, candidateCount: 1, signatureValid: true
+                };
             }
-            if (candidates.size > 1) {
-                throw structuredError('TARGET_AMBIGUOUS', `Skill 持久化目标存在歧义（${candidates.size} matches）`, {
-                    candidateCount: candidates.size
-                });
-            }
-            return {
-                element: [...candidates][0], source: 'skill-persistent',
-                confidence: 1, candidateCount: 1, signatureValid: true,
+            const attributes = target.attributes || {};
+            const signature = target.signature || {
+                tagName: target.tagName, type: attributes.type, role: attributes.role,
+                name: attributes.name, ariaLabel: attributes['aria-label'],
+                ariaLabelledBy: attributes['aria-labelledby'], href: attributes.href,
+                text: target.text || ''
             };
+            const scored = pageCore.getInteractiveElements().map(element => {
+                const validation = pageCore.validateElementAgainstSignature(element, signature);
+                let score = validation.score * 10, total = 10;
+                for (const [field, weight] of [['containerKind', 0.5], ['siblingButtonHint', 0.5],
+                    ['viewportZone', 0.25], ['svgHint', 1]]) {
+                    if (signature[field] === undefined || signature[field] === '') continue;
+                    total += weight;
+                    if (validation.current?.[field] === signature[field]) score += weight;
+                }
+                return { element, score: score / total };
+            }).filter(item => item.score >= 0.42).sort((a, b) => b.score - a.score);
+            const top = scored[0];
+            const margin = top ? top.score - (scored[1]?.score || 0) : 0;
+            if (top?.score >= 0.68 && margin >= 0.12) {
+                return {
+                    element: top.element, handleId: ensureHandle(top.element),
+                    source: 'skill-persistent-rebound', confidence: top.score,
+                    candidateCount: scored.length, scoreMargin: margin, signatureValid: true, rebound: true
+                };
+            }
+            const ambiguous = candidates.size > 1 || top?.score >= 0.42;
+            throw structuredError(ambiguous ? 'TARGET_AMBIGUOUS' : 'TARGET_NOT_FOUND',
+                'Skill 持久化目标无法安全重绑定', {
+                    candidateCount: scored.length, confidence: top?.score || 0, scoreMargin: margin,
+                    candidates: ambiguous ? dehydrateCandidates(scored) : []
+                });
         }
 
         function resolveTarget(target, options = {}) {
@@ -1217,7 +1269,8 @@
             if (uniqueExact.length > 1) {
                 throw structuredError('TARGET_AMBIGUOUS', '精确定位得到多个候选', {
                     candidateCount: uniqueExact.length,
-                    scoreMargin: 0
+                    scoreMargin: 0,
+                    candidates: dehydrateCandidates(uniqueExact.map(element => ({ element, score: 1 })))
                 });
             }
             const scored = pageCore.getInteractiveElements()
@@ -1228,7 +1281,7 @@
                         pageCore.isInputLikeElement(element))
                 )
                 .map(element => ({ element, score: scoreText(normalized, element) }))
-                .filter(item => item.score >= 0.45)
+                .filter(item => item.score >= 0.42)
                 .sort((a, b) => b.score - a.score);
             if (!scored.length) {
                 throw structuredError('TARGET_NOT_FOUND', `未找到目标: ${normalized}`, {
@@ -1256,16 +1309,18 @@
                 throw structuredError('TARGET_AMBIGUOUS', `目标文本存在多个全等候选: ${normalized}`, {
                     candidateCount: exactTextMatches.length,
                     confidence: 1,
-                    scoreMargin: 0
+                    scoreMargin: 0,
+                    candidates: dehydrateCandidates(exactTextMatches)
                 });
             }
 
             const margin = scored.length > 1 ? scored[0].score - scored[1].score : 1;
-            if (scored.length > 1 && margin < 0.08) {
+            if (scored[0].score < 0.68 || (scored.length > 1 && margin < 0.12)) {
                 throw structuredError('TARGET_AMBIGUOUS', `目标文本存在多个近似候选: ${normalized}`, {
                     candidateCount: scored.length,
                     confidence: scored[0].score,
-                    scoreMargin: margin
+                    scoreMargin: margin,
+                    candidates: dehydrateCandidates(scored)
                 });
             }
             return {
@@ -1564,9 +1619,29 @@
             const started = Date.now();
             let stableSince = Date.now();
             let mutationCount = 0;
-            const observer = new windowObject.MutationObserver(() => {
-                stableSince = Date.now();
-                mutationCount += 1;
+            let waitElement = null;
+            let lastTextLength = null;
+            let lastTextElement = null;
+            let textStableSince = Date.now();
+            const changes = new WeakMap();
+            const ignored = new WeakSet();
+            const observer = new windowObject.MutationObserver(mutations => {
+                for (const mutation of mutations) {
+                    const element = mutation.target.nodeType === NodeObject.TEXT_NODE
+                        ? mutation.target.parentElement : mutation.target;
+                    if (!element || ignored.has(element)) continue;
+                    if (params.target && (!waitElement || !waitElement.contains(element))) continue;
+                    const count = (changes.get(element) || 0) + 1;
+                    changes.set(element, count);
+                    const animation = mutation.type === 'attributes' &&
+                        ['style', 'class'].includes(mutation.attributeName);
+                    if (count >= 3 && ((element.textContent || '').length <= 24 || animation)) {
+                        ignored.add(element);
+                        continue;
+                    }
+                    stableSince = Date.now();
+                    mutationCount += 1;
+                }
             });
             observer.observe(documentObject.documentElement, {
                 childList: true,
@@ -1578,8 +1653,10 @@
                 while (Date.now() - started <= timeoutMs) {
                     let element = null;
                     try {
-                        if (params.target) element = resolveTarget(params.target).element;
+                        if (params.target) element = resolveTarget(params.target, { readOnly: true }).element;
                     } catch {}
+                    if (waitElement !== element) stableSince = Date.now();
+                    waitElement = element;
                     let matched = false;
                     let actual = null;
                     if (condition === 'element' || condition === 'visible') {
@@ -1598,7 +1675,21 @@
                     } else if (condition === 'dom_stable') {
                         const stableMs = parseNumber(params.stableMs, 500, 50, 10000);
                         actual = { stableForMs: Date.now() - stableSince, mutationCount };
-                        matched = Date.now() - stableSince >= stableMs;
+                        matched = (!params.target || Boolean(element)) && Date.now() - stableSince >= stableMs;
+                    } else if (condition === 'settled') {
+                        const root = params.target ? element : documentObject.body;
+                        const length = (root?.textContent || '').length;
+                        if (length !== lastTextLength || root !== lastTextElement) {
+                            textStableSince = Date.now();
+                            lastTextLength = length;
+                            lastTextElement = root;
+                        }
+                        const selector = '[aria-busy="true"],.loading,.spinner';
+                        const busy = Boolean(root && ((root.matches?.(selector) && isVisible(root)) ||
+                            Array.from(root.querySelectorAll(selector)).some(isVisible)));
+                        actual = { textLength: length, busy, stableForMs: Date.now() - textStableSince };
+                        matched = Boolean(root) && !busy &&
+                            Date.now() - textStableSince >= parseNumber(params.stableMs, 800, 50, 10000);
                     } else {
                         throw structuredError('WAIT_CONDITION_UNSUPPORTED', `不支持的等待条件: ${condition}`);
                     }
@@ -1670,6 +1761,97 @@
             };
         }
 
+        function actionResolution(resolved) {
+            return {
+                source: resolved.source, handleId: resolved.handleId,
+                confidence: resolved.confidence, candidateCount: resolved.candidateCount,
+                scoreMargin: resolved.scoreMargin, signatureValid: resolved.signatureValid,
+                rebound: resolved.rebound === true
+            };
+        }
+
+        function prepareAction(params) {
+            const action = String(params.targetAction || '').replace(/^page_/, '');
+            const resolved = params.target ? resolveTarget(params.target, {
+                requireInputLike: action === 'type', sideEffecting: true
+            }) : action === 'send_keys'
+                ? { element: documentObject.activeElement || documentObject.body, source: 'focused', confidence: 1 }
+                : resolveTarget(params.target);
+            const element = resolved.element;
+            resolved.handleId = ensureHandle(element);
+            const occlusion = checkOcclusion(element);
+            if (params.strict !== false && occlusion.occluded) {
+                throw structuredError('ELEMENT_OCCLUDED', '目标被页面内容完全遮挡', occlusion);
+            }
+            element.focus?.({ preventScroll: true });
+            const beforeState = pageCore.captureElementActionState(element);
+            const editable = pageCore.isContentEditableElement(element);
+            if (action === 'type' && params.nativeInput !== false) {
+                if (editable) {
+                    const range = documentObject.createRange();
+                    range.selectNodeContents(element);
+                    const selection = windowObject.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                } else if (typeof element.select === 'function') element.select();
+                else element.value = '';
+            }
+            return {
+                status: 'success', code: 'ACTION_PREPARED',
+                result: {
+                    targetAction: action, handleId: resolved.handleId, targetResolution: actionResolution(resolved),
+                    occlusion, point: occlusion.preferredPoint || {
+                        x: occlusion.rect.x + occlusion.rect.width / 2,
+                        y: occlusion.rect.y + occlusion.rect.height / 2
+                    },
+                    beforeState, isContentEditable: editable,
+                    currentChecked: beforeState.checked === true || beforeState.checked === 'true',
+                    isTopFrame: windowObject === windowObject.top
+                }
+            };
+        }
+
+        async function verifyAction(params) {
+            const action = String(params.targetAction || '').replace(/^page_/, '');
+            const entry = registry.get(params.target);
+            const resolved = entry ? { element: entry.element, handleId: entry.strictHandle, source: 'registry-exact' }
+                : resolveTarget(params.target, { readOnly: true });
+            const element = resolved.element;
+            await new Promise(resolve => setTimeout(resolve, 50));
+            const after = pageCore.captureElementActionState(element);
+            const backend = params.backendUsed;
+            let result;
+            if (action === 'type') {
+                result = pageCore.verifyInputAction(element, params.expectedText, params.beforeState, after, backend);
+            } else if (action === 'check') {
+                const desired = parseBoolean(params.desiredChecked, true);
+                const actual = after.checked === true || after.checked === 'true';
+                const current = params.beforeState?.checked === true || params.beforeState?.checked === 'true';
+                result = { attempted: current !== desired, idempotentNoop: current === desired,
+                    verified: actual === desired, desired, actual, beforeState: params.beforeState,
+                    afterState: after, backendUsed: backend, fallbackUsed: false,
+                    requiresFreshSnapshot: current !== desired };
+            } else if (action === 'click') {
+                result = pageCore.verifyClickAction(element, params.beforeState, after, backend);
+            } else {
+                result = { attempted: true, verified: null, beforeState: params.beforeState,
+                    afterState: after, backendUsed: backend, fallbackUsed: false, requiresFreshSnapshot: true };
+            }
+            const enforce = params.verification !== 'observe' && params.verification !== 'none';
+            const failed = result.verified === false;
+            const code = result.verified === true ? 'ACTION_VERIFIED' : failed
+                ? (enforce ? 'ACTION_VERIFICATION_FAILED' : 'ACTION_VERIFICATION_OBSERVED_FAILED')
+                : action === 'click' ? 'ACTION_ATTEMPTED_UNVERIFIABLE' : 'ACTION_DISPATCHED';
+            return {
+                status: failed && enforce ? 'error' : 'success', code,
+                message: failed ? '动作状态回读不一致' : '动作已分派并完成状态回读',
+                backendUsed: backend,
+                result: { ...result, occlusion: params.occlusion, actionPoint: params.actionPoint,
+                    targetResolution: params.targetResolution || actionResolution(resolved),
+                    runtimeInstanceId, documentGeneration, snapshotIdBefore: snapshotId }
+            };
+        }
+
         async function execute(commandInput, params = {}, requestOptions = {}) {
             const command = String(commandInput || '').replace(/^page_/, '');
             const strict = requestOptions.strict === true || params.strict === true;
@@ -1691,6 +1873,8 @@
                 }
                 return specializedResult;
             }
+            if (command === 'prepare_action') return prepareAction({ ...params, strict: params.strict ?? requestOptions.strict });
+            if (command === 'verify_action') return verifyAction(params);
             if (command === 'get_info') return { status: 'success', message: '页面信息已刷新', result: snapshot() };
             if (command === 'get_image') {
                 const entry = resolvePageImage(params.imageId || params.target);
@@ -1912,7 +2096,8 @@
                     confidence: resolved.confidence,
                     candidateCount: resolved.candidateCount,
                     scoreMargin: resolved.scoreMargin,
-                    signatureValid: resolved.signatureValid
+                    signatureValid: resolved.signatureValid,
+                    rebound: resolved.rebound === true
                 };
                 response.result.runtimeInstanceId = runtimeInstanceId;
                 response.result.documentGeneration = documentGeneration;

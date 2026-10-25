@@ -9,7 +9,8 @@
         pageCore: load('VCPWebAgentPageCore', './web-agent-page-core.js'),
         pageRuntime: load('VCPWebAgentPageRuntimeCore', './web-agent-page-runtime-core.js'),
         runtimeCore: load('VCPWebAgentRuntimeCore', './web-agent-runtime-core.js'),
-        chromeAdapter: load('VCPChromeWebAgentAdapter', './chrome-adapter.js')
+        chromeAdapter: load('VCPChromeWebAgentAdapter', './chrome-adapter.js'),
+        entityArbiter: load('VCPWebAgentEntityArbiter', './web-agent-entity-arbiter.js')
     });
 
     if (typeof module === 'object' && module.exports) {
@@ -77,6 +78,8 @@
         pageCore: modules.pageCore,
         pageRuntime: modules.pageRuntime,
         runtimeCore: modules.runtimeCore,
+        entityArbiter: modules.entityArbiter,
+        createEntityArbiter: modules.entityArbiter?.createEntityArbiter,
         adapters: Object.freeze({
             chrome: modules.chromeAdapter
         }),

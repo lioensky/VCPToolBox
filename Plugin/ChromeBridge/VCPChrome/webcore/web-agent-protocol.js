@@ -32,6 +32,8 @@
         ['page_query_scripts', 'page', Risk.ELEVATED, false, true, true, ['page']],
         ['page_code_search', 'page', Risk.ELEVATED, false, true, true, ['page']],
         ['page_wait_for', 'page', Risk.READ, false, true, false, ['page']],
+        ['page_prepare_action', 'page', Risk.INTERACT, true, false, true, ['page']],
+        ['page_verify_action', 'page', Risk.INTERACT, false, true, true, ['page']],
         ['page_click', 'page', Risk.INTERACT, true, false, false, ['page']],
         ['page_type', 'page', Risk.INTERACT, true, false, true, ['page']],
         ['page_set_value', 'page', Risk.INTERACT, true, false, true, ['page']],
@@ -110,7 +112,8 @@
             sideEffecting,
             retryable,
             sensitiveResult,
-            requires: Object.freeze(requires.slice())
+            requires: Object.freeze(requires.slice()),
+            internal: ['page_prepare_action', 'page_verify_action'].includes(id)
         })];
     })));
 
