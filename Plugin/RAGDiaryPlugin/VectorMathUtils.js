@@ -118,39 +118,60 @@ function sigmoid(x) {
     return 1 / (1 + Math.exp(-x));
 }
 
-/**
- * 字符 bigram Dice 相似度。
- *
- * @param {string} textA
- * @param {string} textB
- * @returns {number}
- */
+const BIGRAM_MAP_CACHE_MAX = 512;
+const BIGRAM_MAP_MAX_CHARS = 250000;
+const bigramMapCache = new Map();
+
+function getCachedBigramMap(text) {
+    if (text.length <= BIGRAM_MAP_MAX_CHARS) {
+        const cached = bigramMapCache.get(text);
+        if (cached !== undefined) {
+            bigramMapCache.delete(text);
+            bigramMapCache.set(text, cached);
+            return cached;
+        }
+    }
+
+    const bigrams = new Map();
+    for (let i = 0; i < text.length - 1; i++) {
+        const gram = text.slice(i, i + 2);
+        bigrams.set(gram, (bigrams.get(gram) || 0) + 1);
+    }
+
+    if (text.length <= BIGRAM_MAP_MAX_CHARS) {
+        if (bigramMapCache.size >= BIGRAM_MAP_CACHE_MAX) {
+            const oldestKey = bigramMapCache.keys().next().value;
+            if (oldestKey !== undefined) bigramMapCache.delete(oldestKey);
+        }
+        bigramMapCache.set(text, bigrams);
+    }
+    return bigrams;
+}
+
+/** 字符 Bigram 多重集 Dice 相似度。 */
 function textDiceSimilarity(textA, textB) {
     if (textA === textB) return 1;
     if (!textA || !textB || textA.length < 2 || textB.length < 2) return 0;
 
-    const buildBigrams = (text) => {
-        const bigrams = new Map();
-        for (let i = 0; i < text.length - 1; i++) {
-            const gram = text.slice(i, i + 2);
-            bigrams.set(gram, (bigrams.get(gram) || 0) + 1);
-        }
-        return bigrams;
-    };
+    const totalA = textA.length - 1;
+    const totalB = textB.length - 1;
+    if (totalA + totalB <= 0) return 0;
 
-    const bigramsA = buildBigrams(textA);
-    const bigramsB = buildBigrams(textB);
+    const bigramsA = getCachedBigramMap(textA);
+    const bigramsB = getCachedBigramMap(textB);
+    const [smaller, larger] = bigramsA.size <= bigramsB.size
+        ? [bigramsA, bigramsB]
+        : [bigramsB, bigramsA];
+
     let intersection = 0;
-
-    for (const [gram, countA] of bigramsA.entries()) {
-        const countB = bigramsB.get(gram) || 0;
-        intersection += Math.min(countA, countB);
+    for (const [gram, countSmall] of smaller.entries()) {
+        const countLarge = larger.get(gram);
+        if (countLarge !== undefined) {
+            intersection += countSmall <= countLarge ? countSmall : countLarge;
+        }
     }
 
-    const totalA = Array.from(bigramsA.values()).reduce((sum, count) => sum + count, 0);
-    const totalB = Array.from(bigramsB.values()).reduce((sum, count) => sum + count, 0);
-
-    return totalA + totalB > 0 ? (2 * intersection) / (totalA + totalB) : 0;
+    return (2 * intersection) / (totalA + totalB);
 }
 
 module.exports = {

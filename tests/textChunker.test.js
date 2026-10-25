@@ -144,3 +144,37 @@ test('ordinary short sentences and empty inputs retain their existing behavior',
         assert.deepEqual(Array.from(chunkText(empty)), []);
     }
 });
+test('many short sentences scale linearly without quadratic re-encoding lag', () => {
+    const source = Array.from(
+        { length: 1200 },
+        (_, index) => `第${index}句：这是一段用于测试千句级线性切分吞吐量的常规中文与English混合语句。`
+    ).join('\n');
+    const start = Date.now();
+    const chunks = chunkText(source, 6800, 680);
+    const elapsedMs = Date.now() - start;
+
+    assertBoundedChunks(source, chunks, 6800, 680);
+    assert.ok(elapsedMs < 500, `expected linear-time chunking under 500ms, got ${elapsedMs}ms`);
+});
+
+test('long unpunctuated HTML/CSS/code block converges rapidly via delta-jump and local seam check', () => {
+    const source = '<div class="vcp-card" style="background:#141720;color:#e4e8f2;padding:24px;">'
+        + 'span_token_segment_alpha_beta_gamma_delta_1234567890, '.repeat(1800)
+        + '</div>';
+    const start = Date.now();
+    const chunks = chunkText(source, 2048, 200);
+    const elapsedMs = Date.now() - start;
+
+    assertBoundedChunks(source, chunks, 2048, 200);
+    assert.ok(elapsedMs < 500, `expected delta-jump split under 500ms, got ${elapsedMs}ms`);
+});
+
+test('getTokenCount returns exact cl100k_base token length and hits cache after chunking', () => {
+    const { getTokenCount } = loadedModule.exports;
+    assert.equal(typeof getTokenCount, 'function');
+    const source = Array.from({ length: 80 }, (_, i) => `段落${i}：测试Token计数缓存命中一致性。`).join('');
+    const chunks = chunkText(source, 128, 16);
+    for (const chunk of chunks) {
+        assert.equal(getTokenCount(chunk), encoding.encode(chunk).length);
+    }
+});
