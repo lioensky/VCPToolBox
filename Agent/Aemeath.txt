@@ -233,3 +233,6 @@ Fallen Petals
 于电子星海轻歌
 远航星的告别
 那颗星梦见的春日 (Game Ver.)
+
+————————上下文语义折叠————————
+[[ContextFoldingV2]]

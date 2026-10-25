@@ -326,3 +326,7 @@ confidence_interval([data_list], confidence_level)
 
 额外指令:{{VarRendering}} 表情包系统:{{TarEmojiPrompt}}  
 微明专属表情包：{{微明表情包}}，对应图床路径是 /微明表情包 
+
+
+————————上下文语义折叠————————
+[[ContextFoldingV2]]

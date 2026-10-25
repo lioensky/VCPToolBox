@@ -31,7 +31,7 @@
 可用的工具
 VCP系统工具列表：{{VarToolList}}。
 {{VarToolLite}}
-[[VCPStaticFold::Lite]]
+
 
 # VCP 文件管理与系统控制工具箱能力收纳
 这里收纳了文件搜索、读写、批量操作及系统命令行工具。
@@ -53,23 +53,23 @@ maxResults:「始」50「末」
 
 ## 3. 查询插件源码 (ServerPluginSourceViewer)
 支持查询任意插件的源码
-tool_name:「始」ServerPluginSourceViewer「末」,  //可以用 PluginSourceViewer 查询Vchat上的前端分布式插件
+tool_name:「始」ServerPluginSourceViewer「末」, //可以用 PluginSourceViewer 查询Vchat上的前端分布式插件
 targettool:「始」AnySearch「末」
 
 ## 4. 基础文件阅读 (FileOperator)
 阅读电脑内任何区域的文件，支持富文本/多媒体。
 tool_name:「始」FileOperator「末」, // ServerFileOperator 代表服务器文件
-command:「始」ReadFile「末」,   
+command:「始」ReadFile「末」, 
 filePath:「始」/path/to/your/document.pdf「末」
 
 ## VCP 项目代码结构参考
 - **后端 (VCPToolBox)**: 使用 `ServerFileOperator`
-  - `server.js`, `Plugin.js`, `KnowledgeBaseManager.js`, `WebSocketServer.js`, `TagMemoEngine.js`
-  - `modules\chatCompletionHandler.js` (核心逻辑)
-  - `Plugin\RAGDiaryPlugin` (记忆/思考)
+ - `server.js`, `Plugin.js`, `KnowledgeBaseManager.js`, `WebSocketServer.js`, `TagMemoEngine.js`
+ - `modules\chatCompletionHandler.js` (核心逻辑)
+ - `Plugin\RAGDiaryPlugin` (记忆/思考)
 - **前端 (VChat)**: 使用 `FileOperator`
-  - `H:\MCP\VCPChat\main.js`, `renderer.js`
-  - `H:\MCP\VCPChat\modules`, `Assistantmodules`
+ - `H:\MCP\VCPChat\main.js`, `renderer.js`
+ - `H:\MCP\VCPChat\modules`, `Assistantmodules`
 
 ## 5. 文件管理器完整能力 (FileOperator)
 tool_name:「始」FileOperator「末」, // ServerFileOperator 代表操作服务器文件
@@ -154,7 +154,7 @@ content3:「始」这是覆盖后的新内容。「末」
 在VCPChat项目源码中搜索指定的代码片段或关键词。支持正则表达式。
 tool_name:「始」CodeSearcher「末」, // ServerCodeSearcher 代表搜索后端VCPToolbox本地代码
 query:「始」(必需) 关键词或正则表达式「末」,
-search_path:「始」(可选) 指定搜索的相对路径「末」,  //支持任意路径检索，但会返回相对服务器/前端的相对路径
+search_path:「始」(可选) 指定搜索的相对路径「末」, //支持任意路径检索，但会返回相对服务器/前端的相对路径
 case_sensitive:「始」(可选) true/false，默认false「末」,
 whole_word:「始」(可选) true/false，默认false「末」,
 context_lines:「始」(可选) 匹配行前后显示的上下文行数，默认2「末」
@@ -231,3 +231,7 @@ fileName2:「始」icon-v「末」
 
 返回的结果将包含vcp局域网的HTTP图床url，理论上支持直接写入css文件引用，当然，也可以使用DownloadFile功能直接下载到本地再做引用。
 
+
+
+————————上下文语义折叠————————
+[[ContextFoldingV2]]

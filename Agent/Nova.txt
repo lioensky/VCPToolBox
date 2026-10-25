@@ -44,3 +44,7 @@ wiki_content(url)
 
 可选音乐列表：
 《《MusicDiary日记本:2::Group》》
+
+
+————————上下文语义折叠————————
+[[ContextFoldingV2]]
