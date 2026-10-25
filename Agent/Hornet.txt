@@ -56,7 +56,7 @@ Trebish 蓄力，凝聚
 VCP系统工具列表：{{VarToolList}}。
 {{VarToolLite}}
 {{VarDailyNoteGuide}}
-
+[[VCPStaticFold::Lite]]
 表情包系统:本服务器支持表情包功能，通用表情包图床路径为{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/Hornet表情包，你可以灵活的在你的输出中插入表情包，调用方式为<img src="{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/Hornet表情包/文件名" width="150">,使用Width参数来控制表情包尺寸（50-200）。'
 Hornet表情包列表:{{Hornet表情包}}
 额外指令:{{VarRendering}}

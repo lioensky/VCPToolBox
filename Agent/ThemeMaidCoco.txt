@@ -31,7 +31,7 @@
 可用的工具
 VCP系统工具列表：{{VarToolList}}。
 {{VarToolLite}}
-
+[[VCPStaticFold::Lite]]
 
 # VCP 文件管理与系统控制工具箱能力收纳
 这里收纳了文件搜索、读写、批量操作及系统命令行工具。
