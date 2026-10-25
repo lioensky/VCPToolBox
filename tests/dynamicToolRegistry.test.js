@@ -646,11 +646,14 @@ test('classification uses RAG embedding fallback when no small model or classifi
 
   const state = registry.getAdminState();
   const item = state.records.find((record) => record.pluginName === 'SemanticSearch');
-  assert.ok(item.categories.includes('search'));
+  assert.ok(item.categories.some((category) => category.startsWith('search/')));
   assert.equal(item.classifiedBy, 'rag_embedding_fallback');
 });
 
-test('small model reads private plugin config without leaking api key', async (t) => {
+test('small model migrates private model once but uses only main API credentials', async (t) => {
+  const oldUrl = process.env.API_URL, oldKey = process.env.API_Key;
+  process.env.API_URL = 'https://main.local'; process.env.API_Key = 'main-key';
+  t.after(() => { if (oldUrl === undefined) delete process.env.API_URL; else process.env.API_URL = oldUrl; if (oldKey === undefined) delete process.env.API_Key; else process.env.API_Key = oldKey; });
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -698,13 +701,14 @@ test('small model reads private plugin config without leaking api key', async (t
   await registry.flushClassificationQueue();
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://classifier.local/v1/chat/completions');
-  assert.equal(requests[0].options.headers.Authorization, 'Bearer private-test-key');
+  assert.equal(requests[0].url, 'https://main.local/v1/chat/completions');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer main-key');
 
   const stateConfig = registry.getAdminState().config;
   assert.equal(stateConfig.smallModel.apiKey, undefined);
   assert.equal(stateConfig.smallModel.enabled, true);
-  assert.equal(stateConfig.smallModel.endpoint, 'https://classifier.local/v1/chat/completions');
+  assert.equal(stateConfig.smallModel.endpoint, undefined);
+  assert.equal(stateConfig.smallModel.useMainConfig, undefined);
 
   const saved = await registry.updateConfig({ maxBriefListItems: 12 });
   assert.equal(saved.smallModel.apiKey, undefined);
@@ -712,7 +716,8 @@ test('small model reads private plugin config without leaking api key', async (t
   const diskConfig = JSON.parse(await fs.readFile(configPath, 'utf8'));
   assert.equal(diskConfig.smallModel.apiKey, undefined);
   assert.notEqual(diskConfig.smallModel.endpoint, 'https://classifier.local/v1/chat/completions');
-  assert.notEqual(diskConfig.smallModel.model, 'tiny-classifier');
+  assert.equal(diskConfig.smallModel.model, 'tiny-classifier');
+  assert.equal(diskConfig.version, 2);
 });
 
 test('small model can reuse main upstream config with only model name', async (t) => {
@@ -836,7 +841,10 @@ test('small model classification asks for compact briefs and clamps verbose resp
   assert.ok(record.brief.length <= 70, `brief should be compact, got ${record.brief.length} chars: ${record.brief}`);
 });
 
-test('small model uses independent OpenAI endpoint when main config reuse is disabled', async (t) => {
+test('small model ignores legacy independent endpoint even when reuse flag is false', async (t) => {
+  const oldUrl = process.env.API_URL, oldKey = process.env.API_Key;
+  process.env.API_URL = 'https://main.local'; process.env.API_Key = 'main-key';
+  t.after(() => { if (oldUrl === undefined) delete process.env.API_URL; else process.env.API_URL = oldUrl; if (oldKey === undefined) delete process.env.API_Key; else process.env.API_Key = oldKey; });
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -884,12 +892,12 @@ test('small model uses independent OpenAI endpoint when main config reuse is dis
   await registry.flushClassificationQueue();
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://classifier.local/v1/chat/completions');
-  assert.equal(requests[0].options.headers.Authorization, 'Bearer independent-key');
+  assert.equal(requests[0].url, 'https://main.local/v1/chat/completions');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer main-key');
   assert.equal(requests[0].options.body.model, 'independent-classifier');
 });
 
-test('hot reload picks up public and private dynamic tool config files without leaking secrets', async () => {
+test('hot reload uses JSON settings and ignores stale private env without leaking secrets', async () => {
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -935,9 +943,10 @@ test('hot reload picks up public and private dynamic tool config files without l
 
   assert.equal(state.config.maxBriefListItems, 13);
   assert.equal(state.config.manualOverrides.excludedOriginKeys.includes('local:ReloadSearch'), true);
-  assert.equal(state.config.smallModel.enabled, true);
-  assert.equal(state.config.smallModel.endpoint, 'https://reload.local/v1/chat/completions');
-  assert.equal(state.config.smallModel.model, 'reload-classifier');
+  assert.equal(state.config.smallModel.enabled, false);
+  assert.equal(state.config.smallModel.endpoint, undefined);
+  assert.equal(state.config.smallModel.model, '');
+  assert.equal(state.config.version, 2);
   assert.equal(state.config.smallModel.apiKey, undefined);
   assert.equal(registry.getAdminState().config.smallModel.apiKey, undefined);
 });
