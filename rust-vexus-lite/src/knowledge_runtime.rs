@@ -272,6 +272,188 @@ fn select_external_candidates(
     }).collect()
 }
 
+const SPARSE_FILE_CANDIDATE_LIMIT: usize = 512;
+const SPARSE_INLINE_EXTRA_LIMIT: usize = 64;
+const SPARSE_FILE_INDEX_ID_LIMIT: usize = 4608;
+const SPARSE_QUERY_INDEX_ID_LIMIT: usize = 16384;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SparseCandidateStats {
+    file_candidates_visited: usize,
+    duplicate_file_candidates_skipped: usize,
+    file_metadata_rows_read: usize,
+    window_rows_read: usize,
+    index_id_rows_read: usize,
+    batch_rows_read: usize,
+    content_rows_decoded: usize,
+    files_stopped_at_scan_limit: usize,
+    inline_extra_row_limit: usize,
+    per_file_index_id_limit: usize,
+    query_index_id_limit: usize,
+}
+
+impl Default for SparseCandidateStats {
+    fn default() -> Self {
+        Self { file_candidates_visited:0, duplicate_file_candidates_skipped:0, file_metadata_rows_read:0,
+            window_rows_read:0, index_id_rows_read:0,
+            batch_rows_read:0, content_rows_decoded:0, files_stopped_at_scan_limit:0,
+            inline_extra_row_limit:SPARSE_INLINE_EXTRA_LIMIT,
+            per_file_index_id_limit:SPARSE_FILE_INDEX_ID_LIMIT,
+            query_index_id_limit:SPARSE_QUERY_INDEX_ID_LIMIT }
+    }
+}
+
+fn normalized_sparse_files(files: &[NativeFileCandidate]) -> Vec<(String, &NativeFileCandidate)> {
+    let mut positions = HashMap::new();
+    let mut output: Vec<(String, &NativeFileCandidate)> = Vec::new();
+    for file in files.iter().take(255) {
+        let path = file.path.replace('\\', "/");
+        if let Some(&position) = positions.get(&path) {
+            let (_, existing): &mut (String, &NativeFileCandidate) = &mut output[position];
+            if file.normalized_bm25_score.clamp(0.0,1.0) > existing.normalized_bm25_score.clamp(0.0,1.0) {
+                *existing = file;
+            }
+        } else {
+            positions.insert(path.clone(), output.len());
+            output.push((path, file));
+        }
+    }
+    output
+}
+
+fn external_sparse_row(row: &rusqlite::Row<'_>, score: f64) -> rusqlite::Result<(i64, serde_json::Value)> {
+    let id = row.get::<_, i64>(0)?;
+    Ok((id, serde_json::json!({
+        "id":id, "chunkId":id, "text":row.get::<_,String>(1)?,
+        "sourceFile":row.get::<_,String>(2)?, "diaryName":row.get::<_,String>(3)?,
+        "fileId":row.get::<_,i64>(4)?, "score":score
+    })))
+}
+
+fn append_external_sparse_candidates(
+    connection: &rusqlite::Connection,
+    files: &[NativeFileCandidate],
+    diary_names: &[String],
+    exclude_ids: &HashSet<u64>,
+    sparse_weight: f64,
+    rows: &mut Vec<serde_json::Value>,
+) -> Result<SparseCandidateStats> {
+    let mut stats = SparseCandidateStats::default();
+    if diary_names.is_empty() { return Ok(stats); }
+    let normalized = normalized_sparse_files(files);
+    stats.duplicate_file_candidates_skipped = files.len().min(255) - normalized.len();
+    let allowed: HashSet<&str> = diary_names.iter().map(String::as_str).collect();
+    let mut metadata = connection.prepare("SELECT diary_name FROM files WHERE path=?1")
+        .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+    let mut scoped = Vec::with_capacity(normalized.len());
+    for (path, file) in normalized {
+        let diary: Option<String> = metadata.query_row([&path], |row|row.get(0)).optional()
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        if let Some(diary) = diary {
+            stats.file_metadata_rows_read += 1;
+            if allowed.contains(diary.as_str()) { scoped.push((path, file)); }
+        }
+    }
+    // Scope lookup and body reads share the caller's immutable SQL read transaction.
+    let window_sql = "SELECT c.id,c.content,f.path,f.diary_name,f.id FROM chunks c
+         JOIN files f ON f.id=c.file_id WHERE f.path=?1";
+    if exclude_ids.is_empty() {
+        let mut statement = connection.prepare(window_sql)
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        for (path, file) in &scoped {
+            stats.file_candidates_visited += 1;
+            let score = file.normalized_bm25_score.clamp(0.0,1.0)*sparse_weight;
+            let found = statement.query_map([path], |row|
+                external_sparse_row(row, score))
+                .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+            for row in found.take(SPARSE_FILE_CANDIDATE_LIMIT) {
+                let (_, row) = row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+                stats.window_rows_read += 1;
+                stats.content_rows_decoded += 1;
+                rows.push(row);
+            }
+        }
+        return Ok(stats);
+    }
+
+    let mut window = connection.prepare(window_sql)
+        .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+    let lookup_sql = "SELECT c.id FROM chunks c JOIN files f ON f.id=c.file_id WHERE f.path=?1";
+    for (path, file) in &scoped {
+        stats.file_candidates_visited += 1;
+        let score = file.normalized_bm25_score.clamp(0.0,1.0)*sparse_weight;
+        let window_limit = SPARSE_FILE_CANDIDATE_LIMIT + SPARSE_INLINE_EXTRA_LIMIT.min(exclude_ids.len());
+        let found = window.query_map([path], |row| {
+            let id = row.get::<_,i64>(0)?;
+            if exclude_ids.contains(&(id as u64)) { return Ok((id, None)); }
+            external_sparse_row(row, score).map(|(_, row)| (id, Some(row)))
+        }).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        let mut seen_ids = Vec::with_capacity(window_limit);
+        let mut accepted = 0;
+        for row in found.take(window_limit) {
+            let (id, row) = row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+            seen_ids.push(id);
+            stats.window_rows_read += 1;
+            if let Some(row) = row {
+                rows.push(row);
+                stats.content_rows_decoded += 1;
+                accepted += 1;
+                if accepted == SPARSE_FILE_CANDIDATE_LIMIT { break; }
+            }
+        }
+        if accepted == SPARSE_FILE_CANDIDATE_LIMIT || seen_ids.len() < window_limit { continue; }
+
+        let scan_limit = SPARSE_FILE_INDEX_ID_LIMIT.min(
+            SPARSE_QUERY_INDEX_ID_LIMIT.saturating_sub(stats.index_id_rows_read));
+        if scan_limit == 0 {
+            stats.files_stopped_at_scan_limit += 1;
+            continue;
+        }
+        let seen_ids: HashSet<i64> = seen_ids.into_iter().collect();
+        // The existing chunks(file_id) index covers IDs for deeper, bounded backfill.
+        let mut lookup = connection.prepare(lookup_sql)
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        let found = lookup.query_map([path], |row| row.get::<_, i64>(0))
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        let mut ids = Vec::with_capacity(SPARSE_FILE_CANDIDATE_LIMIT);
+        let mut visited = 0;
+        for id in found.take(scan_limit) {
+            let id = id.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+            visited += 1;
+            if seen_ids.contains(&id) || exclude_ids.contains(&(id as u64)) { continue; }
+            ids.push(id);
+            if accepted + ids.len() == SPARSE_FILE_CANDIDATE_LIMIT { break; }
+        }
+        stats.index_id_rows_read += visited;
+        if accepted + ids.len() < SPARSE_FILE_CANDIDATE_LIMIT && visited == scan_limit {
+            stats.files_stopped_at_scan_limit += 1;
+        }
+        if ids.is_empty() { continue; }
+        let sql = format!(
+            "SELECT c.id,c.content,f.path,f.diary_name,f.id FROM chunks c
+             JOIN files f ON f.id=c.file_id WHERE c.id IN ({})", vec!["?"; ids.len()].join(","));
+        let mut statement = connection.prepare(&sql)
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        let found = statement.query_map(rusqlite::params_from_iter(ids.iter()), |row|
+            external_sparse_row(row, score))
+            .map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+        let mut hydrated = HashMap::with_capacity(ids.len());
+        for row in found {
+            let (id, row) = row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+            stats.batch_rows_read += 1;
+            stats.content_rows_decoded += 1;
+            hydrated.insert(id, row);
+        }
+        // IN queries need not preserve the ID scan order, which affects score ties.
+        for id in ids {
+            rows.push(hydrated.remove(&id)
+                .ok_or_else(|| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?);
+        }
+    }
+    Ok(stats)
+}
+
 struct SemanticDedupConfig {
     db_path: String,
     threshold: f64,
@@ -2575,7 +2757,7 @@ impl NativeKnowledgeRuntime {
             let sparse_files: Vec<NativeFileCandidate> = serde_json::from_value(
                 plan["fileCandidates"].clone()).unwrap_or_default();
             let sparse_weight = plan["bm25Weight"].as_f64().unwrap_or(0.6).clamp(0.0, 1.0);
-            let docs = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
+            let (docs, sparse_stats) = tokio::task::spawn_blocking(move || -> Result<(Vec<serde_json::Value>, SparseCandidateStats)> {
                 let payload = ann.compute()?;
                 let output: serde_json::Value = serde_json::from_str(&payload)
                     .map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_DECODE"))?;
@@ -2588,36 +2770,18 @@ impl NativeKnowledgeRuntime {
                     row["score"] = scores.get(&row["id"].as_i64().unwrap_or(0))
                         .cloned().unwrap_or(serde_json::json!(0));
                 }
+                let mut sparse_stats = SparseCandidateStats::default();
                 if !sparse_files.is_empty() {
                     let _gate = ann.query_guard(&ann.index_scopes)?;
-                    crate::storage::with_registered_read_transaction_napi(&db_path, |connection| {
-                        let mut statement = connection.prepare(
-                            "SELECT c.id,c.content,f.path,f.diary_name,f.id FROM chunks c
-                             JOIN files f ON f.id=c.file_id WHERE f.path=?1"
-                        ).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
-                        for file in sparse_files.iter().take(255) {
-                            let found = statement.query_map([file.path.replace('\\', "/")], |r| {
-                                Ok(serde_json::json!({
-                                    "id":r.get::<_,i64>(0)?, "chunkId":r.get::<_,i64>(0)?,
-                                    "text":r.get::<_,String>(1)?, "sourceFile":r.get::<_,String>(2)?,
-                                    "diaryName":r.get::<_,String>(3)?, "fileId":r.get::<_,i64>(4)?,
-                                    "score": file.normalized_bm25_score.clamp(0.0,1.0)*sparse_weight
-                                }))
-                            }).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
-                            for row in found.take(512) {
-                                let row = row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
-                                if !ann.search_options.exclude_ids.contains(&row["id"].as_u64().unwrap_or(0)) {
-                                    rows.push(row);
-                                }
-                            }
-                        }
-                        Ok(())
+                    sparse_stats = crate::storage::with_registered_read_transaction_napi(&db_path, |connection| {
+                        append_external_sparse_candidates(connection, &sparse_files, &names,
+                            &ann.search_options.exclude_ids, sparse_weight, &mut rows)
                     })?;
                     rows.sort_by(|a,b| b["score"].as_f64().unwrap_or(0.0)
                         .total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
                 }
-                Ok(select_external_candidates(&rows, &names, &excluded,
-                    &ann.search_options.exclude_ids, external_k))
+                Ok((select_external_candidates(&rows, &names, &excluded,
+                    &ann.search_options.exclude_ids, external_k), sparse_stats))
             }).await.map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_TASK"))??;
             let ready_ms = started.elapsed().as_secs_f64() * 1000.0;
             let ranker = ranker.map_err(Error::from_reason)?;
@@ -2641,6 +2805,7 @@ impl NativeKnowledgeRuntime {
                 "diagnostics": {"nativeRerank": {
                     "backend": backend, "greenLane": true,
                     "externalCandidates": docs.len(), "httpReadyMs": ready_ms,
+                    "sparseScan": sparse_stats,
                     "totalMs": started.elapsed().as_secs_f64() * 1000.0
                 }}
             }).to_string());
@@ -4715,6 +4880,226 @@ mod tests {
         let selected = select_external_candidates(&rows, &["fixture".into()], &[], &HashSet::from([1]), 1);
         assert_eq!(selected.len(),1);
         assert_eq!(selected[0]["id"],2);
+    }
+
+    fn sparse_sql_fixture(chunk_count: i64, file_count: i64) -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT,diary_name TEXT);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY,file_id INTEGER,content TEXT);
+             CREATE INDEX idx_chunks_file ON chunks(file_id); BEGIN;"
+        ).unwrap();
+        for file in 1..=file_count {
+            connection.execute("INSERT INTO files VALUES (?1,?2,'fixture')",
+                rusqlite::params![file, format!("fixture/{file}")]).unwrap();
+            for offset in 1..=chunk_count {
+                let id = (file - 1) * chunk_count + offset;
+                connection.execute("INSERT INTO chunks VALUES (?1,?2,?3)",
+                    rusqlite::params![id, file, format!("chunk {id}")]).unwrap();
+            }
+        }
+        connection
+    }
+
+    #[test]
+    fn external_sparse_sql_reaches_allowed_chunk_after_512_excluded_rows() {
+        let connection = sparse_sql_fixture(513, 1);
+        let files = [NativeFileCandidate { path:"fixture\\1".into(),
+            normalized_bm25_score:0.5, ..Default::default() }];
+        let excluded = (1..=512).collect();
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files, &[String::from("fixture")], &excluded, 0.6, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], 513);
+        assert_eq!(rows[0]["score"], 0.3);
+        assert_eq!(stats.window_rows_read, 513);
+        assert_eq!(stats.index_id_rows_read, 0);
+        assert_eq!(stats.content_rows_decoded, 1);
+        assert_eq!(stats.files_stopped_at_scan_limit, 0);
+        let selected = select_external_candidates(&rows, &["fixture".into()], &[], &excluded, 1);
+        assert_eq!(selected[0]["id"], 513);
+
+        rows.clear();
+        append_external_sparse_candidates(&connection, &files, &[String::from("fixture")], &(1..=513).collect(), 0.6, &mut rows).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn external_sparse_sql_caps_each_file_at_512_non_excluded_chunks() {
+        let connection = sparse_sql_fixture(1025, 2);
+        let files = (1..=2).map(|file| NativeFileCandidate {
+            path:format!("fixture/{file}"), ..Default::default()
+        }).collect::<Vec<_>>();
+        let excluded = (1..=512).chain(1026..=1537).collect();
+        let mut rows = vec![serde_json::json!({"id":99999,"fileId":0,"text":"existing ANN candidate"})];
+        append_external_sparse_candidates(&connection, &files, &[String::from("fixture")], &excluded, 0.6, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1025);
+        assert_eq!(rows[0]["id"], 99999);
+        assert!(rows.iter().all(|row| !excluded.contains(&row["id"].as_u64().unwrap())));
+        for file in 1..=2 {
+            let actual = rows.iter().filter(|row| row["fileId"] == file)
+                .map(|row| row["id"].as_u64().unwrap()).collect::<Vec<_>>();
+            let start = (file - 1) * 1025 + 513;
+            assert_eq!(actual, (start..start + 512).collect::<Vec<_>>());
+        }
+        rows.clear();
+        append_external_sparse_candidates(&connection, &files, &[String::from("fixture")], &HashSet::new(), 0.6, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1024);
+        for file in 1..=2 {
+            let actual = rows.iter().filter(|row| row["fileId"] == file)
+                .map(|row| row["id"].as_u64().unwrap()).collect::<Vec<_>>();
+            let start = (file - 1) * 1025 + 1;
+            assert_eq!(actual, (start..start + 512).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn external_sparse_sql_matches_filter_then_take_across_boundaries_and_scattered_exclusions() {
+        for count in [0, 1, 511, 512, 513, 514, 1023, 1024, 1025, 4096] {
+            let connection = sparse_sql_fixture(count, 1);
+            let files = [NativeFileCandidate { path:"fixture/1".into(), ..Default::default() }];
+            let mut cases: Vec<(String, HashSet<u64>)> = [0, 1, 511, 512, 513, 514, 1024]
+                .into_iter().map(|prefix| (format!("prefix-{prefix}"), (1..=prefix).collect())).collect();
+            cases.push(("all".into(), (1..=count as u64).collect()));
+            cases.push(("alternating".into(), (1..=count as u64).filter(|id| id % 2 == 1).collect()));
+            cases.push(("scattered".into(), (1..=count as u64).filter(|id| (id * 73) % 257 < 157).collect()));
+            for (case, excluded) in cases {
+                let mut rows = Vec::new();
+                append_external_sparse_candidates(&connection, &files, &[String::from("fixture")], &excluded, 0.6, &mut rows).unwrap();
+                let actual = rows.iter().map(|row| row["id"].as_u64().unwrap()).collect::<Vec<_>>();
+                // The fixture's integer-primary-key scan visits IDs in ascending order.
+                // Compare every returned ID, rather than only the result count.
+                let expected = (1..=count as u64).filter(|id| !excluded.contains(id))
+                    .take(512).collect::<Vec<_>>();
+                assert_eq!(actual, expected, "rows={count}, exclusions={case}");
+                eprintln!("sparse SQL: rows={count}, exclusions={case}, verified_ids={}", actual.len());
+            }
+        }
+    }
+
+    #[test]
+    fn external_sparse_sql_reports_budget_stops_without_decoding_excluded_bodies() {
+        let connection = sparse_sql_fixture(6000, 1);
+        let files = [NativeFileCandidate { path:"fixture/1".into(), ..Default::default() }];
+        for (prefix, expected_count, stopped) in [(4096,512,0), (4097,511,1), (6000,0,1)] {
+            let mut rows = Vec::new();
+            let stats = append_external_sparse_candidates(&connection, &files, &[String::from("fixture")],
+                &(1..=prefix).collect(), 0.6, &mut rows).unwrap();
+            let actual = rows.iter().map(|row|row["id"].as_u64().unwrap()).collect::<Vec<_>>();
+            let expected = (prefix+1..=4608).collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            assert_eq!(rows.len(), expected_count);
+            assert_eq!(stats.window_rows_read, 576);
+            assert_eq!(stats.index_id_rows_read, 4608);
+            assert_eq!(stats.content_rows_decoded, expected_count);
+            assert_eq!(stats.batch_rows_read, expected_count);
+            assert_eq!(stats.files_stopped_at_scan_limit, stopped);
+            let value = serde_json::to_value(stats).unwrap();
+            assert_eq!(value["inlineExtraRowLimit"], 64);
+            assert_eq!(value["perFileIndexIdLimit"], 4608);
+            assert_eq!(value["queryIndexIdLimit"], 16384);
+        }
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files, &[String::from("fixture")],
+            &HashSet::new(), 0.6, &mut rows).unwrap();
+        assert_eq!(stats.index_id_rows_read, 0);
+        assert_eq!(stats.content_rows_decoded, 512);
+        assert_eq!(stats.window_rows_read, 512);
+        assert_eq!(stats.files_stopped_at_scan_limit, 0);
+    }
+
+    #[test]
+    fn external_sparse_sql_shares_extra_scan_budget_across_files() {
+        let connection = sparse_sql_fixture(5000, 6);
+        let files = (1..=6).map(|file| NativeFileCandidate {
+            path:format!("fixture/{file}"), ..Default::default()
+        }).collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files, &[String::from("fixture")],
+            &(1..=20000).collect(), 0.6, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1024);
+        assert_eq!(rows.iter().map(|row|row["id"].as_u64().unwrap()).collect::<Vec<_>>(),
+            (20001..=20512).chain(25001..=25512).collect::<Vec<_>>());
+        assert_eq!(stats.file_candidates_visited, 6);
+        assert_eq!(stats.window_rows_read, 4*576+2*512);
+        assert_eq!(stats.index_id_rows_read, 16384);
+        assert_eq!(stats.content_rows_decoded, 1024);
+        assert_eq!(stats.files_stopped_at_scan_limit, 4);
+    }
+
+    #[test]
+    fn external_sparse_sql_preserves_id_order_and_only_decodes_selected_bodies() {
+        let connection = sparse_sql_fixture(1200, 1);
+        connection.execute_batch("PRAGMA reverse_unordered_selects=ON; UPDATE chunks SET content=NULL WHERE id=1200;").unwrap();
+        let files = [NativeFileCandidate { path:"fixture/1".into(), ..Default::default() }];
+        let excluded = (701..=1200).collect::<HashSet<u64>>();
+        let mut lookup = connection.prepare(
+            "SELECT c.id FROM chunks c JOIN files f ON f.id=c.file_id WHERE f.path=?1").unwrap();
+        let expected = lookup.query_map(["fixture/1"],|row|row.get::<_,i64>(0)).unwrap()
+            .map(|row|row.unwrap()).filter(|id|!excluded.contains(&(*id as u64)))
+            .take(512).collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files, &[String::from("fixture")],
+            &excluded, 0.6, &mut rows).unwrap();
+        assert_eq!(rows.iter().map(|row|row["id"].as_i64().unwrap()).collect::<Vec<_>>(), expected);
+        assert_eq!(stats.content_rows_decoded, 512);
+        assert_eq!(stats.batch_rows_read, 436);
+        for id in [600,699] {
+            connection.execute("UPDATE chunks SET content=NULL WHERE id=?1",[id]).unwrap();
+            assert!(append_external_sparse_candidates(&connection, &files, &[String::from("fixture")],
+                &excluded, 0.6, &mut Vec::new()).is_err());
+            connection.execute("UPDATE chunks SET content='restored' WHERE id=?1",[id]).unwrap();
+        }
+    }
+
+    #[test]
+    fn external_sparse_sql_filters_diary_scope_before_spending_shared_budget() {
+        let connection = sparse_sql_fixture(5000, 5);
+        connection.execute_batch("UPDATE files SET diary_name='outside' WHERE id<5; UPDATE files SET diary_name='wanted' WHERE id=5;").unwrap();
+        let files = (1..=5).map(|file| NativeFileCandidate {
+            path:format!("fixture/{file}"), ..Default::default()
+        }).collect::<Vec<_>>();
+        let excluded = (1..=20576).collect();
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files,
+            &["wanted".into()], &excluded, 0.6, &mut rows).unwrap();
+        assert_eq!(rows.iter().map(|row|row["id"].as_u64().unwrap()).collect::<Vec<_>>(),
+            (20577..=21088).collect::<Vec<_>>());
+        assert_eq!(stats.window_rows_read, 576);
+        assert_eq!(stats.index_id_rows_read, 1088);
+        assert_eq!(stats.files_stopped_at_scan_limit, 0);
+        assert_eq!(stats.file_metadata_rows_read, 5);
+        assert_eq!(stats.file_candidates_visited, 1);
+        // In-scope earlier files may exhaust the explicit shared budget.
+        rows.clear();
+        let limited = append_external_sparse_candidates(&connection, &files,
+            &["outside".into(),"wanted".into()], &excluded, 0.6, &mut rows).unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(limited.index_id_rows_read, 16384);
+        assert_eq!(limited.files_stopped_at_scan_limit, 5);
+    }
+
+    #[test]
+    fn external_sparse_sql_merges_normalized_duplicate_paths_before_spending_budget() {
+        let connection = sparse_sql_fixture(5000, 2);
+        let mut files = [0.2,0.9,0.4,0.8].into_iter().enumerate().map(|(i, score)| NativeFileCandidate {
+            path:if i%2==0 {"fixture/1".into()} else {"fixture\\1".into()},
+            normalized_bm25_score:score, ..Default::default()
+        }).collect::<Vec<_>>();
+        files.push(NativeFileCandidate { path:"fixture/2".into(), normalized_bm25_score:0.7, ..Default::default() });
+        let mut rows = Vec::new();
+        let stats = append_external_sparse_candidates(&connection, &files,
+            &["fixture".into()], &(1..=5576).collect(), 0.6, &mut rows).unwrap();
+        assert_eq!(rows.iter().map(|row|row["id"].as_u64().unwrap()).collect::<Vec<_>>(),
+            (5577..=6088).collect::<Vec<_>>());
+        assert_eq!(stats.file_candidates_visited, 2);
+        assert_eq!(stats.duplicate_file_candidates_skipped, 3);
+        assert_eq!(stats.index_id_rows_read, 4608+1088);
+        rows.clear();
+        append_external_sparse_candidates(&connection, &files,
+            &["fixture".into()], &HashSet::new(), 0.6, &mut rows).unwrap();
+        assert_eq!(rows.len(), 1024);
+        assert!((rows[0]["score"].as_f64().unwrap()-0.54).abs()<1e-12);
     }
 
     #[test]
