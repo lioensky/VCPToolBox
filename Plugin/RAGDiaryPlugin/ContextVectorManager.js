@@ -14,6 +14,9 @@ class ContextVectorManager {
         this.plugin = plugin;
         // 核心映射：normalizedHash -> { vector, role, originalText, timestamp }
         this.vectorMap = new Map();
+        // 原始消息 -> { normalized, hash }，有界 LRU。
+        this.normalizationCache = new Map();
+        this.maxNormalizationCacheSize = 512;
         // 顺序索引：用于按顺序获取向量
         this.historyAssistantVectors = [];
         this.historyUserVectors = [];
@@ -46,38 +49,79 @@ class ContextVectorManager {
         return crypto.createHash('sha256').update(text).digest('hex');
     }
 
-    /**
-     * 简单的字符串相似度算法 (Dice's Coefficient)
-     * 用于处理微小编辑时的模糊匹配
-     */
+    /** 复用历史消息归一化结果与哈希（>64KB 自动切换为定长 SHA-256 缓存键，支持任意长度历史消息跨轮 O(1) 命中）。 */
+    _getNormalizedAndHash(content) {
+        if (!content) return { normalized: '', hash: this._generateHash('') };
+        const cacheKey = content.length <= 65536
+            ? content
+            : `__raw_sha256:${content.length}:${this._generateHash(content)}`;
+        const cached = this.normalizationCache.get(cacheKey);
+        if (cached !== undefined) {
+            this.normalizationCache.delete(cacheKey);
+            this.normalizationCache.set(cacheKey, cached);
+            return cached;
+        }
+
+        const normalized = this._normalize(content);
+        const hash = this._generateHash(normalized);
+        const record = { normalized, hash };
+        if (normalized.length <= 5000000) {
+            if (this.normalizationCache.size >= this.maxNormalizationCacheSize) {
+                const oldestKey = this.normalizationCache.keys().next().value;
+                if (oldestKey !== undefined) this.normalizationCache.delete(oldestKey);
+            }
+            this.normalizationCache.set(cacheKey, record);
+        }
+        return record;
+    }
+
+    _getBigrams(str) {
+        const bigrams = new Set();
+        for (let i = 0; i < str.length - 1; i++) {
+            bigrams.add(str.substring(i, i + 2));
+        }
+        return bigrams;
+    }
+
+    /** 字符 Bigram Set Dice 相似度。 */
     _calculateSimilarity(str1, str2) {
         if (str1 === str2) return 1.0;
         if (str1.length < 2 || str2.length < 2) return 0;
+        const b1 = this._getBigrams(str1);
+        const b2 = this._getBigrams(str2);
+        return this._calculateSimilarityFromBigrams(b1, b2);
+    }
 
-        const getBigrams = (str) => {
-            const bigrams = new Set();
-            for (let i = 0; i < str.length - 1; i++) {
-                bigrams.add(str.substring(i, i + 2));
-            }
-            return bigrams;
-        };
-
-        const b1 = getBigrams(str1);
-        const b2 = getBigrams(str2);
+    _calculateSimilarityFromBigrams(b1, b2) {
+        if (b1.size === 0 || b2.size === 0) return 0;
+        const [smaller, larger] = b1.size <= b2.size ? [b1, b2] : [b2, b1];
         let intersect = 0;
-        for (const b of b1) {
-            if (b2.has(b)) intersect++;
+        for (const b of smaller) {
+            if (larger.has(b)) intersect++;
         }
-
         return (2.0 * intersect) / (b1.size + b2.size);
     }
 
-    /**
-     * 尝试在现有缓存中寻找模糊匹配的向量
-     */
+    /** 复用 normalizedText 与惰性驻留的 Bigram Set，并以严格成立的集合基数上界剪枝。 */
     _findFuzzyMatch(normalizedText) {
+        if (!normalizedText || normalizedText.length < 2) return null;
+        let queryBigrams = null;
+
         for (const entry of this.vectorMap.values()) {
-            const similarity = this._calculateSimilarity(normalizedText, this._normalize(entry.originalText));
+            const targetNormalized = entry.normalizedText !== undefined
+                ? entry.normalizedText
+                : (entry.normalizedText = this._normalize(entry.originalText));
+
+            if (!targetNormalized || targetNormalized.length < 2) continue;
+            if (normalizedText === targetNormalized) return entry.vector;
+
+            if (!queryBigrams) queryBigrams = this._getBigrams(normalizedText);
+            if (!entry.bigrams) entry.bigrams = this._getBigrams(targetNormalized);
+            if ((2.0 * Math.min(queryBigrams.size, entry.bigrams.size)) / (queryBigrams.size + entry.bigrams.size) < this.fuzzyThreshold) {
+                continue;
+            }
+
+            const similarity = this._calculateSimilarityFromBigrams(queryBigrams, entry.bigrams);
             if (similarity >= this.fuzzyThreshold) {
                 return entry.vector;
             }
@@ -142,8 +186,7 @@ class ContextVectorManager {
                 stats.totalHistoricalUserMessages++;
             }
 
-            const normalized = this._normalize(content);
-            const hash = this._generateHash(normalized);
+            const { normalized, hash } = this._getNormalizedAndHash(content);
 
             let vector = null;
             let vectorSource = 'none';
@@ -182,6 +225,7 @@ class ContextVectorManager {
                         vector,
                         role: msg.role,
                         originalText: content,
+                        normalizedText: normalized,
                         timestamp: Date.now()
                     });
                 }
