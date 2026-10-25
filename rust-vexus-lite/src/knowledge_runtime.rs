@@ -24,9 +24,10 @@ use std::cmp::Ordering as CompareOrdering;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use crate::retrieval_index::RetrievalIndex as Index;
+use crate::retrieval_index::{RetrievalIndex as Index, RetrievalSearchOptions};
 
 pub struct GlobalTagSearchTask {
+    search_options: RetrievalSearchOptions,
     db_path: String,
     memo_runtime: Arc<MemoRuntime>,
     index: Arc<crate::index_handle::IndexHandle>,
@@ -70,7 +71,7 @@ impl Task for GlobalTagSearchTask {
         let output = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
             let matches = self.index.read()
                 .map_err(|_| "Global Tag index lock poisoned".to_string())?
-                .search_sql(connection, None, &self.query, self.limit)
+                .search_sql_options(connection, None, &self.query, self.limit, &self.search_options)
                 .map_err(|error| format!("Global Tag search failed: {}", error))?;
             let mut statement = connection.prepare("SELECT name FROM tags WHERE id=?1")
                 .map_err(|error| error.to_string())?;
@@ -178,6 +179,7 @@ struct NativeFileCandidate {
 #[derive(Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct NativeHybridQueryPlan {
+    ann_search: RetrievalSearchOptions,
     schema: String,
     supplemental: NativeSupplementalQueryPlan,
     file_candidates: Vec<NativeFileCandidate>,
@@ -190,6 +192,7 @@ impl Default for NativeHybridQueryPlan {
     fn default() -> Self {
         Self {
             schema: "vcp-native-hybrid-query-plan-v2".to_string(),
+            ann_search: RetrievalSearchOptions::default(),
             supplemental: NativeSupplementalQueryPlan::default(),
             file_candidates: Vec::new(),
             bm25_weight: 0.6,
@@ -248,12 +251,34 @@ struct NativeAnnOutput {
     diagnostics: NativeAnnDiagnostics,
 }
 
+/// Apply hard exclusions after all ANN and file candidates have been combined.
+fn select_external_candidates(
+    rows: &[serde_json::Value], names: &[String], prefixes: &[String],
+    exclude_ids: &HashSet<u64>, limit: usize,
+) -> Vec<serde_json::Value> {
+    let mut seen = HashSet::new();
+    rows.iter().filter(|row| {
+        let text = row["text"].as_str().unwrap_or("").trim();
+        !exclude_ids.contains(&row["id"].as_u64().unwrap_or(0))
+            && names.iter().any(|name| Some(name.as_str()) == row["diaryName"].as_str())
+            && !text.is_empty()
+            && !prefixes.iter().any(|prefix| !prefix.is_empty() && text.contains(prefix))
+            && seen.insert(text.to_string())
+    }).take(limit).map(|row| {
+        let mut row = row.clone();
+        row["fullPath"] = row["sourceFile"].clone();
+        row["source"] = serde_json::json!("rag");
+        row
+    }).collect()
+}
+
 struct SemanticDedupConfig {
     db_path: String,
     threshold: f64,
 }
 
 pub struct NativeMultiIndexAnnTask {
+    search_options: RetrievalSearchOptions,
     db_path: Option<String>,
     index_scopes: Vec<String>,
     dimension: usize,
@@ -382,6 +407,7 @@ impl NativeMultiIndexAnnTask {
     }
 
     fn compute_with_connection(&mut self, connection: Option<&rusqlite::Connection>) -> Result<String> {
+        self.search_options.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         let total_started = std::time::Instant::now();
         if self.query.len() != self.dimension {
             return Err(Error::from_reason(format!(
@@ -421,10 +447,10 @@ impl NativeMultiIndexAnnTask {
         let mut index_diagnostics = Vec::with_capacity(self.snapshots.len());
         for (snapshot, index) in self.snapshots.iter().zip(guards.iter()) {
             let matches = match connection {
-                Some(connection) => index.search_sql(
-                    connection, Some(&snapshot.diary_name), &self.query, self.per_index_k,
+                Some(connection) => index.search_sql_options(
+                    connection, Some(&snapshot.diary_name), &self.query, self.per_index_k, &self.search_options,
                 ),
-                None => index.search(&self.query, self.per_index_k),
+                None => index.search_options(&self.query, self.per_index_k, &self.search_options),
             }
                 .map_err(|error| {
                     Error::from_reason(format!(
@@ -459,11 +485,11 @@ impl NativeMultiIndexAnnTask {
                     .unwrap_or(1.0)
                     .clamp(0.0, 1.0);
                 let history_matches = match connection {
-                    Some(connection) => index.search_sql(
+                    Some(connection) => index.search_sql_options(
                         connection, Some(&snapshot.diary_name),
-                        supplemental_query, self.supplemental_per_index_k,
+                        supplemental_query, self.supplemental_per_index_k, &self.search_options,
                     ),
-                    None => index.search(supplemental_query, self.supplemental_per_index_k),
+                    None => index.search_options(supplemental_query, self.supplemental_per_index_k, &self.search_options),
                 }
                     .map_err(|error| {
                         Error::from_reason(format!(
@@ -564,7 +590,8 @@ impl NativeMultiIndexAnnTask {
                         })?;
                         // 文件计划来自 JavaScript 控制面，但 Rust 数据面仍必须再次执行
                         // 本次已冻结日记作用域校验，禁止同路径或坏计划越权注入候选。
-                        if !allowed_diaries.contains(diary_name.as_str())
+                        if self.search_options.exclude_ids.contains(&(id as u64))
+                            || !allowed_diaries.contains(diary_name.as_str())
                             || bytes.len() != self.dimension * 4
                         {
                             continue;
@@ -653,6 +680,7 @@ impl NativeMultiIndexAnnTask {
             })?;
         }
 
+        merged.retain(|id, _| !self.search_options.exclude_ids.contains(&(*id as u64)));
         let unique_candidates = merged.len();
         let mut results: Vec<NativeAnnCandidate> = merged
             .into_values()
@@ -2374,6 +2402,7 @@ impl NativeKnowledgeRuntime {
                 "index.tdb-vec.v1".to_string(),
                 "index.sql-authoritative-generational.v1".to_string(),
                 "index.cosine-score.v1".to_string(),
+                "index.query-options.v1".to_string(),
                 "watcher.runtime-owned.v1".to_string(),
                 "memo.native-artifact.v1".to_string(),
                 "river.native-query.v1".to_string(),
@@ -2522,7 +2551,12 @@ impl NativeKnowledgeRuntime {
         }).collect::<Result<Vec<_>>>()?;
         let supplemental_weights = supplemental.iter().map(|entry|
             entry["weight"].as_f64().unwrap_or(1.0).clamp(0.0,1.0)).collect();
+        let search_options: RetrievalSearchOptions = serde_json::from_value(
+            plan.get("annSearch").cloned().unwrap_or_else(|| serde_json::json!({})))
+            .map_err(|e| Error::from_reason(format!("Invalid ANN search options: {e}")))?;
+        search_options.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         let mut ann = NativeMultiIndexAnnTask {
+            search_options,
             db_path:Some(db_path.clone()), index_scopes:names.iter().map(|n| format!("diary:{n}")).collect(),
             dimension, query:query.to_vec(), supplemental_queries, supplemental_weights,
             supplemental_per_index_k:candidate_k / 2, file_candidates:Vec::new(), bm25_weight:0.6,
@@ -2571,7 +2605,10 @@ impl NativeKnowledgeRuntime {
                                 }))
                             }).map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
                             for row in found.take(512) {
-                                rows.push(row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?);
+                                let row = row.map_err(|_| Error::from_reason("NATIVE_RERANK_BM25_HYDRATE"))?;
+                                if !ann.search_options.exclude_ids.contains(&row["id"].as_u64().unwrap_or(0)) {
+                                    rows.push(row);
+                                }
                             }
                         }
                         Ok(())
@@ -2579,22 +2616,8 @@ impl NativeKnowledgeRuntime {
                     rows.sort_by(|a,b| b["score"].as_f64().unwrap_or(0.0)
                         .total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
                 }
-                let mut seen = HashSet::new();
-                Ok(rows.iter()
-                    .filter(|row| {
-                        let text = row["text"].as_str().unwrap_or("").trim();
-                        names.contains(&row["diaryName"].as_str().unwrap_or("").to_string())
-                            && !text.is_empty()
-                            && !excluded.iter().any(|prefix| !prefix.is_empty() && text.contains(prefix))
-                            && seen.insert(text.to_string())
-                    })
-                    .take(external_k)
-                    .map(|row| {
-                        let mut row = row.clone();
-                        row["fullPath"] = row["sourceFile"].clone();
-                        row["source"] = serde_json::json!("rag");
-                        row
-                    }).collect())
+                Ok(select_external_candidates(&rows, &names, &excluded,
+                    &ann.search_options.exclude_ids, external_k))
             }).await.map_err(|_| Error::from_reason("NATIVE_RERANK_ANN_TASK"))??;
             let ready_ms = started.elapsed().as_secs_f64() * 1000.0;
             let ranker = ranker.map_err(Error::from_reason)?;
@@ -2832,6 +2855,16 @@ impl NativeKnowledgeRuntime {
     #[napi]
     pub fn search_global_tags(&self, query: Float32Array, limit: u32)
         -> Result<AsyncTask<TrackedTask<GlobalTagSearchTask>>> {
+        self.search_global_tags_with_options(query, limit, "{}".to_string())
+    }
+
+    #[napi]
+    pub fn search_global_tags_with_options(&self, query: Float32Array, limit: u32, options_json: String)
+        -> Result<AsyncTask<TrackedTask<GlobalTagSearchTask>>> {
+        if options_json.len() > 2 * 1024 * 1024 { return Err(Error::from_reason("Search options too large")); }
+        let search_options: RetrievalSearchOptions = serde_json::from_str(&options_json)
+            .map_err(|e| Error::from_reason(format!("Invalid search options: {e}")))?;
+        search_options.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason("NativeKnowledgeRuntime is shutting down"));
         }
@@ -2840,6 +2873,7 @@ impl NativeKnowledgeRuntime {
         }
         let storage = self.storage_snapshot()?.ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
         Ok(self.tracked_task(GlobalTagSearchTask {
+            search_options,
             db_path: storage.db_path().to_string_lossy().into_owned(),
             memo_runtime: self.memo_runtime.clone(),
             index: self.global_tag_index.clone(),
@@ -3949,6 +3983,22 @@ impl NativeKnowledgeRuntime {
         per_index_k: u32,
         global_k: u32,
     ) -> Result<AsyncTask<TrackedTask<NativeMultiIndexAnnTask>>> {
+        self.search_diary_indices_with_options(diary_names, query, per_index_k, global_k, "{}".to_string())
+    }
+
+    #[napi]
+    pub fn search_diary_indices_with_options(
+        &self,
+        diary_names: Vec<String>,
+        query: Float32Array,
+        per_index_k: u32,
+        global_k: u32,
+        options_json: String,
+    ) -> Result<AsyncTask<TrackedTask<NativeMultiIndexAnnTask>>> {
+        if options_json.len() > 2 * 1024 * 1024 { return Err(Error::from_reason("Search options too large")); }
+        let search_options: RetrievalSearchOptions = serde_json::from_str(&options_json)
+            .map_err(|e| Error::from_reason(format!("Invalid search options: {e}")))?;
+        search_options.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
                 "NativeKnowledgeRuntime is shutting down".to_string(),
@@ -3998,6 +4048,7 @@ impl NativeKnowledgeRuntime {
 
         let final_k = global_k.max(1) as usize;
         Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            search_options,
             db_path: Some(
                 self.storage_snapshot()?.ok_or_else(|| {
                     Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN")
@@ -4093,6 +4144,7 @@ impl NativeKnowledgeRuntime {
         let candidate_k = global_k.max(1) as usize;
         let final_k = final_k.unwrap_or(global_k).max(1) as usize;
         Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            search_options: RetrievalSearchOptions::default(),
             db_path: Some(db_path.clone()),
             index_scopes: requested
                 .iter()
@@ -4209,6 +4261,7 @@ impl NativeKnowledgeRuntime {
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+            search_options: RetrievalSearchOptions::default(),
                 db_path: Some(db_path.clone()),
                 index_scopes: snapshots
                     .iter()
@@ -4277,6 +4330,7 @@ impl NativeKnowledgeRuntime {
             serde_json::from_str(&hybrid_plan_json).map_err(|error| {
                 Error::from_reason(format!("Invalid native hybrid query plan JSON: {}", error))
             })?;
+        plan.ann_search.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         if plan.schema != "vcp-native-hybrid-query-plan-v2" {
             return Err(Error::from_reason(format!(
                 "Unsupported native hybrid query plan schema: {}",
@@ -4369,6 +4423,7 @@ impl NativeKnowledgeRuntime {
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+            search_options: plan.ann_search,
                 db_path: Some(db_path.clone()),
                 index_scopes: snapshots
                     .iter()
@@ -4627,6 +4682,67 @@ impl NativeKnowledgeRuntime {
 mod tests {
     use super::*;
 
+    #[test]
+    fn query_options_reach_current_and_supplemental_ann_results() {
+        let mut index = Index::empty(2).unwrap();
+        index.add(1, &[1.,0.]).unwrap();
+        index.add(2, &[0.9,0.1]).unwrap();
+        index.add(3, &[0.,1.]).unwrap();
+        let plan:NativeHybridQueryPlan=serde_json::from_str(
+            r#"{"annSearch":{"excludeIds":[1],"efSearch":256}}"#).unwrap();
+        let mut task = NativeMultiIndexAnnTask {
+            search_options:plan.ann_search, db_path:None, index_scopes:Vec::new(),
+            dimension:2, query:vec![1.,0.], supplemental_queries:vec![vec![1.,0.]],
+            supplemental_weights:vec![1.], supplemental_per_index_k:2,
+            file_candidates:Vec::new(),bm25_weight:0.6,time_per_diary_limit:10,time_global_limit:50,
+            per_index_k:2,candidate_k:2,final_k:2,
+            snapshots:vec![DiarySearchSnapshot {diary_name:"fixture".into(),
+                index:Arc::new(crate::index_handle::IndexHandle::new(index)),
+                content_revision:Arc::new(AtomicU64::new(0)),generation:0}],semantic_dedup:None,
+        };
+        let result:serde_json::Value=serde_json::from_str(&task.compute_with_connection(None).unwrap()).unwrap();
+        let ids:Vec<i64>=result["results"].as_array().unwrap().iter().map(|v|v["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids,vec![2,3]);
+    }
+
+    #[test]
+    fn external_sparse_append_cannot_reintroduce_an_excluded_id_or_consume_the_limit() {
+        let rows = vec![
+            serde_json::json!({"id":1,"text":"excluded","diaryName":"fixture","sourceFile":"a"}),
+            serde_json::json!({"id":1,"text":"excluded from sparse","diaryName":"fixture","sourceFile":"a"}),
+            serde_json::json!({"id":2,"text":"allowed","diaryName":"fixture","sourceFile":"b"}),
+        ];
+        let selected = select_external_candidates(&rows, &["fixture".into()], &[], &HashSet::from([1]), 1);
+        assert_eq!(selected.len(),1);
+        assert_eq!(selected[0]["id"],2);
+    }
+
+    #[test]
+    fn time_expansion_filters_excluded_ids_before_consuming_the_diary_quota() {
+        let connection=rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE files(id INTEGER PRIMARY KEY,path TEXT,diary_name TEXT); CREATE TABLE chunks(id INTEGER PRIMARY KEY,file_id INTEGER,vector BLOB); INSERT INTO files VALUES(1,'fixture','fixture'); BEGIN;").unwrap();
+        for id in 1..=20 {
+            let values=[(21-id) as f32,1.];
+            let bytes:Vec<u8>=values.iter().flat_map(|v|v.to_le_bytes()).collect();
+            connection.execute("INSERT INTO chunks VALUES (?1,1,?2)",rusqlite::params![id,bytes]).unwrap();
+        }
+        let mut task=NativeMultiIndexAnnTask {
+            search_options:RetrievalSearchOptions {exclude_ids:(1..=10).collect(),..Default::default()},
+            db_path:None,index_scopes:Vec::new(),dimension:2,query:vec![1.,0.],
+            supplemental_queries:Vec::new(),supplemental_weights:Vec::new(),supplemental_per_index_k:10,
+            file_candidates:vec![NativeFileCandidate {path:"fixture".into(),time_score:1.,source:"time".into(),..Default::default()}],
+            bm25_weight:0.6,time_per_diary_limit:10,time_global_limit:50,per_index_k:10,candidate_k:20,final_k:20,
+            snapshots:vec![DiarySearchSnapshot {diary_name:"fixture".into(),
+                index:Arc::new(crate::index_handle::IndexHandle::new(Index::empty(2).unwrap())),
+                content_revision:Arc::new(AtomicU64::new(0)),generation:0}],
+            semantic_dedup:Some(SemanticDedupConfig {db_path:"unused".into(),threshold:1.}),
+        };
+        let value:serde_json::Value=serde_json::from_str(&task.compute_with_connection(Some(&connection)).unwrap()).unwrap();
+        assert_eq!(value["results"].as_array().unwrap().len(),10);
+        assert!(value["results"].as_array().unwrap().iter().all(|v|v["id"].as_u64().unwrap()>10));
+        assert_eq!(value["diagnostics"]["timeChunkCandidatesBeforeLimit"],10);
+    }
+
     fn time_candidate(id: i64, vector_score: f64) -> NativeAnnCandidate {
         NativeAnnCandidate {
             id,
@@ -4708,6 +4824,7 @@ mod tests {
         let index = VexusIndex::new(2, 16).unwrap();
         index.index.write().unwrap().add(999, &[1.0_f32, 0.0]).unwrap();
         let mut task = GlobalTagSearchTask {
+            search_options: RetrievalSearchOptions::default(),
             db_path: db.clone(), index: index.index.clone(),
             memo_runtime: index.memo_runtime.clone(),
             content_revision: index.content_revision.clone(), dimension: 2,
