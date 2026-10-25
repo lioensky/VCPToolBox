@@ -1,4 +1,4 @@
-// tests/approvalFeedbackPassthrough.test.js
+﻿// tests/approvalFeedbackPassthrough.test.js
 // 覆盖需求：工具审核带 archery 时，用户填写的反馈必须优先回传给 AI；无反馈则保持静默。
 //
 // 说明：Plugin.js 顶层 require 会拉起 express / chokidar watcher，无法在测试进程内自由加载。
@@ -23,8 +23,25 @@ function extractMethodBody(source, methodName) {
     const bodyStart = source.indexOf('{', match.index) + 1;
     let depth = 1;
     let i = bodyStart;
+    let quote = null;
     for (; i < source.length; i += 1) {
         const ch = source[i];
+        if (quote) {
+            if (ch === '\\') { i += 1; continue; }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '/' && source[i + 1] === '/') {
+            const lineEnd = source.indexOf('\\n', i);
+            i = lineEnd === -1 ? source.length : lineEnd;
+            continue;
+        }
+        if (ch === '/' && source[i + 1] === '*') {
+            const blockEnd = source.indexOf('*/', i + 2);
+            i = blockEnd === -1 ? source.length : blockEnd + 1;
+            continue;
+        }
+        if (ch === '''' || ch === '"' || ch === '`') { quote = ch; continue; }
         if (ch === '{') depth += 1;
         else if (ch === '}') {
             depth -= 1;
@@ -151,4 +168,50 @@ test('_processResult：正常结果仍为成功', () => {
     const ok = executor._processResult('DemoTool', { hello: 'world' });
     assert.equal(ok.success, true);
     assert.equal(ok.error, undefined);
+});
+
+// _createErrorResult 会在成功路径之外生成失败结果，同样用源码抽取编译。
+const CREATE_ERROR_BODY = extractMethodBody(EXECUTOR_SOURCE, '_createErrorResult');
+
+function makeErrorStub() {
+    const stub = {
+        webSocketServer: { broadcast: () => {} },
+        debugMode: false
+    };
+    stub._broadcast = vm.runInNewContext(
+        `(function _broadcast(toolName, status, content) {${BROADCAST_BODY}})`,
+        { console }
+    );
+    stub._createErrorResult = vm.runInNewContext(
+        `(function _createErrorResult(toolName, message) {${CREATE_ERROR_BODY}})`,
+        { console }
+    );
+    return stub;
+}
+
+test('_createErrorResult：审核拒绝的 JSON 错误被还原为可读文本', () => {
+    const executor = makeErrorStub();
+    const payload = JSON.stringify({
+        plugin_error: 'Tool call "DemoTool" was REJECTED by manual approval. User feedback: 路径写错了',
+        error_type: 'approval_rejected',
+        rejected_by_user: true,
+        user_feedback: '路径写错了'
+    });
+
+    const result = executor._createErrorResult('DemoTool', payload);
+    assert.equal(result.success, false);
+    assert.equal(result.error, payload, 'error 保留原始串供日志排查');
+    assert.match(result.content[0].text, /REJECTED by manual approval/);
+    assert.match(result.content[0].text, /路径写错了/);
+    assert.equal(result.raw.error_type, 'approval_rejected');
+    assert.equal(result.raw.user_feedback, '路径写错了');
+    assert.doesNotMatch(result.content[0].text, /\\{.*plugin_error/, '不应把 JSON 原文直接喂给 AI');
+});
+
+test('_createErrorResult：普通字符串错误保持原样', () => {
+    const executor = makeErrorStub();
+    const result = executor._createErrorResult('DemoTool', '插件崩了');
+    assert.equal(result.success, false);
+    assert.equal(result.content[0].text, '[错误] 插件崩了');
+    assert.equal(result.raw, undefined);
 });

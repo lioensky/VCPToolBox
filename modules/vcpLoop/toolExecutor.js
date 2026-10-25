@@ -539,10 +539,30 @@ class ToolExecutor {
 
   _createErrorResult(toolName, message) {
     this._broadcast(toolName, 'error', message);
+
+    // 上层抛出的业务错误通常是 JSON 字符串（plugin_error / error_type / user_feedback…）。
+    // 直接把转义串喂给 AI 会变成噪声，这里解出可读文本，并保留结构化原文到 raw。
+    let displayText = typeof message === 'string' ? message : String(message);
+    let parsedPayload = null;
+    if (typeof message === 'string' && message.trim().startsWith('{')) {
+      try {
+        parsedPayload = JSON.parse(message);
+        const readableParts = [];
+        if (parsedPayload.plugin_error) readableParts.push(parsedPayload.plugin_error);
+        if (parsedPayload.user_feedback && !String(parsedPayload.plugin_error || '').includes(parsedPayload.user_feedback)) {
+          readableParts.push(`用户反馈: ${parsedPayload.user_feedback}`);
+        }
+        if (readableParts.length > 0) displayText = readableParts.join('\\n');
+      } catch (_parseError) {
+        // 不是合法 JSON，保持原字符串。
+      }
+    }
+
     return {
       success: false,
       error: message,
-      content: [{ type: 'text', text: `[错误] ${message}` }]
+      content: [{ type: 'text', text: `[错误] ${displayText}` }],
+      ...(parsedPayload ? { raw: parsedPayload } : {})
     };
   }
 

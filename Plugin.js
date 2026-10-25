@@ -1419,7 +1419,7 @@ class PluginManager extends EventEmitter {
                         error: silentRejectionRecord.message
                     });
 
-                    // 无用户输入：archey 语义生效，静默吞掉回执，AI 完全无感。
+                    // 无用户输入：archery 语义生效，静默吞掉回执，AI 完全无感。
                     if (!userFeedback) {
                         if (this.debugMode) {
                             console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
@@ -1427,19 +1427,18 @@ class PluginManager extends EventEmitter {
                         return undefined;
                     }
 
-                    // 有用户输入：优先传递用户反馈，构造显式失败结果回灌给 AI。
+                    // 有用户输入：优先传递用户反馈。
+                    // 走与普通拒绝完全同构的抛错路径，让上层既有错误链产出 isError=true，
+                    // archery 分支才能把内容写回对话而不是静默终止。
                     if (this.debugMode) {
-                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected with user feedback; returning feedback to AI.`);
+                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected with user feedback; raising rejection to surface feedback to AI.`);
                     }
-                    return {
-                        success: false,
-                        error: silentRejectionRecord.message,
-                        content: [{
-                            type: 'text',
-                            text: `[工具调用 "${toolName}" 已被用户拒绝]\\n用户反馈: ${userFeedback}`
-                        }],
-                        raw: silentRejectionRecord
-                    };
+                    throw new Error(JSON.stringify({
+                        plugin_error: `Tool call "${toolName}" was REJECTED by manual approval. User feedback: ${userFeedback}`,
+                        error_type: 'approval_rejected',
+                        rejected_by_user: true,
+                        user_feedback: userFeedback
+                    }));
                 }
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
             } catch (error) {
