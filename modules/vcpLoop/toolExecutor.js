@@ -498,8 +498,13 @@ class ToolExecutor {
       }
     }
     
+    // 内层显式声明 success:false 时必须透传：审核带用户反馈的拒绝依赖该标志，
+    // 否则 archery 循环的 isError 判定会把反馈当作成功结果静默丢弃。
+    const innerFailed = !!(result && typeof result === 'object' && result.success === false);
+
     return {
-      success: true,
+      success: !innerFailed,
+      error: innerFailed ? (result.error || formatted.text) : undefined,
       content: formatted.content,
       raw: result
     };

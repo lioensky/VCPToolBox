@@ -1399,23 +1399,47 @@ class PluginManager extends EventEmitter {
             try {
                 const approvalResult = await approvalPromise;
                 if (approvalResult && approvalResult.silentRejected === true) {
-                    if (this.debugMode) {
-                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
-                    }
+                    const userFeedback = typeof approvalResult.userFeedback === 'string'
+                        ? approvalResult.userFeedback.trim()
+                        : '';
                     const silentRejectionRecord = {
                         status: 'rejected',
                         success: false,
                         silentRejected: true,
                         error_type: 'approval_rejected',
                         rejected_by_user: true,
-                        message: `Tool call "${toolName}" was rejected silently by manual approval.`
+                        message: userFeedback
+                            ? `Tool call "${toolName}" was rejected by manual approval with user feedback.`
+                            : `Tool call "${toolName}" was rejected silently by manual approval.`,
+                        ...(userFeedback ? { user_feedback: userFeedback } : {})
                     };
                     toolCallRecordStore.finishRecord(managedToolCallRecord, {
                         success: false,
                         result: silentRejectionRecord,
                         error: silentRejectionRecord.message
                     });
-                    return undefined;
+
+                    // 无用户输入：archey 语义生效，静默吞掉回执，AI 完全无感。
+                    if (!userFeedback) {
+                        if (this.debugMode) {
+                            console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
+                        }
+                        return undefined;
+                    }
+
+                    // 有用户输入：优先传递用户反馈，构造显式失败结果回灌给 AI。
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected with user feedback; returning feedback to AI.`);
+                    }
+                    return {
+                        success: false,
+                        error: silentRejectionRecord.message,
+                        content: [{
+                            type: 'text',
+                            text: `[工具调用 "${toolName}" 已被用户拒绝]\\n用户反馈: ${userFeedback}`
+                        }],
+                        raw: silentRejectionRecord
+                    };
                 }
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
             } catch (error) {
@@ -1913,10 +1937,18 @@ class PluginManager extends EventEmitter {
                 }
                 approval.resolve();
             } else if (approval.notifyAiOnReject === false) {
-                if (this.debugMode && normalizedReason) {
-                    console.log(`[PluginManager] Silent manual rejection for ${requestId} included user note hidden from AI: ${normalizedReason.substring(0, 300)}`);
+                // 静默拒绝只屏蔽“无用户输入”的回执；用户在审核框中填写的反馈必须优先回传给 AI。
+                if (normalizedReason) {
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Silent manual rejection for ${requestId} carries user feedback to AI: ${normalizedReason.substring(0, 300)}`);
+                    }
+                    approval.resolve({ silentRejected: true, userFeedback: normalizedReason });
+                } else {
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Silent manual rejection for ${requestId} without user note; nothing returned to AI.`);
+                    }
+                    approval.resolve({ silentRejected: true });
                 }
-                approval.resolve({ silentRejected: true });
             } else {
                 const rejectionMessage = normalizedReason
                     ? `Manual approval was REJECTED by user. User reason: ${normalizedReason}`
