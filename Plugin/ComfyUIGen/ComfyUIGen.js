@@ -113,7 +113,7 @@ function fillWorkflowParameters(workflow, args, config) {
     const settings = config.userSettings || {};
     const userPrompt = args.prompt || '';
 
-    // 仅放大模板使用倍率；拒绝非法输入，不静默改为默认值。
+    // 含缩放占位符的模板使用各自默认倍率；拒绝非法输入。
     let resizeScale;
     if (JSON.stringify(workflow).includes('{{RESIZE_SCALE}}')) {
         const candidate = args.resize_scale ?? settings.defaultResizeScale ?? 2;
@@ -124,6 +124,11 @@ function fillWorkflowParameters(workflow, args, config) {
         }
     }
     
+    const facePrompt = args.face_prompt ?? settings.facePrompt ?? '';
+    if (JSON.stringify(workflow).includes('{{FACE_PROMPT}}') && typeof facePrompt !== 'string') {
+        throw new Error('face_prompt must be a string.');
+    }
+
     // 构建LoRA字符串
     const lorasString = buildLoRAsString(settings.loras || []);
     
@@ -169,6 +174,7 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{USER_PROMPT}}': userPrompt || '',
         '{{PROMPT_INPUT}}': userPrompt || '', // 独立提示词输入
         '{{LORA_PROMPT}}': args.lora_prompt || '',
+        '{{FACE_PROMPT}}': facePrompt,
         
         // 组件字符串
         '{{LORAS}}': lorasString,
