@@ -59,3 +59,26 @@
 - 新占位符或新节点字段：扩展 WorkflowTemplateProcessor 的映射
 
 更多细节、目录结构说明、测试与 PR 校验清单，请参考完整文档：[@/VCPToolBox/Plugin/ComfyUIGen/docs/README_PLUGIN_CN.md](docs/README_PLUGIN_CN.md:1)
+
+## Anima 生图增强
+
+[AnimaEZGen 工作流](workflows/AnimaEZGen.json) 已按增强版重写：生图 → AnimeSharp 缩放 → FaceDetailer 面部重绘 → 保存，调用名称仍为 AnimaEZGen。
+
+- 放大倍率参数 [resize_scale](ComfyUIGen.js:119)：可选，默认 1（保持原尺寸），可传 1.5、2 等正数。倍率为 1 时仍执行 AnimeSharp 增强再缩回原尺寸，不是跳过增强节点。
+- 面部重绘提示词参数 [face_prompt](ComfyUIGen.js:126)：可选，默认 `detailed glassy eyes, smooth porcelain skin`，独立于主画面提示词；显式传空字符串则使用空面部提示词。
+- 保留主画面提示词、尺寸、步数、种子以及 LoRA 覆盖能力；主采样默认 24 步、CFG 4、Euler Ancestral / Normal，面部重绘沿用增强版固定参数。
+- 需要原增强工作流对应的 FaceDetailer、UltralyticsDetectorProvider、UpscaleImageByModelThenResize 节点，以及 Anima 模型、LoRA、face_yolov8m 检测模型和 AnimeSharp 放大模型。
+
+调用示例：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ComfyUIGen「末」,
+workflow:「始」AnimaEZGen「末」,
+prompt:「始」1girl, silver hair, blue eyes, cinematic anime illustration「末」,
+resize_scale:「始」2「末」,
+face_prompt:「始」detailed blue eyes, delicate face, gentle smile「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+仅需默认效果时，省略放大倍率和面部重绘提示词这两行即可。

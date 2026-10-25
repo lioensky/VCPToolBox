@@ -21,7 +21,7 @@ const VectorMathUtils = require('./VectorMathUtils.js');
 const AttachmentMemoUtils = require('./AttachmentMemoUtils.js');
 const RAGResultFormatter = require('./RAGResultFormatter.js');
 const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
-const { chunkText } = require('../../TextChunker.js');
+const { chunkText, getTokenCount } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
     findLastRealUserMessage,
@@ -5236,7 +5236,10 @@ class RAGDiaryPlugin {
             // 对超长用户/AI 上下文，先按 TextChunker 的 safeMaxTokens 切分，再对各 chunk 向量做 token 加权平均，
             // 避免单条 6800+ token 文本被 EmbeddingUtils 直接跳过导致 RAG 查询向量为 null。
             const results = await getEmbeddingsBatch(chunks, { apiUrl, apiKey });
-            const weights = chunks.map(chunk => Math.max(1, this._estimateTokens(chunk)));
+            const weights = chunks.map(chunk => Math.max(
+                1,
+                typeof getTokenCount === 'function' ? getTokenCount(chunk) : this._estimateTokens(chunk)
+            ));
             const vector = this._getWeightedAverageVector(results, weights);
 
             if (!vector) {

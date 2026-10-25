@@ -434,9 +434,12 @@ class ToolExecutor {
         toolCallRecordHandle: recordHandle
       });
       const processedResult = this._processResult(name, result);
+      // 与 _processResult 的 success 判定保持一致：
+      // 插件若显式返回 { success: false }，记录必须落为失败，不能硬编码成功。
       toolCallRecordStore.finishRecord(recordHandle, {
-        success: true,
-        result
+        success: processedResult.success,
+        result,
+        error: processedResult.error || null
       });
       return this._attachRecordIdToResult(processedResult, recordHandle);
     } catch (error) {
@@ -498,9 +501,17 @@ class ToolExecutor {
       }
     }
     
+    // 内层显式声明 success:false 时必须透传：审核带用户反馈的拒绝依赖该标志，
+    // 否则 archery 循环的 isError 判定会把反馈当作成功结果静默丢弃。
+    const innerFailed = !!(result && typeof result === 'object' && result.success === false);
+
     return {
-      success: true,
+      success: !innerFailed,
+      error: innerFailed ? (result.error || formatted.text) : undefined,
       content: formatted.content,
+      approvalFeedbackContent: result?.__vcpApprovalFeedback
+        ? [{ type: 'text', text: `【用户审核留言：已允许工具 "${toolName}" 调用】\n${result.__vcpApprovalFeedback}` }]
+        : [],
       raw: result
     };
   }
@@ -510,21 +521,42 @@ class ToolExecutor {
       return { text: '(无返回内容)', content: [{ type: 'text', text: '(无返回内容)' }] };
     }
 
-    // 检查是否为富内容格式
+    const feedback = typeof result?.__vcpApprovalFeedback === 'string'
+      ? result.__vcpApprovalFeedback.trim()
+      : '';
+    const suffix = feedback ? `\n\n【用户审核留言：已允许本次工具调用】\n${feedback}` : '';
+
+    // 标准多模态回执只修改最后一个 text 块，绝不字符串化或改写图片等非文本块。
     if (typeof result === 'object') {
-      const richContent = result.data?.content || result.content;
+      const richContent = Array.isArray(result) ? result : (result.data?.content || result.content);
       if (Array.isArray(richContent)) {
-        const textPart = richContent.find(p => p.type === 'text');
+        let content = richContent;
+        if (suffix) {
+          content = richContent.slice();
+          const lastTextIndex = content.findLastIndex(part => part?.type === 'text' && typeof part.text === 'string');
+          if (lastTextIndex >= 0) {
+            content[lastTextIndex] = { ...content[lastTextIndex], text: content[lastTextIndex].text + suffix };
+          } else {
+            content.push({ type: 'text', text: suffix.trimStart() });
+          }
+        }
+        const textPart = content.find(p => p?.type === 'text');
         return {
           text: textPart?.text || '[Rich Content]',
-          content: richContent
+          content
         };
       }
     }
 
-    const text = typeof result === 'object' 
-      ? JSON.stringify(result, null, 2) 
-      : String(result);
+    // 内部审核元信息不作为业务字段重复展示，旧回执统一在文本尾部附加留言。
+    let displayResult = result;
+    if (feedback && typeof result === 'object') {
+      const { __vcpApprovalFeedback, ...businessResult } = result;
+      displayResult = businessResult;
+    }
+    const text = (typeof displayResult === 'object'
+      ? JSON.stringify(displayResult, null, 2)
+      : String(displayResult)) + suffix;
     
     return {
       text,
@@ -534,10 +566,39 @@ class ToolExecutor {
 
   _createErrorResult(toolName, message) {
     this._broadcast(toolName, 'error', message);
+
+    // 上层抛出的业务错误通常是 JSON 字符串（plugin_error / error_type / user_feedback…）。
+    // 直接把转义串喂给 AI 会变成噪声，这里解出可读文本，并保留结构化原文到 raw。
+    //
+    // 注意：真实调用链里 ToolExecutor 的 catch 会给 error.message 套上 `执行错误: ` 前缀，
+    // 若直接对 message 做 startsWith('{') 判断将恒为 false，JSON 解析分支永不生效。
+    // 因此先剥掉已知的包装前缀，再对剩余部分尝试解析。
+    const rawMessage = typeof message === 'string' ? message : String(message);
+    const jsonCandidate = rawMessage.replace(/^执行错误:\s*/, '');
+    let displayText = rawMessage;
+    let parsedPayload = null;
+    if (jsonCandidate.trim().startsWith('{')) {
+      try {
+        parsedPayload = JSON.parse(jsonCandidate);
+        const readableParts = [];
+        if (parsedPayload.plugin_error) readableParts.push(parsedPayload.plugin_error);
+        if (parsedPayload.user_feedback && !String(parsedPayload.plugin_error || '').includes(parsedPayload.user_feedback)) {
+          readableParts.push('用户反馈: ' + parsedPayload.user_feedback);
+        }
+        if (readableParts.length > 0) displayText = readableParts.join('\n');
+        if (parsedPayload.__vcpApprovalFeedback) {
+          displayText += `\n\n【用户审核留言：已允许工具 "${toolName}" 调用】\n${parsedPayload.__vcpApprovalFeedback}`;
+        }
+      } catch (_parseError) {
+        // 不是合法 JSON，保持原字符串。
+      }
+    }
+
     return {
       success: false,
       error: message,
-      content: [{ type: 'text', text: `[错误] ${message}` }]
+      content: [{ type: 'text', text: `[错误] ${displayText}` }],
+      ...(parsedPayload ? { raw: parsedPayload } : {})
     };
   }
 

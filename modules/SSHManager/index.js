@@ -1,7 +1,9 @@
 /**
  * SSHManager 共享模块 - 单例导出
  *
- * 用途：为 LinuxShellExecutor 和 LinuxLogMonitor 提供统一的 SSH 连接管理
+ * 用途：为 LinuxShellExecutor 等插件提供统一的 SSH 连接与虚拟终端管理
+ *
+ * v2.0 新增：hostId::terminalId 虚拟终端、按键/文本注入、滑动输出缓冲。
  *
  * @version 1.1.0
  * @author VCP Team

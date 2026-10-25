@@ -203,13 +203,19 @@
                 return this.executeStorageOperation(targetId, operation, payload);
             }
             const legacyOperation = operation.replace(/^page_/, '');
+            // The adapter runtime and the injected page runtime have distinct identities.
+            const pageState = this.documentStates.get(String(targetId)) || {};
+            const pageContext = {
+                ...request.targetContext,
+                runtimeInstanceId: payload.runtimeInstanceId ?? pageState.pageRuntimeInstanceId ?? null
+            };
             const response = await this.chrome.tabs.sendMessage(targetId, {
                 type: 'EXECUTE_CORE_COMMAND',
                 data: {
                     ...payload,
                     command: legacyOperation,
                     requestId: request.requestId,
-                    targetContext: request.targetContext,
+                    targetContext: pageContext,
                     options: request.options
                 }
             });

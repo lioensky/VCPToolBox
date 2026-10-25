@@ -464,6 +464,18 @@ impl VexusIndex {
         })
     }
 
+    /// Query-local external-ID exclusions and optional navigation width.
+    #[napi]
+    pub fn search_with_options(&self, query: Float32Array, k: u32, options_json: String) -> Result<Vec<SearchResult>> {
+        if options_json.len() > 2 * 1024 * 1024 { return Err(Error::from_reason("Search options too large")); }
+        let options: crate::retrieval_index::RetrievalSearchOptions = serde_json::from_str(&options_json)
+            .map_err(|e| Error::from_reason(format!("Invalid search options: {e}")))?;
+        let index = self.index.read().map_err(|e| Error::from_reason(format!("Lock failed: {e}")))?;
+        index.search_options(&query, k as usize, &options)
+            .map(|rows| rows.into_iter().map(|(id,score)| SearchResult { id:id as i64, score:score as f64 }).collect())
+            .map_err(|e| Error::from_reason(format!("Search failed: {e}")))
+    }
+
     /// 搜索
     #[napi]
     pub fn search(&self, query: Float32Array, k: u32) -> Result<Vec<SearchResult>> {

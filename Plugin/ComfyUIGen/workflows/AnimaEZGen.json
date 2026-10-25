@@ -1,152 +1,96 @@
 {
-  "displayName": "Anima EZ 文生图",
-  "description": "Anima Base 1.0 动漫与艺术插画工作流。步数可自定义，CFG 固定 4，并使用 Euler Ancestral、Simple。",
-  "version": "1.2",
+  "displayName": "Anima EZ 生图增强",
+  "description": "Anima 生图 → AnimeSharp 缩放 → FaceDetailer 面部重绘。resize_scale 可选，默认 1（保持原尺寸）；face_prompt 可选，默认 detailed glassy eyes, smooth porcelain skin。保留尺寸、步数、种子和 LoRA 参数。",
+  "version": "2.0",
+  "defaults": {
+    "defaultSteps": 24,
+    "defaultResizeScale": 1,
+    "facePrompt": "detailed glassy eyes, smooth porcelain skin",
+    "negativePrompt": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+  },
   "workflow": {
-    "44": {
-      "inputs": {
-        "unet_name": "waiANIMA_v10Base10.safetensors",
-        "weight_dtype": "default"
-      },
-      "class_type": "UNETLoader",
-      "_meta": {
-        "title": "加载 Anima UNet"
-      }
-    },
-    "45": {
-      "inputs": {
-        "clip_name": "waiANIMA_v10Base10_txt.safetensors",
-        "type": "stable_diffusion",
-        "device": "default"
-      },
+    "77": {
       "class_type": "CLIPLoader",
-      "_meta": {
-        "title": "加载 Anima CLIP"
-      }
+      "inputs": {"clip_name": "waiANIMA_v10Base10_txt.safetensors", "type": "stable_diffusion", "device": "default"}
     },
-    "15": {
-      "inputs": {
-        "vae_name": "qwenImage_qwenImageVAE.safetensors"
-      },
+    "78": {
       "class_type": "VAELoader",
-      "_meta": {
-        "title": "加载 Qwen Image VAE"
-      }
+      "inputs": {"vae_name": "qwenImage_qwenImageVAE.safetensors"}
     },
-    "75": {
-      "inputs": {
-        "lora_name": "anima_rendering_detailer_base10.safetensors",
-        "strength_model": 0.4,
-        "strength_clip": 1,
-        "model": [
-          "44",
-          0
-        ],
-        "clip": [
-          "45",
-          0
-        ]
-      },
-      "class_type": "LoraLoader",
-      "_meta": {
-        "title": "加载 Anima Rendering Detailer LoRA"
-      }
-    },
-    "28": {
-      "inputs": {
-        "width": "{{WIDTH}}",
-        "height": "{{HEIGHT}}",
-        "batch_size": "{{BATCH_SIZE}}"
-      },
-      "class_type": "EmptyLatentImage",
-      "_meta": {
-        "title": "空 Latent 图像"
-      }
-    },
-    "11": {
-      "inputs": {
-        "text": "{{POSITIVE_PROMPT}}",
-        "clip": [
-          "75",
-          1
-        ]
-      },
-      "class_type": "CLIPTextEncode",
-      "_meta": {
-        "title": "正面提示词"
-      }
-    },
-    "12": {
-      "inputs": {
-        "text": "{{NEGATIVE_PROMPT}}",
-        "clip": [
-          "75",
-          1
-        ]
-      },
-      "class_type": "CLIPTextEncode",
-      "_meta": {
-        "title": "负面提示词"
-      }
-    },
-    "19": {
-      "inputs": {
-        "seed": "{{SEED}}",
-        "steps": "{{STEPS}}",
-        "cfg": 4,
-        "sampler_name": "euler_ancestral",
-        "scheduler": "simple",
-        "denoise": 1,
-        "model": [
-          "75",
-          0
-        ],
-        "positive": [
-          "11",
-          0
-        ],
-        "negative": [
-          "12",
-          0
-        ],
-        "latent_image": [
-          "28",
-          0
-        ]
-      },
-      "class_type": "KSampler",
-      "_meta": {
-        "title": "K 采样器"
-      }
-    },
-    "46": {
-      "inputs": {
-        "samples": [
-          "19",
-          0
-        ],
-        "vae": [
-          "15",
-          0
-        ]
-      },
+    "79": {
       "class_type": "VAEDecode",
-      "_meta": {
-        "title": "VAE 解码"
+      "inputs": {"samples": ["82", 0], "vae": ["78", 0]}
+    },
+    "80": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {"width": "{{WIDTH}}", "height": "{{HEIGHT}}", "batch_size": "{{BATCH_SIZE}}"}
+    },
+    "81": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "{{NEGATIVE_PROMPT}}", "clip": ["86", 1]}
+    },
+    "82": {
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": "{{SEED}}", "steps": "{{STEPS}}", "cfg": 4,
+        "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 1,
+        "model": ["86", 0], "positive": ["83", 0], "negative": ["81", 0], "latent_image": ["80", 0]
       }
     },
-    "74": {
-      "inputs": {
-        "filename_prefix": "AnimaEZGen",
-        "images": [
-          "46",
-          0
-        ]
-      },
+    "83": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "{{POSITIVE_PROMPT}}", "clip": ["86", 1]}
+    },
+    "84": {
+      "class_type": "UNETLoader",
+      "inputs": {"unet_name": "waiANIMA_v10Base10.safetensors", "weight_dtype": "default"}
+    },
+    "85": {
       "class_type": "SaveImage",
-      "_meta": {
-        "title": "保存 Anima 图像"
+      "inputs": {"filename_prefix": "AnimaEZGen", "images": ["87", 0]}
+    },
+    "86": {
+      "class_type": "LoraLoader",
+      "inputs": {
+        "lora_name": "anima_rendering_detailer_base10.safetensors", "strength_model": 0.4, "strength_clip": 1,
+        "model": ["84", 0], "clip": ["77", 0]
       }
+    },
+    "87": {
+      "class_type": "FaceDetailer",
+      "inputs": {
+        "guide_size": 512, "guide_size_for": true, "max_size": 1024,
+        "seed": "{{SEED}}", "steps": 18, "cfg": 8, "sampler_name": "euler", "scheduler": "simple",
+        "denoise": 0.32, "feather": 5, "noise_mask": true, "force_inpaint": true,
+        "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
+        "sam_detection_hint": "center-1", "sam_dilation": 0, "sam_threshold": 0.93,
+        "sam_bbox_expansion": 0, "sam_mask_hint_threshold": 0.7, "sam_mask_hint_use_negative": "False",
+        "drop_size": 10, "wildcard": "", "cycle": 1, "inpaint_model": false,
+        "noise_mask_feather": 20, "tiled_encode": false, "tiled_decode": false,
+        "image": ["94", 0], "model": ["86", 0], "clip": ["86", 1], "vae": ["78", 0],
+        "positive": ["91", 0], "negative": ["92", 0], "bbox_detector": ["89", 0]
+      }
+    },
+    "89": {
+      "class_type": "UltralyticsDetectorProvider",
+      "inputs": {"model_name": "bbox/face_yolov8m.pt"}
+    },
+    "91": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "{{FACE_PROMPT}}", "clip": ["86", 1]},
+      "_meta": {"title": "面部重绘优化提示词"}
+    },
+    "92": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {"text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts,", "clip": ["86", 1]}
+    },
+    "94": {
+      "class_type": "UpscaleImageByModelThenResize",
+      "inputs": {"resize_scale": "{{RESIZE_SCALE}}", "resize_method": "lanczos", "upscale_model": ["95", 0], "image": ["79", 0]}
+    },
+    "95": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {"model_name": "4x-AnimeSharp.pth"}
     }
   }
 }

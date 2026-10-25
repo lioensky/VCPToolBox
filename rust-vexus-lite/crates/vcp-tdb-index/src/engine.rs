@@ -15,6 +15,12 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+/// Per-query navigation controls; reranking retains its fixed budget.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchOptions {
+    pub ef_search: Option<usize>,
+}
+
 pub struct TdbIndex {
     dimension: usize,
     base: Option<VectorAsset>,
@@ -245,10 +251,26 @@ impl TdbIndex {
     /// Query routing using authoritative host originals, not snapshot vectors.
     /// The caller must freeze the source for the duration of this query.
     pub fn search_with_source<F>(
-        &self, query: &[f32], k: usize, ef: Option<usize>, mut fill: F,
+        &self, query: &[f32], k: usize, ef: Option<usize>, fill: F,
     ) -> io::Result<Vec<(u64, f32)>>
     where
         F: FnMut(u64, &mut Vec<f32>) -> bool,
+    {
+        self.search_with_source_options(query, k, &SearchOptions { ef_search: ef }, &|_| false, fill)
+    }
+
+    pub fn search_with_options<E: Fn(u64) -> bool>(
+        &self, query: &[f32], k: usize, options: &SearchOptions, exclude: &E,
+    ) -> io::Result<Vec<(u64, f32)>> {
+        self.search_with_source_options(query, k, options, exclude, |id, output| {
+            self.positions.get(&id).is_some_and(|slot| self.fill_slot(*slot, output))
+        })
+    }
+
+    pub fn search_with_source_options<F, E>(
+        &self, query: &[f32], k: usize, options: &SearchOptions, exclude: &E, mut fill: F,
+    ) -> io::Result<Vec<(u64, f32)>>
+    where F: FnMut(u64, &mut Vec<f32>) -> bool, E: Fn(u64) -> bool,
     {
         if query.len() != self.dimension || query.iter().any(|v| !v.is_finite()) {
             return Err(invalid("invalid search vector"));
@@ -257,15 +279,15 @@ impl TdbIndex {
         if k == 0 { return Ok(Vec::new()); }
         let mut output: Vec<(u64, f32)> = if let Some(graph) = &self.graph {
             let config = QuIVerSearchConfig {
-                top_k: k, ef_search: ef.unwrap_or(128).max(k),
+                top_k: k, ef_search: options.ef_search.unwrap_or(128).max(k),
                 rerank_limit: Some(64_usize.max(k)),
             };
-            let candidates = graph.search(query, |slot, output| {
+            let candidates = graph.search_with_options(query, |slot, output| {
                 self.ids.get(slot).is_some_and(|id| *id != 0 && fill(*id, output))
-            }, &config);
+            }, &config, exclude);
             let mut row = Vec::with_capacity(self.dimension);
             candidates.into_iter().filter_map(|(id, _)| {
-                if !self.contains(id) { return None; }
+                if !self.contains(id) || exclude(id) { return None; }
                 row.clear();
                 fill(id, &mut row).then(|| (id, cosine(query, &row)))
             }).collect()
@@ -275,7 +297,7 @@ impl TdbIndex {
             let mut row = Vec::with_capacity(self.dimension);
             for &id in &self.ids {
                 row.clear();
-                if id != 0 && fill(id, &mut row) {
+                if id != 0 && !exclude(id) && fill(id, &mut row) {
                     let candidate = RankedRow { id, score: cosine(query, &row) };
                     if heap.len() < k {
                         heap.push(candidate);

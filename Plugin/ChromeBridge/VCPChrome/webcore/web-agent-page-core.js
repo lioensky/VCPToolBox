@@ -19,6 +19,30 @@
         '[contenteditable]', '[onclick]', '[tabindex]'
     ].join(',');
 
+    function computeTextSimilarity(a, b) {
+        const normalize = value => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const left = normalize(a), right = normalize(b);
+        if (!left || !right) return 0;
+        if (left === right) return 1;
+        const overlap = (x, y) => {
+            const common = [...x].filter(item => y.has(item)).length;
+            return Math.max(common / Math.max(x.size, y.size, 1),
+                common / Math.max(x.size + y.size - common, 1));
+        };
+        let score = overlap(new Set(left.split(/\s+/)), new Set(right.split(/\s+/)));
+        if (left.includes(right) || right.includes(left)) {
+            score = Math.max(score, Math.min(left.length, right.length) / Math.max(left.length, right.length));
+        }
+        if (/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(left + right)) {
+            const bigrams = text => {
+                const chars = Array.from(text.replace(/\s+/g, ''));
+                return new Set(chars.length < 2 ? chars : chars.slice(1).map((char, i) => chars[i] + char));
+            };
+            score = Math.max(score, overlap(bigrams(left), bigrams(right)));
+        }
+        return score;
+    }
+
     function createWebAgentPageCore(environment = {}, options = {}) {
         const windowObject = environment.window || globalScope?.window;
         const documentObject = environment.document || windowObject?.document || globalScope?.document;
@@ -210,7 +234,9 @@
             if (!element || element.nodeType !== NodeObject.ELEMENT_NODE) return false;
             const tagName = element.tagName.toLowerCase();
             const role = element.getAttribute('role');
-            return ['a', 'button', 'summary', 'label', 'option', 'select'].includes(tagName) ||
+            return (tagName === 'input' && ['submit', 'button', 'reset'].includes(
+                (element.getAttribute('type') || element.type || '').toLowerCase())) ||
+                ['a', 'button', 'summary', 'label', 'option', 'select'].includes(tagName) ||
                 ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab', 'switch', 'option', 'treeitem'].includes(role) ||
                 element.hasAttribute('onclick') ||
                 element.hasAttribute('tabindex') ||
@@ -348,7 +374,26 @@
 
         function createElementSignature(element) {
             const rect = element.getBoundingClientRect();
+            const container = element.closest?.('form,header,nav,main,aside,footer,dialog,[role="dialog"],[role="search"]');
+            const svg = element.querySelector?.('svg');
+            const path = svg?.querySelector?.('path');
+            const use = svg?.querySelector?.('use');
+            const buttons = Array.from(documentObject.querySelectorAll('button,a,[role="button"],input[type="submit"],input[type="button"]'));
+            const siblingButtonHint = buttons.some(button => {
+                if (button === element) return false;
+                if (button.parentElement === element.parentElement) return true;
+                const other = button.getBoundingClientRect();
+                return (other.left >= rect.right && other.left - rect.right <= 80 &&
+                    other.top <= rect.bottom + 80 && other.bottom >= rect.top) ||
+                    (other.top >= rect.bottom && other.top - rect.bottom <= 80 &&
+                    other.left <= rect.right + 80 && other.right >= rect.left);
+            });
+            const centerY = (rect.top + rect.height / 2) / Math.max(1, windowObject.innerHeight);
             const signature = {
+                containerKind: container ? (container.getAttribute('role') || container.tagName.toLowerCase()) : '',
+                siblingButtonHint,
+                svgHint: svg ? `${svg.getAttribute('viewBox') || ''}|${use?.getAttribute('href') || use?.getAttribute('xlink:href') || simpleHash((path?.getAttribute('d') || '').slice(0, 24))}` : '',
+                viewportZone: centerY < 1 / 3 ? 'top' : centerY > 2 / 3 ? 'bottom' : 'center',
                 tagName: element.tagName.toLowerCase(),
                 type: normalizeAttribute(element.getAttribute('type') || element.type),
                 role: normalizeAttribute(element.getAttribute('role')),
@@ -395,30 +440,33 @@
             const current = createElementSignature(element);
             let score = 0;
             let total = 0;
-            const add = (condition, weight) => {
+            const add = (fraction, weight) => {
                 total += weight;
-                if (condition) score += weight;
+                score += Number(fraction) * weight;
             };
-            add(current.tagName === signature.tagName, 4);
-            add(!signature.type || current.type === signature.type, 1);
-            add(!signature.role || current.role === signature.role, 1);
-            add(!signature.id || current.id === signature.id, 4);
-            add(!signature.name || current.name === signature.name, 3);
-            add(!signature.ariaLabel || current.ariaLabel === signature.ariaLabel, 3);
-            add(!signature.ariaLabelledBy || current.ariaLabelledBy === signature.ariaLabelledBy, 2);
-            add(!signature.accessibleName || current.accessibleName === signature.accessibleName, 2);
-            add(!signature.placeholder || current.placeholder === signature.placeholder, 3);
-            add(!signature.title || current.title === signature.title, 1);
-            add(!signature.href || current.href === signature.href, 2);
-            if (signature.text) {
-                const currentText = normalizeText(current.text);
-                const expectedText = normalizeText(signature.text);
-                add(currentText === expectedText || currentText.includes(expectedText) || expectedText.includes(currentText), 1);
+            const functionalRole = sig => {
+                if (sig.isInputLike || ['textarea'].includes(sig.tagName) ||
+                    ['searchbox', 'textbox', 'combobox'].includes(sig.role) ||
+                    (sig.tagName === 'input' && !['submit', 'button', 'checkbox', 'radio', 'hidden'].includes(sig.type))) return 'input';
+                if (['button', 'a'].includes(sig.tagName) || sig.role === 'button' ||
+                    (sig.tagName === 'input' && ['submit', 'button'].includes(sig.type))) return 'click';
+                return '';
+            };
+            const equivalent = functionalRole(signature) && functionalRole(signature) === functionalRole(current);
+            const weights = { tagName: 4, type: 1, role: 1, id: 4, name: 3, ariaLabel: 3,
+                ariaLabelledBy: 2, accessibleName: 2, placeholder: 3, title: 1, href: 2, text: 1 };
+            for (const [field, weight] of Object.entries(weights)) {
+                if (typeof signature[field] !== 'string' || !signature[field].trim()) continue;
+                const match = current[field] === signature[field] ? 1 :
+                    field === 'tagName' && equivalent ? 0.85 :
+                    ['text', 'accessibleName', 'ariaLabel', 'placeholder'].includes(field)
+                        ? computeTextSimilarity(current[field], signature[field]) : 0;
+                add(match, weight);
             }
             if (validationOptions.requireInputLike) add(current.isInputLike === true, 5);
             if (validationOptions.requireClickableLike) add(current.isClickableLike || current.isInputLike, 3);
             const ratio = total > 0 ? score / total : 0;
-            const valid = current.tagName === signature.tagName && ratio >= (validationOptions.minScore || 0.62);
+            const valid = ratio >= (validationOptions.minScore ?? 0.62);
             return {
                 valid,
                 score: ratio,
@@ -553,6 +601,7 @@
             normalizeAttribute,
             normalizeText,
             simpleHash,
+            computeTextSimilarity,
             safeCssEscape,
             getTextFromIdRefs,
             findLabelForInput,
@@ -589,6 +638,7 @@
         VERSION,
         SENSITIVE_FIELD_PATTERN,
         INTERACTIVE_SELECTOR,
+        computeTextSimilarity,
         createWebAgentPageCore
     });
 });

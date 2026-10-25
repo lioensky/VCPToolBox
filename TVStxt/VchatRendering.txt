@@ -1,9 +1,7 @@
-当前Vchat客户端支持高级流式输出渲染器，支持HTML/Div元素/CSS/JS/MD/PY/Latex/Mermaid渲染。可用于输出图表，数据图，数学公式，函数图，网页渲染模块，脚本执行。支持本地/在线音频数据，视频数据，网络字体的气泡内调用。简单表格可以通过MD,Mermaid输出，复杂表格可以通过div-Css或者draw-io(代码块)输出，div/Script类直接发送会在气泡内渲染，且支持完整的anmie.js、three.js和pixi.js-v8语法动画。Py脚本需要添加```python头，来构建CodeBlock来让脚本可以在气泡内直接执行获取结果(用户可见)。
-Vchat支持多种流式HTML渲染器。
-例如以<div id="vcp-root" style=xxx> …… </div>的完整div内容来演示动画和复杂排版。
-或者以html代码块输出一个独立网页渲染窗(通常用于演示复杂交互元素):
-```html
-<!DOCTYPE html>
-</html>
-```
-**引擎兼容**: 在VCHAT输出DIV动画时，脚本内可直接使用当前消息容器 container。交互事件推荐用 container.querySelector(...) + addEventListener 绑定。请勿使用onclick 等内联事件、全局函数、document.getElementById 和全局 #id！元素用唯一 class，推荐用 div 裸露块表达动画和情绪，JS 用 IIFE 隔离变量。
+【VChat 流式富渲染引擎】当前客户端突破纯文本限制，原生支持流式 DOM、动画与代码沙盒。遇到概念解构、数据对比、架构推演或情绪演出时，优先使用高维视觉组件替代枯燥文本：
+1. **气泡内联 DOM 岛（推荐）**：正文中直接裸写 `<div>...</div>` 即可流式渲染复杂排版、富表格与交互动画（支持内联 `<style>`、`<script>`、音视频与网络字体）。
+   - **沙盒铁律**：`<style>` 与 `<script>` 须包裹在根 `div` 内；JS 须用 IIFE `(()=>{...})()` 隔离，直接用内置变量 `container.querySelector('.唯一类名')` + `addEventListener` 绑定交互；**严禁**使用全局 `#id`、`document.getElementById`、全局函数及 `onclick` 等内联事件。
+   - **动画依赖**：支持 CDN `<script>` 声明引入 `anime.js(V3.3.2)`、`Pixi.js(V8)`、`three.js(r160)`（沙盒自动重定向至本地高速依赖）。
+   - **主题自适应(可选)**：气泡自带毛玻璃底，内部卡片用透明微光/凹槽（`rgba(255,255,255,0.06)` 或 `rgba(0,0,0,0.15)`）即可，免重复声明 `blur`；文本/边框/高光优先用 `var(--primary-text)`、`var(--secondary-text)`、`var(--border-color)`、`var(--highlight-text)`（亦可自定义独立炫酷配色）。
+2. **Pele 极速图表（` ```mermaid `）**：流式支持 30+ 图表（含 `mindmap|timeline|kanban|gitGraph|radar-beta` 等）。特异语法铁律：① 智能体流：`agentflow-beta \n LR \n A["指令"] --> B{"分支"} -->|执行| C(["结果"])`（次行写方向，禁 `graph/node/title`）；② 架构图 `architecture-beta`：`service/group id(icon)[Name]`，连线必用双减号 `a:R> -- L:b` 或 `a:R -[标签]- L:b`（**严禁** `->` / `<->`）；③ 协议帧 `packet-beta`：按位区间声明 `0-7: "Header"`。
+3. **代码块沙盒**：` ```html `（含 `<!DOCTYPE html>`）弹出独立网页窗口（适合重状态应用）；` ```python ` 在气泡内直接执行并输出运算结果；` ```drawio ` 渲染复杂工程图。

@@ -2,7 +2,9 @@ importScripts(
     'webcore/web-agent-protocol.js',
     'webcore/adapter-contract.js',
     'webcore/web-agent-runtime-core.js',
-    'webcore/chrome-adapter.js'
+    'webcore/chrome-adapter.js',
+    'webcore/web-agent-entity-arbiter.js',
+    'jev-ws-proxy.js'
 );
 
 if (
@@ -63,7 +65,11 @@ let connectionEnabled = true;
 const chromeWebAgentAdapter = globalThis.VCPChromeWebAgentAdapter.createChromeWebAgentAdapter(chrome, {
     currentActiveTabId
 });
+const jevWsProxy = globalThis.VCPChromeJevWsProxy.createJevWsProxy(() => ws);
 const webAgentRuntime = globalThis.VCPWebAgentRuntimeCore.createWebAgentRuntime(chromeWebAgentAdapter, {
+    arbiter: globalThis.VCPWebAgentEntityArbiter.createEntityArbiter({
+        decide: (state, questions, options) => jevWsProxy.decide(state, questions, options)
+    }),
     audit(event) {
         if (event.phase === 'error') {
             console.warn('[VCP Background] Web Agent Core audit:', event);
@@ -346,6 +352,8 @@ function connect(options = {}) {
             console.log('Message from server:', event.data);
             const message = JSON.parse(event.data);
             
+            if (jevWsProxy.handleMessage(socket, message)) return;
+
             // 处理来自服务器的指令
             if (message.type === 'heartbeat_ack') {
                 console.log('Received heartbeat acknowledgment.');
@@ -475,6 +483,7 @@ function connect(options = {}) {
 
         socket.onclose = () => {
             console.log('WebSocket connection closed.');
+            jevWsProxy.clear(socket);
             if (socketHeartbeatIntervalId) {
                 clearInterval(socketHeartbeatIntervalId);
                 socketHeartbeatIntervalId = null;
@@ -1596,6 +1605,37 @@ async function handleIncomingCommand(commandData) {
                     details: error.details || null
                 }
             });
+        }
+        return;
+    }
+
+    // All targeted actions enter the shared orchestration layer, including ambiguity arbitration.
+    const coreActions = new Set(['click', 'type', 'set_value', 'send_keys', 'select_option', 'hover', 'check']);
+    const canonicalAction = String(command || '').replace(/^page_/, '');
+    if (coreActions.has(canonicalAction)) {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = commandData.targetId ?? tabs[0]?.id;
+        try {
+            if (!tabId) throw Object.assign(new Error('没有活动的标签页'), { code: 'NO_ACTIVE_TAB' });
+            const privileged = runtimeIdentity.managedRuntime || runtimeIdentity.clientKind === 'agent';
+            const actionBackend = privileged ? (commandData.actionBackend || 'content-script') : 'content-script';
+            const result = await executeLegacyCommandThroughCore({ ...commandData, targetId: tabId, actionBackend });
+            sendResponseToWs({ type: 'command_result', data: { requestId, sourceClientId, ...result } });
+            setTimeout(() => requestPageInfoWithRetry(tabId), 350);
+        } catch (error) {
+            // No action replay after dispatch, including navigation-related channel closure.
+            const navigated = shouldTreatChannelCloseAsNavigation({ command: canonicalAction }, error);
+            sendResponseToWs({
+                type: 'command_result',
+                data: {
+                    requestId, sourceClientId, status: navigated ? 'success' : 'error',
+                    code: navigated ? 'ACTION_DISPATCHED_UNCONFIRMED' : (error.code || 'BACKGROUND_COMMAND_ERROR'),
+                    message: navigated ? '动作后页面通道关闭；不重放动作，请通过新快照确认页面状态' : undefined,
+                    error: navigated ? undefined : error.message,
+                    details: error.details || null
+                }
+            });
+            if (navigated) setTimeout(() => requestPageInfoWithRetry(tabId), 350);
         }
         return;
     }

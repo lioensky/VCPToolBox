@@ -7,6 +7,9 @@ const dotenv = require('dotenv');
 const pluginManager = require('../../Plugin.js');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
 
+const { createJevEntityService } = require('./jevEntityService');
+const handleJevEntityRequest = createJevEntityService(require('../../modules/jevClient'));
+
 let pluginConfig = {};
 let debugMode = false;
 
@@ -575,6 +578,13 @@ function handleClientMessage(clientId, message) {
     const entry = connectedChromes.get(clientId);
     if (entry) {
         entry.lastSeenAt = nowIso();
+    }
+
+    if (message?.type === 'jev_entity_request') {
+        // Only registered sockets that passed the existing VCP WebSocket authentication.
+        if (!entry || !isOpen(entry.ws)) return;
+        void handleJevEntityRequest(entry, message.data || {});
+        return;
     }
 
     if (message?.type === 'urlfetch_cookie_sync') {

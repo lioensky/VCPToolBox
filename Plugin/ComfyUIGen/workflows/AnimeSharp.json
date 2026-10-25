@@ -1,0 +1,33 @@
+{
+  "displayName": "AnimeSharp 图片放大",
+  "description": "使用 4x-AnimeSharp 放大图片；image 输入格式与 qwen21edit 一致，支持 HTTP/file URL 或 ComfyUI 已上传文件名。只需图片和 resize_scale（相对原图的倍率，默认 2），无需提示词。固定使用 lanczos 缩放并保存 PNG。",
+  "version": "1.0",
+  "requiredInputs": ["image"],
+  "requiresPrompt": false,
+  "defaults": {
+    "defaultResizeScale": 2
+  },
+  "workflow": {
+    "1": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {"model_name": "4x-AnimeSharp.pth"}
+    },
+    "3": {
+      "class_type": "LoadImage",
+      "inputs": {"image": "{{IMAGE}}"}
+    },
+    "6": {
+      "class_type": "UpscaleImageByModelThenResize",
+      "inputs": {
+        "upscale_model": ["1", 0],
+        "image": ["3", 0],
+        "resize_scale": "{{RESIZE_SCALE}}",
+        "resize_method": "lanczos"
+      }
+    },
+    "4": {
+      "class_type": "SaveImage",
+      "inputs": {"images": ["6", 0], "filename_prefix": "AnimeSharp"}
+    }
+  }
+}

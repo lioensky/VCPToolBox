@@ -1343,6 +1343,8 @@ class PluginManager extends EventEmitter {
         }
         // --- 透明化处理结束 ---
 
+        // 审核留言属于回执元信息，不得混入插件执行参数。
+        let approvalFeedback = '';
         // --- 人工审核逻辑 (新增) ---
         const approvalDecision = this.toolApprovalManager.getApprovalDecision(toolName, pluginSpecificArgs);
         if (approvalDecision.requiresApproval) {
@@ -1399,24 +1401,50 @@ class PluginManager extends EventEmitter {
             try {
                 const approvalResult = await approvalPromise;
                 if (approvalResult && approvalResult.silentRejected === true) {
-                    if (this.debugMode) {
-                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
-                    }
+                    const userFeedback = typeof approvalResult.userFeedback === 'string'
+                        ? approvalResult.userFeedback.trim()
+                        : '';
                     const silentRejectionRecord = {
                         status: 'rejected',
                         success: false,
                         silentRejected: true,
                         error_type: 'approval_rejected',
                         rejected_by_user: true,
-                        message: `Tool call "${toolName}" was rejected silently by manual approval.`
+                        message: userFeedback
+                            ? `Tool call "${toolName}" was rejected by manual approval with user feedback.`
+                            : `Tool call "${toolName}" was rejected silently by manual approval.`,
+                        ...(userFeedback ? { user_feedback: userFeedback } : {})
                     };
                     toolCallRecordStore.finishRecord(managedToolCallRecord, {
                         success: false,
                         result: silentRejectionRecord,
                         error: silentRejectionRecord.message
                     });
-                    return undefined;
+
+                    // 无用户输入：archery 语义生效，静默吞掉回执，AI 完全无感。
+                    if (!userFeedback) {
+                        if (this.debugMode) {
+                            console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
+                        }
+                        return undefined;
+                    }
+
+                    // 有用户输入：优先传递用户反馈。
+                    // 走与普通拒绝完全同构的抛错路径，让上层既有错误链产出 isError=true，
+                    // archery 分支才能把内容写回对话而不是静默终止。
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected with user feedback; raising rejection to surface feedback to AI.`);
+                    }
+                    throw new Error(JSON.stringify({
+                        plugin_error: `Tool call "${toolName}" was REJECTED by manual approval. User feedback: ${userFeedback}`,
+                        error_type: 'approval_rejected',
+                        rejected_by_user: true,
+                        user_feedback: userFeedback
+                    }));
                 }
+                approvalFeedback = typeof approvalResult?.userFeedback === 'string'
+                    ? approvalResult.userFeedback.trim()
+                    : '';
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
             } catch (error) {
                 if (this.debugMode) console.warn(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) rejected: ${error.message}`);
@@ -1466,7 +1494,15 @@ class PluginManager extends EventEmitter {
             );
 
             if (Object.prototype.hasOwnProperty.call(executionResult, 'shortCircuitResult')) {
-                const shortCircuitResult = executionResult.shortCircuitResult;
+                const originalShortCircuitResult = executionResult.shortCircuitResult;
+                const shortCircuitResult = approvalFeedback
+                    ? this._sanitizeToolResultForAi({
+                        ...(originalShortCircuitResult && typeof originalShortCircuitResult === 'object'
+                            ? originalShortCircuitResult
+                            : { original_plugin_output: originalShortCircuitResult }),
+                        __vcpApprovalFeedback: approvalFeedback
+                    })
+                    : originalShortCircuitResult;
                 this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
                     result: shortCircuitResult
                 });
@@ -1525,7 +1561,9 @@ class PluginManager extends EventEmitter {
                 resultFromPlugin = resultFromPlugin.result;
             }
 
-            let finalResultObject = (typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin };
+            let finalResultObject = Array.isArray(resultFromPlugin)
+                ? { content: resultFromPlugin }
+                : ((typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin });
 
             if (maidNameFromArgs) {
                 finalResultObject.MaidName = maidNameFromArgs;
@@ -1533,6 +1571,9 @@ class PluginManager extends EventEmitter {
             finalResultObject.timestamp = getFormattedLocalTimestamp();
             filterFuzzyDiff(finalResultObject, getFormattedLocalTimestamp());
 
+            if (approvalFeedback) {
+                finalResultObject.__vcpApprovalFeedback = approvalFeedback;
+            }
             const sanitizedResult = this._sanitizeToolResultForAi(finalResultObject);
             this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
                 result: sanitizedResult
@@ -1563,6 +1604,9 @@ class PluginManager extends EventEmitter {
                 errorObject.timestamp = getFormattedLocalTimestamp();
             }
             filterFuzzyDiff(errorObject, getFormattedLocalTimestamp());
+            if (approvalFeedback) {
+                errorObject.__vcpApprovalFeedback = approvalFeedback;
+            }
             const sanitizedErrorObject = this._sanitizeToolResultForAi(errorObject);
             toolCallRecordStore.finishRecord(managedToolCallRecord, {
                 success: false,
@@ -1911,12 +1955,20 @@ class PluginManager extends EventEmitter {
                 if (this.debugMode && normalizedReason) {
                     console.log(`[PluginManager] Manual approval for ${requestId} included user note: ${normalizedReason.substring(0, 300)}`);
                 }
-                approval.resolve();
+                approval.resolve(normalizedReason ? { userFeedback: normalizedReason } : undefined);
             } else if (approval.notifyAiOnReject === false) {
-                if (this.debugMode && normalizedReason) {
-                    console.log(`[PluginManager] Silent manual rejection for ${requestId} included user note hidden from AI: ${normalizedReason.substring(0, 300)}`);
+                // 静默拒绝只屏蔽“无用户输入”的回执；用户在审核框中填写的反馈必须优先回传给 AI。
+                if (normalizedReason) {
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Silent manual rejection for ${requestId} carries user feedback to AI: ${normalizedReason.substring(0, 300)}`);
+                    }
+                    approval.resolve({ silentRejected: true, userFeedback: normalizedReason });
+                } else {
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Silent manual rejection for ${requestId} without user note; nothing returned to AI.`);
+                    }
+                    approval.resolve({ silentRejected: true });
                 }
-                approval.resolve({ silentRejected: true });
             } else {
                 const rejectionMessage = normalizedReason
                     ? `Manual approval was REJECTED by user. User reason: ${normalizedReason}`

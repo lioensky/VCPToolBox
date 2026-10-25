@@ -339,7 +339,7 @@
                 this.audit('start', request, definition);
                 const routed = await this.route(request, definition, identity, documentState);
                 const response = protocol.createResponse(request, {
-                    status: protocol.Status.SUCCESS,
+                    status: routed?.status === 'error' ? protocol.Status.ERROR : protocol.Status.SUCCESS,
                     code: routed?.code || 'COMMAND_COMPLETED',
                     message: routed?.message || '命令执行成功',
                     result: routed,
@@ -354,7 +354,7 @@
                 return response;
             } catch (error) {
                 const response = protocol.createErrorResponse(request, error, {
-                    backendUsed: this.adapter.backend,
+                    backendUsed: error.backendUsed || this.adapter.backend,
                     durationMs: Date.now() - startedAt
                 });
                 this.audit('error', request, null, response);
@@ -391,11 +391,125 @@
             }
         }
 
+        async pageOperation(command, params, request, definition) {
+            const invoke = async payload => {
+                const response = await this.adapter.executePageOperation(command, payload, request);
+                if (response?.status === 'error') {
+                    throw new protocol.WebAgentError(response.code, response.error || response.message, response.details || {});
+                }
+                return response;
+            };
+            try {
+                return await invoke(params);
+            } catch (error) {
+                if (error.code !== 'TARGET_AMBIGUOUS' || !error.details?.candidates?.length ||
+                    definition.risk === protocol.Risk.ROOT || !this.options.arbiter?.arbitrate) throw error;
+                let decision;
+                const identityBefore = await this.adapter.getTargetIdentity(request.targetContext);
+                const documentBefore = await this.adapter.getDocumentState(identityBefore);
+                try {
+                    const target = await this.adapter.getTarget?.(identityBefore.targetId);
+                    decision = await this.options.arbiter.arbitrate({
+                        command: request.command, target: params.target,
+                        pageUrl: target?.url || '', candidates: error.details.candidates
+                    });
+                } catch { throw error; }
+                if (!decision?.resolved || !decision.chosen?.handleId || !error.details.candidates.some(item =>
+                    item.handleId === decision.chosen.handleId)) throw error;
+                const identityAfter = await this.adapter.getTargetIdentity(request.targetContext);
+                const documentAfter = await this.adapter.getDocumentState(identityAfter);
+                protocol.assertIdentity(
+                    { ...identityBefore, ...documentBefore },
+                    { ...identityAfter, ...documentAfter }, { strict: true }
+                );
+                // Pin the original target after async arbitration, never the newly active tab.
+                if (String(identityBefore.targetId) !== String(identityAfter.targetId)) throw error;
+                const response = await invoke({ ...params, target: decision.chosen.handleId });
+                const result = response.result || (response.result = {});
+                result.targetResolution = { ...result.targetResolution,
+                    arbiterUsed: true, arbiterProbability: decision.probability };
+                return response;
+            }
+        }
+
+        async routePageAction(request, definition) {
+            const command = request.command;
+            const params = { ...request.params, verification: request.params?.verification ?? request.options?.verification };
+            const options = request.options || {};
+            const backend = options.backend || params.actionBackend || 'auto';
+            const native = this.capabilities.has('nativeInput') &&
+                !['page-core', 'content-script'].includes(backend);
+            const invoke = payload => this.pageOperation(command, payload, request, definition);
+            const action = command.replace(/^page_/, '');
+            let fallbackUsed = false;
+            if (!native || (action === 'type' && backend !== 'cdp-input')) {
+                let response;
+                try {
+                    response = await invoke(params);
+                } catch (error) {
+                    if (!(native && action === 'type' && options.allowFallback !== false &&
+                        error.code === 'ACTION_VERIFICATION_FAILED')) throw error;
+                }
+                const failed = !response || response.code === 'ACTION_VERIFICATION_FAILED' ||
+                    response.result?.verified === false;
+                if (!native || action !== 'type' || !failed || options.allowFallback === false) return response;
+                fallbackUsed = true;
+            }
+            const prepared = await this.pageOperation('page_prepare_action', {
+                ...params, targetAction: action, nativeInput: true, strict: options.strict
+            }, request, definition);
+            if (prepared.code !== 'ACTION_PREPARED' || !prepared.result?.handleId) {
+                throw new protocol.WebAgentError('ACTION_PREPARATION_FAILED', '原生输入缺少有效准备结果');
+            }
+            const state = prepared.result;
+            if (state.isTopFrame === false) {
+                if (options.allowFallback === false) {
+                    throw new protocol.WebAgentError('CAPABILITY_NOT_SUPPORTED', '子 frame 不支持顶层 CDP 坐标击发');
+                }
+                const response = await invoke({ ...params, target: state.handleId });
+                response.fallbackUsed = true;
+                if (response.result) response.result.fallbackUsed = true;
+                return response;
+            }
+            const desired = parseBooleanParam(params.checked, true);
+            if (action !== 'check' || state.currentChecked !== desired) {
+                const plan = action === 'type' ? { type: 'insert-text', text: String(params.value ?? params.text ?? '') }
+                    : action === 'send_keys' ? createKeyboardPlan(params.keys || params.text)
+                    : createMousePlan(action === 'check' ? 'click' : action, state.point, params);
+                await this.adapter.dispatchNativeInput(plan, request.targetContext);
+            }
+            const backendUsed = `${this.adapter.id}-cdp-input`;
+            // Never retry after physical dispatch: a failed verification must not duplicate a click.
+            let response;
+            try {
+                response = await this.adapter.executePageOperation('page_verify_action', {
+                    targetAction: action, target: state.handleId,
+                    expectedText: String(params.value ?? params.text ?? ''), desiredChecked: desired,
+                    beforeState: state.beforeState, backendUsed, verification: params.verification,
+                    occlusion: state.occlusion, actionPoint: state.point, targetResolution: state.targetResolution
+                }, request);
+            } catch (error) {
+                error.backendUsed = backendUsed;
+                error.details = { ...error.details, backendUsed, fallbackUsed };
+                throw error;
+            }
+            response.backendUsed = backendUsed;
+            response.fallbackUsed = fallbackUsed;
+            if (response.result) {
+                response.result.backendUsed = backendUsed;
+                response.result.fallbackUsed = fallbackUsed;
+            }
+            return response;
+        }
+
         async route(request, definition, identity) {
             const command = request.command;
             const params = request.params || {};
             if (definition.domain === 'page' && command.startsWith('page_')) {
-                return this.adapter.executePageOperation(command, params, request);
+                if (['page_click', 'page_hover', 'page_check', 'page_send_keys', 'page_type'].includes(command)) {
+                    return this.routePageAction(request, definition);
+                }
+                return this.pageOperation(command, params, request, definition);
             }
 
             switch (command) {

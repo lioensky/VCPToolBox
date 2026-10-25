@@ -24,6 +24,33 @@ const os = require('os');
 const util = require('util');
 const { createSanitizedUserCommandEnv } = require('../sensitiveEnv');
 
+// PTYShell 规范按键映射（v2.0 虚拟终端）
+const INTERACTIVE_KEY_MAP = Object.freeze({
+    'ctrl+c': '\x03',
+    'ctrl+d': '\x04',
+    'ctrl+z': '\x1a',
+    'ctrl+l': '\x0c',
+    'ctrl+u': '\x15',
+    enter: '\r',
+    return: '\r',
+    esc: '\x1b',
+    escape: '\x1b',
+    tab: '\t',
+    up: '\x1b[A',
+    down: '\x1b[B',
+    right: '\x1b[C',
+    left: '\x1b[D',
+    home: '\x1b[H',
+    end: '\x1b[F',
+    'pageup': '\x1b[5~',
+    'pagedown': '\x1b[6~',
+    backspace: '\x7f',
+    space: ' '
+});
+
+const TERMINAL_ANSI_PATTERN = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]/g;
+const TERMINAL_MAX_BUFFER = 512 * 1024;
+
 let loggerModule = null;
 
 function isServerLoggerActive() {
@@ -95,6 +122,9 @@ class SSHManager {
         
         // 流式会话池
         this.streamSessions = new Map();
+
+        // 虚拟终端会话池 (v2.0): hostId::terminalId -> TerminalSession
+        this.terminalSessions = new Map();
         
         // 调试日志收集器（用于返回给调用者）
         this.debugLogs = this.debugLogs || [];
@@ -1116,19 +1146,19 @@ class SSHManager {
         return false;
     }
 
-    _runHostExecution(hostId, state, task) {
+    _runHostExecution(hostId, queueKey, state, task) {
         state.running = true;
         state.activeSince = Date.now();
 
         return Promise.resolve()
             .then(task)
             .finally(() => {
-                this._releaseHostExecution(hostId);
+                this._releaseHostExecution(hostId, queueKey);
             });
     }
 
-    _releaseHostExecution(hostId) {
-        const state = this.executionQueues.get(hostId);
+    _releaseHostExecution(hostId, queueKey = hostId) {
+        const state = this.executionQueues.get(queueKey);
         if (!state) return;
 
         while (state.queue.length > 0) {
@@ -1151,7 +1181,7 @@ class SSHManager {
             }
 
             this._log(`[ExecQueue] 开始执行排队命令: ${hostId} (剩余队列: ${state.queue.length})`);
-            this._runHostExecution(hostId, state, next.task)
+            this._runHostExecution(hostId, queueKey, state, next.task)
                 .then(next.resolve, next.reject);
             return;
         }
@@ -1159,7 +1189,7 @@ class SSHManager {
         state.running = false;
         state.activeSince = null;
         if (state.queue.length === 0) {
-            this.executionQueues.delete(hostId);
+            this.executionQueues.delete(queueKey);
         }
     }
 
@@ -1172,7 +1202,11 @@ class SSHManager {
             return Promise.resolve().then(task);
         }
 
-        const state = this._getExecutionQueueState(hostId);
+        // v2.0 终端隔离：执行队列按 hostId::terminalId 分槽，
+        // 不同终端互不阻塞，显式指定的 terminalId 在该槽位内串行。
+        const terminalId = options.terminalId ? String(options.terminalId).trim() : '';
+        const queueKey = terminalId ? `${hostId}::${terminalId}` : hostId;
+        const state = this._getExecutionQueueState(queueKey);
         const maxQueueLength = Number.isFinite(Number(options.maxExecutionQueueLength))
             ? Number(options.maxExecutionQueueLength)
             : this.maxExecutionQueueLength;
@@ -1181,8 +1215,8 @@ class SSHManager {
             : this.queueWaitTimeout;
 
         if (!state.running) {
-            this._log(`[ExecQueue] 直接执行命令: ${hostId}`);
-            return this._runHostExecution(hostId, state, task);
+            this._log(`[ExecQueue] 直接执行命令: ${hostId}${terminalId ? ` (terminal: ${terminalId})` : ''}`);
+            return this._runHostExecution(hostId, queueKey, state, task);
         }
 
         if (maxQueueLength >= 0 && state.queue.length >= maxQueueLength) {
@@ -1937,7 +1971,586 @@ class SSHManager {
     }
     
     // ==================== 流式会话支持结束 ====================
-    
+
+    // ==================== 虚拟终端会话 (v2.0) ====================
+    // 每个 hostId::terminalId 对应一个独立的 SSH Channel / 本地 PTY。
+    // 普通命令不占用终端；显式 terminalId 的命令运行在持久 shell 中，
+    // 因此可以注入 Ctrl+C / stdin 文本，并通过滑动缓冲区查看当前画面。
+
+    _terminalKey(hostId, terminalId = 'default') {
+        return `${hostId}::${terminalId || 'default'}`;
+    }
+
+    _cleanTerminalText(text) {
+        return String(text === undefined || text === null ? '' : text)
+            .replace(TERMINAL_ANSI_PATTERN, '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n')
+            .replace(/\u0007/g, '')
+            .replace(/\u0000/g, '');
+    }
+
+    /**
+     * 打开（或复用）一个虚拟终端。
+     * @param {string} hostId
+     * @param {string} terminalId
+     * @param {Object} options
+     * @returns {Promise<Object>} TerminalSession
+     */
+    async openTerminal(hostId, terminalId = 'default', options = {}) {
+        const normalizedTerminalId = String(terminalId || 'default').trim() || 'default';
+        const key = this._terminalKey(hostId, normalizedTerminalId);
+        const existing = this.terminalSessions.get(key);
+        if (existing && existing.isActive) {
+            return existing;
+        }
+
+        const config = await this.getHostConfig(hostId);
+        let session;
+        if (config.type === 'local') {
+            session = await this._openLocalTerminal(hostId, normalizedTerminalId, options);
+        } else {
+            const connection = await this.connect(hostId, {
+                bypassPool: true,
+                signal: options.signal
+            });
+            session = await this._openSSHTerminal(connection, normalizedTerminalId, options);
+        }
+
+        this.terminalSessions.set(key, session);
+        this._log(`虚拟终端已创建: ${key}`);
+        await this._initializeTerminal(session);
+        return session;
+    }
+
+    async _initializeTerminal(session) {
+        const startedAt = Date.now();
+        try {
+            // PS1 内嵌唯一标记与上一条命令退出码：
+            // 命令结束时 shell 必然重新打印该提示符，作为无损完成判据。
+            session.write(`export PS1='${session.promptMarker}[$?] ' PS2=''\n`);
+        } catch (_) {}
+
+        // 等待 shell 回显初始化命令；最多 900ms。
+        while (Date.now() - startedAt < 900) {
+            if (session.buffer.includes(session.promptMarker)) break;
+            await this._delay(50);
+        }
+
+        try {
+            session.write('true\n');
+        } catch (_) {}
+
+        const promptStartedAt = Date.now();
+        while (Date.now() - promptStartedAt < 900) {
+            if (session.buffer.includes(`${session.promptMarker}[0]`)) break;
+            await this._delay(50);
+        }
+        await this._delay(80);
+        session.clearBuffer();
+    }
+
+    _openSSHTerminal(connection, terminalId, options = {}) {
+        return new Promise((resolve, reject) => {
+            connection.client.shell(
+                { term: 'xterm-256color', cols: 160, rows: 48 },
+                (err, stream) => {
+                    if (err) {
+                        reject(new Error(`创建虚拟终端失败: ${err.message}`));
+                        return;
+                    }
+
+                    this._markConnectionBusy(connection);
+                    connection.activeStreamSessions =
+                        (connection.activeStreamSessions || 0) + 1;
+
+                    let released = false;
+                    const releaseConnectionUse = () => {
+                        if (released) return;
+                        released = true;
+                        connection.activeStreamSessions = Math.max(
+                            0,
+                            (connection.activeStreamSessions || 0) - 1
+                        );
+                        this._markConnectionIdle(connection);
+                    };
+
+                    const session = this._createTerminalSession({
+                        hostId: connection.hostId,
+                        terminalId,
+                        type: 'ssh',
+                        stream,
+                        connection,
+                        hasPty: true,
+                        onClose: releaseConnectionUse
+                    });
+
+                    stream.on('data', (data) => {
+                        this._touchConnection(connection);
+                        session._append(data.toString());
+                    });
+                    if (stream.stderr) {
+                        stream.stderr.on('data', (data) => {
+                            this._touchConnection(connection);
+                            session._append(data.toString());
+                        });
+                    }
+                    stream.on('close', () => session._handleClose());
+                    stream.on('error', (streamError) => {
+                        this._warn(`虚拟终端流错误 (${session.key}): ${streamError.message}`);
+                        session._handleClose();
+                    });
+
+                    resolve(session);
+                }
+            );
+        });
+    }
+
+    async _openLocalTerminal(hostId, terminalId, options = {}) {
+        const { spawn } = require('child_process');
+        const fsSync = require('fs');
+        const scriptBin = ['/usr/bin/script', '/bin/script'].find((candidate) =>
+            fsSync.existsSync(candidate)
+        );
+
+        const env = {
+            ...createSanitizedUserCommandEnv(),
+            TERM: 'xterm-256color',
+            PS1: '',
+            PS2: ''
+        };
+
+        let child;
+        let hasPty = false;
+        if (scriptBin) {
+            hasPty = true;
+            child = spawn(scriptBin, ['-q', '-f', '-c', 'bash -i', '/dev/null'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env,
+                detached: true
+            });
+        } else {
+            child = spawn('/bin/bash', ['-i'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env,
+                detached: true
+            });
+        }
+
+        await new Promise((resolve, reject) => {
+            child.once('spawn', resolve);
+            child.once('error', reject);
+        });
+
+        const session = this._createTerminalSession({
+            hostId,
+            terminalId,
+            type: 'local',
+            child,
+            hasPty,
+            onClose: () => {}
+        });
+
+        child.stdout.on('data', (data) => session._append(data.toString()));
+        child.stderr.on('data', (data) => session._append(data.toString()));
+        child.on('close', (code) => {
+            session.lastExitCode = code;
+            session._handleClose();
+        });
+        child.on('error', (error) => {
+            this._warn(`本地虚拟终端错误 (${session.key}): ${error.message}`);
+            session._handleClose();
+        });
+
+        return session;
+    }
+
+    _createTerminalSession(config = {}) {
+        const manager = this;
+        const {
+            hostId,
+            terminalId,
+            type,
+            stream = null,
+            child = null,
+            connection = null,
+            hasPty = false,
+            onClose = null
+        } = config;
+
+        let pendingMarker = null;
+        let closed = false;
+
+        const session = {
+            key: manager._terminalKey(hostId, terminalId),
+            hostId,
+            terminalId,
+            type,
+            stream,
+            child,
+            connection,
+            hasPty,
+            isActive: true,
+            createdAt: Date.now(),
+            lastActivityAt: Date.now(),
+            buffer: '',
+            busy: false,
+            runningCommand: null,
+            runningStartedAt: null,
+            lastExitCode: null,
+            promptMarker: `__VCP_PROMPT_${Date.now().toString(36)}_${crypto
+                .randomBytes(2)
+                .toString('hex')}__`
+        };
+
+        session._append = (text) => {
+            if (!text) return;
+            session.buffer += String(text);
+            if (session.buffer.length > TERMINAL_MAX_BUFFER) {
+                session.buffer = session.buffer.slice(-TERMINAL_MAX_BUFFER);
+            }
+            session.lastActivityAt = Date.now();
+            if (pendingMarker) {
+                try {
+                    pendingMarker.check();
+                } catch (_) {}
+            }
+        };
+
+        session.write = (data) => {
+            if (!session.isActive) {
+                throw new Error(`终端会话已关闭: ${session.terminalId}`);
+            }
+            const chunk = String(data === undefined || data === null ? '' : data);
+            if (type === 'ssh') {
+                if (!stream || !stream.writable) {
+                    throw new Error(`SSH 终端通道不可写: ${session.terminalId}`);
+                }
+                stream.write(chunk);
+            } else {
+                if (!child || !child.stdin || !child.stdin.writable) {
+                    throw new Error(`本地终端标准输入不可写: ${session.terminalId}`);
+                }
+                child.stdin.write(chunk);
+            }
+            session.lastActivityAt = Date.now();
+        };
+
+        session.sendKey = (keyName, repeat = 1) => {
+            const key = String(keyName || '').trim().toLowerCase();
+            const sequence = INTERACTIVE_KEY_MAP[key];
+            if (sequence === undefined) {
+                throw new Error(
+                    `不支持的按键: ${keyName}。支持: ${Object.keys(INTERACTIVE_KEY_MAP).join(', ')}`
+                );
+            }
+            const count = Math.max(1, Math.min(50, Number(repeat) || 1));
+
+            // 无 PTY 的本地兜底：Ctrl+C 只能用信号模拟。
+            if (key === 'ctrl+c' && type === 'local' && !hasPty && child && child.pid) {
+                try {
+                    process.kill(-child.pid, 'SIGINT');
+                } catch (_) {
+                    try {
+                        child.kill('SIGINT');
+                    } catch (_) {}
+                }
+                return { key, sequence, count };
+            }
+
+            session.write(sequence.repeat(count));
+            return { key, sequence, count };
+        };
+
+        session.clearBuffer = () => {
+            session.buffer = '';
+        };
+
+        session.visible = (lines = 20) => {
+            const maxLines = Math.max(1, Math.min(2000, Number(lines) || 20));
+            let cleaned = manager._cleanTerminalText(session.buffer);
+            // 隐藏内部提示符哨兵，保留真实终端画面。
+            const promptPrefix = `${session.promptMarker}[`;
+            while (cleaned.includes(promptPrefix)) {
+                cleaned = cleaned.replace(
+                    new RegExp(`${session.promptMarker}\\[\\d+\\] ?`, 'g'),
+                    ''
+                );
+                break;
+            }
+            cleaned = cleaned.replace(/\n+$/, '');
+            if (!cleaned) return '';
+            return cleaned.split('\n').slice(-maxLines).join('\n');
+        };
+
+        session._cleanCommandOutput = (raw, command) => {
+            let text = manager._cleanTerminalText(raw);
+            // 去掉内部提示符哨兵
+            text = text.replace(
+                new RegExp(`${session.promptMarker}\\[\\d+\\] ?`, 'g'),
+                ''
+            );
+            const lines = text.split('\n');
+
+            // 去掉终端回显的命令行（PS1 已置空，通常是第一行）。
+            if (lines.length > 0) {
+                const firstLine = lines[0];
+                const commandHead = String(command || '').split('\n')[0].slice(0, 80);
+                if (commandHead && firstLine.includes(commandHead)) {
+                    lines.shift();
+                }
+            }
+
+            return lines
+                .join('\n')
+                .replace(/^\n+/, '')
+                .replace(/\n+$/, '');
+        };
+
+        session.run = (command, options = {}) => {
+            if (!session.isActive) {
+                return Promise.reject(new Error(`终端会话已关闭: ${session.terminalId}`));
+            }
+            if (session.runningCommand) {
+                return Promise.reject(
+                    new Error(
+                        `终端 [${session.terminalId}] 正在执行命令: ${session.runningCommand}。请先发送 ctrl+c 或等待完成。`
+                    )
+                );
+            }
+
+            const timeout = Math.max(0, Number(options.timeout) || 0) || 30000;
+            const promptRegex = new RegExp(`${session.promptMarker}\\[(\\d+)\\]`);
+            const startOffset = session.buffer.length;
+            const startedAt = Date.now();
+
+            session.runningCommand = command;
+            session.runningStartedAt = startedAt;
+            session.busy = true;
+
+            try {
+                session.write(`${command}\n`);
+            } catch (error) {
+                session.runningCommand = null;
+                session.runningStartedAt = null;
+                session.busy = false;
+                return Promise.reject(error);
+            }
+
+            return new Promise((resolve) => {
+                let settled = false;
+                let timer = null;
+
+                const settle = (result) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timer) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    resolve(result);
+                };
+
+                const check = () => {
+                    const text = session.buffer.slice(startOffset);
+                    const match = text.match(promptRegex);
+                    if (!match || match.index === undefined) return false;
+
+                    const exitCode = Number.parseInt(match[1], 10);
+                    session.lastExitCode = exitCode;
+                    session.runningCommand = null;
+                    session.runningStartedAt = null;
+                    session.busy = false;
+                    pendingMarker = null;
+
+                    settle({
+                        completed: true,
+                        exitCode,
+                        output: session._cleanCommandOutput(
+                            text.slice(0, match.index),
+                            command
+                        ),
+                        durationMs: Date.now() - startedAt
+                    });
+                    return true;
+                };
+
+                pendingMarker = { check, marker: session.promptMarker, startedAt };
+                if (check()) return;
+
+                timer = setTimeout(() => {
+                    // 超时不杀进程：保持 busy 与 pendingMarker，等待后续按键/查询。
+                    settle({
+                        completed: false,
+                        output: session._cleanCommandOutput(
+                            session.buffer.slice(startOffset),
+                            command
+                        ),
+                        durationMs: Date.now() - startedAt
+                    });
+                }, timeout);
+            });
+        };
+
+        session._handleClose = () => {
+            if (closed) return;
+            closed = true;
+            session.isActive = false;
+            session.busy = false;
+            session.runningCommand = null;
+            pendingMarker = null;
+            manager.terminalSessions.delete(session.key);
+
+            if (onClose) {
+                try {
+                    onClose();
+                } catch (_) {}
+            }
+
+            if (connection && !connection.isPooled && connection.client) {
+                try {
+                    connection.client.end();
+                    connection.isConnected = false;
+                } catch (_) {}
+            }
+        };
+
+        session.close = async () => {
+            if (!session.isActive) {
+                return { success: true, alreadyClosed: true };
+            }
+            try {
+                if (type === 'ssh') {
+                    try {
+                        session.write('exit\n');
+                    } catch (_) {}
+                    await manager._delay(120);
+                    try {
+                        stream.end();
+                    } catch (_) {}
+                    setTimeout(() => {
+                        try {
+                            stream.close();
+                        } catch (_) {}
+                    }, 100);
+                } else if (child) {
+                    try {
+                        session.write('exit\n');
+                    } catch (_) {}
+                    await manager._delay(120);
+                    try {
+                        child.kill('SIGTERM');
+                    } catch (_) {}
+                    setTimeout(() => {
+                        try {
+                            child.kill('SIGKILL');
+                        } catch (_) {}
+                    }, 300);
+                }
+            } finally {
+                session._handleClose();
+            }
+            return { success: true };
+        };
+
+        session.getStats = () => ({
+            key: session.key,
+            hostId: session.hostId,
+            terminalId: session.terminalId,
+            type: session.type,
+            isActive: session.isActive,
+            busy: session.busy,
+            command: session.runningCommand,
+            startedAt: session.runningStartedAt,
+            createdAt: session.createdAt,
+            lastActivityAt: session.lastActivityAt,
+            lastExitCode: session.lastExitCode,
+            bufferBytes: Buffer.byteLength(session.buffer || '', 'utf8')
+        });
+
+        return session;
+    }
+
+    getTerminal(hostId, terminalId = 'default') {
+        const session = this.terminalSessions.get(this._terminalKey(hostId, terminalId));
+        return session && session.isActive ? session : null;
+    }
+
+    listTerminals() {
+        const list = [];
+        for (const session of this.terminalSessions.values()) {
+            if (session.isActive) {
+                list.push(session.getStats());
+            }
+        }
+        return list;
+    }
+
+    isTerminalBusy(hostId, terminalId = 'default') {
+        const session = this.getTerminal(hostId, terminalId);
+        return Boolean(session && (session.busy || session.runningCommand));
+    }
+
+    async sendTerminalKey(hostId, terminalId, keyName, repeat = 1) {
+        const session = this.getTerminal(hostId, terminalId);
+        if (!session) {
+            throw new Error(
+                `终端 [${terminalId || 'default'}] 不存在。请先通过 runInTerminal 或带 terminalId 的 command 启动会话。`
+            );
+        }
+        const result = session.sendKey(keyName, repeat);
+        await this._delay(120);
+        return { ...result, terminalId: session.terminalId };
+    }
+
+    async writeTerminal(hostId, terminalId, text, submit = true) {
+        const session = this.getTerminal(hostId, terminalId);
+        if (!session) {
+            throw new Error(
+                `终端 [${terminalId || 'default'}] 不存在。请先通过 runInTerminal 或带 terminalId 的 command 启动会话。`
+            );
+        }
+        const payload = String(text === undefined || text === null ? '' : text);
+        session.write(payload);
+        if (submit) {
+            session.write('\r');
+        }
+        await this._delay(100);
+        return {
+            terminalId: session.terminalId,
+            chars: payload.length,
+            submitted: submit
+        };
+    }
+
+    getTerminalVisible(hostId, terminalId, lines = 20) {
+        const session = this.getTerminal(hostId, terminalId);
+        if (!session) return null;
+        return session.visible(lines);
+    }
+
+    async closeTerminal(hostId, terminalId = 'default') {
+        const session = this.getTerminal(hostId, terminalId);
+        if (!session) {
+            return { success: true, alreadyClosed: true };
+        }
+        return session.close();
+    }
+
+    async closeAllTerminals() {
+        const sessions = Array.from(this.terminalSessions.values());
+        for (const session of sessions) {
+            try {
+                await session.close();
+            } catch (error) {
+                this._warn(`关闭虚拟终端失败 (${session.key}): ${error.message}`);
+            }
+        }
+    }
+
+    // ==================== 虚拟终端会话结束 ====================
+
     /**
      * 测试主机连接（并更新缓存）
      */
@@ -2040,6 +2653,18 @@ class SSHManager {
      * 断开指定主机连接
      */
     async disconnect(hostId) {
+        // 先关闭该主机下的所有虚拟终端，避免 Channel 泄漏。
+        const terminalKeys = Array.from(this.terminalSessions.keys()).filter((key) =>
+            key.startsWith(`${hostId}::`)
+        );
+        for (const key of terminalKeys) {
+            const session = this.terminalSessions.get(key);
+            if (!session) continue;
+            try {
+                await session.close();
+            } catch (_) {}
+        }
+
         const connection = this.connectionPool.get(hostId);
         if (connection && connection.client) {
             if (typeof connection.releaseSlot === 'function') {
@@ -2059,7 +2684,10 @@ class SSHManager {
     async disconnectAll() {
         this._clearExecutionQueues('SSHManager 正在断开所有连接，已取消等待中的命令');
 
-        // 先停止所有流式会话
+        // 先关闭所有虚拟终端
+        await this.closeAllTerminals();
+
+        // 再停止所有流式会话
         await this.stopAllStreamSessions();
 
         // 停止定时器

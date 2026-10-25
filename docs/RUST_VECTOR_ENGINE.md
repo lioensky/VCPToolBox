@@ -887,6 +887,43 @@ export declare class VexusIndex {
 
 ---
 
+## 查询排除谓词下推
+
+原有查询入口和默认参数保持兼容：默认搜索宽度为 `max(128, k)`，精排预算为 `max(64, k)`。新增入口支持按外部 ID 排除候选，并可显式指定搜索宽度：
+
+```js
+const options = JSON.stringify({ excludeIds: [12, 34] });
+index.searchWithOptions(query, 10, options);
+await runtime.searchGlobalTagsWithOptions(query, 10, options);
+await runtime.searchDiaryIndicesWithOptions(diaryNames, query, 64, 100, options);
+```
+
+`excludeIds` 使用当前索引的外部 ID。被排除的节点仍可作为图导航跳板，但不会占据结果候选池。通用 SM、768 维 SM 和旧 BQ 路径执行同样的过滤规则。SQL 查询继续使用原有读事务和发布门禁；不以原始向量读取失败代替候选池过滤。显式校正模式的锚点仍可用于评分校准，但不会作为结果返回。
+
+当前查询与历史补充查询使用同一组选项。文件和时间候选在消耗配额前执行排除，融合后再次过滤。外部 rerank 通道的稀疏追加及最终候选选择也检查排除集，避免已排除 ID 经其他通道回流。
+
+`KnowledgeBaseManager.executeExternalRerank` 和 `executeParallelRerank` 通过 `options.annSearch` 透传调用者显式提供的选项；插件不会自行从文本前缀推导排除 ID。显式传入选项时要求原生模块声明 `index.query-options.v1`，不支持时返回重编译错误，避免旧模块静默忽略排除。
+
+外部 rerank 的稀疏补充仍只检查输入前 255 个文件候选，先归并规范化后的重复路径并保留最高分，再在同一读事务内按文件元数据核对日记作用域，避免无关或重复文件占用补找预算。每条保留候选最多追加 512 个未被 ID 排除的记录。无排除集时沿原正文查询；有排除集时先在同一查询中有限补找，最多额外查看 64 条。需要更深补找时才读取 ID 索引，再批量获取选中记录的正文。索引补找每条文件候选最多查看 4,608 个 ID，整个查询共享 16,384 个 ID 的预算；预算耗尽后，后续文件仍执行基础窗口。
+
+`diagnostics.nativeRerank.sparseScan` 提供元数据、窗口、索引、批量正文的行数，以及正文解码数、重复候选数、预算值和 `filesStoppedAtScanLimit`。最后一项表示触及预算且未补满，文件恰好在边界结束时也可能计数，因此只说明可能还有未检查记录。诊断会保留到插件广播，但不会自动重试。合法早到文件可能耗尽共享预算；极端排除集不保证补满候选，也不会无上限扫描整个大文件。正文前缀过滤和去重仍在最终选择阶段执行，512 不是最终结果数量保证。行数是 SQL 返回/处理计数，不是物理磁盘读取量或固定耗时保证。
+
+混合查询计划可通过 `annSearch` 字段传入同一组选项，例如 `{"annSearch":{"excludeIds":[12,34]}}`。可选 `efSearch` 用于显式控制导航宽度；更宽搜索会增加计算，不能把其召回收益归因于排除下推。本次没有修改默认值或推荐加宽。
+
+### SQL 读取对照
+
+`rust-vexus-lite/benchmarks/sm-search` 是独立 Cargo 基准，直接编译生产 `index_source.rs` 和 `retrieval_index.rs`，不会复制搜索循环。它使用磁盘 SQLite 和显式读事务，通过 SQL trace 统计完整向量查询次数，包含宿主返回前的向量复读。
+
+输入由 `BENCH_LIB`（前 97,464 行库向量）、`BENCH_QUERIES`（500 行查询）、`BENCH_REAL_TRUTH`（每查询 300 个 uint64 ID）提供。向量为无头的 3,072 维 little-endian float32；ID 从 1 开始。`BENCH_DB` 必须指向不存在的新文件，`BENCH_OUT` 指定 JSON 输出。
+
+```sh
+RAYON_NUM_THREADS=1 cargo run --release --offline --manifest-path rust-vexus-lite/benchmarks/sm-search/Cargo.toml
+```
+
+对照采用排除真实前 M 个近邻的压力场景。后置过滤会先请求 64 或 `64+M` 条结果，再过滤并取十条；下推方案直接请求十条，保留原精排预算。两种搜索宽度分别报告，256 仅作为额外计算对照。聚合数据与输入 SHA-256 见 `results-summary.json`，运行输出提供逐题排名、真值和完整 SQL 读取计数。即使宽度不变，过滤后也可能增加图遍历量，读取减少不代表总 CPU 或延迟降低。该基准不作生产端到端延迟或全库精确 Top-K 保证。
+
+---
+
 ## 更新日志
 
 | 版本 | 日期 | 变更 |

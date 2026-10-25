@@ -38,6 +38,10 @@ mod production_tests;
 pub use build::SmBuildConfig;
 
 #[cfg(test)]
+#[path = "corrected_sm/filter_tests.rs"]
+mod filter_tests;
+
+#[cfg(test)]
 #[path = "corrected_sm/l2_tests.rs"]
 mod l2_tests;
 
@@ -736,6 +740,7 @@ impl CorrectedSmIndex {
         self.search_callback(query, &self.graph, config, mode, fill)
     }
 
+    #[cfg(test)]
     pub(super) fn search_routed<F>(
         &self,
         query: &[f32],
@@ -747,6 +752,22 @@ impl CorrectedSmIndex {
         F: FnMut(usize, &mut Vec<f32>) -> bool,
     {
         self.search_callback(query, graph, config, SmSearchMode::Combined, fill)
+    }
+
+    pub(super) fn search_routed_filtered<F, E>(
+        &self, query: &[f32], graph: &FlatAdj, config: &QuIVerSearchConfig,
+        exclude: &E, fill: F,
+    ) -> io::Result<SmSearchOutput>
+    where F: FnMut(usize, &mut Vec<f32>) -> bool, E: Fn(u64) -> bool,
+    {
+        if self.dynamic.is_some() {
+            return self.dynamic_callback_filtered(query, graph, config, exclude, fill);
+        }
+        EXACT_BUFFERS.with(|cell| {
+            let mut buffers = cell.borrow_mut();
+            let mut source = CallbackSource { fill, buffers: &mut buffers, scales: &self.exact_scales };
+            self.search_impl_filtered::<false, true, _, _>(query, graph, &mut source, config, exclude)
+        })
     }
 
     fn search_callback<F>(
@@ -787,6 +808,17 @@ impl CorrectedSmIndex {
         graph: &FlatAdj,
         source: &mut S,
         cfg: &QuIVerSearchConfig,
+    ) -> io::Result<SmSearchOutput> {
+        self.search_impl_filtered::<TRACE, OPTIMIZED, S, _>(q, graph, source, cfg, &|_| false)
+    }
+
+    fn search_impl_filtered<const TRACE: bool, const OPTIMIZED: bool, S: ExactSource, E: Fn(u64) -> bool>(
+        &self,
+        q: &[f32],
+        graph: &FlatAdj,
+        source: &mut S,
+        cfg: &QuIVerSearchConfig,
+        exclude: &E,
     ) -> io::Result<SmSearchOutput> {
         let budget = cfg.rerank_limit.unwrap_or(64);
         let ef = cfg.ef_search.min(self.len());
@@ -843,7 +875,9 @@ impl CorrectedSmIndex {
             let mut counts = [0usize, 1 + usize::from(uses_anchor), 0, 0, 0];
             visited.set(self.entry as usize);
             st.queue.push(Reverse((NonNanF32(first), self.entry)));
-            st.results.push((NonNanF32(first), self.entry));
+            if !exclude(self.ids[self.entry as usize]) {
+                st.results.push((NonNanF32(first), self.entry));
+            }
             while let Some(&Reverse((distance, u))) = st.queue.peek() {
                 if st.results.len() >= ef && distance > st.results.peek().unwrap().0 {
                     break;
@@ -951,6 +985,7 @@ impl CorrectedSmIndex {
                         let next = NonNanF32(1. - value);
                         if st.results.len() < ef || next < st.results.peek().unwrap().0 {
                             st.queue.push(Reverse((next, v)));
+                            if !exclude(self.ids[v as usize]) {
                             if optimized && st.results.len() == ef {
                                 *st.results.peek_mut().unwrap() = (next, v);
                             } else {
@@ -958,6 +993,7 @@ impl CorrectedSmIndex {
                                 if st.results.len() > ef {
                                     st.results.pop();
                                 }
+                            }
                             }
                         }
                     }
@@ -970,7 +1006,7 @@ impl CorrectedSmIndex {
             if TRACE {
                 trace.candidates.extend(st.candidates.iter().map(|x| x.1));
             }
-            if uses_anchor {
+            if uses_anchor && !exclude(self.ids[self.anchor as usize]) {
                 st.exact.push((self.anchor, anchor));
             }
             for &(_, v) in &st.candidates {

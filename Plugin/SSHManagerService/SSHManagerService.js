@@ -420,6 +420,82 @@ class SSHManagerService {
                     }
                     break;
                 }
+                case 'openTerminal': {
+                    if (typeof this.sshManager.openTerminal !== 'function') {
+                        result = { error: 'Terminal sessions not supported by current SSHManager' };
+                        break;
+                    }
+                    const session = await this.sshManager.openTerminal(
+                        params.hostId,
+                        params.terminalId,
+                        params.options
+                    );
+                    result = {
+                        success: true,
+                        stats: typeof session.getStats === 'function' ? session.getStats() : null
+                    };
+                    break;
+                }
+                case 'runTerminalCommand': {
+                    const session = this.sshManager.getTerminal(
+                        params.hostId,
+                        params.terminalId
+                    );
+                    if (!session || typeof session.run !== 'function') {
+                        result = { error: 'Terminal not found or not runnable' };
+                    } else {
+                        result = await session.run(params.command, params.options);
+                    }
+                    break;
+                }
+                case 'sendTerminalKey': {
+                    result = await this.sshManager.sendTerminalKey(
+                        params.hostId,
+                        params.terminalId,
+                        params.key,
+                        params.repeat
+                    );
+                    break;
+                }
+                case 'writeTerminal': {
+                    result = await this.sshManager.writeTerminal(
+                        params.hostId,
+                        params.terminalId,
+                        params.text,
+                        params.submit
+                    );
+                    break;
+                }
+                case 'getTerminalVisible': {
+                    result = {
+                        output: this.sshManager.getTerminalVisible(
+                            params.hostId,
+                            params.terminalId,
+                            params.lines
+                        )
+                    };
+                    break;
+                }
+                case 'listTerminals': {
+                    result = this.sshManager.listTerminals();
+                    break;
+                }
+                case 'isTerminalBusy': {
+                    result = {
+                        busy: this.sshManager.isTerminalBusy(
+                            params.hostId,
+                            params.terminalId
+                        )
+                    };
+                    break;
+                }
+                case 'closeTerminal': {
+                    result = await this.sshManager.closeTerminal(
+                        params.hostId,
+                        params.terminalId
+                    );
+                    break;
+                }
                 default:
                     result = { error: `Unknown method: ${method}` };
             }

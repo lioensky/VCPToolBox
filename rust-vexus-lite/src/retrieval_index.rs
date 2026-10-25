@@ -7,6 +7,29 @@ use std::path::{Path, PathBuf};
 use vcp_tdb_index::asset::AssetIdentity;
 use vcp_tdb_index::engine::TdbIndex;
 
+/// Query-local exclusion and navigation controls.
+#[derive(Clone, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetrievalSearchOptions {
+    pub exclude_ids: std::collections::HashSet<u64>,
+    pub ef_search: Option<usize>,
+}
+
+impl Default for RetrievalSearchOptions {
+    fn default() -> Self { Self { exclude_ids: std::collections::HashSet::new(), ef_search: None } }
+}
+impl RetrievalSearchOptions {
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        if self.exclude_ids.len() > 100_000 || self.exclude_ids.iter().any(|id| *id == 0 || *id > i64::MAX as u64)
+            || self.ef_search.is_some_and(|v| v == 0 || v > 65_536)
+        { return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid retrieval search options")); }
+        Ok(())
+    }
+    pub(crate) fn kernel(&self) -> vcp_tdb_index::engine::SearchOptions {
+        vcp_tdb_index::engine::SearchOptions { ef_search: self.ef_search }
+    }
+}
+
 pub(crate) struct RetrievalIndex {
     // Explicit Option permits releasing the mmap before private-file cleanup.
     inner: Option<TdbIndex>,
@@ -134,6 +157,13 @@ impl RetrievalIndex {
         self.core().search(query, k, None)
     }
 
+    pub(crate) fn search_options(&self, query: &[f32], k: usize, options: &RetrievalSearchOptions)
+        -> io::Result<Vec<(u64, f32)>> {
+        options.validate()?;
+        if self.sql_owned { return Err(io::Error::other("SQL-owned routing requires a Runtime SQL query")); }
+        self.core().search_with_options(query, k, &options.kernel(), &|id| options.exclude_ids.contains(&id))
+    }
+
     /// The caller owns the read transaction and scope gate. No new connection,
     /// snapshot file read, or retained original-vector cache is introduced.
     pub(crate) fn search_sql(
@@ -143,6 +173,18 @@ impl RetrievalIndex {
         query: &[f32],
         k: usize,
     ) -> io::Result<Vec<(u64, f32)>> {
+        self.search_sql_options(connection, diary, query, k, &RetrievalSearchOptions::default())
+    }
+
+    pub(crate) fn search_sql_options(
+        &self,
+        connection: &rusqlite::Connection,
+        diary: Option<&str>,
+        query: &[f32],
+        k: usize,
+        options: &RetrievalSearchOptions,
+    ) -> io::Result<Vec<(u64, f32)>> {
+        options.validate()?;
         if connection.is_autocommit() {
             return Err(io::Error::other("SQL retrieval requires an active read transaction"));
         }
@@ -155,7 +197,8 @@ impl RetrievalIndex {
         let mut statement = connection.prepare_cached(sql).map_err(io::Error::other)?;
         let dimension = self.dimensions();
         let mut source_error = None;
-        let result = self.core().search_with_source(query, k, None, |id, output| {
+        let result = self.core().search_with_source_options(query, k, &options.kernel(),
+            &|id| options.exclude_ids.contains(&id), |id, output| {
             use rusqlite::OptionalExtension;
             output.clear();
             let bytes = statement.query_row(
@@ -215,6 +258,43 @@ impl Drop for RetrievalIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_options_exclude_ids_in_flat_and_graph_routes_and_require_a_transaction() {
+        for (dimension, count) in [(2, 8), (768, 2048), (1536, 2048)] {
+            let connection = rusqlite::Connection::open_in_memory().unwrap();
+            connection.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB); BEGIN;").unwrap();
+            let mut row = vec![0f32; dimension];
+            row[0] = 1.;
+            let bytes:Vec<u8> = row.iter().flat_map(|x| x.to_le_bytes()).collect();
+            for id in 1..=count {
+                connection.execute("INSERT INTO tags VALUES (?1,?2)", rusqlite::params![id, &bytes]).unwrap();
+            }
+            let build = crate::index_source::build_memory_from_connection(&connection, None, dimension, "model").unwrap();
+            let index = RetrievalIndex::from_sql(build);
+            let wanted = (count as usize).min(10);
+            let options = RetrievalSearchOptions { exclude_ids:(1..=count as u64-wanted as u64).collect(), ..Default::default() };
+            let found = index.search_sql_options(&connection,None,&row,10,&options).unwrap();
+            assert_eq!(found.len(),wanted);
+            assert!(found.iter().all(|(id,score)| !options.exclude_ids.contains(id) && (*score-1.).abs()<1e-5));
+            let all = RetrievalSearchOptions { exclude_ids:(1..=count as u64).collect(), ..Default::default() };
+            assert!(index.search_sql_options(&connection,None,&row,10,&all).unwrap().is_empty());
+            connection.execute_batch("ROLLBACK").unwrap();
+            assert!(index.search_sql_options(&connection,None,&row,10,&options).is_err());
+        }
+    }
+
+    #[test]
+    fn search_options_parse_defaults_and_reject_bad_ids_and_limits() {
+        let defaults:RetrievalSearchOptions=serde_json::from_str("{}").unwrap();
+        assert!(defaults.kernel().ef_search.is_none());
+        for json in [r#"{"excludeIds":[-1]}"#, r#"{"unknown":true}"#] {
+            assert!(serde_json::from_str::<RetrievalSearchOptions>(json).is_err());
+        }
+        for json in [r#"{"excludeIds":[0]}"#, r#"{"efSearch":0}"#, r#"{"efSearch":65537}"#] {
+            assert!(serde_json::from_str::<RetrievalSearchOptions>(json).unwrap().validate().is_err());
+        }
+    }
 
     #[test]
     fn maintenance_tracks_graph_transition_and_bounded_delta_residency() {

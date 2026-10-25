@@ -795,6 +795,26 @@ impl CorrectedSmIndex {
             }
         })
     }
+    pub(super) fn dynamic_callback_filtered<F, E>(
+        &self, q: &[f32], graph: &FlatAdj, cfg: &QuIVerSearchConfig,
+        exclude: &E, fill: F,
+    ) -> io::Result<SmSearchOutput>
+    where F: FnMut(usize, &mut Vec<f32>) -> bool, E: Fn(u64) -> bool,
+    {
+        if q.len() != self.dimension() || q.iter().any(|x| !x.is_finite()) {
+            return Err(invalid("SM查询维度或数值无效"));
+        }
+        EXACT_BUFFERS.with(|cell| {
+            let mut buffers = cell.borrow_mut();
+            let mut source = DynamicCallback { fill, buffers: &mut buffers,
+                scales: &self.exact_scales, dim: self.dimension(), native_l2: self.scoring == SmScoring::NativeL2 };
+            QUERY.with(|cell| {
+                let mut query = cell.borrow_mut();
+                query.encode(q, true);
+                self.dynamic_encoded_filtered::<false, true, _, _>(q, graph, &mut source, cfg, &query, Some(exclude))
+            })
+        })
+    }
     fn search_dynamic<const TRACE: bool, const OPTIMIZED: bool, S: ExactSource>(
         &self,
         q: &[f32],
