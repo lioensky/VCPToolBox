@@ -1343,6 +1343,8 @@ class PluginManager extends EventEmitter {
         }
         // --- 透明化处理结束 ---
 
+        // 审核留言属于回执元信息，不得混入插件执行参数。
+        let approvalFeedback = '';
         // --- 人工审核逻辑 (新增) ---
         const approvalDecision = this.toolApprovalManager.getApprovalDecision(toolName, pluginSpecificArgs);
         if (approvalDecision.requiresApproval) {
@@ -1440,6 +1442,9 @@ class PluginManager extends EventEmitter {
                         user_feedback: userFeedback
                     }));
                 }
+                approvalFeedback = typeof approvalResult?.userFeedback === 'string'
+                    ? approvalResult.userFeedback.trim()
+                    : '';
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
             } catch (error) {
                 if (this.debugMode) console.warn(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) rejected: ${error.message}`);
@@ -1489,7 +1494,15 @@ class PluginManager extends EventEmitter {
             );
 
             if (Object.prototype.hasOwnProperty.call(executionResult, 'shortCircuitResult')) {
-                const shortCircuitResult = executionResult.shortCircuitResult;
+                const originalShortCircuitResult = executionResult.shortCircuitResult;
+                const shortCircuitResult = approvalFeedback
+                    ? this._sanitizeToolResultForAi({
+                        ...(originalShortCircuitResult && typeof originalShortCircuitResult === 'object'
+                            ? originalShortCircuitResult
+                            : { original_plugin_output: originalShortCircuitResult }),
+                        __vcpApprovalFeedback: approvalFeedback
+                    })
+                    : originalShortCircuitResult;
                 this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
                     result: shortCircuitResult
                 });
@@ -1548,7 +1561,9 @@ class PluginManager extends EventEmitter {
                 resultFromPlugin = resultFromPlugin.result;
             }
 
-            let finalResultObject = (typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin };
+            let finalResultObject = Array.isArray(resultFromPlugin)
+                ? { content: resultFromPlugin }
+                : ((typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin });
 
             if (maidNameFromArgs) {
                 finalResultObject.MaidName = maidNameFromArgs;
@@ -1556,6 +1571,9 @@ class PluginManager extends EventEmitter {
             finalResultObject.timestamp = getFormattedLocalTimestamp();
             filterFuzzyDiff(finalResultObject, getFormattedLocalTimestamp());
 
+            if (approvalFeedback) {
+                finalResultObject.__vcpApprovalFeedback = approvalFeedback;
+            }
             const sanitizedResult = this._sanitizeToolResultForAi(finalResultObject);
             this.toolLifecycleVcpInfo.emit(lifecycleContext, 'success', {
                 result: sanitizedResult
@@ -1586,6 +1604,9 @@ class PluginManager extends EventEmitter {
                 errorObject.timestamp = getFormattedLocalTimestamp();
             }
             filterFuzzyDiff(errorObject, getFormattedLocalTimestamp());
+            if (approvalFeedback) {
+                errorObject.__vcpApprovalFeedback = approvalFeedback;
+            }
             const sanitizedErrorObject = this._sanitizeToolResultForAi(errorObject);
             toolCallRecordStore.finishRecord(managedToolCallRecord, {
                 success: false,
@@ -1934,7 +1955,7 @@ class PluginManager extends EventEmitter {
                 if (this.debugMode && normalizedReason) {
                     console.log(`[PluginManager] Manual approval for ${requestId} included user note: ${normalizedReason.substring(0, 300)}`);
                 }
-                approval.resolve();
+                approval.resolve(normalizedReason ? { userFeedback: normalizedReason } : undefined);
             } else if (approval.notifyAiOnReject === false) {
                 // 静默拒绝只屏蔽“无用户输入”的回执；用户在审核框中填写的反馈必须优先回传给 AI。
                 if (normalizedReason) {

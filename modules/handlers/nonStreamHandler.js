@@ -330,6 +330,9 @@ class NonStreamHandler {
                 const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
                 if (vcpText) conversationHistoryForClient.push(vcpText);
               }
+            } else if (result.approvalFeedbackContent?.length) {
+              // 用户明确输入的审核留言优先于 archery 静默；业务成功状态保持不变。
+              archeryErrorContents.push(...result.approvalFeedbackContent);
             }
             return { tool: toolCall, result: result.content };
           } catch (e) {
@@ -338,7 +341,7 @@ class NonStreamHandler {
           }
         }));
 
-        // 处理纯 Archery 且有错误的情况
+        // 处理纯 Archery 的错误或用户审核留言。
         if (normalCalls.length === 0 && archeryErrorContents.length > 0) {
           let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
           if (enableRoleDivider && enableRoleDividerInLoop) {

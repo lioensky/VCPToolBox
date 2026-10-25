@@ -252,3 +252,251 @@ test('_createErrorResult：普通字符串错误保持原样', () => {
     assert.equal(result.content[0].text, '[错误] 插件崩了');
     assert.equal(result.raw, undefined);
 });
+
+
+test('允许审核：留言规范化后传给等待方，空留言保持旧行为', async () => {
+    for (const reason of ['  请继续并汇总结果  ', '   ', undefined]) {
+        const { entry, promise } = makePendingEntry(true);
+        const ctx = makeContext(new Map([['approved', entry]]));
+        assert.equal(handleApprovalResponse.call(ctx, 'approved', true, reason), true);
+        const result = await promise;
+        if (typeof reason === 'string' && reason.trim()) {
+            assert.equal(result.userFeedback, reason.trim());
+        } else {
+            assert.equal(result, undefined);
+        }
+        assert.equal(ctx.pendingApprovals.size, 0);
+    }
+});
+
+test('允许留言：旧对象回执在文本尾部追加，不重复展示内部字段', () => {
+    const executor = makeExecutorStub();
+    const result = executor._formatResult({ message: '执行完成', __vcpApprovalFeedback: '继续检查' });
+    assert.match(result.content[0].text, /执行完成/);
+    assert.ok(result.content[0].text.endsWith('继续检查'));
+    assert.doesNotMatch(result.content[0].text, /__vcpApprovalFeedback/);
+});
+
+test('允许留言：标准内容数组只追加最后一个文本块，图片与原始对象保持不变', () => {
+    const executor = makeExecutorStub();
+    for (const nested of [false, true]) {
+        const image = Object.freeze({
+            type: 'image_url',
+            image_url: Object.freeze({ url: 'data:image/png;base64,AAAA', detail: 'high' })
+        });
+        const first = Object.freeze({ type: 'text', text: '前段' });
+        const last = Object.freeze({ type: 'text', text: '后段', custom: '保留' });
+        const content = Object.freeze([first, image, last, image]);
+        const input = nested
+            ? { data: { content }, __vcpApprovalFeedback: '允许留言' }
+            : { content, __vcpApprovalFeedback: '允许留言' };
+        const result = executor._formatResult(input);
+        assert.equal(result.content.length, 4);
+        assert.equal(result.content[0], first);
+        assert.equal(result.content[1], image);
+        assert.equal(result.content[3], image);
+        assert.equal(result.content[2].custom, '保留');
+        assert.ok(result.content[2].text.startsWith('后段\n\n'));
+        assert.ok(result.content[2].text.endsWith('允许留言'));
+        assert.equal(last.text, '后段');
+        assert.equal(image.image_url.url, 'data:image/png;base64,AAAA');
+    }
+});
+
+test('允许留言：纯图片回执在末尾增加文本块，无留言原样透传', () => {
+    const executor = makeExecutorStub();
+    const image = { type: 'image_url', image_url: { url: 'https://example.com/image.png' } };
+    const content = [image];
+    const plain = executor._formatResult({ content });
+    assert.equal(plain.content, content);
+    const annotated = executor._formatResult({ content, __vcpApprovalFeedback: '图片已允许' });
+    assert.equal(annotated.content[0], image);
+    assert.equal(annotated.content[1].type, 'text');
+    assert.ok(annotated.content[1].text.endsWith('图片已允许'));
+    assert.equal(content.length, 1);
+    assert.equal(executor._formatResult(content).content, content, '兼容裸标准数组');
+});
+
+test('允许留言：免回执提供独立反馈内容，不泄漏成功业务输出且保持成功', () => {
+    const executor = makeExecutorStub();
+    const result = executor._processResult('DemoTool', {
+        __vcpArcheryNoReplySilent: true,
+        __vcpApprovalFeedback: '请汇总',
+        content: [{ type: 'text', text: 'BUSINESS_OUTPUT' }]
+    });
+    assert.equal(result.success, true);
+    assert.equal(result.approvalFeedbackContent.length, 1);
+    assert.match(result.approvalFeedbackContent[0].text, /DemoTool/);
+    assert.ok(result.approvalFeedbackContent[0].text.endsWith('请汇总'));
+    assert.doesNotMatch(result.approvalFeedbackContent[0].text, /BUSINESS_OUTPUT/);
+});
+
+test('允许后执行失败：错误文本仍包含允许留言', () => {
+    const executor = makeErrorStub();
+    const result = executor._createErrorResult('DemoTool', '执行错误: ' + JSON.stringify({
+        plugin_error: '工具执行失败',
+        __vcpApprovalFeedback: '执行后请汇总'
+    }));
+    assert.equal(result.success, false);
+    assert.match(result.content[0].text, /工具执行失败/);
+    assert.ok(result.content[0].text.endsWith('执行后请汇总'));
+});
+
+const PROCESS_TOOL_BODY = extractMethodBody(PLUGIN_AST, PLUGIN_SOURCE, 'processToolCall');
+
+test('真实工具审核链：普通、富内容、裸数组、短路、异常均携带允许留言且不污染参数', async () => {
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } };
+    const cases = [
+        { result: { message: 'done' } },
+        { result: { content: [{ type: 'text', text: 'done' }, image] } },
+        { result: [{ type: 'text', text: 'done' }, image] },
+        { shortCircuitResult: { __vcpArcheryNoReplySilent: true, message: 'accepted' } },
+        { error: true }
+    ];
+    for (const output of cases) {
+        let executedArgs;
+        let sanitizeCount = 0;
+        const run = vm.runInNewContext(
+            `(async function processToolCall(toolName, toolArgs, requestIp = null, sourceNode = null, executionOptions = {}) {${PROCESS_TOOL_BODY}})`,
+            {
+                console, setTimeout, clearTimeout,
+                resolveArgsFileUrls: async () => {},
+                buildToolChangePreview: () => null,
+                getFormattedLocalTimestamp: () => 'test-time',
+                filterFuzzyDiff: () => {},
+                toolCallRecordStore: { beginRecord: () => null, finishRecord: () => {} }
+            }
+        );
+        const ctx = {
+            plugins: new Map([['DemoTool', {}]]),
+            pendingApprovals: new Map(),
+            debugMode: false,
+            toolApprovalManager: {
+                getApprovalDecision: () => ({ requiresApproval: true }),
+                getTimeoutMs: () => 10000
+            },
+            webSocketServer: {
+                broadcast: payload => handleApprovalResponse.call(ctx, payload.data.requestId, true, '  审核留言  ')
+            },
+            toolLifecycleVcpInfo: { createContext: () => ({}), emit: () => {} },
+            _getPluginConfig: () => ({}),
+            _sanitizeToolResultForAi: result => { sanitizeCount++; return result; },
+            executionBridgeRegistry: {
+                execute: async (_plugin, args) => {
+                    executedArgs = args;
+                    if (output.error) throw new Error(JSON.stringify({ plugin_error: 'failed' }));
+                    return output;
+                }
+            }
+        };
+        let result;
+        try {
+            result = await run.call(ctx, 'DemoTool', { command: 'read' });
+            assert.equal(output.error, undefined);
+        } catch (error) {
+            assert.equal(output.error, true);
+            result = JSON.parse(error.message);
+        }
+        assert.equal(result.__vcpApprovalFeedback, '审核留言');
+        assert.equal(executedArgs.command, 'read');
+        assert.equal(executedArgs.__vcpApprovalFeedback, undefined);
+        assert.equal(ctx.pendingApprovals.size, 0);
+        assert.equal(sanitizeCount, 1);
+        if (Array.isArray(output.result)) assert.equal(result.content, output.result);
+    }
+});
+
+
+test('流式/非流式模型请求：多模态回执不损坏，免回执仅传留言，无留言不续轮', async () => {
+    const { Readable } = require('node:stream');
+    for (const stream of [false, true]) {
+        const filename = stream ? 'streamHandler.js' : 'nonStreamHandler.js';
+        const source = fs.readFileSync(path.join(__dirname, '..', 'modules', 'handlers', filename), 'utf8');
+        const moduleStub = { exports: {} };
+        vm.runInNewContext(source, {
+            module: moduleStub, exports: moduleStub.exports,
+            require: name => {
+                if (name.includes('vcpInfoHandler')) return { streamVcpInfo: () => '' };
+                if (name.includes('roleDivider')) return { process: messages => messages };
+                return require(name.startsWith('../') ? path.join(__dirname, '..', 'modules', name.slice(3)) : name);
+            },
+            console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval
+        });
+        const Handler = moduleStub.exports;
+        for (const scenario of ['normal', 'archery', 'silent']) {
+            const requests = [];
+            const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } };
+            const feedback = [{ type: 'text', text: '用户允许留言：请汇总' }];
+            const executor = makeExecutorStub();
+            const formatted = executor._formatResult({
+                content: [{ type: 'text', text: 'BUSINESS_OUTPUT' }, image],
+                __vcpApprovalFeedback: '请汇总'
+            });
+            const makeResponse = text => stream
+                ? {
+                    ok: true,
+                    body: Readable.from([
+                        `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`,
+                        `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+                        'data: [DONE]\n\n'
+                    ])
+                }
+                : {
+                    ok: true,
+                    arrayBuffer: async () => Buffer.from(JSON.stringify({
+                        choices: [{ message: { content: text }, finish_reason: 'stop' }]
+                    }))
+                };
+            const context = {
+                apiUrl: 'https://example.com', apiKey: 'test',
+                pluginManager: { messagePreprocessors: new Map() },
+                originalBody: { model: 'test', messages: [{ role: 'user', content: '执行' }] },
+                abortController: new AbortController(),
+                maxVCPLoopStream: 3, maxVCPLoopNonStream: 3,
+                apiRetries: 1,
+                ToolCallParser: {
+                    parse: text => text.includes('CALL_TOOL') ? [{ name: 'DemoTool', args: {} }] : [],
+                    separate: calls => scenario === 'normal'
+                        ? { normal: calls, archery: [] }
+                        : { normal: [], archery: calls }
+                },
+                toolExecutor: {
+                    execute: async () => ({
+                        success: true,
+                        content: formatted.content,
+                        raw: {},
+                        approvalFeedbackContent: scenario === 'archery' ? feedback : []
+                    }),
+                    executeAll: async () => [{ success: true, content: formatted.content, raw: {} }]
+                },
+                isToolResultError: () => false,
+                fetchWithRetry: async (_url, options) => {
+                    requests.push(JSON.parse(options.body));
+                    return makeResponse('完成');
+                }
+            };
+            const res = {
+                writableEnded: false, destroyed: false,
+                write: (_text, callback) => { if (callback) callback(); },
+                end: () => { res.writableEnded = true; },
+                send: () => { res.writableEnded = true; }
+            };
+            await new Handler(context).handle({}, res, makeResponse('CALL_TOOL'));
+            if (scenario === 'silent') {
+                assert.equal(requests.length, 0);
+                continue;
+            }
+            assert.equal(requests.length, 1);
+            const payload = requests[0].messages.at(-1);
+            assert.equal(payload.role, 'user');
+            if (scenario === 'normal') {
+                assert.ok(Array.isArray(payload.content));
+                assert.equal(payload.content[1].text.endsWith('请汇总'), true);
+                assert.deepEqual(payload.content[2], image);
+            } else {
+                assert.match(payload.content, /请汇总/);
+                assert.doesNotMatch(payload.content, /BUSINESS_OUTPUT|image_url/);
+            }
+        }
+    }
+});

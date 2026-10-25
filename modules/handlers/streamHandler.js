@@ -489,6 +489,9 @@ class StreamHandler {
               type: 'text',
               text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
             });
+          } else if (result.approvalFeedbackContent?.length) {
+            // 用户明确输入的审核留言优先于 archery 静默；只回灌留言，不回灌成功业务输出。
+            archeryErrorContents.push(...result.approvalFeedbackContent);
           }
 
           const forceThisOne = !shouldShowVCP && toolCall.markHistory;
@@ -502,7 +505,7 @@ class StreamHandler {
         }
       }));
 
-      // 处理纯 Archery 且有错误的情况
+      // 处理纯 Archery 的错误或用户审核留言；成功留言不改变工具成功状态。
       if (normalCalls.length === 0 && archeryErrorContents.length > 0) {
         const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
         currentMessagesForLoop.push({ role: 'user', content: errorPayload });

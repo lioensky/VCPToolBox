@@ -509,6 +509,9 @@ class ToolExecutor {
       success: !innerFailed,
       error: innerFailed ? (result.error || formatted.text) : undefined,
       content: formatted.content,
+      approvalFeedbackContent: result?.__vcpApprovalFeedback
+        ? [{ type: 'text', text: `【用户审核留言：已允许工具 "${toolName}" 调用】\n${result.__vcpApprovalFeedback}` }]
+        : [],
       raw: result
     };
   }
@@ -518,21 +521,42 @@ class ToolExecutor {
       return { text: '(无返回内容)', content: [{ type: 'text', text: '(无返回内容)' }] };
     }
 
-    // 检查是否为富内容格式
+    const feedback = typeof result?.__vcpApprovalFeedback === 'string'
+      ? result.__vcpApprovalFeedback.trim()
+      : '';
+    const suffix = feedback ? `\n\n【用户审核留言：已允许本次工具调用】\n${feedback}` : '';
+
+    // 标准多模态回执只修改最后一个 text 块，绝不字符串化或改写图片等非文本块。
     if (typeof result === 'object') {
-      const richContent = result.data?.content || result.content;
+      const richContent = Array.isArray(result) ? result : (result.data?.content || result.content);
       if (Array.isArray(richContent)) {
-        const textPart = richContent.find(p => p.type === 'text');
+        let content = richContent;
+        if (suffix) {
+          content = richContent.slice();
+          const lastTextIndex = content.findLastIndex(part => part?.type === 'text' && typeof part.text === 'string');
+          if (lastTextIndex >= 0) {
+            content[lastTextIndex] = { ...content[lastTextIndex], text: content[lastTextIndex].text + suffix };
+          } else {
+            content.push({ type: 'text', text: suffix.trimStart() });
+          }
+        }
+        const textPart = content.find(p => p?.type === 'text');
         return {
           text: textPart?.text || '[Rich Content]',
-          content: richContent
+          content
         };
       }
     }
 
-    const text = typeof result === 'object' 
-      ? JSON.stringify(result, null, 2) 
-      : String(result);
+    // 内部审核元信息不作为业务字段重复展示，旧回执统一在文本尾部附加留言。
+    let displayResult = result;
+    if (feedback && typeof result === 'object') {
+      const { __vcpApprovalFeedback, ...businessResult } = result;
+      displayResult = businessResult;
+    }
+    const text = (typeof displayResult === 'object'
+      ? JSON.stringify(displayResult, null, 2)
+      : String(displayResult)) + suffix;
     
     return {
       text,
@@ -562,6 +586,9 @@ class ToolExecutor {
           readableParts.push('用户反馈: ' + parsedPayload.user_feedback);
         }
         if (readableParts.length > 0) displayText = readableParts.join('\n');
+        if (parsedPayload.__vcpApprovalFeedback) {
+          displayText += `\n\n【用户审核留言：已允许工具 "${toolName}" 调用】\n${parsedPayload.__vcpApprovalFeedback}`;
+        }
       } catch (_parseError) {
         // 不是合法 JSON，保持原字符串。
       }
