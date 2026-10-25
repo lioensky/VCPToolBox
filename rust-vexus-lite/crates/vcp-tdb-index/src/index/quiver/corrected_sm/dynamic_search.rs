@@ -9,6 +9,25 @@ impl CorrectedSmIndex {
         cfg: &QuIVerSearchConfig,
         sq: &DynamicQuery,
     ) -> io::Result<SmSearchOutput> {
+        self.dynamic_encoded_filtered::<TRACE, OPTIMIZED, S, fn(u64) -> bool>(
+            q, graph, source, cfg, sq, None,
+        )
+    }
+
+    pub(super) fn dynamic_encoded_filtered<
+        const TRACE: bool,
+        const OPTIMIZED: bool,
+        S: ExactSource,
+        F: Fn(u64) -> bool,
+    >(
+        &self,
+        q: &[f32],
+        graph: &FlatAdj,
+        source: &mut S,
+        cfg: &QuIVerSearchConfig,
+        sq: &DynamicQuery,
+        exclude_pred: Option<&F>,
+    ) -> io::Result<SmSearchOutput> {
         let budget = cfg.rerank_limit.unwrap_or(64);
         let ef = cfg.ef_search.min(self.len());
         if q.len() != self.dimension()
@@ -65,7 +84,12 @@ impl CorrectedSmIndex {
             let mut counts = [0usize, 1 + usize::from(uses_anchor), 0, 0, 0];
             visited.set(self.entry as usize);
             st.queue.push(Reverse((NonNanF32(first), self.entry)));
-            st.results.push((NonNanF32(first), self.entry));
+            let entry_excluded = exclude_pred
+                .map(|pred| pred(self.ids[self.entry as usize]))
+                .unwrap_or(false);
+            if !entry_excluded {
+                st.results.push((NonNanF32(first), self.entry));
+            }
             while let Some(&Reverse((distance, u))) = st.queue.peek() {
                 if st.results.len() >= ef && distance > st.results.peek().unwrap().0 {
                     break;
@@ -173,12 +197,17 @@ impl CorrectedSmIndex {
                         let next = NonNanF32(1. - value);
                         if st.results.len() < ef || next < st.results.peek().unwrap().0 {
                             st.queue.push(Reverse((next, v)));
-                            if optimized && st.results.len() == ef {
-                                *st.results.peek_mut().unwrap() = (next, v);
-                            } else {
-                                st.results.push((next, v));
-                                if st.results.len() > ef {
-                                    st.results.pop();
+                            let is_excluded = exclude_pred
+                                .map(|pred| pred(self.ids[v as usize]))
+                                .unwrap_or(false);
+                            if !is_excluded {
+                                if optimized && st.results.len() == ef {
+                                    *st.results.peek_mut().unwrap() = (next, v);
+                                } else {
+                                    st.results.push((next, v));
+                                    if st.results.len() > ef {
+                                        st.results.pop();
+                                    }
                                 }
                             }
                         }
@@ -192,7 +221,7 @@ impl CorrectedSmIndex {
             if TRACE {
                 trace.candidates.extend(st.candidates.iter().map(|x| x.1));
             }
-            if uses_anchor {
+            if uses_anchor && !exclude_pred.map(|p| p(self.ids[self.anchor as usize])).unwrap_or(false) {
                 st.exact.push((self.anchor, anchor));
             }
             for &(_, v) in &st.candidates {

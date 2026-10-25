@@ -1,0 +1,148 @@
+{
+  "dimension": 3072,
+  "library_rows": 97464,
+  "post_filter_contract": "request 64 (or 64+M) results, filter IDs, take ten; pushdown requests ten with the unchanged max(64,k) rerank budget",
+  "queries": 500,
+  "rayon_threads": 1,
+  "scope": "actual SQL function; counts include final vector rereads; adversarial true-top-M exclusions; no latency claim",
+  "sqlite_version": "3.41.2",
+  "baseline_commit": "c603f13692b212db371223ff6d91fb71b0b3b39e",
+  "embedding_model": "gemini-embedding-2-preview",
+  "dataset": "LongMemEval cached public benchmark embeddings",
+  "truth": "Exhaustive FP64 cosine top-300 over the library; IDs are one-based",
+  "results": [
+    {
+      "ef": 128,
+      "excluded_top": 0,
+      "mean_sql_vector_reads": 128.0,
+      "mode": "post_filter_128",
+      "recall10": 0.9646,
+      "requested_k": 64
+    },
+    {
+      "ef": 128,
+      "excluded_top": 0,
+      "mean_sql_vector_reads": 128.0,
+      "mode": "expanded_post_filter",
+      "recall10": 0.9646,
+      "requested_k": 64
+    },
+    {
+      "ef": 128,
+      "excluded_top": 0,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_128",
+      "recall10": 0.9646,
+      "requested_k": 10
+    },
+    {
+      "ef": 256,
+      "excluded_top": 0,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_256",
+      "recall10": 0.9822,
+      "requested_k": 10
+    },
+    {
+      "ef": 128,
+      "excluded_top": 32,
+      "mean_sql_vector_reads": 128.0,
+      "mode": "post_filter_128",
+      "recall10": 0.9176,
+      "requested_k": 64
+    },
+    {
+      "ef": 160,
+      "excluded_top": 32,
+      "mean_sql_vector_reads": 192.0,
+      "mode": "expanded_post_filter",
+      "recall10": 0.94,
+      "requested_k": 96
+    },
+    {
+      "ef": 128,
+      "excluded_top": 32,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_128",
+      "recall10": 0.9378,
+      "requested_k": 10
+    },
+    {
+      "ef": 256,
+      "excluded_top": 32,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_256",
+      "recall10": 0.9664,
+      "requested_k": 10
+    },
+    {
+      "ef": 128,
+      "excluded_top": 64,
+      "mean_sql_vector_reads": 128.0,
+      "mode": "post_filter_128",
+      "recall10": 0.3578,
+      "requested_k": 64
+    },
+    {
+      "ef": 192,
+      "excluded_top": 64,
+      "mean_sql_vector_reads": 256.0,
+      "mode": "expanded_post_filter",
+      "recall10": 0.9204,
+      "requested_k": 128
+    },
+    {
+      "ef": 128,
+      "excluded_top": 64,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_128",
+      "recall10": 0.9132,
+      "requested_k": 10
+    },
+    {
+      "ef": 256,
+      "excluded_top": 64,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_256",
+      "recall10": 0.944,
+      "requested_k": 10
+    },
+    {
+      "ef": 128,
+      "excluded_top": 128,
+      "mean_sql_vector_reads": 128.0,
+      "mode": "post_filter_128",
+      "recall10": 0.01,
+      "requested_k": 64
+    },
+    {
+      "ef": 256,
+      "excluded_top": 128,
+      "mean_sql_vector_reads": 384.0,
+      "mode": "expanded_post_filter",
+      "recall10": 0.8694,
+      "requested_k": 192
+    },
+    {
+      "ef": 128,
+      "excluded_top": 128,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_128",
+      "recall10": 0.853,
+      "requested_k": 10
+    },
+    {
+      "ef": 256,
+      "excluded_top": 128,
+      "mean_sql_vector_reads": 74.0,
+      "mode": "pushdown_256",
+      "recall10": 0.8752,
+      "requested_k": 10
+    }
+  ],
+  "input_sha256": {
+    "library_first_97464_rows_f32le": "fcbe0049718a9863588da943f2c03c701bae79ae0011d0b380275dcf337f97d1",
+    "queries_500_rows_f32le": "cce5697156435bf2e642787b61857c30bb8c03cbafbd948a9dbe297b6250288d",
+    "truth_500_by_300_u64le": "4bfc083d89094d01c470405949b2be874698e2babe0f6a03982ee8dad9390159"
+  }
+}

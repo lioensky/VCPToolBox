@@ -1306,7 +1306,7 @@ impl QuIVer {
         let d = NonNanF32(scorer.score(self.ids[entry as usize], cheap_distance(entry)) as f32);
         visited.set(entry as usize);
         candidates.push(Reverse((d, entry)));
-        results.push((d, entry));
+        if scorer.accept_result(self.ids[entry as usize]) { results.push((d, entry)); }
 
         while let Some(Reverse((cd, cur))) = candidates.pop() {
             if results.len() >= ef && cd > results.peek().unwrap().0 {
@@ -1330,9 +1330,9 @@ impl QuIVer {
                 let nd = NonNanF32(scorer.score(self.ids[nb as usize], cheap_distance(nb)) as f32);
                 if results.len() < ef || nd < results.peek().unwrap().0 {
                     candidates.push(Reverse((nd, nb)));
-                    results.push((nd, nb));
-                    if results.len() > ef {
-                        results.pop();
+                    if scorer.accept_result(self.ids[nb as usize]) {
+                        results.push((nd, nb));
+                        if results.len() > ef { results.pop(); }
                     }
                 }
             }
@@ -1543,7 +1543,9 @@ impl QuIVer {
         let initial_distance = distance(scorer, entry);
         scratch.visited.set(entry as usize);
         scratch.candidates.push(Reverse((initial_distance, entry)));
-        scratch.results.push((initial_distance, entry));
+        if scorer.accept_result(self.ids[entry as usize]) {
+            scratch.results.push((initial_distance, entry));
+        }
 
         while let Some(Reverse((candidate_distance, current))) = scratch.candidates.pop() {
             if scratch.results.len() >= ef && candidate_distance > scratch.results.peek().unwrap().0
@@ -1568,9 +1570,9 @@ impl QuIVer {
                     scratch
                         .candidates
                         .push(Reverse((neighbor_distance, neighbor)));
-                    scratch.results.push((neighbor_distance, neighbor));
-                    if scratch.results.len() > ef {
-                        scratch.results.pop();
+                    if scorer.accept_result(self.ids[neighbor as usize]) {
+                        scratch.results.push((neighbor_distance, neighbor));
+                        if scratch.results.len() > ef { scratch.results.pop(); }
                     }
                 }
             }
@@ -1709,11 +1711,25 @@ impl QuIVer {
     pub fn search<F>(
         &self,
         query: &[f32],
-        mut get_vec_f32: F,
+        get_vec_f32: F,
         config: &QuIVerSearchConfig,
     ) -> Vec<(u64, f32)>
     where
         F: FnMut(usize, &mut Vec<f32>) -> bool,
+    {
+        self.search_with_options(query, get_vec_f32, config, &|_| false)
+    }
+
+    pub fn search_with_options<F, E>(
+        &self,
+        query: &[f32],
+        mut get_vec_f32: F,
+        config: &QuIVerSearchConfig,
+        exclude: &E,
+    ) -> Vec<(u64, f32)>
+    where
+        F: FnMut(usize, &mut Vec<f32>) -> bool,
+        E: Fn(u64) -> bool,
     {
         if query.len() != self.dim
             || query.iter().any(|x| !x.is_finite())
@@ -1748,7 +1764,7 @@ impl QuIVer {
             let mut fill = |internal: usize, buffer: &mut Vec<f32>| {
                 !self.tombstones[internal] && get_vec_f32(self.slot_indices[internal], buffer)
             };
-            let mut output = model.search_routed(sm_query, &self.layer0, &sm_config, &mut fill);
+            let mut output = model.search_routed_filtered(sm_query, &self.layer0, &sm_config, exclude, &mut fill);
             if output
                 .as_ref()
                 .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
@@ -1756,7 +1772,7 @@ impl QuIVer {
                 && let Some(default) = &self.default_sm
             {
                 // 属性过滤屏蔽显式校正锚点时，使用无锚点默认SM，仍保持余弦精排。
-                output = default.search_routed(sm_query, &self.layer0, &sm_config, &mut fill);
+                output = default.search_routed_filtered(sm_query, &self.layer0, &sm_config, exclude, &mut fill);
             }
             return match output {
                 Ok(output) => output.neighbors,
@@ -1767,7 +1783,12 @@ impl QuIVer {
             };
         }
         // 仅缺少原始向量的独立旧sidecar仍使用BQ；数据库加载时会流式补齐SM。
-        let mut scorer = BqNavigationScorer;
+        struct FilteredBq<'a, E>(&'a E);
+        impl<E: Fn(u64) -> bool> NavigationScorer for FilteredBq<'_, E> {
+            fn score(&mut self, _: u64, distance: u32) -> u32 { distance }
+            fn accept_result(&mut self, id: u64) -> bool { !(self.0)(id) }
+        }
+        let mut scorer = FilteredBq(exclude);
         self.search_with_scorer(query, get_vec_f32, config, &mut scorer)
     }
 
@@ -3711,6 +3732,25 @@ mod tests {
         assert!(first.windows(2).all(|pair| {
             pair[0].1 < pair[1].1 || (pair[0].1 == pair[1].1 && pair[0].0 < pair[1].0)
         }));
+    }
+
+    #[test]
+    fn filtered_legacy_bq_does_not_spend_the_result_pool_on_excluded_hubs() {
+        for dim in [65,384] {
+            let mut index = QuIVer::new(dim,&QuIVerConfig::default());
+            let mut row = vec![0.;dim];row[0]=1.;
+            let mut seed=17;
+            for slot in 0..96 { index.insert(&row,slot as u64+1,slot,&mut seed); }
+            index.default_sm=None;index.corrected_sm=None;index.max_level=0;
+            index.layer0.reset_full(96);index.entry_point=0;
+            for slot in 0..96 { index.layer0.set_neighbors(slot, &[((slot+1)%96)]); }
+            let cfg=QuIVerSearchConfig {top_k:10,ef_search:80,rerank_limit:Some(64)};
+            let mut reads=0;
+            let found=index.search_with_options(&row,|_,out| {reads+=1;out.clear();out.extend_from_slice(&row);true},
+                &cfg,&|id|id<=80);
+            assert_eq!(found.len(),10);assert_eq!(reads,16);
+            assert!(found.iter().all(|(id,_)|*id>80));
+        }
     }
 
     #[test]
