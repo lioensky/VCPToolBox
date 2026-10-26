@@ -1,0 +1,97 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MinerUParser",
+  "version": "0.4.1",
+  "displayName": "MinerU PDF 智能解析",
+  "description": "学术论文 PDF 解析与自由阅读插件：把 PDF 转化为本地结构化资产包（纯净 Markdown + 图片 + 大纲索引），Agent 上下文只收到元数据卡片；随后用 read 命令按行范围、Markdown 章节、关键词检索自由读取正文，按序号/页码/图注/路径读取图片并以 base64 image_url 交给多模态模型。V3 增加论文库工作区感知：list/status/info 可随时查看已解析内容与进度，资产目录自动命名为「论文标题__paper_id」并兼容旧 paper_id 目录；parse/batch 支持整个文件夹递归导入与并发解析，query 支持一次续查多篇（paper_ids / batch_ids / all=true），并新增 migrate 安全整理旧目录。V4 增加去重：preflight 在解析前按 SHA-256 与论文库比对并标记本次选择内重复（不消耗配额），duplicates 全局只读检索同一 paper_id 多份资产、正文指纹、标题指纹与同一源文件；VCPChat 同时提供「MinerU 论文工作台」可视化窗口（选择文件/文件夹、预检、解析队列、全库查重、PDF 与 Markdown 双栏阅读）。支持超 200 页自动分片、公开 URL、content_list 关键词定位。Rust 实现，通过 Node.js 包装器按平台选择原生二进制。",
+  "author": "Kerr",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node MinerUParser.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1800000
+  },
+  "configSchema": {
+    "MINERU_TOKEN": {
+      "type": "string",
+      "description": "MinerU API Token（从 https://mineru.net 获取）"
+    },
+    "MODEL_VERSION": {
+      "type": "string",
+      "description": "默认解析模型：vlm（MinerU 4.0 视觉大模型）/ pipeline（传统管线）",
+      "default": "vlm"
+    },
+    "POLL_TIMEOUT_SEC": {
+      "type": "integer",
+      "description": "parse/query 命令单次轮询等待上限（秒）",
+      "default": 240
+    },
+    "BATCH_WORKERS": {
+      "type": "integer",
+      "description": "批量解析/续查的并发线程数（1-5，默认 3）。",
+      "default": 3
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "parse",
+        "description": "功能: 完整解析一篇学术论文 PDF 或公开 URL。云端解析完成后，产物（纯净 Markdown、图片、结构化内容流、大纲索引）落盘到本地资产目录，目录名自动采用「论文标题__paper_id」，返回一张元数据卡片（paper_id、资产目录、页数、大纲、图片清单、质检报告），绝不返回全文正文；正文请用 read 命令按行范围/章节/关键词读取，图片用 read 内嵌 base64 查看。传入多个 file_paths/urls 时会自动转入 batch 汇总。\n参数:\n- command (字符串, 必需): 固定为 parse\n- file_path (字符串, 与 url 二选一): PDF 文件绝对路径（≤200MB）\n- url (字符串, 与 file_path 二选一): 可公开访问的 PDF URL（如 arxiv 链接），走 extract/task 免上传通道\n- title (字符串, 可选): 显式覆盖论文标题（缺省用 content_list 首个标题；同时影响资产目录名）\n- file_paths / urls (数组或分隔字符串, 可选): 多文件时自动转 batch\n- model_version (字符串, 可选, 默认vlm): vlm（视觉大模型，推荐）/ pipeline（传统管线）\n- is_ocr (布尔值, 可选, 默认false): 扫描件（无文字层）设为 true\n- language (字符串, 可选, 默认en): 内容语言提示\n- enable_formula (布尔值, 可选, 默认true): 公式解析\n- enable_table (布尔值, 可选, 默认true): 表格解析\n说明: 超 200 页的 PDF 自动按 200 页分片、逐片解析后合并落盘。同一文件（内容 SHA-256 相同）/同一 URL 重复解析直接返回缓存卡片，不重复消耗 API 配额。若单次轮询超时，返回 paper_id 与 batch_id，用 query 续查收尾；卡片末尾附论文库摘要。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」parse「末」,\nfile_path:「始」D:\\papers\\demo.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "query",
+        "description": "功能: 断点续查。解析轮询超时后，凭 paper_id（推荐）或 batch_id 继续查询；云端完成后自动完成下载、解压、落盘、路径重写、质检全收尾，返回卡片或批量汇总。分片模式自动逐片推进。支持一次同时续查多篇：paper_ids（数组或逗号/换行分隔）、batch_ids（与 paper_ids 按序配对），或 all=true 续查全部未完成论文；并发数由 workers 控制（默认 3，最多 5，单次最多 10 篇）。paper_id 也可传标题关键词自动解析到唯一论文。\n参数:\n- command (字符串, 必需): 固定为 query\n- paper_id / paper_ids (字符串, 可选): 论文 ID 或标题关键词；数组形式一次多篇\n- batch_id / batch_ids (字符串, 可选): 批次 ID；缺失时从本地 state 自动读取\n- all (布尔值, 可选): true 时续查全部未完成论文\n- workers (整数, 可选, 默认3): 并发数（1-5）\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」query「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」\n<<<[END_TOOL_REQUEST]>>>\n\n同时续查多篇:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」query「末」,\npaper_ids:「始」paper_a1b2c3d4e5f60718, paper_0f9e8d7c6b5a4938「末」\n<<<[END_TOOL_REQUEST]>>>\n\n续查全部未完成:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」query「末」,\nall:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "status",
+        "description": "功能: 一次查看多篇论文的实时进度（只读本地 state/index，不访问 MinerU，不消耗配额）。默认列出全部论文，也可用 paper_id / paper_ids 指定多篇（支持标题关键词），或 all=true。返回每篇的状态、分片/页级进度、batch_id 与下一步（query/read/info）。这是「同时查询多个进度」的轻量入口。\n参数:\n- command (字符串, 必需): 固定为 status\n- paper_id / paper_ids (字符串/数组, 可选): 指定论文；缺省为全部\n- status (字符串, 可选): 状态过滤\n- limit (整数, 可选, 默认50, 最多200)\n- sort (字符串, 可选, 默认recent)\n说明: 文本卡片之外同时返回结构化 data（papers / paper 字段），便于 Agent 或前端二次消费。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」status「末」\n<<<[END_TOOL_REQUEST]>>>\n\n同时查看多篇:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」status「末」,\npaper_ids:「始」paper_a1b2c3d4e5f60718, paper_0f9e8d7c6b5a4938「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "batch",
+        "description": "功能: 批量导入。一次提交多个本地 PDF、整个文件夹（递归展开 .pdf）或公开 URL，并发解析（含自动分片与缓存复用），返回汇总表：每篇的 paper_id、标题、状态、页数、图片数与资产目录；失败项给出原因，进行中项给出续查提示。单次最多 20 个文件；workers 控制并发（1-5，默认 3）。目录中的 PDF 会按路径去重，超过 20 个时提示拆分。\n参数:\n- command (字符串, 必需): 固定为 batch\n- file_paths (数组或分隔字符串, 与 urls 至少其一): 本地 PDF 绝对路径或文件夹（递归展开）\n- urls (数组或分隔字符串, 与 file_paths 至少其一): 公开 PDF URL\n- recursive (布尔值, 可选, 默认true): 文件夹是否递归\n- workers (整数, 可选, 默认3): 并发解析数（1-5）\n- 其余参数（title / model_version / is_ocr / language / enable_formula / enable_table）同 parse，作用于全部文件\n说明: 批量任务可能耗时较长（分片书稿可达数十分钟），可用 status/query 跟进。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」batch「末」,\nfile_paths:「始」D:\\papers\\a.pdf, D:\\papers\\b.pdf「末」\n<<<[END_TOOL_REQUEST]>>>\n\n整个文件夹递归导入（并发 3）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」batch「末」,\nfile_paths:「始」E:\\pdf\\科研相关论文「末」,\nworkers:「始」3「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "migrate",
+        "description": "功能: 把历史遗留的 paper_id 资产目录安全改名为「论文标题__paper_id」，并同步更新 index.json 中的 md_path / render_url / 图片 URL、full.render.md 中的图片链接与 state.json。默认只预演（不改磁盘）；确认后传 apply=true 执行。只处理已完成（有 index.json）的论文；未完成项跳过。paper_id 保持不变，read/list/info 全程兼容新旧目录。\n参数:\n- command (字符串, 必需): 固定为 migrate\n- paper_id / paper_ids (字符串/数组, 可选): 只整理指定论文；缺省为全部\n- apply (布尔值, 可选, 默认false): true 才实际改名；false 仅预演\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」migrate「末」\n<<<[END_TOOL_REQUEST]>>>\n\n确认后执行:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」migrate「末」,\napply:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "locate",
+        "description": "功能: 关键词 → 段落秒级定位。在已解析论文的 content_list 中大小写不敏感检索关键词，返回命中的页码、块编号、类型（正文/公式/表格/图注）与摘录（关键词加粗），支持「图 4 在哪一页」「某个术语出现位置」这类问题的快速锚定。\n参数:\n- command (字符串, 必需): 固定为 locate\n- paper_id (字符串, 必需): 论文 ID（也可写标题关键词，自动唯一解析）\n- keyword (字符串, 必需): 检索关键词（大小写不敏感）\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」locate「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\nkeyword:「始」microwave absorption「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "read",
+        "description": "功能: 自由阅读已解析论文。正文：path/paths/glob 选择文件（默认 full.md），lines 指定行范围（head:N、tail:N、M-N、N、all；缺省最多 600 行，lines=all 读全文）；section 按 Markdown 章节标题读取整节（含子节，支持 3.2 或标题关键词）；find 关键词检索并返回命中行与上下文（context 默认 2）。图片：images 按序号（1 起，对应卡片 #N）或 page:N/caption:关键词 选择，也可直接用 page、caption 或 path=images/xxx.jpg；默认 with_base64=true，以 data:image/...;base64 的 image_url content part 返回，多模态模型可直接看图。show_line=false 关闭行号。单次默认最多 20 个文本文件、12 张图片（单图 10MB / 合计 24MB）。\n参数:\n- command (字符串, 必需): 固定为 read\n- paper_id (字符串, 必需): 论文 ID（parse/list/status/info 返回）；也可直接写标题关键词，自动唯一解析\n- path (字符串, 可选): 单文件，默认 full.md；支持 :M-N 后缀；图片路径直接读图\n- paths (数组或分隔字符串, 可选): 多个文件/图片，每项可带 :M-N\n- glob (字符串, 可选): 相对资产目录的通配，如 images/*.jpg、**/*.md\n- lines (字符串, 可选): head:N / tail:N / M-N / M:N / N / all\n- section (字符串, 可选): 章节标题或编号，如 3.2 Experimental Setup、Results\n- find (字符串, 可选): 在正文中检索关键词\n- context (整数, 可选, 默认2): find 命中前后上下文行数（最多10）\n- images (字符串/数组, 可选): 图片选择器，如 3、3,5、page:4、caption:Figure 2、images/xxx.jpg\n- page (整数, 可选): 读取该页全部图片（1 起）\n- caption (字符串, 可选): 按图注关键词选图\n- show_line (布尔值, 可选, 默认true): 文本是否带行号\n- with_base64 (布尔值, 可选, 默认true): 图片是否以 base64 内嵌返回\n说明: 读取结果为 text 与 image_url 两类 content part；图片默认 base64 直接进入模型视觉通道，同时保留 HTTP URL。路径仅限该论文的 file/image 资产目录，拒绝 .. 逃逸。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」read「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\nlines:「始」100-160「末」\n<<<[END_TOOL_REQUEST]>>>\n\n按章节读:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」read「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\nsection:「始」3.2 Experimental Setup「末」\n<<<[END_TOOL_REQUEST]>>>\n\n检索关键词:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」read「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\nfind:「始」microwave absorption「末」,\ncontext:「始」2「末」\n<<<[END_TOOL_REQUEST]>>>\n\n读第 4 页全部图片（base64 直接看图）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」read「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\npage:「始」4「末」\n<<<[END_TOOL_REQUEST]>>>\n\n按卡片图片序号读图:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」read「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」,\nimages:「始」3,5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "preflight",
+        "description": "功能: 解析前查重（不访问 MinerU，不消耗配额）。对 file_paths 中的 PDF（文件夹递归展开，单次最多 500 个）逐个计算 SHA-256 → paper_id，与本地论文库比对，并标记同一批选择内内容相同的项。返回结构化 data：counts（new/indexed/running/timeout/failed/duplicate/invalid）与 items（path、file_name、size、sha256、paper_id、status、duplicate_in_selection、duplicate_of、existing 摘要）。用于批量导入前先排除已解析和本次重复文件；只读，不删除任何文件。\n参数:\n- command (字符串, 必需): 固定为 preflight（别名 precheck / dedupe_check）\n- file_paths / paths (数组或分隔字符串, 与 urls 至少其一): PDF 文件或文件夹\n- urls (数组或分隔字符串, 可选): 公开 PDF URL\n- recursive (布尔值, 可选, 默认true): 文件夹是否递归\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」preflight「末」,\nfile_paths:「始」E:\\pdf\\科研相关论文「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "duplicates",
+        "description": "功能: 全库重复检索（只读，不删除、不改名）。扫描 file/mineru 下全部论文，按 group_by 维度分组：asset（同一 paper_id 存在多份资产目录）、text（full.md 归一化空白/大小写后的正文指纹相同）、title（标题只保留字母数字后相同，至少 12 个字符）、source（同一 source_path 对应不同 paper_id，通常是源文件被替换后重复解析）。返回 counts（papers/groups/papers_involved/reclaim_bytes）与 groups（每组含成员、建议保留项 recommended、可回收 source.zip 字节数）。\n参数:\n- command (字符串, 必需): 固定为 duplicates（别名 dedupe / dupes）\n- group_by (字符串, 可选, 默认all): all / asset,text,title,source（逗号分隔）\n- query (字符串, 可选): 只检索标题/文件名/paper_id 匹配的论文\n- limit (整数, 可选, 默认200, 最多200): 返回分组上限\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」duplicates「末」,\ngroup_by:「始」text,title「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "list",
+        "description": "功能: 论文库清单（工作区感知）。扫描本地全部资产，合并 index.json 与 state.json，返回总览（已完成/进行中/待续查/失败数量）、每篇的 paper_id、标题、状态、页数、图片数、资产目录与更新时间。可选 status 过滤（indexed/running/timeout/failed/unknown/unfinished/all）、query 关键词（标题/文件名/paper_id/目录）、sort（recent/title/pages/created）与 limit（默认 20，最多 100）。Agent 可用它快速确认「已经解析了哪些内容」，再决定 read / locate / status / info。\n参数:\n- command (字符串, 必需): 固定为 list\n- status (字符串, 可选): 状态过滤，逗号分隔\n- query (字符串, 可选): 标题/文件名/paper_id/目录关键词\n- sort (字符串, 可选, 默认recent): recent / title / pages / created\n- limit (整数, 可选, 默认20, 最多100)\n说明: 文本卡片之外同时返回结构化 data（papers / counts 字段），便于 Agent 或前端二次消费。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」list「末」\n<<<[END_TOOL_REQUEST]>>>\n\n只看进行中/待续查:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」list「末」,\nstatus:「始」running,timeout「末」\n<<<[END_TOOL_REQUEST]>>>\n\n按标题搜索:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」list「末」,\nquery:「始」microwave absorption「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "info",
+        "description": "功能: 查看单篇论文详情（工作区感知的 GetProject 等价物）。返回标题、paper_id、状态、资产目录、源文件/源目录、页数/字符/图片/表格/公式、batch_id、目录大纲（前 25 条）、图片清单（前 12 张）与质检结果。paper_id 可写完整 ID 或标题关键词；paper_ids 一次最多 5 篇（返回紧凑表）。不带参数时退化为论文库概览（等同 list）。\n参数:\n- command (字符串, 必需): 固定为 info\n- paper_id (字符串, 可选): 论文 ID 或标题关键词\n- paper_ids (数组, 可选): 最多 5 篇\n说明: 文本卡片之外同时返回结构化 data（papers / paper 字段），便于 Agent 或前端二次消费。\n调用格式:",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MinerUParser「末」,\ncommand:「始」info「末」,\npaper_id:「始」paper_a1b2c3d4e5f60718「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

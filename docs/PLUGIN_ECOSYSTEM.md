@@ -1262,7 +1262,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 | ArtistMatcher | synchronous | 画师匹配 |
 | SVCardFinder | synchronous | SV 卡牌查询 |
 
-### 9.8 其他工具 (14 个)
+### 9.8 其他工具 (15 个)
 
 | 插件名 | 类型 | 功能 |
 |--------|------|------|
@@ -1273,6 +1273,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 | TencentCOSBackup | synchronous | 腾讯云备份 |
 | NCBIDatasets | synchronous | NCBI 数据集 |
 | PaperReader | synchronous | 论文阅读 |
+| MinerUParser | synchronous | MinerU PDF 解析、查重与知识库 |
 | FlashDeepSearch | synchronous | 深度搜索 |
 | VCPForum | synchronous | VCP 论坛 |
 | VCPForumLister | static | 论坛列表 |
