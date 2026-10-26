@@ -53,9 +53,9 @@ test('publish sends HTML as index.html anonymously and returns the parsed result
     assert.ok(server.authorizations.every(value => value === null));
 });
 
-test('a configured token is sent as a Bearer header and SSE results are parsed', async () => {
+test('an explicit token is sent as a Bearer header and SSE results are parsed', async () => {
     const server = mockServer({ sse: true, toolResult: { ok: true, deleted: 'weekly-report' } });
-    const result = await processRequest({ command: 'delete_site', slug: 'weekly-report' }, { ...server, token: ' deed_tok_saved ' });
+    const result = await processRequest({ command: 'delete_site', slug: 'weekly-report', token: ' deed_tok_saved ' }, server);
     assert.equal(result.status, 'success');
     assert.equal(result.result.deleted, 'weekly-report');
     assert.deepEqual(server.requests.find(r => r.method === 'tools/call').params.arguments, { slug: 'weekly-report' });
@@ -80,6 +80,47 @@ test('HTTP failures propagate without retrying the request', async () => {
         }
     }), error => error.code === 429 && /rate limited/.test(error.message));
     assert.equal(calls, 1);
+});
+
+test('updates and deletes use each site token without leaking credentials into tool arguments', async () => {
+    const sites = [
+        { command: 'publish_site', slug: 'site-a', html: '<h1>Updated A</h1>', token: 'deed_tok_a' },
+        { command: 'delete_site', slug: 'site-b', token: 'deed_tok_b' }
+    ];
+    await Promise.all(sites.map(async input => {
+        const server = mockServer();
+        assert.equal((await processRequest(input, server)).status, 'success');
+        assert.ok(server.authorizations.every(value => value === `Bearer ${input.token}`));
+        const args = server.requests.find(r => r.method === 'tools/call').params.arguments;
+        assert.equal(args.slug, input.slug);
+        assert.equal(args.token, undefined);
+        if (input.html) assert.deepEqual(args.files, { 'index.html': input.html });
+    }));
+});
+
+test('legacy environment and option tokens are ignored, including for deletion', async () => {
+    const previous = process.env.DEEDPAGE_TOKEN;
+    process.env.DEEDPAGE_TOKEN = 'deed_tok_legacy';
+    try {
+        const server = mockServer();
+        await processRequest({ command: 'publish_site', html: '<p>New site</p>' }, { ...server, token: 'deed_tok_option' });
+        assert.ok(server.authorizations.every(value => value === null));
+        await assert.rejects(processRequest({ command: 'delete_site', slug: 'site-a' }, {
+            token: 'deed_tok_option',
+            fetch: () => assert.fail('Missing explicit token reached network')
+        }), /token/);
+    } finally {
+        if (previous === undefined) delete process.env.DEEDPAGE_TOKEN;
+        else process.env.DEEDPAGE_TOKEN = previous;
+    }
+});
+
+test('invalid tokens fail before sending requests', async () => {
+    for (const token of ['', ' ', null, 123, {}, 'deed_tok_a\ninjected', 'deed_tok_a b']) {
+        await assert.rejects(processRequest({ command: 'publish_site', html: '<p>x</p>', token }, {
+            fetch: () => assert.fail('Invalid token reached network')
+        }), /token/);
+    }
 });
 
 test('invalid VCP arguments fail before sending requests', async () => {

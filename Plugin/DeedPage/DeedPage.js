@@ -18,10 +18,12 @@ function slugValue(value) {
     return slug;
 }
 
-function normalizeArguments(input, token) {
+function normalizeArguments(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
         throw new Error('输入必须是 JSON 对象。');
     }
+    const token = input.token === undefined ? '' : stringValue(input.token, 'token').trim();
+    if (/\s/.test(token)) throw new Error('token 不能包含空白字符。');
     const name = input.command;
     const args = {};
     if (name === 'publish_site') {
@@ -35,7 +37,7 @@ function normalizeArguments(input, token) {
     } else if (name === 'get_site') {
         args.slug = slugValue(input.slug);
     } else if (name === 'delete_site') {
-        if (!token) throw new Error('删除站点需要在插件 config.env 中配置 DEEDPAGE_TOKEN。');
+        if (!token) throw new Error('删除站点需要显式传入该站点的 token（发布时返回的令牌）。');
         args.slug = slugValue(input.slug);
     } else {
         throw new Error('command 必须是 publish_site、get_site 或 delete_site。');
@@ -43,14 +45,14 @@ function normalizeArguments(input, token) {
     return { name, arguments: args };
 }
 
-async function processRequest(input, { fetch: fetchImpl = globalThis.fetch, token = process.env.DEEDPAGE_TOKEN } = {}) {
-    token = typeof token === 'string' ? token.trim() : '';
-    const params = normalizeArguments(input, token);
+async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {}) {
+    const params = normalizeArguments(input);
+    const token = input.token === undefined ? '' : input.token.trim();
     const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
     const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
     const client = new Client({ name: 'VCPToolBox-DeedPage', version: '1.0.0' });
     const headers = { 'User-Agent': USER_AGENT };
-    // 只有配置了令牌才发送 Authorization；未配置时首次发布会返回新令牌。
+    // 只使用本次调用显式传入的令牌，不读取环境变量或复用其他站点的凭据。
     if (token) headers.Authorization = `Bearer ${token}`;
     const transport = new StreamableHTTPClientTransport(new URL(ENDPOINT), {
         requestInit: { headers },
