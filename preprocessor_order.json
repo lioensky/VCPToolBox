@@ -3,6 +3,7 @@
   "CapturePreprocessor",
   "$StaticPlaceholderInjection",
   "ImageProcessor",
+  "MemoryThinkingTray",
   "RAGDiaryPlugin",
   "VCPTimeLine",
   "OpenHerPersona",
