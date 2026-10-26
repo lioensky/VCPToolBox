@@ -1,0 +1,12 @@
+{
+  "name": "vcp-vtrade",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VCP daily simulation, preparation and position journal",
+  "license": "CC-BY-NC-SA-4.0",
+  "engines": { "node": ">=22.7" },
+  "scripts": {
+    "test": "node --test --test-timeout=15000 tests/*.test.cjs",
+    "preview": "node preview.cjs"
+  }
+}

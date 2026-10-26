@@ -1,0 +1,20 @@
+/* Standalone light fallback from VCPToolBox AdminPanel-Vue/src/style/index.css,
+   3b227adf8e183b58ea7bdf54af5b9362d6db7578. VCPUI supplies the semantic roles. */
+body[data-vcp-theme="light"] {
+  --primary-bg:oklch(0.96 0.008 230);
+  --secondary-bg:oklch(0.99 0.005 230 / 0.9);
+  --tertiary-bg:oklch(0.94 0.008 230 / 0.7);
+  --primary-text:oklch(0.15 0.015 230);
+  --secondary-text:oklch(0.50 0.018 230);
+  --highlight-text:oklch(0.68 0.16 230);
+  --border-color:oklch(0 0 0 / 0.06);
+  --button-bg:oklch(0.68 0.16 230);
+  --button-hover-bg:oklch(0.60 0.18 230);
+  --input-bg:oklch(0.94 0.008 230 / 0.9);
+  color-scheme:light;
+}
+body[data-vcp-theme="dark"] { color-scheme:dark; }
+
+/* Chart engine (chart-engine.mjs): the canvas fills its host; page rules may still position the host. */
+:where(.vt-chart) { position: relative; overflow: hidden; }
+.vt-chart-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
