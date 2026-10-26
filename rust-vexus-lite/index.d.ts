@@ -179,7 +179,6 @@ export declare class NativeKnowledgeRuntime {
   /** Never wait for a query lock on the Node main thread. */
   evictIdleLightMemoIndex(ttlMs: number): boolean
   searchGlobalTags(query: Float32Array, limit: number): Promise<unknown>
-  /** JSON options: excludeIds and optional efSearch (default max(128, k)). */
   searchGlobalTagsWithOptions(query: Float32Array, limit: number, optionsJson: string): Promise<unknown>
   storeState(): NativeStoreState | null
   healthCheck(): Promise<unknown>
@@ -317,7 +316,6 @@ export declare class NativeKnowledgeRuntime {
   registerDiaryIndex(diaryName: string, diaryIndex: VexusIndex): RegisteredDiaryIndexState
   /** 在多个已注册日记索引上执行一次后台 ANN，并按 Chunk ID 确定性合并。 */
   searchDiaryIndices(diaryNames: Array<string>, query: Float32Array, perIndexK: number, globalK: number): Promise<unknown>
-  /** Exclusion applies to current and supplemental ANN and final merged results. */
   searchDiaryIndicesWithOptions(diaryNames: Array<string>, query: Float32Array, perIndexK: number, globalK: number, optionsJson: string): Promise<unknown>
   /**
    * 多索引 ANN 后在同一后台任务中批量读取 Chunk 向量并执行确定性语义去重。
@@ -422,10 +420,10 @@ export declare class VexusIndex {
    * 搜索通过同一 RwLock 等待差分完成，只会看到差分前或差分后的索引。
    */
   applyTagDelta(removeIds: Array<number>, upsertIds: Array<number>, upsertVectors: Float32Array): Promise<unknown>
+  /** Query-local external-ID exclusions and optional navigation width. */
+  searchWithOptions(query: Float32Array, k: number, optionsJson: string): Array<SearchResult>
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
-  /** JSON options: excludeIds and optional efSearch; reranking retains its fixed budget. */
-  searchWithOptions(query: Float32Array, k: number, optionsJson: string): Array<SearchResult>
   /**
    * 在本 Tag 向量索引与 MemoRuntime 上执行统一查询数学管线。
    *
