@@ -1157,7 +1157,7 @@ function downloadRawPayload() {
   try {
     // 直接导出服务器保存的完整上游 body，不从可见块/summary 重建消息，
     // 不过滤任何消息字段或多模态数据，也不添加快照元信息。
-    const json = JSON.stringify(current.body)
+    const json = JSON.stringify(current.body, null, 2)
     if (json === undefined) throw new Error('当前缓存组没有原始请求体')
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
     url = URL.createObjectURL(blob)
