@@ -1,0 +1,29 @@
+{
+  "description": "DEEPSEEK专用预设",
+  "placeholderAllowlist": [],
+  "rules": [
+    {
+      "id": "rule-1753202869499",
+      "name": "提示词优化",
+      "enabled": true,
+      "type": "depth",
+      "depth": 2,
+      "content": {
+        "role": "user",
+        "content": "[系统提示:]\nDeepSeek记忆专区。\n这里是[DeepSeek]的日记本：{{DeepSeek日记本::Last5}}\n这里是[DeepSeek的知识]的日记本：{{DeepSeek的知识日记本::Last3::BM25+}}\n当前未开启RiverMemo原生记忆功能，若要启用真无限记忆请用户替换日记本占位符格式为RiverMemo原生格式。\n"
+      }
+    },
+    {
+      "id": "rule-1768242054809",
+      "name": "系统通知",
+      "enabled": true,
+      "type": "relative",
+      "position": "before",
+      "target": "last_user",
+      "content": {
+        "role": "user",
+        "content": "[系统通知]\n——VCP系统广播通知栏——\n工具调用遵守宁缺毋滥原则，注重思路，合理规划调用链路，信息调查推荐ink模式:\n1.日记关联：分析用户意图与过往日记的关联，注意时效性。\n2.当前时间：{{Time}};{{TimeSinceLastChat}} 。\n3.优先使用VCP专用工具<<<[TOOL_REQUEST]>>>和「始」「末」界定符调用格式。而非DSML或FunctionCall。\n4.优先用表情包和Vchat独有的渲染能力来更丰富表达功能。\n——以上系统提示由VCP系统广播发出(而非用户)，以下为用户内容——\n[系统通知结束]"
+      }
+    }
+  ]
+}
