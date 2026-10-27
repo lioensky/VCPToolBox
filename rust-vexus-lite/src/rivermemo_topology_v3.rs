@@ -16,7 +16,7 @@ use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.topology-v3.1-rust";
+const ALGORITHM_VERSION: &str = "rivermemo.safe-stoploss-v1";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -386,15 +386,15 @@ impl Default for NativeConfig {
             omega_epsilon: 0.02,
             collapsed_threshold: 0.12,
             sparse_threshold: 0.45,
-            semantic_anchor_threshold: 0.8,
+            semantic_anchor_threshold: 0.88,
             semantic_anchor_discount: 0.7,
             specificity_floor: 0.35,
             rarity_floor: 0.15,
             reliability_seed_saturation: 2.0,
             fallback_reliability_cap: 0.5,
-            pure_query_weight: 0.25,
+            pure_query_weight: 0.7,
             pure_local_weight: 0.2,
-            pure_transfer_weight: 0.15,
+            pure_transfer_weight: 0.1,
             topology_bonus_cap: 0.08,
             topology_path_saturation: 0.15,
             conditional_bandwidth: 0.04,
@@ -1974,24 +1974,32 @@ fn anchor_contacts(
     config: &NativeConfig,
     cosines: &CosineCache,
 ) -> Vec<(i64, i64, bool, f64, f64, f64)> {
-    let mut contacts = Vec::new();
+    // Enumerate edges before assignment: exact contacts reserve both endpoints.
+    let mut edges = Vec::new();
     for (seed_id, mass) in seeds {
-        if let Some(tag) = curve.tags.iter().find(|tag| tag.id == *seed_id) {
-            contacts.push((*seed_id, tag.id, true, 1.0, *mass, tag.chunk_cosine));
-            continue;
+        for tag in &curve.tags {
+            let exact = tag.id == *seed_id;
+            let similarity = if exact { 1.0 } else {
+                seed_vectors.get(seed_id)
+                    .map(|vector| cosines.tag_pair(*seed_id, vector, tag)).unwrap_or(0.0)
+            };
+            if exact || similarity >= config.semantic_anchor_threshold.max(0.88) {
+                edges.push((*seed_id, tag.id, exact, similarity, *mass, tag.chunk_cosine));
+            }
         }
-        let Some(seed_vector) = seed_vectors.get(seed_id) else {
-            continue;
-        };
-        if let Some((tag, similarity)) = curve
-            .tags
-            .iter()
-            .map(|tag| (tag, cosines.tag_pair(*seed_id, seed_vector, tag)))
-            .filter(|item| item.1 >= config.semantic_anchor_threshold)
-            .max_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(Ordering::Equal))
-        {
-            contacts.push((*seed_id, tag.id, false, similarity, *mass, tag.chunk_cosine));
-        }
+    }
+    edges.sort_by(|a, b| b.2.cmp(&a.2)
+        .then_with(|| (b.3 * b.4 * b.5).total_cmp(&(a.3 * a.4 * a.5)))
+        .then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
+    let mut used_seeds = HashSet::new();
+    let mut used_tags = HashSet::new();
+    let mut contacts = Vec::new();
+    for edge in edges {
+        if used_seeds.contains(&edge.0) || used_tags.contains(&edge.1) { continue; }
+        used_seeds.insert(edge.0);
+        used_tags.insert(edge.1);
+        contacts.push(edge);
+        if contacts.len() == 3 { break; }
     }
     contacts
 }
@@ -2009,12 +2017,6 @@ fn compute_anchors(
         .par_iter()
         .map(|curve| anchor_contacts(curve, seeds, seed_vectors, config, cosines))
         .collect();
-    let mut pool_counts: HashMap<i64, usize> = seeds.iter().map(|seed| (seed.0, 0)).collect();
-    for candidate_contacts in &contacts {
-        for contact in candidate_contacts {
-            *pool_counts.entry(contact.0).or_default() += 1;
-        }
-    }
     let max_seed_mass = seeds
         .iter()
         .map(|seed| positive(seed.1))
@@ -2034,10 +2036,8 @@ fn compute_anchors(
                 } else {
                     1.0
                 };
-                let rarity = config.rarity_floor.max(
-                    1.0 - pool_counts.get(&contact.0).copied().unwrap_or(0) as f64
-                        / curves.len().max(1) as f64,
-                );
+                // Global specificity, not the accidental composition of this pool.
+                let rarity = config.rarity_floor.max(specificity);
                 let normalized_mass = if max_seed_mass > 0.0 {
                     clamp01(contact.4 / max_seed_mass)
                 } else {
@@ -2047,7 +2047,9 @@ fn compute_anchors(
                     exact += 1;
                     1.0
                 } else {
-                    config.semantic_anchor_discount
+                    config.semantic_anchor_discount * clamp01(
+                        (contact.3 - config.semantic_anchor_threshold.max(0.88))
+                            / (1.0 - config.semantic_anchor_threshold.max(0.88)).max(1e-9))
                 };
                 let contribution =
                     clamp01(normalized_mass * specificity * contact.5 * rarity * match_weight);
@@ -2061,11 +2063,10 @@ fn compute_anchors(
                 0.0
             };
             let score = clamp01(1.0 - no_contact_probability);
-            let mut reliability = clamp01(
-                (mean_closure
-                    * (contacted as f64 / config.reliability_seed_saturation.max(1.0)).min(1.0))
-                .sqrt(),
-            );
+            // A single exact focus is sufficient identity evidence. Quantity is
+            // never a substitute for closure; semantic-only contacts stay discounted.
+            let mut reliability = clamp01(mean_closure).sqrt()
+                * if exact > 0 { 1.0 } else { config.semantic_anchor_discount };
             if fallback {
                 reliability = reliability.min(config.fallback_reliability_cap);
             }
@@ -2095,6 +2096,7 @@ struct ScoredWork {
     anchor: AnchorOutput,
     v2_bonus: f64,
     gated_bonus: f64,
+    path_bonus: f64,
     anchor_bonus: f64,
     final_score: f64,
 }
@@ -2435,12 +2437,10 @@ fn assign_v3_scores(
     omega: &OmegaOutput,
     config: &NativeConfig,
 ) {
-    let maximum_pure = work.iter().map(|item| item.pure_score).fold(0.0, f64::max);
     for item in work.iter_mut() {
-        let near_frontier = item.pure_score >= maximum_pure - 0.03;
         let direct_answer = mode != "atomic"
             && item.observables.closure >= 0.55
-            && (item.direct_evidence >= 0.55 || (near_frontier && item.curve.query_score >= 0.55));
+            && item.anchor.exact_contacts > 0;
         let structural = (item.topology.matched_edge_coverage
             * item.topology.reliability
             * item.observables.closure)
@@ -2456,12 +2456,6 @@ fn assign_v3_scores(
         }
         .to_string();
     }
-
-    let direct_frontier = work
-        .iter()
-        .filter(|item| item.role == "direct_answer")
-        .map(|item| item.pure_score)
-        .fold(0.0, f64::max);
 
     for index in 0..work.len() {
         let mut peers: Vec<(usize, f64)> = (0..work.len())
@@ -2553,54 +2547,20 @@ fn assign_v3_scores(
         let combined_confidence = clamp01(candidate_confidence * statistical);
         let (role_cap, multiplier) = match work[index].role.as_str() {
             "atomic_concept" => (config.topology_bonus_cap, 1.0),
-            "direct_answer" => (0.02, 0.35),
+            "direct_answer" => (config.topology_bonus_cap, 1.0),
             "structural_explanation" => (0.045, 0.7),
             _ => (0.008, 0.15),
         };
         let requested = innovation * combined_confidence * config.innovation_scale * multiplier;
-        let mut bonus = requested.min(role_cap).min(config.topology_bonus_cap);
-        if direct_frontier > 0.0 && work[index].role != "direct_answer" && mode != "atomic" {
-            bonus = bonus.min(positive(direct_frontier - 0.005 - work[index].pure_score));
-        }
+        let bonus = requested.min(role_cap).min(config.topology_bonus_cap);
         work[index].v2_bonus = clamp01(bonus);
     }
 
-    let anchor_mean = if work.is_empty() {
-        0.0
-    } else {
-        work.iter().map(|item| item.anchor.strength).sum::<f64>() / work.len() as f64
-    };
-    let anchor_variance = if work.is_empty() {
-        0.0
-    } else {
-        work.iter()
-            .map(|item| (item.anchor.strength - anchor_mean).powi(2))
-            .sum::<f64>()
-            / work.len() as f64
-    };
-    let anchor_std = anchor_variance.sqrt();
-    let threshold = clamp01(
-        config
-            .anchor_activation_floor
-            .max(anchor_mean + config.anchor_activation_z * anchor_std),
-    );
-    let mut ranked_anchors: Vec<(usize, f64)> = work
-        .iter()
-        .enumerate()
-        .map(|(index, item)| (index, item.anchor.strength))
-        .collect();
-    ranked_anchors.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-    let strongest = ranked_anchors.first().copied();
-    let second = ranked_anchors.get(1).map(|item| item.1).unwrap_or(0.0);
-    let promote = strongest
-        .map(|item| {
-            item.1 >= config.anchor_frontier_abs_floor
-                && item.1 >= config.anchor_frontier_contrast * second
-        })
-        .unwrap_or(false);
+    // Absolute activation: unrelated candidates cannot change eligibility.
+    let threshold = clamp01(config.anchor_activation_floor);
     let graph_gate = omega.omega.powf(config.omega_gamma.max(0.0));
 
-    for (index, item) in work.iter_mut().enumerate() {
+    for item in work.iter_mut() {
         let activation = if item.anchor.strength <= threshold {
             0.0
         } else if config.anchor_saturation - threshold > 1e-12 {
@@ -2612,15 +2572,14 @@ fn assign_v3_scores(
             1.0
         };
         item.anchor_bonus = config.anchor_bonus_cap * activation;
-        if promote && strongest.map(|entry| entry.0) == Some(index) {
-            item.role = "direct_answer".to_string();
-        } else if omega.omega < config.struct_role_min_omega
+        if omega.omega < config.struct_role_min_omega
             && item.role == "structural_explanation"
         {
             item.role = "thematic_neighbor".to_string();
         }
-        item.gated_bonus = item.v2_bonus * graph_gate;
-        item.final_score = clamp01(item.pure_score + item.gated_bonus + item.anchor_bonus);
+        item.gated_bonus = (item.v2_bonus * graph_gate)
+            .min(positive(config.topology_bonus_cap - item.path_bonus));
+        item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus + item.anchor_bonus);
     }
 }
 
@@ -2634,6 +2593,9 @@ struct NativeResultItem {
     base_score: f64,
     topology_bonus: f64,
     anchor_bonus: f64,
+    path_bonus: f64,
+    graph_bonus: f64,
+    score_clipping: f64,
     role: String,
     omega: f64,
     river_regime: String,
@@ -2860,13 +2822,18 @@ pub(crate) fn run_native_with_connection(
     } else {
         direct_ids.into_iter().collect()
     };
-    let seeds: Vec<(i64, f64)> = input
+    let mut seeds: Vec<(i64, f64)> = input
         .query_state
         .source_field
         .iter()
         .filter(|entry| anchor_ids.contains(&entry.0) && entry.1 > 0.0)
         .copied()
         .collect();
+
+    let maximum_seed = seeds.iter().map(|s| s.1).fold(0.0, f64::max);
+    let core_ids: HashSet<i64> = input.query_state.field_provenance.iter()
+        .filter(|p| p.source_type == "core").map(|p| p.id).collect();
+    seeds.retain(|s| s.1 >= maximum_seed * 0.2 || core_ids.contains(&s.0));
 
     // Query River 节点和 Direct Anchor/Seed 共享一次分块 Tag 向量读取。
     // 同一 ID 同时属于河网和锚点时只读取、解码并存储一次。
@@ -2929,14 +2896,18 @@ pub(crate) fn run_native_with_connection(
             let visible = true; // 越权候选已在进入候选池前删除。
             let observables =
                 evaluate_observables(&curve, &geometry, &input, &workspace, visible, &cosines);
-            let semantic_total = (input.config.pure_query_weight
-                + input.config.pure_local_weight
-                + input.config.pure_transfer_weight)
-                .max(1e-12);
+            let local_weight = if squared_norm(&input.local_vector) > 1e-12 {
+                positive(input.config.pure_local_weight)
+            } else { 0.0 };
+            let transfer_weight = if squared_norm(&input.transfer_vector) > 1e-12 {
+                positive(input.config.pure_transfer_weight)
+            } else { 0.0 };
+            let semantic_total = (positive(input.config.pure_query_weight)
+                + local_weight + transfer_weight).max(1e-12);
             let semantic_base = clamp01(
                 (input.config.pure_query_weight * clamp01(curve.query_score)
-                    + input.config.pure_local_weight * clamp01(curve.local_score)
-                    + input.config.pure_transfer_weight * clamp01(curve.transfer_score))
+                    + local_weight * clamp01(curve.local_score)
+                    + transfer_weight * clamp01(curve.transfer_score))
                     / semantic_total,
             );
             let topology_raw = clamp01(
@@ -2954,8 +2925,8 @@ pub(crate) fn run_native_with_connection(
             let topology_reliability = (path_reliability * observables.query_chunk_score).sqrt();
             let topology_bonus =
                 input.config.topology_bonus_cap * topology_raw * topology_reliability;
-            let pure_score =
-                clamp01(semantic_base + topology_bonus.min(input.config.topology_bonus_cap));
+            let pure_score = semantic_base;
+            let path_bonus = topology_bonus.min(input.config.topology_bonus_cap);
             let atomic_score = 0.75 * topology.node_graph_score + 0.25 * topology.edge_graph_score;
             let propositional_score =
                 0.25 * topology.node_graph_score + 0.75 * topology.edge_graph_score;
@@ -2978,6 +2949,7 @@ pub(crate) fn run_native_with_connection(
                 anchor,
                 v2_bonus: 0.0,
                 gated_bonus: 0.0,
+                path_bonus,
                 anchor_bonus: 0.0,
                 final_score: 0.0,
             }
@@ -3044,6 +3016,9 @@ pub(crate) fn run_native_with_connection(
                     "meanClosure": item.anchor.mean_closure,
                     "role": item.role,
                     "pureScore": item.pure_score,
+                    "pathBonus": item.path_bonus,
+                    "graphBonus": item.gated_bonus,
+                    "requestedGraphBonus": item.v2_bonus * omega.omega.powf(input.config.omega_gamma.max(0.0)),
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
                 }))
@@ -3056,8 +3031,12 @@ pub(crate) fn run_native_with_connection(
                 rank: index + 1,
                 score: item.final_score,
                 base_score: item.pure_score,
-                topology_bonus: item.gated_bonus,
+                topology_bonus: item.path_bonus + item.gated_bonus,
                 anchor_bonus: item.anchor_bonus,
+                path_bonus: item.path_bonus,
+                graph_bonus: item.gated_bonus,
+                score_clipping: positive(item.pure_score + item.path_bonus + item.gated_bonus
+                    + item.anchor_bonus - item.final_score),
                 role: item.role,
                 omega: omega.omega,
                 river_regime: omega.regime.clone(),
@@ -3402,5 +3381,81 @@ mod cold_load_tests {
             assert_eq!(active.provenance.len(), NODES as usize);
         }
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod stoploss_tests {
+    use super::*;
+
+    fn curve(tags: Vec<TagData>) -> Curve {
+        Curve {
+            id: 1, file_id: 1, tags, chunk_vector: Arc::from(vec![1.0, 0.0]),
+            query_score: 0.7, denoised_score: 0.7, local_score: 0.7,
+            transfer_score: 0.7, bm25_score: 0.0, time_score: 0.0,
+            anchor_score: 0.0, union_score: 0.0, union_rank: 1, sources: vec![],
+        }
+    }
+    fn tag(id: i64, vector: Vec<f32>) -> TagData {
+        TagData { id, name: format!("t{id}"), position: id, vector: Arc::from(vector), chunk_cosine: 0.81 }
+    }
+    fn work(exact: usize, strength: f64) -> ScoredWork {
+        ScoredWork {
+            curve: curve(vec![]), geometry: GeometryOutput::default(),
+            topology: TopologyOutput::default(),
+            observables: ObservableOutput { closure: 0.8, ..ObservableOutput::default() },
+            pure_score: 0.7, graph_score: 0.5, direct_evidence: 0.9,
+            role: String::new(),
+            anchor: AnchorOutput { exact_contacts: exact, strength, ..AnchorOutput::default() },
+            v2_bonus: 0.0, gated_bonus: 0.0, path_bonus: 0.03,
+            anchor_bonus: 0.0, final_score: 0.0,
+        }
+    }
+    fn omega() -> OmegaOutput {
+        OmegaOutput { omega: 0.95, omega_edge: 1.0, omega_emerge: 1.0,
+            omega_flow: 0.85, regime: "dense".into(), active_edges: 16,
+            seed_nodes: 7, reached_nodes: 23, emergent_nodes: 16, complete_observation: true }
+    }
+
+    #[test]
+    fn candidate_tag_has_one_vote_and_exact_match_reserves_it() {
+        let curves = vec![curve(vec![tag(9, vec![1.0, 0.0])])];
+        let vectors: TagVectorPool = [(1, Arc::from(vec![1.0_f32, 0.0])),
+            (2, Arc::from(vec![1.0_f32, 0.0])), (9, Arc::from(vec![1.0_f32, 0.0]))]
+            .into_iter().collect();
+        let cache = CosineCache::build(&curves, &[1.0, 0.0], [1, 2, 9], &vectors);
+        let contacts = anchor_contacts(&curves[0], &[(1, 1.0), (2, 1.0), (9, 0.5)],
+            &vectors, &NativeConfig::default(), &cache);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!((contacts[0].0, contacts[0].1, contacts[0].2), (9, 9, true));
+    }
+
+    #[test]
+    fn one_exact_focus_has_no_seed_count_discount() {
+        let curves = vec![curve(vec![tag(9, vec![1.0, 0.0])])];
+        let vectors: TagVectorPool = [(9, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
+        let cache = CosineCache::build(&curves, &[1.0, 0.0], [9], &vectors);
+        let anchors = compute_anchors(&curves, &[(9, 1.0)], &vectors,
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache);
+        assert!((anchors[0].reliability - 0.9).abs() < 1e-12);
+        assert_eq!(anchors[0].contacted_seeds, 1);
+    }
+
+    #[test]
+    fn absolute_activation_preserves_multiple_answers_and_score_accounting() {
+        let mut candidates = vec![work(1, 0.15), work(1, 0.15), work(0, 0.0)];
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &NativeConfig::default());
+        for item in &candidates[..2] {
+            assert_eq!(item.role, "direct_answer");
+            assert!(item.anchor_bonus > 0.0);
+            assert!((item.final_score - item.pure_score - item.path_bonus
+                - item.gated_bonus - item.anchor_bonus).abs() < 1e-12);
+        }
+        assert_ne!(candidates[2].role, "direct_answer");
+        let prior = candidates[0].anchor_bonus;
+        candidates.extend((0..20).map(|_| work(0, 0.0)));
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &NativeConfig::default());
+        assert_eq!(prior, candidates[0].anchor_bonus);
     }
 }

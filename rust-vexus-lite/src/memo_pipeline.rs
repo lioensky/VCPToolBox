@@ -20,7 +20,7 @@ use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
 use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "tagmemo.epa-pyramid-spike-fusion-v9.4-calibrated-rust";
+const PIPELINE_ALGORITHM: &str = "memo.safe-stoploss-v1";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -120,6 +120,9 @@ struct PipelineConfig {
     pyramid_top_k: usize,
     min_energy_ratio: f64,
     layer_decay: f64,
+    min_layer_explained_energy: f64,
+    seed_contribution_ratio: f64,
+    seed_contribution_floor: f64,
     activation_multiplier: Vec<f64>,
     dynamic_boost_range: Vec<f64>,
     core_boost_range: Vec<f64>,
@@ -153,6 +156,9 @@ impl Default for PipelineConfig {
             pyramid_top_k: 10,
             min_energy_ratio: 0.1,
             layer_decay: 0.7,
+            min_layer_explained_energy: 0.03,
+            seed_contribution_ratio: 0.1,
+            seed_contribution_floor: 0.05,
             activation_multiplier: vec![0.5, 1.5],
             dynamic_boost_range: vec![0.3, 2.0],
             core_boost_range: vec![1.2, 1.4],
@@ -708,12 +714,17 @@ fn analyze_pyramid_with_pool(
         let (projection, next_residual, coefficients) =
             orthogonal_projection(&residual, &tags, dimension);
         for (tag, coefficient) in tags.iter_mut().zip(coefficients.iter()) {
-            tag.contribution = *coefficient;
+            tag.contribution = *coefficient / original_energy.sqrt();
         }
         let handshake = analyze_handshakes(&residual, &mut tags, dimension);
         let residual_magnitude = magnitude(&next_residual);
         let residual_energy = residual_magnitude * residual_magnitude;
         let energy_explained = positive(current_energy - residual_energy) / original_energy;
+        // A large remaining residual is not evidence that another layer is useful.
+        // Reject before publishing work/residuals, including dynamic-wormhole inputs.
+        if energy_explained < config.min_layer_explained_energy.clamp(0.0, 1.0) {
+            break;
+        }
         total_explained += energy_explained;
         levels_output.push(PyramidLevelOutput {
             level,
@@ -840,11 +851,18 @@ fn gate_tags(
     let mut seen = HashSet::new();
     let mut gated = Vec::new();
     for (level, tags) in levels.iter().enumerate() {
+        let maximum = tags.iter().map(|tag| positive(tag.contribution)).fold(0.0, f64::max);
+        let threshold = (maximum * config.seed_contribution_ratio.clamp(0.0, 1.0))
+            .max(config.seed_contribution_floor.max(0.0));
         for tag in tags {
-            if tag.id <= 0 || !seen.insert(tag.id) {
+            let is_core = core_names.contains(&tag.name.to_lowercase());
+            if tag.id <= 0 || seen.contains(&tag.id) {
                 continue;
             }
-            let is_core = core_names.contains(&tag.name.to_lowercase());
+            if !is_core && (tag.contribution < threshold || tag.similarity <= 0.0) {
+                continue;
+            }
+            seen.insert(tag.id);
             // Cosine zero is a measured orthogonal relationship, not a
             // missing-score sentinel. Every pyramid candidate is measured
             // against its SQL original before entering this gate.
@@ -869,7 +887,10 @@ fn gate_tags(
                     penalty
                 };
             }
-            let layer_gain = config.layer_decay.clamp(0.0, 1.0).powi(level as i32);
+            let decay = config.layer_decay.clamp(0.0, 1.0).powi(level as i32);
+            // Restore, never amplify, strong residual foci in accepted layers.
+            let independent_support = clamp01(tag.contribution / maximum.max(1e-12));
+            let layer_gain = decay + (1.0 - decay) * independent_support;
             let weight = positive(tag.contribution) * layer_gain * language_gain * core_gain;
             if weight > 0.0 {
                 gated.push(GatedTag {
@@ -1538,8 +1559,15 @@ fn project_basin_fields(
             selected_mass += mass;
             let Some(vector) = pool.get(id) else { continue };
             projected_mass += mass;
+            // Transport already penalizes hubs. Apply only a mild residual
+            // projection discount, preserving the observed query core unchanged.
+            let hub_ratio = if artifact.max_inbound > 0.0 {
+                positive(artifact.inbound.get(id).copied().unwrap_or(0.0)) / artifact.max_inbound
+            } else { 0.0 };
+            let projection_gain = if river_ids.contains(id) { 1.0 }
+                else { 1.0 / (1.0 + hub_ratio.sqrt()) };
             for (out, value) in outputs[field].iter_mut().zip(vector.iter()) {
-                *out += *value as f64 * mass;
+                *out += *value as f64 * mass * projection_gain;
             }
         }
         if projected_mass > 0.0 {
@@ -2564,5 +2592,32 @@ mod projection_budget_tests {
             assert!(serde_json::from_value::<PipelineConfig>(
                 serde_json::json!({"maxFieldProjectionNodes": value})).is_err());
         }
+    }
+}
+
+
+#[cfg(test)]
+mod stoploss_gate_tests {
+    use super::*;
+
+    #[test]
+    fn contribution_tails_are_removed_and_residual_focus_keeps_weight() {
+        let epa = EpaOutput {
+            logic_depth: 0.5, entropy: 0.5, resonance: 0.0, dominant_axes: vec![],
+            bridges: vec![], basis_count: 0, cache_available: false, out_of_domain: 1.0,
+            semantic_explained_ratio: 0.0, in_domain_gate: 0.0,
+            baseline_coverage: 0.0, background_ratio: 0.0,
+        };
+        let make = |id, contribution, similarity| PyramidTagWork {
+            id, name: format!("标签{id}"), vector: Arc::from(vec![1.0_f32, 0.0]),
+            similarity, contribution, handshake_magnitude: 0.0,
+        };
+        let levels = vec![vec![make(1, 0.66, 0.66), make(2, 0.02, 0.6)],
+            vec![make(3, 0.2, 0.32), make(4, 0.01, 0.1), make(5, 0.1, -0.1)]];
+        let pyramid = PyramidOutput { levels: vec![], total_explained_energy: 0.68,
+            features: PyramidFeatures::default() };
+        let (gated, _, _) = gate_tags(&levels, &epa, &pyramid, &[], &PipelineConfig::default());
+        assert_eq!(gated.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 3]);
+        assert!((gated[1].weight - 0.2).abs() < 1e-12);
     }
 }
