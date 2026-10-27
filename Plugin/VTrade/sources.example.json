@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "id": "feed-my-tdx",
+      "name": "我的通达信日线",
+      "kind": "tdx",
+      "directory": "C:/YOUR_TDX/vipdoc",
+      "syncIntervalSeconds": 0,
+      "securities": [
+        { "symbol": "SH.000000", "name": "自行选择的证券", "file": "sh/lday/sh000000.day" }
+      ]
+    },
+    {
+      "id": "feed-my-json",
+      "name": "我的下载脚本输出",
+      "kind": "json",
+      "directory": "C:/YOUR_MARKET_DATA",
+      "file": "daily.json",
+      "syncIntervalSeconds": 0
+    }
+  ],
+  "tools": {
+    "financials": { "directory": "C:/YOUR_MARKET_DATA", "file": "financials.json" }
+  }
+}

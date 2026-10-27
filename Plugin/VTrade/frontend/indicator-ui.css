@@ -1,0 +1,94 @@
+/* Chart indicators (indicator-layer.mjs, indicator-editor.mjs), shared by 看盘 and 对决. */
+
+/* The switches above the chart: one per indicator, a pressed switch is lit one step. */
+.ind-toolbar { display: flex; flex: none; align-items: center; gap: var(--vcp-ui-space-3); min-height: 30px; padding: 2px var(--vcp-ui-space-2);
+  overflow-x: auto; border-bottom: 1px solid var(--vcp-ui-border); container-type: inline-size; scrollbar-width: none; }
+.ind-switches { display: flex; flex: none; align-items: center; gap: 2px; }
+.ind-group-label { margin-right: var(--vcp-ui-space-1); color: var(--vcp-ui-text-secondary); font-size: var(--vcp-ui-font-helper); }
+.ind-switch { display: inline-flex; align-items: baseline; gap: 4px; min-height: 24px; padding: 2px 8px; border: 0; border-radius: var(--vcp-ui-radius-sm);
+  background: transparent; color: var(--vcp-ui-text-secondary); font: inherit; font-size: var(--vcp-ui-font-helper); cursor: pointer; }
+.ind-switch b { font-weight: 600; letter-spacing: 0.02em; }
+.ind-switch span { font-size: var(--vcp-ui-font-micro, 11px); }
+.ind-switch:hover { background: var(--vcp-ui-fill-1); color: var(--vcp-ui-text-1); }
+.ind-switch[aria-pressed="true"] { background: var(--vcp-ui-fill-2); color: var(--vcp-ui-text-1); }
+.ind-switch:focus-visible, .ind-name:focus-visible, .ind-tool:focus-visible, .ind-swatch:focus-visible, .ind-width:focus-visible,
+.ind-palette-color:focus-visible, .ind-text-button:focus-visible, .ind-add:focus-visible { outline: 2px solid var(--vcp-ui-focus-ring, var(--vcp-ui-text-accent)); outline-offset: 1px; }
+@container (max-width: 560px) { .ind-switch span { display: none; } }
+
+/* Legends laid over the chart, one block at the top left of each pane. */
+.ind-legends { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.ind-legend { position: absolute; left: 6px; display: grid; justify-items: start; gap: 1px; }
+.ind-row { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 0 2px 0 0; border-radius: var(--vcp-ui-radius-sm);
+  background: color-mix(in srgb, var(--vcp-ui-bg-1) 78%, transparent); font-size: var(--vcp-ui-font-helper); line-height: 20px; pointer-events: auto; }
+.ind-name { display: inline-flex; flex: none; gap: 4px; padding: 0 4px; border: 0; border-radius: var(--vcp-ui-radius-sm); background: transparent;
+  color: var(--vcp-ui-text-1); font: inherit; cursor: pointer; }
+.ind-name b { font-weight: 600; }
+.ind-name span { color: var(--vcp-ui-text-secondary); }
+.ind-name:hover { background: var(--vcp-ui-fill-1); }
+.ind-values { display: flex; flex-wrap: wrap; gap: 0 10px; min-width: 0; font-variant-numeric: tabular-nums; }
+.ind-value { color: var(--ind-color, var(--vcp-ui-text-1)); white-space: nowrap; }
+.ind-tools { display: inline-flex; flex: none; gap: 1px; opacity: 0.45; }
+.ind-row:hover .ind-tools, .ind-row:focus-within .ind-tools { opacity: 1; }
+.ind-tool { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--vcp-ui-radius-sm);
+  background: transparent; color: var(--vcp-ui-text-secondary); cursor: pointer; }
+.ind-tool:hover { background: var(--vcp-ui-fill-2); color: var(--vcp-ui-text-1); }
+.ind-row[data-hidden="true"] :is(.ind-name, .ind-values) { opacity: 0.45; }
+.ind-row[data-hidden="true"] .ind-name { text-decoration: line-through; }
+
+/* The settings panel, floating at the top right of the chart. */
+.ind-editor { position: absolute; top: 8px; right: 64px; z-index: var(--vcp-ui-z-dropdown, 20); display: grid; gap: var(--vcp-ui-space-2);
+  width: min(320px, calc(100% - 24px)); max-height: calc(100% - 16px); padding: var(--vcp-ui-space-3); overflow-y: auto;
+  border: 1px solid var(--vcp-ui-border-strong, var(--vcp-ui-border)); border-radius: var(--vcp-ui-radius-lg);
+  background: var(--vcp-ui-bg-1); box-shadow: var(--vcp-ui-shadow-elevation-overlay, var(--vcp-ui-shadow-lg));
+  color: var(--vcp-ui-text-1); font-size: var(--vcp-ui-font-helper); }
+.ind-editor-head { display: flex; align-items: center; justify-content: space-between; gap: var(--vcp-ui-space-2); }
+.ind-editor-head strong { font-size: var(--vcp-ui-font-body); }
+.ind-hint { margin: 0; color: var(--vcp-ui-text-secondary); }
+.ind-editor h4 { margin: var(--vcp-ui-space-1) 0 0; color: var(--vcp-ui-text-secondary); font-size: var(--vcp-ui-font-helper); font-weight: 500; }
+.ind-editor-body { display: grid; gap: var(--vcp-ui-space-2); }
+.ind-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: var(--vcp-ui-space-2); }
+.ind-field { display: grid; gap: 2px; color: var(--vcp-ui-text-secondary); }
+.ind-number { width: 100%; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--vcp-ui-control-border, var(--vcp-ui-border));
+  border-radius: var(--vcp-ui-radius-sm); background: var(--vcp-ui-bg-input, var(--vcp-ui-bg-1)); color: var(--vcp-ui-text-1); font: inherit;
+  font-variant-numeric: tabular-nums; }
+.ind-number[aria-invalid="true"] { border-color: var(--vcp-ui-danger); }
+.ind-lines { display: grid; gap: 4px; }
+.ind-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--vcp-ui-space-2); }
+.ind-line:has(.ind-number) { grid-template-columns: auto auto minmax(0, 1fr) auto auto; }
+.ind-line-label { color: var(--vcp-ui-text-secondary); }
+.ind-swatch { width: 28px; height: 22px; padding: 3px; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-sm);
+  background: var(--vcp-ui-bg-1); cursor: pointer; }
+.ind-swatch::before { content: ""; display: block; width: 100%; height: 100%; border-radius: 2px; background: var(--ind-color); }
+.ind-swatch[aria-expanded="true"] { border-color: var(--vcp-ui-text-accent); }
+.ind-palette { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; padding: var(--vcp-ui-space-2); border-radius: var(--vcp-ui-radius-md);
+  background: var(--vcp-ui-fill-1); }
+.ind-palette-color { aspect-ratio: 1; max-width: 100%; padding: 0; border: 2px solid transparent; border-radius: var(--vcp-ui-radius-sm);
+  background: var(--ind-color); cursor: pointer; }
+.ind-palette-color[aria-pressed="true"] { border-color: var(--vcp-ui-text-1); }
+.ind-palette-custom { display: flex; grid-column: span 7; align-items: center; justify-content: space-between; gap: var(--vcp-ui-space-2);
+  color: var(--vcp-ui-text-secondary); }
+.ind-palette-custom input { width: 48px; height: 24px; padding: 0; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-sm);
+  background: transparent; cursor: pointer; }
+.ind-widths { display: inline-flex; gap: 2px; }
+.ind-width { display: inline-grid; place-items: center; width: 26px; height: 22px; padding: 0; border: 0; border-radius: var(--vcp-ui-radius-sm);
+  background: transparent; cursor: pointer; }
+.ind-width i { display: block; width: 14px; height: calc(var(--w, 1) * 1px); border-radius: 1px; background: var(--vcp-ui-text-secondary); }
+.ind-width[data-width="2"] i { --w: 2; }
+.ind-width[data-width="3"] i { --w: 3; }
+.ind-width:hover { background: var(--vcp-ui-fill-1); }
+.ind-width[aria-pressed="true"] { background: var(--vcp-ui-fill-2); }
+.ind-width[aria-pressed="true"] i { background: var(--vcp-ui-text-1); }
+.ind-tool-space { width: 20px; }
+.ind-add { justify-self: start; padding: 2px 8px; border: 1px dashed var(--vcp-ui-border-strong, var(--vcp-ui-border)); border-radius: var(--vcp-ui-radius-sm);
+  background: transparent; color: var(--vcp-ui-text-secondary); font: inherit; cursor: pointer; }
+.ind-add:hover { color: var(--vcp-ui-text-1); }
+.ind-note { margin: 0; color: var(--vcp-ui-text-secondary); }
+.ind-error { min-height: 0; margin: 0; color: var(--vcp-ui-danger); }
+.ind-error:empty { display: none; }
+.ind-editor-foot { display: flex; align-items: center; gap: var(--vcp-ui-space-2); padding-top: var(--vcp-ui-space-2); border-top: 1px solid var(--vcp-ui-border); }
+.ind-saved { margin-right: auto; color: var(--vcp-ui-text-secondary); font-size: var(--vcp-ui-font-micro, 11px); }
+.ind-text-button { padding: 3px 10px; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-sm); background: transparent;
+  color: var(--vcp-ui-text-1); font: inherit; cursor: pointer; }
+.ind-text-button:hover { background: var(--vcp-ui-fill-1); }
+.ind-text-button.primary { border-color: transparent; background: var(--vcp-ui-accent); color: var(--vcp-ui-on-accent); }
+.ind-text-button.primary:hover { background: var(--vcp-ui-accent-hover, var(--vcp-ui-accent)); }

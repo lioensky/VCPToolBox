@@ -222,11 +222,11 @@ export function useDashboardState(
   const userAuthCode = ref("加载中…");
   const weather = ref<DashboardWeatherDisplay>({
     icon: "--",
-    temp: 0,
+    temp: null,
     text: "加载中…",
-    humidity: 0,
+    humidity: null,
     wind: "--",
-    pressure: 0,
+    pressure: null,
     forecast: [],
   });
   const newsItems = ref<NewsItem[]>([]);
@@ -377,6 +377,10 @@ export function useDashboardState(
       );
 
       if (response) {
+        weather.value = {
+          icon: "cloud_off", temp: null, text: "当前天气暂不可用", humidity: null,
+          wind: "--", pressure: null, forecast: [],
+        };
         if (response.hourly && response.hourly.length > 0) {
           const now = new Date();
           let current = response.hourly[0];
@@ -391,13 +395,14 @@ export function useDashboardState(
             }
           }
 
+          current = response.now || current;
           weather.value = {
             icon: mapWeatherIcon(current.icon),
-            temp: parseInt(current.temp) || 0,
+            temp: Number.isFinite(parseFloat(current.temp)) ? parseFloat(current.temp) : null,
             text: current.text || "加载中…",
-            humidity: parseInt(current.humidity) || 0,
+            humidity: Number.isFinite(parseFloat(current.humidity)) ? parseFloat(current.humidity) : null,
             wind: `${current.windDir || "--"} ${current.windScale || "--"}`,
-            pressure: parseInt(current.pressure) || 0,
+            pressure: Number.isFinite(parseFloat(current.pressure)) ? parseFloat(current.pressure) : null,
             forecast: [],
           };
         }
@@ -418,7 +423,10 @@ export function useDashboardState(
       }
     } catch (error) {
       logger.error("Failed to load weather:", error);
-      weather.value.text = "加载失败";
+      weather.value = {
+        icon: "cloud_off", temp: null, text: "天气暂不可用", humidity: null,
+        wind: "--", pressure: null, forecast: [],
+      };
     }
   }
 

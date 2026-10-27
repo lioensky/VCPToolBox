@@ -1,0 +1,630 @@
+@layer vcp-ui.tokens {
+    /* Token ownership contract (refactor 2026-08-27):
+       Every --vcp-ui-* token is declared on :root so ANY element — including
+       portals appended directly to document.body by select menus, tooltips
+       and toasts — resolves them. Previously the tokens lived only on
+       .vcp-ui-scope subtrees; body-level portals could not resolve var()
+       references, which silently degraded properties to their initial value
+       (the "menu z-index computed to auto" trap).
+
+       Derived chains (e.g. --vcp-ui-bg-primary -> --primary-bg) are declared
+       TWICE, on :root and on body[data-vcp-theme="light"]: custom-property var()
+       substitution happens at the declaring element's computed-value time and
+       that substituted result is what descendants inherit. The legacy theme
+       variables are declared at :root (dark) and overridden at
+       body[data-vcp-theme="light"] (light), so a single :root declaration would freeze
+       every derived token at its dark value. Re-declaring the identical block
+       at body[data-vcp-theme="light"] re-derives it from the light overrides.
+
+       color-scheme deliberately stays scoped to .vcp-ui-scope hosts (below):
+       the settings overlay and appearance studio are dark surfaces even while
+       the rest of the app runs its light theme. */
+
+    :root {
+
+
+        --vcp-ui-palette-cyan: oklch(0.75 0.14 230);
+        --vcp-ui-palette-cyan-strong: oklch(0.68 0.16 230);
+        --vcp-ui-palette-cyan-hover: oklch(0.60 0.18 230);
+        --vcp-ui-palette-red: oklch(0.58 0.22 25);
+        --vcp-ui-palette-green: oklch(0.62 0.18 145);
+        --vcp-ui-palette-amber: oklch(0.78 0.16 85);
+        --vcp-ui-palette-blue: oklch(0.66 0.16 250);
+
+        --vcp-ui-bg-primary: var(--vcp-ui-theme-bg-primary, var(--primary-bg, oklch(0.04 0.012 230)));
+        --vcp-ui-bg-secondary: var(--vcp-ui-theme-bg-secondary, var(--secondary-bg, oklch(0.18 0.015 230 / 0.92)));
+        --vcp-ui-bg-tertiary: var(--vcp-ui-theme-bg-tertiary, var(--tertiary-bg, oklch(0.25 0.012 230 / 0.72)));
+        --vcp-ui-bg-input: var(--vcp-ui-theme-bg-input, var(--input-bg, oklch(0.25 0.012 230 / 0.82)));
+        --vcp-ui-text-primary: var(--vcp-ui-theme-text-primary, var(--primary-text, oklch(0.96 0.008 230)));
+        --vcp-ui-text-secondary: var(--vcp-ui-theme-text-secondary, var(--secondary-text, oklch(0.68 0.015 230)));
+        --vcp-ui-text-accent: var(--vcp-ui-theme-text-accent, var(--highlight-text, var(--vcp-ui-palette-cyan)));
+        --vcp-ui-text-disabled: color-mix(in srgb, var(--vcp-ui-text-secondary) 58%, transparent);
+        --vcp-ui-border: var(--vcp-ui-theme-border, var(--border-color, oklch(1 0 0 / 0.10)));
+        --vcp-ui-border-strong: color-mix(in srgb, var(--vcp-ui-text-accent) 40%, var(--vcp-ui-border));
+        --vcp-ui-accent: var(--vcp-ui-theme-accent, var(--button-bg, var(--vcp-ui-palette-cyan-strong)));
+        --vcp-ui-accent-hover: var(--vcp-ui-theme-accent-hover, var(--button-hover-bg, var(--vcp-ui-palette-cyan-hover)));
+        --vcp-ui-on-accent: var(--vcp-ui-theme-on-accent, oklch(1 0 0));
+
+        --vcp-ui-bg-0: var(--vcp-ui-bg-primary);
+        --vcp-ui-bg-1: var(--vcp-ui-bg-secondary);
+        --vcp-ui-bg-2: var(--vcp-ui-bg-tertiary);
+        --vcp-ui-bg-3: color-mix(in srgb, var(--vcp-ui-bg-secondary) 88%, var(--vcp-ui-text-primary));
+        --vcp-ui-bg-4: color-mix(in srgb, var(--vcp-ui-bg-secondary) 82%, var(--vcp-ui-text-primary));
+        --vcp-ui-text-0: var(--vcp-ui-text-primary);
+        --vcp-ui-text-1: color-mix(in srgb, var(--vcp-ui-text-primary) 82%, var(--vcp-ui-text-secondary));
+        --vcp-ui-text-2: var(--vcp-ui-text-secondary);
+        --vcp-ui-text-3: color-mix(in srgb, var(--vcp-ui-text-secondary) 72%, transparent);
+
+        /* ZCode-inspired roles keep the existing theme palette as authority. */
+        --vcp-ui-color-background: var(--vcp-ui-bg-0);
+        --vcp-ui-color-sidebar: var(--vcp-ui-bg-1);
+        --vcp-ui-color-panel: var(--vcp-ui-bg-1);
+        --vcp-ui-color-surface: var(--vcp-ui-bg-2);
+        --vcp-ui-color-card: var(--vcp-ui-bg-2);
+        --vcp-ui-color-popover: var(--vcp-ui-bg-3);
+        --vcp-ui-color-menu: var(--vcp-ui-bg-3);
+        --vcp-ui-color-input: var(--vcp-ui-bg-input);
+        --vcp-ui-color-input-focused: color-mix(in srgb, var(--vcp-ui-bg-input) 92%, var(--vcp-ui-text-primary));
+        /* ZCode Zai Dark composer palette; geometry remains owned by chat-input.css. */
+        --vcp-ui-composer-input: #2b2b2b;
+        --vcp-ui-composer-border: rgba(255, 255, 255, 0.1);
+        --vcp-ui-composer-border-active: rgba(255, 255, 255, 0.15);
+        --vcp-ui-composer-foreground: #d4d4d4;
+        --vcp-ui-composer-placeholder: color-mix(in oklab, #d4d4d4 30%, transparent);
+        --vcp-ui-color-foreground: var(--vcp-ui-text-0);
+        --vcp-ui-color-foreground-subtle: var(--vcp-ui-text-2);
+        --vcp-ui-color-foreground-subtlest: var(--vcp-ui-text-3);
+        --vcp-ui-color-border: var(--vcp-ui-border);
+        --vcp-ui-color-brand: var(--vcp-ui-accent);
+        --vcp-ui-color-hover: var(--vcp-ui-fill-0);
+        --vcp-ui-color-selected: var(--vcp-ui-selection-bg);
+
+        --vcp-ui-font-size: 14px;
+        --vcp-ui-text-xl: calc(var(--vcp-ui-font-size) + 4px);
+        --vcp-ui-text-lg: calc(var(--vcp-ui-font-size) + 2px);
+        --vcp-ui-text-base: var(--vcp-ui-font-size);
+        --vcp-ui-text-caption: calc(var(--vcp-ui-font-size) - 1px);
+        --vcp-ui-text-sm: calc(var(--vcp-ui-font-size) - 2px);
+        --vcp-ui-text-xs: calc(var(--vcp-ui-font-size) - 4px);
+
+        --vcp-ui-success: var(--success-color, var(--vcp-ui-palette-green));
+        --vcp-ui-warning: var(--warning-color, var(--vcp-ui-palette-amber));
+        --vcp-ui-danger: var(--danger-color, var(--vcp-ui-palette-red));
+        --vcp-ui-info: var(--vcp-ui-palette-blue);
+        --vcp-ui-success-bg: color-mix(in srgb, var(--vcp-ui-success) 16%, transparent);
+        --vcp-ui-warning-bg: color-mix(in srgb, var(--vcp-ui-warning) 16%, transparent);
+        --vcp-ui-danger-bg: color-mix(in srgb, var(--vcp-ui-danger) 16%, transparent);
+        --vcp-ui-info-bg: color-mix(in srgb, var(--vcp-ui-info) 16%, transparent);
+
+        --vcp-ui-surface-soft: color-mix(in srgb, var(--vcp-ui-text-primary) 4%, transparent);
+        --vcp-ui-surface: color-mix(in srgb, var(--vcp-ui-text-primary) 7%, transparent);
+        --vcp-ui-surface-strong: color-mix(in srgb, var(--vcp-ui-text-primary) 11%, transparent);
+        --vcp-ui-fill-0: color-mix(in srgb, var(--vcp-ui-text-primary) 5%, transparent);
+        --vcp-ui-fill-1: color-mix(in srgb, var(--vcp-ui-text-primary) 8%, transparent);
+        --vcp-ui-fill-2: color-mix(in srgb, var(--vcp-ui-text-primary) 12%, transparent);
+        /* Neutral hover fill shared with the composer's model picker and mic
+           button, which fall back to this grey when --vcp-ui-interactive-hover
+           is unset. */
+        --vcp-ui-composer-control-hover: rgba(127, 127, 127, 0.16);
+        /* Soft lift for menus that open from the composer: a short contact
+           shadow plus a wide faint halo, no hard drop. */
+        --vcp-ui-composer-popover-shadow: 0 3px 8px 0 rgba(0, 0, 0, 0.04), 0 0 20px 0 rgba(0, 0, 0, 0.05);
+        --vcp-ui-disabled-bg: color-mix(in srgb, var(--vcp-ui-bg-input) 70%, transparent);
+        --vcp-ui-disabled-border: color-mix(in srgb, var(--vcp-ui-border) 60%, transparent);
+        --vcp-ui-backdrop: oklch(0 0 0 / 0.58);
+        --vcp-ui-focus-ring: color-mix(in srgb, var(--vcp-ui-text-accent) 30%, transparent);
+        --vcp-ui-selection-bg: color-mix(in srgb, var(--vcp-ui-accent) 14%, transparent);
+        --vcp-ui-selection-hover: color-mix(in srgb, var(--vcp-ui-accent) 20%, transparent);
+
+        --vcp-ui-space-1: 4px;
+        --vcp-ui-space-2: 8px;
+        --vcp-ui-space-3: 12px;
+        --vcp-ui-space-4: 16px;
+        --vcp-ui-space-5: 24px;
+        --vcp-ui-space-6: 32px;
+        --vcp-ui-space-7: 48px;
+        --vcp-ui-space-8: 64px;
+        --vcp-ui-font-size-xs: 11px;
+
+        --vcp-ui-radius-xs: 4px;
+        --vcp-ui-radius-sm: 6px;
+        --vcp-ui-radius-md: 8px;
+        --vcp-ui-radius-lg: 12px;
+        --vcp-ui-radius-xl: 18px;
+        --vcp-ui-radius-control: 10px;
+        --vcp-ui-radius-card: 8px;
+        --vcp-ui-radius-full: 9999px;
+
+        --vcp-ui-font-caption: 12px;
+        --vcp-ui-font-micro: 10px;
+        --vcp-ui-font-helper: 13px;
+        --vcp-ui-font-body: 14px;
+        --vcp-ui-font-emphasis: 15px;
+        --vcp-ui-font-title: 18px;
+        --vcp-ui-font-display: 22px;
+        --vcp-ui-font-reasoning-icon: 21px;
+        --vcp-ui-font-disclosure: 24px;
+        --vcp-ui-font-section: 16px;
+        --vcp-ui-font-suppress: 0; /* icon-only controls collapse their intrinsic label */
+        --vcp-ui-line-compact: 1.35;
+        --vcp-ui-line-body: 1.5;
+        --vcp-ui-line-relaxed: 1.65;
+
+        --vcp-ui-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.24);
+        --vcp-ui-shadow-md: 0 6px 18px oklch(0 0 0 / 0.30);
+        --vcp-ui-shadow-lg: 0 16px 48px oklch(0 0 0 / 0.42);
+        /* Elevation tokens registered from settings.css literals (guard cleanup
+           2026-08-27): the overlay shadow lifts modal-attached panels, the
+           hairline shadow sits on compact row cards. */
+        --vcp-ui-shadow-elevation-overlay: 0 12px 28px rgb(15 23 42 / 18%);
+        --vcp-ui-shadow-elevation-hairline: 0 1px 3px rgb(15 23 42 / 10%);
+        /* Neutral veil fallbacks referenced by the canonicalized template
+           declarations when a legacy --bg-secondary style variable is absent. */
+        --vcp-ui-veil-8: rgba(127, 127, 127, 0.08);
+        --vcp-ui-veil-5: rgba(127, 127, 127, 0.05);
+
+        /* Motion contract: semantic durations/easing are the single source
+           for UI transitions. Keep the legacy aliases below for existing
+           consumers while migrating them to --vcp-motion-* names. */
+        --vcp-motion-duration-instant: 0ms;
+        --vcp-motion-duration-fast: 120ms;
+        --vcp-motion-duration-standard: 160ms;
+        --vcp-motion-duration-normal: 220ms;
+        --vcp-motion-duration-slow: 300ms;
+        --vcp-motion-duration-spinner: 900ms;
+        --vcp-motion-duration-ambient: 5.5s;
+        --vcp-motion-duration-flow: 6.5s;
+        --vcp-motion-duration-reveal: 1.35s;
+        --vcp-motion-delay-reveal: 250ms;
+        --vcp-motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+        --vcp-motion-ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+        --vcp-motion-ease-linear: linear;
+        --vcp-motion-toast-hold: 3000ms;
+        --vcp-motion-toast-fade: 1000ms;
+        --vcp-ui-duration-fast: var(--vcp-motion-duration-standard);
+        --vcp-ui-duration-normal: var(--vcp-motion-duration-normal);
+        --vcp-ui-duration-slow: var(--vcp-motion-duration-slow);
+        --vcp-ui-easing-standard: var(--vcp-motion-ease-standard);
+        --vcp-ui-easing-spring: var(--vcp-motion-ease-emphasized);
+        --vcp-ui-transition-fast: var(--vcp-ui-duration-fast) var(--vcp-ui-easing-standard);
+        --vcp-ui-transition-normal: var(--vcp-ui-duration-normal) var(--vcp-ui-easing-standard);
+        --vcp-ui-transition-spring: 220ms var(--vcp-ui-easing-spring);
+
+        --vcp-ui-z-dropdown: 1300;
+        --vcp-ui-z-overlay: 1400;
+        --vcp-ui-z-toast: 1500;
+        --vcp-ui-shell-height: var(--next-topbar-height, 44px);
+        --vcp-ui-app-icon-size: 64px;
+
+        --vcp-ui-control-sm: 28px;
+        --vcp-ui-control-md: 32px;
+        --vcp-ui-control-lg: 36px;
+        --vcp-ui-control-border: var(--vcp-ui-border);
+        --vcp-ui-control-bg: var(--vcp-ui-bg-input);
+        --vcp-ui-control-hover: var(--vcp-ui-surface-strong);
+        --vcp-ui-control-focus: var(--vcp-ui-border-strong);
+        --vcp-ui-row-height: 44px;
+        --vcp-ui-shell-header-height: 48px;
+        --vcp-ui-panel-padding: var(--vcp-ui-space-4);
+        --vcp-ui-density-gap: var(--vcp-ui-space-3);
+        --vcp-ui-scrollbar-size: 6px;
+        --vcp-ui-scrollbar-thumb: color-mix(in srgb, var(--vcp-ui-text-secondary) 30%, transparent);
+        --vcp-ui-scrollbar-thumb-hover: color-mix(in srgb, var(--vcp-ui-text-secondary) 50%, transparent);
+        --vcp-ui-icon-sm: 16px;
+        --vcp-ui-icon-md: 18px;
+        --vcp-ui-icon-lg: 22px;
+        --vcp-ui-message-avatar: 36px;
+        --vcp-ui-message-max-width: 82%;
+        --vcp-ui-message-max-width-wide: 92%;
+        --vcp-ui-message-max-width-notifications: 90%;
+        --vcp-ui-message-max-width-wide-notifications: 96%;
+        --vcp-ui-sidebar-row-height: var(--vcp-appearance-sidebar-row-height, 36px);
+        --vcp-ui-sidebar-avatar-size: var(--vcp-appearance-sidebar-avatar-size, 26px);
+        --vcp-ui-sidebar-font-size: 13.5px;
+        --vcp-ui-sidebar-item-radius: 8px;
+        --vcp-ui-sidebar-list-gutter: 8px;
+        --vcp-ui-sidebar-account-left-padding: 0;
+        --vcp-ui-sidebar-item-shadow: none;
+        --vcp-ui-send-button-size: 34px;
+        --vcp-ui-send-icon-size: 20px;
+        --vcp-ui-send-button-shadow: 0 6px 18px oklch(0 0 0 / 0.18);
+        --vcp-ui-message-user-bg: var(--user-bubble-bg, var(--vcp-ui-accent));
+        --vcp-ui-message-user-text: var(--user-text, var(--vcp-ui-on-accent));
+        --vcp-ui-message-assistant-bg: color-mix(in srgb, var(--assistant-bubble-bg, var(--vcp-ui-bg-2)) 88%, transparent);
+        --vcp-ui-message-assistant-text: var(--agent-text, var(--vcp-ui-text-0));
+        --vcp-ui-message-code-bg: color-mix(in srgb, var(--vcp-ui-bg-0) 78%, transparent);
+        --vcp-ui-message-code-text: var(--vcp-ui-text-1);
+        --vcp-ui-message-max-width-narrow: 88%;
+        --vcp-ui-modal-width: 520px;
+        --vcp-ui-modal-wide-width: 800px;
+        --vcp-ui-modal-height: 760px;
+    }
+
+    body[data-vcp-theme="light"] {
+
+
+        --vcp-ui-palette-cyan: oklch(0.75 0.14 230);
+        --vcp-ui-palette-cyan-strong: oklch(0.68 0.16 230);
+        --vcp-ui-palette-cyan-hover: oklch(0.60 0.18 230);
+        --vcp-ui-palette-red: oklch(0.58 0.22 25);
+        --vcp-ui-palette-green: oklch(0.62 0.18 145);
+        --vcp-ui-palette-amber: oklch(0.78 0.16 85);
+        --vcp-ui-palette-blue: oklch(0.66 0.16 250);
+
+        --vcp-ui-bg-primary: var(--vcp-ui-theme-bg-primary, var(--primary-bg, oklch(0.04 0.012 230)));
+        --vcp-ui-bg-secondary: var(--vcp-ui-theme-bg-secondary, var(--secondary-bg, oklch(0.18 0.015 230 / 0.92)));
+        --vcp-ui-bg-tertiary: var(--vcp-ui-theme-bg-tertiary, var(--tertiary-bg, oklch(0.25 0.012 230 / 0.72)));
+        --vcp-ui-bg-input: var(--vcp-ui-theme-bg-input, var(--input-bg, oklch(0.25 0.012 230 / 0.82)));
+        --vcp-ui-text-primary: var(--vcp-ui-theme-text-primary, var(--primary-text, oklch(0.96 0.008 230)));
+        --vcp-ui-text-secondary: var(--vcp-ui-theme-text-secondary, var(--secondary-text, oklch(0.68 0.015 230)));
+        --vcp-ui-text-accent: var(--vcp-ui-theme-text-accent, var(--highlight-text, var(--vcp-ui-palette-cyan)));
+        --vcp-ui-text-disabled: color-mix(in srgb, var(--vcp-ui-text-secondary) 58%, transparent);
+        --vcp-ui-border: var(--vcp-ui-theme-border, var(--border-color, oklch(1 0 0 / 0.10)));
+        --vcp-ui-border-strong: color-mix(in srgb, var(--vcp-ui-text-accent) 40%, var(--vcp-ui-border));
+        --vcp-ui-accent: var(--vcp-ui-theme-accent, var(--button-bg, var(--vcp-ui-palette-cyan-strong)));
+        --vcp-ui-accent-hover: var(--vcp-ui-theme-accent-hover, var(--button-hover-bg, var(--vcp-ui-palette-cyan-hover)));
+        --vcp-ui-on-accent: var(--vcp-ui-theme-on-accent, oklch(1 0 0));
+
+        --vcp-ui-bg-0: var(--vcp-ui-bg-primary);
+        --vcp-ui-bg-1: var(--vcp-ui-bg-secondary);
+        --vcp-ui-bg-2: var(--vcp-ui-bg-tertiary);
+        --vcp-ui-bg-3: color-mix(in srgb, var(--vcp-ui-bg-secondary) 88%, var(--vcp-ui-text-primary));
+        --vcp-ui-bg-4: color-mix(in srgb, var(--vcp-ui-bg-secondary) 82%, var(--vcp-ui-text-primary));
+        --vcp-ui-text-0: var(--vcp-ui-text-primary);
+        --vcp-ui-text-1: color-mix(in srgb, var(--vcp-ui-text-primary) 82%, var(--vcp-ui-text-secondary));
+        --vcp-ui-text-2: var(--vcp-ui-text-secondary);
+        --vcp-ui-text-3: color-mix(in srgb, var(--vcp-ui-text-secondary) 72%, transparent);
+
+        /* Repeat theme-derived roles after the light palette overrides. */
+        --vcp-ui-color-background: var(--vcp-ui-bg-0);
+        --vcp-ui-color-sidebar: var(--vcp-ui-bg-1);
+        --vcp-ui-color-panel: var(--vcp-ui-bg-1);
+        --vcp-ui-color-surface: var(--vcp-ui-bg-2);
+        --vcp-ui-color-card: var(--vcp-ui-bg-2);
+        --vcp-ui-color-popover: var(--vcp-ui-bg-3);
+        --vcp-ui-color-menu: var(--vcp-ui-bg-3);
+        --vcp-ui-color-input: var(--vcp-ui-bg-input);
+        --vcp-ui-color-input-focused: color-mix(in srgb, var(--vcp-ui-bg-input) 92%, var(--vcp-ui-text-primary));
+        /* ZCode Zai Light composer palette. */
+        --vcp-ui-composer-input: #ffffff;
+        --vcp-ui-composer-border: rgba(13, 13, 13, 0.1);
+        --vcp-ui-composer-border-active: rgba(13, 13, 13, 0.15);
+        --vcp-ui-composer-foreground: #262626;
+        --vcp-ui-composer-placeholder: color-mix(in oklab, #262626 40%, transparent);
+        --vcp-ui-color-foreground: var(--vcp-ui-text-0);
+        --vcp-ui-color-foreground-subtle: var(--vcp-ui-text-2);
+        --vcp-ui-color-foreground-subtlest: var(--vcp-ui-text-3);
+        --vcp-ui-color-border: var(--vcp-ui-border);
+        --vcp-ui-color-brand: var(--vcp-ui-accent);
+        --vcp-ui-color-hover: var(--vcp-ui-fill-0);
+        --vcp-ui-color-selected: var(--vcp-ui-selection-bg);
+
+        --vcp-ui-success: var(--success-color, var(--vcp-ui-palette-green));
+        --vcp-ui-warning: var(--warning-color, var(--vcp-ui-palette-amber));
+        --vcp-ui-danger: var(--danger-color, var(--vcp-ui-palette-red));
+        --vcp-ui-info: var(--vcp-ui-palette-blue);
+        --vcp-ui-success-bg: color-mix(in srgb, var(--vcp-ui-success) 16%, transparent);
+        --vcp-ui-warning-bg: color-mix(in srgb, var(--vcp-ui-warning) 16%, transparent);
+        --vcp-ui-danger-bg: color-mix(in srgb, var(--vcp-ui-danger) 16%, transparent);
+        --vcp-ui-info-bg: color-mix(in srgb, var(--vcp-ui-info) 16%, transparent);
+
+        --vcp-ui-surface-soft: color-mix(in srgb, var(--vcp-ui-text-primary) 4%, transparent);
+        --vcp-ui-surface: color-mix(in srgb, var(--vcp-ui-text-primary) 7%, transparent);
+        --vcp-ui-surface-strong: color-mix(in srgb, var(--vcp-ui-text-primary) 11%, transparent);
+        --vcp-ui-fill-0: color-mix(in srgb, var(--vcp-ui-text-primary) 5%, transparent);
+        --vcp-ui-fill-1: color-mix(in srgb, var(--vcp-ui-text-primary) 8%, transparent);
+        --vcp-ui-fill-2: color-mix(in srgb, var(--vcp-ui-text-primary) 12%, transparent);
+        --vcp-ui-disabled-bg: color-mix(in srgb, var(--vcp-ui-bg-input) 70%, transparent);
+        --vcp-ui-disabled-border: color-mix(in srgb, var(--vcp-ui-border) 60%, transparent);
+        --vcp-ui-backdrop: oklch(0 0 0 / 0.58);
+        --vcp-ui-focus-ring: color-mix(in srgb, var(--vcp-ui-text-accent) 30%, transparent);
+        --vcp-ui-selection-bg: color-mix(in srgb, var(--vcp-ui-accent) 14%, transparent);
+        --vcp-ui-selection-hover: color-mix(in srgb, var(--vcp-ui-accent) 20%, transparent);
+
+        --vcp-ui-space-1: 4px;
+        --vcp-ui-space-2: 8px;
+        --vcp-ui-space-3: 12px;
+        --vcp-ui-space-4: 16px;
+        --vcp-ui-space-5: 24px;
+        --vcp-ui-space-6: 32px;
+        --vcp-ui-space-7: 48px;
+        --vcp-ui-space-8: 64px;
+        --vcp-ui-font-size-xs: 11px;
+
+        --vcp-ui-radius-xs: 4px;
+        --vcp-ui-radius-sm: 6px;
+        --vcp-ui-radius-md: 8px;
+        --vcp-ui-radius-lg: 12px;
+        --vcp-ui-radius-xl: 18px;
+        --vcp-ui-radius-control: 10px;
+        --vcp-ui-radius-card: 8px;
+        --vcp-ui-radius-full: 9999px;
+
+        --vcp-ui-font-caption: 12px;
+        --vcp-ui-font-micro: 10px;
+        --vcp-ui-font-helper: 13px;
+        --vcp-ui-font-body: 14px;
+        --vcp-ui-font-emphasis: 15px;
+        --vcp-ui-font-title: 18px;
+        --vcp-ui-font-display: 22px;
+        --vcp-ui-font-reasoning-icon: 21px;
+        --vcp-ui-font-disclosure: 24px;
+        --vcp-ui-font-section: 16px;
+        --vcp-ui-font-suppress: 0; /* icon-only controls collapse their intrinsic label */
+        --vcp-ui-line-compact: 1.35;
+        --vcp-ui-line-body: 1.5;
+        --vcp-ui-line-relaxed: 1.65;
+
+        --vcp-ui-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.24);
+        --vcp-ui-shadow-md: 0 6px 18px oklch(0 0 0 / 0.30);
+        --vcp-ui-shadow-lg: 0 16px 48px oklch(0 0 0 / 0.42);
+        /* Elevation tokens registered from settings.css literals (guard cleanup
+           2026-08-27): the overlay shadow lifts modal-attached panels, the
+           hairline shadow sits on compact row cards. */
+        --vcp-ui-shadow-elevation-overlay: 0 12px 28px rgb(15 23 42 / 18%);
+        --vcp-ui-shadow-elevation-hairline: 0 1px 3px rgb(15 23 42 / 10%);
+        /* Neutral veil fallbacks referenced by the canonicalized template
+           declarations when a legacy --bg-secondary style variable is absent. */
+        --vcp-ui-veil-8: rgba(127, 127, 127, 0.08);
+        --vcp-ui-veil-5: rgba(127, 127, 127, 0.05);
+
+        --vcp-motion-duration-instant: 0ms;
+        --vcp-motion-duration-fast: 120ms;
+        --vcp-motion-duration-standard: 160ms;
+        --vcp-motion-duration-normal: 220ms;
+        --vcp-motion-duration-slow: 300ms;
+        --vcp-motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+        --vcp-motion-ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+        --vcp-motion-ease-linear: linear;
+        --vcp-ui-duration-fast: var(--vcp-motion-duration-standard);
+        --vcp-ui-duration-normal: var(--vcp-motion-duration-normal);
+        --vcp-ui-duration-slow: var(--vcp-motion-duration-slow);
+        --vcp-ui-easing-standard: var(--vcp-motion-ease-standard);
+        --vcp-ui-easing-spring: var(--vcp-motion-ease-emphasized);
+        --vcp-ui-transition-fast: var(--vcp-ui-duration-fast) var(--vcp-ui-easing-standard);
+        --vcp-ui-transition-normal: var(--vcp-ui-duration-normal) var(--vcp-ui-easing-standard);
+        --vcp-ui-transition-spring: 220ms var(--vcp-ui-easing-spring);
+
+        --vcp-ui-z-dropdown: 1300;
+        --vcp-ui-z-overlay: 1400;
+        --vcp-ui-z-toast: 1500;
+        --vcp-ui-shell-height: var(--next-topbar-height, 44px);
+        --vcp-ui-app-icon-size: 64px;
+
+        --vcp-ui-control-sm: 28px;
+        --vcp-ui-control-md: 32px;
+        --vcp-ui-control-lg: 36px;
+        --vcp-ui-control-border: var(--vcp-ui-border);
+        --vcp-ui-control-bg: var(--vcp-ui-bg-input);
+        --vcp-ui-control-hover: var(--vcp-ui-surface-strong);
+        --vcp-ui-control-focus: var(--vcp-ui-border-strong);
+        --vcp-ui-row-height: 44px;
+        --vcp-ui-shell-header-height: 48px;
+        --vcp-ui-panel-padding: var(--vcp-ui-space-4);
+        --vcp-ui-density-gap: var(--vcp-ui-space-3);
+        --vcp-ui-scrollbar-size: 6px;
+        --vcp-ui-scrollbar-thumb: color-mix(in srgb, var(--vcp-ui-text-secondary) 30%, transparent);
+        --vcp-ui-scrollbar-thumb-hover: color-mix(in srgb, var(--vcp-ui-text-secondary) 50%, transparent);
+        --vcp-ui-icon-sm: 16px;
+        --vcp-ui-icon-md: 18px;
+        --vcp-ui-icon-lg: 22px;
+        --vcp-ui-message-avatar: 36px;
+        --vcp-ui-message-max-width: 82%;
+        --vcp-ui-message-max-width-wide: 92%;
+        --vcp-ui-message-max-width-notifications: 90%;
+        --vcp-ui-message-max-width-wide-notifications: 96%;
+        --vcp-ui-sidebar-row-height: var(--vcp-appearance-sidebar-row-height, 36px);
+        --vcp-ui-sidebar-avatar-size: var(--vcp-appearance-sidebar-avatar-size, 26px);
+        --vcp-ui-sidebar-font-size: 13.5px;
+        --vcp-ui-sidebar-item-radius: 8px;
+        --vcp-ui-sidebar-list-gutter: 8px;
+        --vcp-ui-sidebar-account-left-padding: 0;
+        --vcp-ui-sidebar-item-shadow: none;
+        --vcp-ui-send-button-size: 34px;
+        --vcp-ui-send-icon-size: 20px;
+        --vcp-ui-send-button-shadow: 0 6px 18px oklch(0 0 0 / 0.18);
+        --vcp-ui-message-user-bg: var(--user-bubble-bg, var(--vcp-ui-accent));
+        --vcp-ui-message-user-text: var(--user-text, var(--vcp-ui-on-accent));
+        --vcp-ui-message-assistant-bg: color-mix(in srgb, var(--assistant-bubble-bg, var(--vcp-ui-bg-2)) 88%, transparent);
+        --vcp-ui-message-assistant-text: var(--agent-text, var(--vcp-ui-text-0));
+        --vcp-ui-message-code-bg: color-mix(in srgb, var(--vcp-ui-bg-0) 78%, transparent);
+        --vcp-ui-message-code-text: var(--vcp-ui-text-1);
+        --vcp-ui-message-max-width-narrow: 88%;
+        --vcp-ui-modal-width: 520px;
+        --vcp-ui-modal-wide-width: 800px;
+        --vcp-ui-modal-height: 760px;
+    }
+
+    :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope {
+        color-scheme: dark;
+    }
+
+    :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope[data-density="compact"] {
+        --vcp-ui-control-sm: 26px;
+        --vcp-ui-control-md: 30px;
+        --vcp-ui-control-lg: 34px;
+        --vcp-ui-row-height: 38px;
+        --vcp-ui-panel-padding: var(--vcp-ui-space-3);
+        --vcp-ui-density-gap: var(--vcp-ui-space-2);
+    }
+
+    :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope[data-density="comfortable"] {
+        --vcp-ui-control-sm: 28px;
+        --vcp-ui-control-md: 32px;
+        --vcp-ui-control-lg: 36px;
+        --vcp-ui-row-height: 44px;
+        --vcp-ui-panel-padding: var(--vcp-ui-space-4);
+        --vcp-ui-density-gap: var(--vcp-ui-space-3);
+    }
+
+    :is(html, html.vcp-appearance-studio-host) body[data-vcp-theme="light"] .vcp-ui-scope {
+        color-scheme: light;
+        --vcp-ui-backdrop: oklch(0.2 0.01 240 / 0.28);
+        --vcp-ui-shadow-sm: 0 1px 2px oklch(0.12 0.01 230 / 0.08);
+        --vcp-ui-shadow-md: 0 8px 22px oklch(0.12 0.01 230 / 0.12);
+        --vcp-ui-shadow-lg: 0 18px 48px oklch(0.12 0.01 230 / 0.18);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope, :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope *, :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope *::before, :is(html, html.vcp-appearance-studio-host, html.vcp-global-settings-host) .vcp-ui-scope *::after {
+            scroll-behavior: auto;
+            animation-duration: 1ms;
+            animation-iteration-count: 1;
+            transition-duration: 1ms;
+        }
+    }
+}
+
+/* ZCode port primitives: central ownership preserves reviewed light/dark colors. */
+:root {
+    --vcp-ui-port-color-rgba-0-0-0-0-35: rgba(0, 0, 0, 0.35);
+    --vcp-ui-port-color-888: #888;
+    --vcp-ui-port-color-15191f: #15191f;
+    --vcp-ui-port-color-fde68a: #fde68a;
+    --vcp-ui-port-color-262626: #262626;
+    --vcp-ui-port-color-f59e0b: #f59e0b;
+    --vcp-ui-port-color-1a1a1a: #1a1a1a;
+    --vcp-ui-port-color-rgba-0-0-0-0-14: rgba(0, 0, 0, 0.14);
+    --vcp-ui-port-color-rgba-127-127-127-0-3: rgba(127, 127, 127, 0.3);
+    --vcp-ui-port-color-3b82f6: #3b82f6;
+    --vcp-ui-port-color-fff: #fff;
+    --vcp-ui-port-color-rgba-0-0-0-0-28: rgba(0, 0, 0, 0.28);
+    --vcp-ui-port-color-000: #000;
+    --vcp-ui-port-color-22a06b: #22a06b;
+    --vcp-ui-port-color-e5484d: #e5484d;
+    --vcp-ui-port-color-2b3441: #2b3441;
+    --vcp-ui-port-color-f0f4f8: #f0f4f8;
+    --vcp-ui-port-color-rgba-0-0-0-0-22: rgba(0, 0, 0, 0.22);
+    --vcp-ui-port-color-rgba-0-0-0-0-16: rgba(0, 0, 0, 0.16);
+    --vcp-ui-port-color-1f252e: #1f252e;
+    --vcp-ui-port-color-rgba-0-0-0-0-18: rgba(0, 0, 0, 0.18);
+    --vcp-ui-port-color-d4d4d4: #d4d4d4;
+    --vcp-ui-port-color-ffffff: #ffffff;
+    --vcp-ui-port-color-rgba-255-255-255-0-05: rgba(255, 255, 255, 0.05);
+    --vcp-ui-port-color-rgba-255-255-255-0-10: rgba(255, 255, 255, 0.10);
+    --vcp-ui-port-color-000000: #000000;
+    --vcp-ui-port-color-rgba-0-0-0-0-05: rgba(0, 0, 0, 0.05);
+    --vcp-ui-port-color-rgba-0-0-0-0-08: rgba(0, 0, 0, 0.08);
+    --vcp-ui-port-color-rgba-255-255-255-0-12: rgba(255, 255, 255, 0.12);
+    --vcp-ui-port-color-f1f5f9: #f1f5f9;
+    --vcp-ui-port-color-rgba-0-0-0-0-12: rgba(0, 0, 0, 0.12);
+    --vcp-ui-port-color-0f172a: #0f172a;
+    --vcp-ui-port-color-1e1e2e: #1e1e2e;
+    --vcp-ui-port-color-94a3b8: #94a3b8;
+    --vcp-ui-port-color-rgba-255-255-255-0-07: rgba(255, 255, 255, 0.07);
+    --vcp-ui-port-color-rgba-0-0-0-0-06: rgba(0, 0, 0, 0.06);
+    --vcp-ui-port-color-rgba-255-255-255-0-45: rgba(255, 255, 255, 0.45);
+    --vcp-ui-port-color-22c55e: #22c55e;
+    --vcp-ui-port-color-ef4444: #ef4444;
+    --vcp-ui-port-color-rgba-255-255-255-0-5: rgba(255, 255, 255, 0.5);
+    --vcp-ui-port-color-rgba-255-255-255-0-6: rgba(255, 255, 255, 0.6);
+    --vcp-ui-port-color-rgba-34-197-94-0-14: rgba(34, 197, 94, 0.14);
+    --vcp-ui-port-color-rgba-239-68-68-0-14: rgba(239, 68, 68, 0.14);
+    --vcp-ui-port-color-rgba-127-127-127-0-1: rgba(127, 127, 127, 0.1);
+    --vcp-ui-port-color-rgba-255-255-255-0-4: rgba(255, 255, 255, 0.4);
+    --vcp-ui-port-color-rgba-255-255-255-0-35: rgba(255, 255, 255, 0.35);
+    --vcp-ui-port-color-rgba-127-127-127-0-16: rgba(127, 127, 127, 0.16);
+    --vcp-ui-port-color-rgba-0-0-0-0-2: rgba(0, 0, 0, 0.2);
+    --vcp-ui-port-color-rgba-250-204-21-0-38: rgba(250, 204, 21, 0.38);
+    --vcp-ui-port-color-rgba-249-115-22-0-62: rgba(249, 115, 22, 0.62);
+    --vcp-ui-port-color-rgba-217-119-6-0-12: rgba(217, 119, 6, 0.12);
+    --vcp-ui-port-color-rgba-127-127-127-0-25: rgba(127, 127, 127, 0.25);
+    --vcp-ui-port-color-rgba-241-245-249-0-6: rgba(241, 245, 249, 0.6);
+    --vcp-ui-port-color-a7afb1: #a7afb1;
+    --vcp-ui-port-color-2b2f31: #2b2f31;
+    --vcp-ui-port-color-e6e9ea: #e6e9ea;
+    --vcp-ui-port-color-rgba-0-0-0-0-25: rgba(0, 0, 0, 0.25);
+    --vcp-ui-port-color-rgba-0-0-0-0-1: rgba(0, 0, 0, 0.1);
+    --vcp-ui-port-color-fafafa: #fafafa;
+    --vcp-ui-port-color-f0f0f0: #f0f0f0;
+    --vcp-ui-port-color-rgba-220-38-38-0-1: rgba(220, 38, 38, 0.1);
+    --vcp-ui-port-color-rgba-255-255-255-0-22: rgba(255, 255, 255, 0.22);
+    --vcp-ui-port-color-rgba-255-255-255-0-08: rgba(255, 255, 255, 0.08);
+    --vcp-ui-port-color-rgba-255-255-255-0-65: rgba(255, 255, 255, 0.65);
+    --vcp-ui-port-color-475569: #475569;
+    --vcp-ui-port-color-rgba-241-245-249-0-4: rgba(241, 245, 249, 0.4);
+    --vcp-ui-port-color-64748b: #64748b;
+    --vcp-ui-port-color-rgba-241-245-249-0-7: rgba(241, 245, 249, 0.7);
+    --vcp-ui-port-color-rgba-0-0-0-0-04: rgba(0, 0, 0, 0.04);
+    --vcp-ui-port-color-rgba-255-255-255-0-1: rgba(255, 255, 255, 0.1);
+    --vcp-ui-port-color-rgba-255-255-255-0-9: rgba(255, 255, 255, 0.9);
+    --vcp-ui-port-color-2563eb: #2563eb;
+    --vcp-ui-port-color-rgba-37-99-235-0-12: rgba(37, 99, 235, 0.12);
+    --vcp-ui-port-color-rgba-37-99-235-0-25: rgba(37, 99, 235, 0.25);
+    --vcp-ui-port-color-1d4ed8: #1d4ed8;
+    --vcp-ui-port-color-dc2626: #dc2626;
+    --vcp-ui-port-color-rgba-245-158-11-0-12: rgba(245, 158, 11, 0.12);
+    --vcp-ui-port-color-rgba-245-158-11-0-3: rgba(245, 158, 11, 0.3);
+    --vcp-ui-port-color-b45309: #b45309;
+    --vcp-ui-port-color-rgba-245-158-11-0-15: rgba(245, 158, 11, 0.15);
+    --vcp-ui-port-color-rgba-245-158-11-0-35: rgba(245, 158, 11, 0.35);
+    --vcp-ui-port-color-rgba-255-255-255-0-06: rgba(255, 255, 255, 0.06);
+    --vcp-ui-port-color-rgba-241-245-249-0-75: rgba(241, 245, 249, 0.75);
+    --vcp-ui-port-color-18181b: #18181b;
+    --vcp-ui-port-color-rgba-241-245-249-0-5: rgba(241, 245, 249, 0.5);
+    --vcp-ui-port-color-rgba-0-0-0-0-55: rgba(0, 0, 0, 0.55);
+    --vcp-ui-port-color-rgba-255-255-255-0-04: rgba(255, 255, 255, 0.04);
+    --vcp-ui-port-color-rgba-0-0-0-0-03: rgba(0, 0, 0, 0.03);
+    --vcp-ui-port-color-rgba-255-255-255-0-09: rgba(255, 255, 255, 0.09);
+    --vcp-ui-port-color-rgba-255-255-255-0-18: rgba(255, 255, 255, 0.18);
+    --vcp-ui-port-color-rgba-0-0-0-0-5: rgba(0, 0, 0, 0.5);
+    --vcp-ui-port-color-rgba-0-0-0-0-3: rgba(0, 0, 0, 0.3);
+    --vcp-ui-port-color-rgba-255-255-255-0-15: rgba(255, 255, 255, 0.15);
+    --vcp-ui-port-color-rgba-59-130-246-0-4: rgba(59, 130, 246, 0.4);
+    --vcp-ui-port-color-rgba-59-130-246-0-5: rgba(59, 130, 246, 0.5);
+    --vcp-ui-port-color-rgba-255-255-255-0-02: rgba(255, 255, 255, 0.02);
+    --vcp-ui-port-color-rgba-0-0-0-0-02: rgba(0, 0, 0, 0.02);
+    --vcp-ui-port-color-rgba-255-255-255-0-2: rgba(255, 255, 255, 0.2);
+    --vcp-ui-port-color-f87171: #f87171;
+    --vcp-ui-port-color-rgba-239-68-68-0-15: rgba(239, 68, 68, 0.15);
+    --vcp-ui-port-color-rgba-255-255-255-0-7: rgba(255, 255, 255, 0.7);
+    --vcp-ui-port-color-rgba-59-130-246-0-15: rgba(59, 130, 246, 0.15);
+    --vcp-ui-port-color-60a5fa: #60a5fa;
+    --vcp-ui-port-color-rgba-59-130-246-0-25: rgba(59, 130, 246, 0.25);
+    --vcp-ui-port-color-rgba-37-99-235-0-08: rgba(37, 99, 235, 0.08);
+    --vcp-ui-port-color-rgba-37-99-235-0-2: rgba(37, 99, 235, 0.2);
+    --vcp-ui-port-color-rgba-0-0-0-0-15: rgba(0, 0, 0, 0.15);
+    --vcp-ui-port-color-rgba-34-197-94-0-12: rgba(34, 197, 94, 0.12);
+    --vcp-ui-port-color-86efac: #86efac;
+    --vcp-ui-port-color-rgba-34-197-94-0-15: rgba(34, 197, 94, 0.15);
+    --vcp-ui-port-color-15803d: #15803d;
+    --vcp-ui-port-color-rgba-239-68-68-0-12: rgba(239, 68, 68, 0.12);
+    --vcp-ui-port-color-fca5a5: #fca5a5;
+    --vcp-ui-port-color-b91c1c: #b91c1c;
+    --vcp-ui-port-color-rgba-255-255-255-0-03: rgba(255, 255, 255, 0.03);
+    --vcp-ui-port-color-rgba-255-255-255-0-8: rgba(255, 255, 255, 0.8);
+    --vcp-ui-port-color-334155: #334155;
+    --vcp-ui-port-color-14161a: #14161a;
+    --vcp-ui-port-color-rgba-255-255-255-0-3: rgba(255, 255, 255, 0.3);
+    --vcp-ui-port-color-rgba-255-255-255-0-16: rgba(255, 255, 255, 0.16);
+    --vcp-ui-port-color-1b1d22: #1b1d22;
+    --vcp-ui-port-color-rgba-255-255-255-0-75: rgba(255, 255, 255, 0.75);
+    --vcp-ui-port-color-26262b: #26262b;
+    --vcp-ui-port-color-f8fafc: #f8fafc;
+    --vcp-ui-port-color-222225: #222225;
+    --vcp-ui-port-color-rgba-0-0-0-0-4: rgba(0, 0, 0, 0.4);
+    --vcp-ui-port-color-rgba-127-127-127-0-18: rgba(127, 127, 127, 0.18);
+    --vcp-ui-port-color-737373: #737373;
+    --vcp-ui-port-color-a3a3a3: #a3a3a3;
+    --vcp-ui-port-color-f7f7f7: #f7f7f7;
+    --vcp-ui-port-color-efefef: #efefef;
+    --vcp-ui-port-color-e4e4e4: #e4e4e4;
+    --vcp-ui-port-color-16a34a: #16a34a;
+    --vcp-ui-port-color-d97706: #d97706;
+    --vcp-ui-port-color-rgba-0-0-0-0-6: rgba(0, 0, 0, 0.6);
+    --vcp-ui-port-color-a855f7: #a855f7;
+    --vcp-ui-port-color-2b2b2b: #2b2b2b;
+    --vcp-ui-port-color-363636: #363636;
+    --vcp-ui-port-color-222222: #222222;
+    --vcp-ui-port-color-e5e5e5: #e5e5e5;
+    --vcp-ui-port-color-414141: #414141;
+    --vcp-ui-port-color-4ade80: #4ade80;
+    --vcp-ui-port-color-fbbf24: #fbbf24;
+    --zcode-panel-border: rgba(255, 255, 255, 0.08);
+    --zcode-header-divider: rgba(255, 255, 255, 0.05)
+;
+}
+body[data-vcp-theme="light"] {
+    --zcode-panel-border: rgba(0, 0, 0, 0.08);
+    --zcode-header-divider: rgba(0, 0, 0, 0.05)
+}

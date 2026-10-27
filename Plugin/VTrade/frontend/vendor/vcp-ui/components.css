@@ -1,0 +1,682 @@
+@layer vcp-ui.base {
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope, :is(html, html.vcp-global-settings-host) .vcp-ui-scope * {
+        box-sizing: border-box;
+        letter-spacing: 0;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope {
+        color: var(--vcp-ui-text-primary);
+        font-size: var(--vcp-ui-font-body);
+        line-height: var(--vcp-ui-line-body);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope button, :is(html, html.vcp-global-settings-host) .vcp-ui-scope input, :is(html, html.vcp-global-settings-host) .vcp-ui-scope textarea, :is(html, html.vcp-global-settings-host) .vcp-ui-scope select {
+        color: inherit;
+        font: inherit;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope button:focus-visible, :is(html, html.vcp-global-settings-host) .vcp-ui-scope input:focus-visible, :is(html, html.vcp-global-settings-host) .vcp-ui-scope textarea:focus-visible, :is(html, html.vcp-global-settings-host) .vcp-ui-scope select:focus-visible, :is(html, html.vcp-global-settings-host) .vcp-ui-scope [tabindex]:focus-visible {
+        outline: 2px solid var(--vcp-ui-focus-ring);
+        outline-offset: 2px;
+    }
+}
+
+@layer vcp-ui.components {
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        gap: var(--vcp-ui-space-2);
+        border: 1px solid transparent;
+        border-radius: var(--vcp-ui-radius-control);
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: color var(--vcp-ui-transition-fast), background var(--vcp-ui-transition-fast), border-color var(--vcp-ui-transition-fast), box-shadow var(--vcp-ui-transition-fast), transform var(--vcp-ui-transition-fast);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-size="sm"] { min-height: var(--vcp-ui-control-sm); padding: 0 var(--vcp-ui-space-2); font-size: var(--vcp-ui-font-helper); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-size="md"] { min-height: var(--vcp-ui-control-md); padding: 0 var(--vcp-ui-space-3); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-size="lg"] { min-height: var(--vcp-ui-control-lg); padding: 0 var(--vcp-ui-space-4); font-size: var(--vcp-ui-font-emphasis); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-size="xl"] { min-height: calc(var(--vcp-ui-control-lg) + var(--vcp-ui-space-2)); padding: 0 var(--vcp-ui-space-5); font-size: var(--vcp-ui-font-emphasis); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button.is-block { width: 100%; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="primary"] { color: var(--vcp-ui-on-accent); background: var(--vcp-ui-accent); box-shadow: var(--vcp-ui-shadow-sm); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="primary"]:hover { background: var(--vcp-ui-accent-hover); box-shadow: var(--vcp-ui-shadow-md); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="secondary"] { color: var(--vcp-ui-text-primary); background: var(--vcp-ui-surface-strong); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="outline"] { border-color: var(--vcp-ui-control-border); background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="ghost"], :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="link"] { color: var(--vcp-ui-text-accent); background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="link"] { min-height: auto; padding: 0; border-radius: 0; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="danger"] { color: var(--vcp-ui-on-accent); background: var(--vcp-ui-danger); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="secondary"]:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="outline"]:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button[data-variant="ghost"]:hover { background: var(--vcp-ui-control-hover); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button:active:not(:disabled), :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button:active:not(:disabled) { transform: translateY(1px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-button:disabled, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button:disabled { border-color: var(--vcp-ui-disabled-border); color: var(--vcp-ui-text-disabled); background: var(--vcp-ui-disabled-bg); opacity: 0.72; cursor: not-allowed; box-shadow: none; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button { width: var(--vcp-ui-control-md); height: var(--vcp-ui-control-md); padding: 0; color: var(--vcp-ui-text-secondary); background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button[data-size="sm"] { width: var(--vcp-ui-control-sm); height: var(--vcp-ui-control-sm); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button.is-active { color: var(--vcp-ui-text-primary); background: var(--vcp-ui-control-hover); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button[data-variant="outline"] { border-color: var(--vcp-ui-border); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-icon-button[data-variant="danger"] { color: var(--vcp-ui-danger); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea-wrap {
+        position: relative;
+        display: flex;
+        width: 100%;
+        border: 1px solid var(--vcp-ui-control-border);
+        border-radius: var(--vcp-ui-radius-control);
+        color: var(--vcp-ui-text-primary);
+        background: var(--vcp-ui-control-bg);
+        transition: border-color var(--vcp-ui-transition-fast), box-shadow var(--vcp-ui-transition-fast), background var(--vcp-ui-transition-fast);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap:focus-within, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea-wrap:focus-within, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-select:focus-visible { border-color: var(--vcp-ui-control-focus); box-shadow: 0 0 0 3px var(--vcp-ui-focus-ring); outline: none; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap[data-state="invalid"], :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea-wrap[data-state="invalid"], :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-select[aria-invalid="true"] { border-color: var(--vcp-ui-danger); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea { width: 100%; min-width: 0; border: 0; outline: 0; color: inherit; background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input { height: 100%; padding: 0 var(--vcp-ui-space-3); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea { min-height: 88px; padding: var(--vcp-ui-space-3); resize: vertical; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea-wrap[data-resize="none"] .vcp-ui-textarea { resize: none; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap[data-size="sm"] { height: var(--vcp-ui-control-sm); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap[data-size="md"] { height: var(--vcp-ui-control-md); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input-wrap[data-size="lg"] { height: var(--vcp-ui-control-lg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-control-icon { align-self: center; color: var(--vcp-ui-text-secondary); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-control-icon.is-leading { margin-left: var(--vcp-ui-space-3); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-control-icon.is-trailing { margin-right: var(--vcp-ui-space-3); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input::placeholder, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea::placeholder { color: var(--vcp-ui-text-secondary); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-input:disabled, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-textarea:disabled { cursor: not-allowed; opacity: 0.58; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-select { width: 100%; height: var(--vcp-ui-control-md); padding: 0 calc(var(--vcp-ui-space-5) + var(--vcp-ui-space-2)) 0 var(--vcp-ui-space-3); border: 1px solid var(--vcp-ui-control-border); border-radius: var(--vcp-ui-radius-control); color: var(--vcp-ui-text-primary); background: var(--vcp-ui-control-bg); cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-select[data-size="sm"] { height: var(--vcp-ui-control-sm); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-select[data-size="lg"] { height: var(--vcp-ui-control-lg); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox { display: inline-flex; align-items: center; gap: var(--vcp-ui-space-2); min-height: var(--vcp-ui-control-sm); cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox-box { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-sm); color: transparent; background: var(--vcp-ui-control-bg); transition: background var(--vcp-ui-transition-fast), border-color var(--vcp-ui-transition-fast); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox[data-state="checked"] .vcp-ui-checkbox-box, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox[data-state="indeterminate"] .vcp-ui-checkbox-box { border-color: var(--vcp-ui-accent); color: var(--vcp-ui-on-accent); background: var(--vcp-ui-accent); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox:has(input:focus-visible) .vcp-ui-checkbox-box { box-shadow: 0 0 0 3px var(--vcp-ui-focus-ring); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-checkbox.is-disabled { color: var(--vcp-ui-text-disabled); cursor: not-allowed; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch { display: inline-flex; align-items: center; gap: var(--vcp-ui-space-2); min-height: var(--vcp-ui-control-md); padding: 0; border: 0; background: transparent; cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch-track { position: relative; width: 38px; height: 22px; flex: 0 0 auto; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-full); background: var(--vcp-ui-surface-strong); transition: background var(--vcp-ui-transition-fast), border-color var(--vcp-ui-transition-fast); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch-thumb { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: var(--vcp-ui-radius-full); background: var(--vcp-ui-text-secondary); box-shadow: var(--vcp-ui-shadow-sm); transition: transform var(--vcp-ui-transition-spring), background var(--vcp-ui-transition-fast); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch[data-state="on"] .vcp-ui-switch-track { border-color: var(--vcp-ui-accent); background: var(--vcp-ui-accent); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch[data-state="on"] .vcp-ui-switch-thumb { background: var(--vcp-ui-on-accent); transform: translateX(16px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-switch:disabled { color: var(--vcp-ui-text-disabled); cursor: not-allowed; opacity: 0.58; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-field { display: grid; gap: var(--vcp-ui-space-2); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-field-header { display: flex; gap: var(--vcp-ui-space-1); font-weight: 600; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-required, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-field[data-state="error"] .vcp-ui-field-message { color: var(--vcp-ui-danger); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-field-message { min-height: 20px; color: var(--vcp-ui-text-secondary); font-size: var(--vcp-ui-font-helper); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 var(--vcp-ui-space-2); border-radius: var(--vcp-ui-radius-full); color: var(--vcp-ui-text-secondary); background: var(--vcp-ui-surface-strong); font-size: var(--vcp-ui-font-caption); font-weight: 650; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-badge[data-variant="accent"] { color: var(--vcp-ui-text-accent); background: var(--vcp-ui-focus-ring); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-badge[data-variant="success"] { color: var(--vcp-ui-success); background: var(--vcp-ui-success-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-badge[data-variant="warning"] { color: var(--vcp-ui-warning); background: var(--vcp-ui-warning-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-badge[data-variant="danger"] { color: var(--vcp-ui-danger); background: var(--vcp-ui-danger-bg); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert { display: flex; align-items: flex-start; gap: var(--vcp-ui-space-3); padding: var(--vcp-ui-space-3); border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-md); background: var(--vcp-ui-surface-soft); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert[data-variant="info"] { border-color: var(--vcp-ui-info); background: var(--vcp-ui-info-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert[data-variant="success"] { border-color: var(--vcp-ui-success); background: var(--vcp-ui-success-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert[data-variant="warning"] { border-color: var(--vcp-ui-warning); background: var(--vcp-ui-warning-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert[data-variant="danger"] { border-color: var(--vcp-ui-danger); background: var(--vcp-ui-danger-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-alert-body { display: grid; flex: 1; gap: var(--vcp-ui-space-1); min-width: 0; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card { display: grid; width: 100%; gap: var(--vcp-ui-space-1); padding: var(--vcp-ui-panel-padding); border: 1px solid transparent; border-radius: var(--vcp-ui-radius-card); color: inherit; text-align: left; background: var(--vcp-ui-fill-0); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card[data-variant="outlined"] { border-color: var(--vcp-ui-border); background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card[data-variant="interactive"] { cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card[data-variant="interactive"]:hover { border-color: var(--vcp-ui-border-strong); background: var(--vcp-ui-surface); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card[data-variant="selected"] { border-color: var(--vcp-ui-accent); background: var(--vcp-ui-selection-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-card > span { color: var(--vcp-ui-text-secondary); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tabs { display: flex; max-width: 100%; gap: var(--vcp-ui-space-1); border-bottom: 1px solid var(--vcp-ui-border); overflow-x: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tab { position: relative; min-height: var(--vcp-ui-control-lg); padding: 0 var(--vcp-ui-space-3); border: 0; color: var(--vcp-ui-text-secondary); background: transparent; cursor: pointer; white-space: nowrap; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tab:hover { color: var(--vcp-ui-text-primary); background: var(--vcp-ui-surface-soft); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tab[aria-selected="true"] { color: var(--vcp-ui-text-accent); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tab[aria-selected="true"]::after { position: absolute; right: var(--vcp-ui-space-2); bottom: 0; left: var(--vcp-ui-space-2); height: 2px; border-radius: var(--vcp-ui-radius-full); background: var(--vcp-ui-accent); content: ''; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toolbar { display: flex; align-items: center; width: 100%; min-width: 0; gap: var(--vcp-ui-space-2); padding: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toolbar-group { display: flex; align-items: center; min-width: 0; gap: var(--vcp-ui-space-1); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toolbar-group.is-end { margin-left: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toolbar-separator { width: 1px; height: 20px; margin: 0 var(--vcp-ui-space-1); background: var(--vcp-ui-border); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list { display: grid; border-block: 1px solid var(--vcp-ui-border); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-item { display: flex; align-items: center; width: 100%; min-width: 0; gap: var(--vcp-ui-density-gap); min-height: var(--vcp-ui-row-height); padding: var(--vcp-ui-space-2) var(--vcp-ui-space-3); border: 0; border-bottom: 1px solid var(--vcp-ui-border); color: inherit; text-align: left; background: transparent; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-item:last-child { border-bottom: 0; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope button.vcp-ui-list-item { cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope button.vcp-ui-list-item:hover { background: var(--vcp-ui-surface-soft); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-item[data-state="selected"] { background: var(--vcp-ui-selection-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-copy { display: grid; flex: 1; min-width: 0; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-copy span, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-list-trailing { color: var(--vcp-ui-text-secondary); font-size: var(--vcp-ui-font-helper); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame { width: 100%; min-height: 120px; border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-md); color: var(--vcp-ui-text-secondary); overflow: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame[data-state="empty"], :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame[data-state="loading"] { display: grid; place-items: center; align-content: center; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame table { width: 100%; border-collapse: collapse; color: var(--vcp-ui-text-primary); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame th, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame td { padding: var(--vcp-ui-space-3); border-bottom: 1px solid var(--vcp-ui-border); text-align: left; white-space: nowrap; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame th { position: sticky; top: 0; color: var(--vcp-ui-text-secondary); background: var(--vcp-ui-bg-secondary); font-size: var(--vcp-ui-font-helper); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-empty-state { display: grid; place-items: center; align-content: center; gap: var(--vcp-ui-space-2); min-height: 180px; padding: var(--vcp-ui-space-5); color: var(--vcp-ui-text-secondary); text-align: center; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-empty-state strong { color: var(--vcp-ui-text-primary); font-size: var(--vcp-ui-font-emphasis); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-empty-state p { max-width: 440px; margin: 0; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-empty-state-icon { --vcp-ui-icon-size: 36px; color: var(--vcp-ui-text-accent); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-empty-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--vcp-ui-space-2); margin-top: var(--vcp-ui-space-2); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider { display: flex; align-items: center; width: 100%; gap: var(--vcp-ui-space-3); color: var(--vcp-ui-text-3); font-size: var(--vcp-ui-font-caption); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider::before, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider::after { height: 1px; flex: 1; background: var(--vcp-ui-border); content: ''; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider:not(:has(span))::after { display: none; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider[data-orientation="vertical"] { width: 1px; height: 20px; align-self: stretch; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider[data-orientation="vertical"]::before { width: 1px; height: 100%; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider[data-orientation="vertical"]::after, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-divider[data-orientation="vertical"] span { display: none; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip { position: relative; display: inline-flex; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip-bubble { position: absolute; z-index: var(--vcp-ui-z-dropdown); width: max-content; max-width: 240px; padding: var(--vcp-ui-space-1) var(--vcp-ui-space-2); border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-sm); color: var(--vcp-ui-text-0); background: var(--vcp-ui-bg-4); box-shadow: var(--vcp-ui-shadow-md); font-size: var(--vcp-ui-font-caption); line-height: var(--vcp-ui-line-compact); opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(2px); transition: opacity var(--vcp-ui-transition-fast), transform var(--vcp-ui-transition-fast), visibility var(--vcp-ui-transition-fast); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-state="open"] .vcp-ui-tooltip-bubble { opacity: 1; visibility: visible; transform: translateY(0); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-placement="top"] .vcp-ui-tooltip-bubble { left: 50%; bottom: calc(100% + var(--vcp-ui-space-2)); transform: translate(-50%, 2px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-state="open"][data-placement="top"] .vcp-ui-tooltip-bubble { transform: translate(-50%, 0); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-placement="bottom"] .vcp-ui-tooltip-bubble { top: calc(100% + var(--vcp-ui-space-2)); left: 50%; transform: translate(-50%, -2px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-state="open"][data-placement="bottom"] .vcp-ui-tooltip-bubble { transform: translate(-50%, 0); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-placement="left"] .vcp-ui-tooltip-bubble { top: 50%; right: calc(100% + var(--vcp-ui-space-2)); transform: translate(2px, -50%); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-state="open"][data-placement="left"] .vcp-ui-tooltip-bubble { transform: translate(0, -50%); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-placement="right"] .vcp-ui-tooltip-bubble { top: 50%; left: calc(100% + var(--vcp-ui-space-2)); transform: translate(-2px, -50%); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tooltip[data-state="open"][data-placement="right"] .vcp-ui-tooltip-bubble { transform: translate(0, -50%); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton { display: grid; width: 100%; gap: var(--vcp-ui-space-2); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton-line { display: block; width: 100%; height: 12px; border-radius: var(--vcp-ui-radius-sm); background: linear-gradient(90deg, var(--vcp-ui-fill-1), var(--vcp-ui-fill-2), var(--vcp-ui-fill-1)); background-size: 220% 100%; animation: vcp-ui-skeleton 1.4s ease-in-out infinite; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton-line:last-child:not(:first-child) { width: 68%; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton[data-variant="rect"] .vcp-ui-skeleton-line { height: 88px; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton[data-variant="circle"] { width: var(--vcp-ui-control-lg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-skeleton[data-variant="circle"] .vcp-ui-skeleton-line { height: var(--vcp-ui-control-lg); border-radius: var(--vcp-ui-radius-full); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented { display: inline-flex; align-items: center; gap: var(--vcp-ui-space-1); min-height: var(--vcp-ui-control-md); padding: var(--vcp-ui-space-1); border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-control); background: var(--vcp-ui-fill-0); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented[data-size="sm"] { min-height: var(--vcp-ui-control-sm); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented button { display: inline-flex; align-items: center; justify-content: center; gap: var(--vcp-ui-space-1); min-height: calc(var(--vcp-ui-control-md) - var(--vcp-ui-space-2)); padding: 0 var(--vcp-ui-space-3); border: 0; border-radius: calc(var(--vcp-ui-radius-control) - 3px); color: var(--vcp-ui-text-2); background: transparent; cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented[data-size="sm"] button { min-height: calc(var(--vcp-ui-control-sm) - var(--vcp-ui-space-2)); padding-inline: var(--vcp-ui-space-2); font-size: var(--vcp-ui-font-helper); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented button:hover { color: var(--vcp-ui-text-0); background: var(--vcp-ui-fill-1); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-segmented button[aria-checked="true"] { color: var(--vcp-ui-text-accent); background: var(--vcp-ui-selection-bg); box-shadow: var(--vcp-ui-shadow-sm); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: var(--vcp-ui-space-1); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-pagination button { display: grid; place-items: center; min-width: var(--vcp-ui-control-sm); height: var(--vcp-ui-control-sm); padding: 0 var(--vcp-ui-space-2); border: 1px solid transparent; border-radius: var(--vcp-ui-radius-control); color: var(--vcp-ui-text-2); background: transparent; cursor: pointer; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-pagination button:hover { color: var(--vcp-ui-text-0); background: var(--vcp-ui-fill-1); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-pagination button[aria-current="page"] { border-color: var(--vcp-ui-border-strong); color: var(--vcp-ui-text-accent); background: var(--vcp-ui-selection-bg); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-pagination button:disabled { color: var(--vcp-ui-text-disabled); cursor: not-allowed; opacity: 0.6; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area { position: relative; width: 100%; min-height: 0; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area-viewport { max-height: 260px; padding-right: var(--vcp-ui-space-2); overflow: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area[data-size="sm"] .vcp-ui-scroll-area-viewport { max-height: 160px; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area[data-size="lg"] .vcp-ui-scroll-area-viewport { max-height: 380px; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area-fade { position: absolute; right: var(--vcp-ui-scrollbar-size); bottom: 0; left: 0; height: 32px; background: linear-gradient(transparent, var(--vcp-ui-bg-1)); opacity: 0; pointer-events: none; transition: opacity var(--vcp-ui-transition-normal); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area[data-scrollable="true"][data-at-bottom="false"] .vcp-ui-scroll-area-fade { opacity: 1; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area-viewport::-webkit-scrollbar, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame::-webkit-scrollbar, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal-body::-webkit-scrollbar, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tabs::-webkit-scrollbar { width: var(--vcp-ui-scrollbar-size); height: var(--vcp-ui-scrollbar-size); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area-viewport::-webkit-scrollbar-thumb, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame::-webkit-scrollbar-thumb, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal-body::-webkit-scrollbar-thumb, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tabs::-webkit-scrollbar-thumb { border-radius: var(--vcp-ui-radius-full); background: var(--vcp-ui-scrollbar-thumb); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-scroll-area-viewport::-webkit-scrollbar-thumb:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-table-frame::-webkit-scrollbar-thumb:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal-body::-webkit-scrollbar-thumb:hover, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-tabs::-webkit-scrollbar-thumb:hover { background: var(--vcp-ui-scrollbar-thumb-hover); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal-overlay { position: fixed; inset: 0; z-index: var(--vcp-ui-z-overlay); display: grid; place-items: center; padding: var(--vcp-ui-space-4); background: var(--vcp-ui-backdrop); backdrop-filter: blur(5px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal { display: grid; width: min(100%, 520px); max-height: min(760px, calc(100vh - var(--vcp-ui-space-7))); border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-lg); background: var(--vcp-ui-bg-secondary); box-shadow: var(--vcp-ui-shadow-lg); overflow: hidden; animation: vcp-ui-dialog-in var(--vcp-ui-transition-spring); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal[data-size="sm"] { width: min(100%, 400px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal[data-size="lg"] { width: min(100%, 760px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal > header, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal > footer { display: flex; align-items: center; gap: var(--vcp-ui-space-2); padding: var(--vcp-ui-space-3) var(--vcp-ui-space-4); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal > header { border-bottom: 1px solid var(--vcp-ui-border); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal > header h2 { flex: 1; margin: 0; font-size: var(--vcp-ui-font-title); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal > footer { justify-content: flex-end; border-top: 1px solid var(--vcp-ui-border); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-modal-body { padding: var(--vcp-ui-space-4); overflow: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-dialog-copy { margin: 0; color: var(--vcp-ui-text-secondary); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-dialog-form { display: grid; gap: var(--vcp-ui-space-2); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-dialog-error { min-height: 20px; color: var(--vcp-ui-danger); font-size: var(--vcp-ui-font-helper); }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope.vcp-ui-feedback-host { position: fixed; inset: 0; z-index: var(--vcp-ui-z-toast); pointer-events: none; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope.vcp-ui-feedback-host .vcp-ui-dialog-host, :is(html, html.vcp-global-settings-host) .vcp-ui-scope.vcp-ui-feedback-host .vcp-ui-dialog-host > *, :is(html, html.vcp-global-settings-host) .vcp-ui-scope.vcp-ui-feedback-host .vcp-ui-loading-layer { pointer-events: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast-stack { position: fixed; top: calc(var(--next-topbar-height, 44px) + var(--vcp-ui-space-4)); right: var(--vcp-ui-space-4); z-index: var(--vcp-ui-z-toast); display: grid; width: min(360px, calc(100vw - var(--vcp-ui-space-6))); gap: var(--vcp-ui-space-2); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast { display: flex; align-items: center; gap: var(--vcp-ui-space-2); min-height: 48px; padding: var(--vcp-ui-space-2) var(--vcp-ui-space-3); border: 1px solid var(--vcp-ui-border); border-radius: var(--vcp-ui-radius-md); background: var(--vcp-ui-bg-secondary); box-shadow: var(--vcp-ui-shadow-md); pointer-events: auto; cursor: pointer; animation: vcp-ui-toast-in var(--vcp-ui-transition-spring); }
+    /* Toasts ignore pointer input so they do not block the workspace; both native
+       and Web Awesome close controls must opt back in. */
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast > :is(button, wa-button) { pointer-events: auto; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast > span:nth-child(2) { flex: 1; }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast[data-variant="success"] > .vcp-ui-icon:first-child { color: var(--vcp-ui-success); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast[data-variant="warning"] > .vcp-ui-icon:first-child { color: var(--vcp-ui-warning); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-toast[data-variant="error"] > .vcp-ui-icon:first-child { color: var(--vcp-ui-danger); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-loading-layer { position: fixed; inset: 0; display: grid; place-items: center; align-content: center; gap: var(--vcp-ui-space-2); color: var(--vcp-ui-text-primary); background: var(--vcp-ui-backdrop); backdrop-filter: blur(4px); }
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-loading-layer[hidden] { display: none; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-spinner { animation: vcp-ui-spin 900ms linear infinite; }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range {
+        width: 100%;
+        height: 20px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        appearance: none;
+        cursor: pointer;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range::-webkit-slider-runnable-track {
+        height: 4px;
+        border: 0;
+        border-radius: var(--vcp-ui-radius-full);
+        background: linear-gradient(
+            90deg,
+            var(--vcp-ui-accent) 0 var(--vcp-ui-range-progress, 50%),
+            var(--vcp-ui-fill-2) var(--vcp-ui-range-progress, 50%) 100%
+        );
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range::-webkit-slider-thumb {
+        width: 14px;
+        height: 14px;
+        margin-top: -5px;
+        border: 2px solid var(--vcp-ui-accent);
+        border-radius: var(--vcp-ui-radius-full);
+        background: var(--vcp-ui-bg-1);
+        box-shadow: 0 0 0 2px var(--vcp-ui-bg-0);
+        appearance: none;
+        transition: box-shadow var(--vcp-ui-transition-fast), transform var(--vcp-ui-transition-fast);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range:hover::-webkit-slider-thumb {
+        box-shadow: 0 0 0 4px var(--vcp-ui-focus-ring);
+        transform: scale(1.06);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range:focus-visible {
+        outline: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range:focus-visible::-webkit-slider-thumb {
+        box-shadow: 0 0 0 4px var(--vcp-ui-focus-ring);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range::-moz-range-track {
+        height: 4px;
+        border: 0;
+        border-radius: var(--vcp-ui-radius-full);
+        background: var(--vcp-ui-fill-2);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range::-moz-range-progress {
+        height: 4px;
+        border-radius: var(--vcp-ui-radius-full);
+        background: var(--vcp-ui-accent);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-range::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--vcp-ui-accent);
+        border-radius: var(--vcp-ui-radius-full);
+        background: var(--vcp-ui-bg-1);
+        box-shadow: 0 0 0 2px var(--vcp-ui-bg-0);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-textarea, .vcp-ui-native-select) {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--vcp-ui-control-border);
+        border-radius: var(--vcp-ui-radius-control);
+        color: var(--vcp-ui-text-0);
+        background: var(--vcp-ui-control-bg);
+        box-shadow: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-select) {
+        height: var(--vcp-ui-control-md);
+        padding: 0 var(--vcp-ui-space-3);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-select)[data-size="sm"] {
+        height: var(--vcp-ui-control-sm);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-select)[data-size="lg"] {
+        height: var(--vcp-ui-control-lg);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-native-textarea {
+        min-height: 88px;
+        padding: var(--vcp-ui-space-3);
+        resize: vertical;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-textarea, .vcp-ui-native-select):focus-visible {
+        border-color: var(--vcp-ui-control-focus);
+        outline: none;
+        box-shadow: 0 0 0 3px var(--vcp-ui-focus-ring);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-textarea, .vcp-ui-native-select)[aria-invalid="true"] {
+        border-color: var(--vcp-ui-danger);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope :is(.vcp-ui-native-input, .vcp-ui-native-textarea, .vcp-ui-native-select):disabled {
+        color: var(--vcp-ui-text-disabled);
+        background: var(--vcp-ui-disabled-bg);
+        cursor: not-allowed;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-native-switch {
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-native-switch.is-disabled {
+        cursor: not-allowed;
+        opacity: 0.58;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section {
+        display: block;
+        min-width: 0;
+        border: 1px solid var(--vcp-ui-border);
+        border-radius: var(--vcp-ui-radius-card);
+        background: var(--vcp-ui-bg-1);
+        overflow: hidden;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--vcp-ui-control-sm);
+        grid-template-areas:
+            "title toggle"
+            "summary toggle";
+        align-items: center;
+        gap: var(--vcp-ui-space-1) var(--vcp-ui-space-2);
+        min-height: var(--vcp-ui-control-lg);
+        padding: var(--vcp-ui-space-2) var(--vcp-ui-space-3);
+        cursor: pointer;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-header > strong {
+        grid-area: title;
+        color: var(--vcp-ui-text-0);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-summary {
+        grid-area: summary;
+        color: var(--vcp-ui-text-3);
+        font-size: var(--vcp-ui-font-caption);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-toggle {
+        grid-area: toggle;
+        width: var(--vcp-ui-control-sm);
+        height: var(--vcp-ui-control-sm);
+        padding: 0;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: var(--vcp-ui-radius-sm);
+        color: var(--vcp-ui-text-2);
+        background: transparent;
+        cursor: pointer;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-toggle:hover {
+        color: var(--vcp-ui-text-0);
+        background: var(--vcp-ui-fill-1);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-toggle .vcp-ui-icon {
+        transition: transform var(--vcp-ui-transition-normal);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section[data-state="collapsed"] .vcp-ui-settings-section-toggle .vcp-ui-icon {
+        transform: rotate(-90deg);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section-content {
+        padding: var(--vcp-ui-space-3);
+        border-top: 1px solid var(--vcp-ui-border);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-section[data-state="collapsed"] .vcp-ui-settings-section-content {
+        display: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-field {
+        min-width: 0;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-field[data-state="error"] :is(input, select, textarea) {
+        border-color: var(--vcp-ui-danger);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-field[data-state="error"] :is(.group-settings-helper-text, small, .form-hint) {
+        color: var(--vcp-ui-danger);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-action-bar {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: var(--vcp-ui-space-2);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-action-bar[data-state="saving"] button[type="submit"] {
+        cursor: progress;
+        opacity: 0.78;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-action-bar[data-state="deleting"] :is(.danger-button, [data-variant="danger"]) {
+        cursor: progress;
+        opacity: 0.78;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-settings-action-bar[data-state="error"] {
+        border-color: var(--vcp-ui-danger);
+    }
+
+    /* --- Application page shell --- */
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header {
+        min-height: var(--vcp-ui-shell-header-height);
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: var(--vcp-ui-space-3);
+        padding: 0 var(--vcp-ui-space-4);
+        border-bottom: 1px solid var(--vcp-ui-border);
+        background: var(--vcp-ui-bg-1);
+        -webkit-app-region: drag;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header button, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header input, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header select, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header wa-button, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header wa-input, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-header wa-select, :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-controls {
+        -webkit-app-region: no-drag;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-title {
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        color: var(--vcp-ui-text-0);
+        font-size: var(--vcp-ui-font-title);
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-actions {
+        min-width: 0;
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: var(--vcp-ui-space-1);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell[data-embedded="true"] .vcp-ui-window-controls {
+        display: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-controls {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: var(--vcp-ui-space-1);
+        position: relative;
+        z-index: 2;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-control-button {
+        position: relative;
+        z-index: 1;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-control-pin.is-pinned {
+        color: var(--vcp-ui-accent);
+        background: color-mix(in srgb, var(--vcp-ui-accent) 16%, transparent);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-control-pin.is-pinned .vcp-ui-icon,
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-control-pin.is-pinned svg {
+        transform: rotate(-15deg);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-window-control-close:hover {
+        color: var(--vcp-ui-danger);
+        background: var(--vcp-ui-danger-bg);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell-content {
+        min-width: 0;
+        min-height: 0;
+        flex: 1 1 auto;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    /* --- Integrated application shell ---
+       Embedded business pages share the main VChat navigation surface. The
+       page-specific AppPageShell header is only useful in a standalone
+       window, so embedded pages expose their controls inside the content
+       toolbar and let the business surface form the visible application. */
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell.vcp-ui-integrated-shell[data-embedded="true"] {
+        background: var(--vcp-ui-bg-1);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell.vcp-ui-integrated-shell[data-embedded="true"] > .vcp-ui-page-shell-header {
+        display: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-page-shell.vcp-ui-integrated-shell[data-embedded="true"] > .vcp-ui-page-shell-content {
+        overflow: hidden;
+        background: var(--vcp-ui-bg-1);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        background: var(--vcp-ui-bg-1);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout[data-layout="rail"] {
+        display: grid;
+        grid-template-columns: clamp(240px, 20vw, 300px) minmax(0, 1fr);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout[data-layout="compact-rail"] {
+        display: grid;
+        grid-template-columns: 58px minmax(0, 1fr);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout[data-layout="canvas"] {
+        display: block;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-rail {
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        border: 0;
+        background: var(--vcp-ui-bg-1);
+        box-shadow: none;
+        backdrop-filter: none;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-main {
+        min-width: 0;
+        min-height: 0;
+        height: calc(100% - 4px);
+        margin: 0 4px 4px 0;
+        box-sizing: border-box;
+        overflow: hidden;
+        border: 1px solid var(--vcp-ui-border);
+        border-radius: var(--vcp-ui-shell-radius);
+        background: var(--vcp-ui-bg-primary);
+        box-shadow: var(--vcp-ui-shadow-md);
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout[data-layout="canvas"] > .vcp-ui-integrated-main {
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-content-toolbar {
+        min-height: 44px;
+        padding: 0 var(--vcp-ui-space-3);
+        display: flex;
+        align-items: center;
+        gap: var(--vcp-ui-space-2);
+        border-bottom: 1px solid var(--vcp-ui-border);
+        background: var(--vcp-ui-bg-1);
+    }
+
+    @media (max-width: 760px) {
+        :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-integrated-layout[data-layout="rail"] {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    /* --- Async boundary --- */
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-async-boundary {
+        min-width: 0;
+        min-height: 0;
+        padding: var(--vcp-ui-space-4);
+        display: grid;
+        gap: var(--vcp-ui-space-3);
+        align-content: start;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-async-boundary[data-status="loading"] {
+        display: block;
+    }
+
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope .vcp-ui-async-boundary[data-status="error"] .vcp-ui-button {
+        justify-self: start;
+    }
+}
+
+@keyframes vcp-ui-spin { to { transform: rotate(360deg); } }
+@keyframes vcp-ui-skeleton { from { background-position: 100% 0; } to { background-position: -120% 0; } }
+@keyframes vcp-ui-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
+@keyframes vcp-ui-toast-in { from { opacity: 0; transform: translateX(12px); } }
+
+@media (prefers-reduced-motion: reduce) {
+    :is(html, html.vcp-global-settings-host) .vcp-ui-scope *, :is(html, html.vcp-global-settings-host) .vcp-ui-scope *::before, :is(html, html.vcp-global-settings-host) .vcp-ui-scope *::after {
+        scroll-behavior: auto;
+        animation-duration: 1ms;
+        animation-iteration-count: 1;
+        transition-duration: 1ms;
+    }
+}

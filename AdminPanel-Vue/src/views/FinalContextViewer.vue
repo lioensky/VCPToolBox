@@ -14,6 +14,17 @@
           </template>
           复制可见文本
         </UiButton>
+        <UiButton
+          variant="outline"
+          @click="downloadRawPayload"
+          :disabled="!snapshot || isLoading || selectedSnapshotId !== snapshot.id"
+          title="下载当前缓存组实际发给上游的完整请求体，包含全部消息字段、模型参数和原始附件数据，不包含面板摘要"
+        >
+          <template #leading>
+            <span class="material-symbols-outlined">download</span>
+          </template>
+          下载原始载荷JSON
+        </UiButton>
       </UiPageActions>
     </Teleport>
 
@@ -1135,6 +1146,37 @@ function jumpMatch(direction: 1 | -1) {
       : (currentMatchPosition + direction + matches.length) % matches.length
 
   scrollToBlock(matches[nextPosition].index)
+}
+
+function downloadRawPayload() {
+  const current = snapshot.value
+  if (!current || isLoading.value || selectedSnapshotId.value !== current.id) return
+
+  let url: string | null = null
+  const link = document.createElement('a')
+  try {
+    // 直接导出服务器保存的完整上游 body，不从可见块/summary 重建消息，
+    // 不过滤任何消息字段或多模态数据，也不添加快照元信息。
+    const json = JSON.stringify(current.body, null, 2)
+    if (json === undefined) throw new Error('当前缓存组没有原始请求体')
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
+    url = URL.createObjectURL(blob)
+    link.href = url
+    link.download = `final-context-${current.id ?? 'unknown'}-${current.capturedAt.replace(/[^0-9TZ-]/g, '-')}.json`
+    document.body.appendChild(link)
+    link.click()
+    showMessage(`已发起缓存组 #${current.id ?? '-'} 的完整原始载荷下载`, 'success')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showMessage(`下载原始载荷失败：${message}`, 'error')
+  } finally {
+    link.remove()
+    // 延迟释放，避免浏览器尚未接管下载时撤销资源。
+    if (url) {
+      const downloadUrl = url
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
+    }
+  }
 }
 
 async function copyVisibleText() {

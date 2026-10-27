@@ -1,0 +1,28 @@
+{
+    "manifestVersion": "1.0.0",
+    "name": "MemoryThinkingTray",
+    "displayName": "记忆思维托盘",
+    "version": "0.1.0",
+    "description": "实验性记忆区整合托盘：在记忆解析前，将系统提示词中的完整记忆思维区搬运为指定深度的伪系统 user 块。只搬运，不检索、不解析占位符。",
+    "author": "VCP",
+    "pluginType": "messagePreprocessor",
+    "entryPoint": {
+        "type": "nodejs",
+        "script": "MemoryThinkingTray.js"
+    },
+    "communication": {
+        "protocol": "direct"
+    },
+    "configSchema": {
+        "MEMORY_THINKING_TRAY_DEPTH": {
+            "type": "integer",
+            "default": 1,
+            "description": "托盘注入深度：0 为上下文末尾，1 为末条消息之前；超出长度时置于开头连续 system 块之后"
+        },
+        "MEMORY_THINKING_TRAY_CACHE_BREAKPOINT": {
+            "type": "boolean",
+            "default": false,
+            "description": "实验性缓存断点：在托盘前最近的 user/assistant 消息的最后一个非空文本块添加 ephemeral 缓存标记；需上游支持，默认关闭"
+        }
+    }
+}

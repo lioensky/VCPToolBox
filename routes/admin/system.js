@@ -7,6 +7,7 @@ const util = require('util');
 const execAsync = util.promisify(exec);
 const pm2 = require('pm2');
 const { getAuthCode } = require('../../modules/captchaDecoder');
+const { getFreshWeather } = require('../../Plugin/WeatherReporter/weather-data');
 
 const CPU_TEMPERATURE_URL = 'http://localhost:8085/data.json';
 const CPU_TEMPERATURE_TIMEOUT_MS = 800;
@@ -274,7 +275,13 @@ module.exports = function(options) {
         const weatherCachePath = path.join(__dirname, '..', '..', 'Plugin', 'WeatherReporter', 'weather_cache.json');
         try {
             const content = await fs.readFile(weatherCachePath, 'utf-8');
-            res.json(JSON.parse(content));
+            let data;
+            try {
+                data = getFreshWeather(JSON.parse(content));
+            } catch (error) {
+                return res.status(503).json({ success: false, error: error.message });
+            }
+            res.json(data);
         } catch (error) {
             if (error.code === 'ENOENT') {
                 res.status(404).json({ success: false, error: '天气缓存文件未找到。' });

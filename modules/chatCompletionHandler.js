@@ -1178,6 +1178,16 @@ class ChatCompletionHandler {
         if (DEBUG_MODE) await writeDebugLog('LogAfterFinalRoleDivider', processedMessages);
       }
 
+      // 前端的展示姓名不是上游参与者标识（中文姓名还可能触发上游 name 格式校验）。
+      // 必须在所有预处理器/原消息恢复完成后清理，避免 OneRing 恢复视图时重新带回；
+      // 此时来源识别与时间戳绑定已完成，正文中的 OneRing 来源通知保持不变。
+      // 不清理 function/tool 消息：旧式 function 协议依赖 name 匹配调用结果。
+      for (const message of processedMessages) {
+        if (message && ['system', 'developer', 'user', 'assistant'].includes(message.role)) {
+          delete message.name;
+        }
+      }
+
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
       originalBody.messages = processedMessages;
 
