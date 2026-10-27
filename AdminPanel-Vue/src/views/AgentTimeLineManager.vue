@@ -17,7 +17,7 @@
       <span class="material-symbols-outlined hero-icon">timeline</span>
       <div>
         <h2>Agent TimeLine 管理</h2>
-        <p>生成并管理按月长期时间线。<code>[[VCPTimeLine::小克]]</code> 永久注入全部月摘要，带参数时可展开语义相关的完整月份。</p>
+        <p>生成并管理按月长期时间线。支持将月度总览与动态召回分开放置，旧版 <code>[[VCPTimeLine::小克]]</code> 仍保持总览＋召回的兼容行为。</p>
       </div>
     </header>
 
@@ -62,10 +62,23 @@
         </UiField>
       </div>
       <div class="syntax-help">
+        <span>月度总览（放系统提示词稳定区）：</span>
+        <code>[[VCPTimeLineSummary::小克]]</code>
+      </div>
+      <div class="syntax-help">
+        <span>动态召回（放靠后的系统通知）：</span>
+        <code>[[VCPTimeLineRecall::小克]]</code>
+        <code>[[VCPTimeLineRecall::小克:3]]</code>
+        <code>[[VCPTimeLineRecall::小克:0.5]]</code>
+        <code>[[VCPTimeLineRecall::小克:3:0.5]]</code>
+      </div>
+      <div class="syntax-help">
+        <span>旧版兼容（总览＋召回，无需迁移）：</span>
         <code>[[VCPTimeLine::小克]]</code>
-        <code>[[VCPTimeLine::小克:3]]</code>
-        <code>[[VCPTimeLine::小克:0.5]]</code>
         <code>[[VCPTimeLine::小克:3:0.5]]</code>
+      </div>
+      <div class="syntax-help">
+        <small>三个入口使用相同可信规则：系统角色消息，或正文以“[系统”开头的用户角色消息；每种入口仅接受首个可信声明。K 为最大展开月份数，阈值为 0.01–0.99，省略时使用默认设置。总览不执行向量查询，召回无命中时输出为空。请选择旧入口或拆分入口，混用会重复输出。动态内容应在最终请求中靠后放置，才能减少对稳定前缀缓存的影响。</small>
       </div>
     </section>
 

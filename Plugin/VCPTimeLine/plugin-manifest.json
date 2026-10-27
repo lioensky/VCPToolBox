@@ -3,7 +3,7 @@
   "name": "VCPTimeLine",
   "displayName": "VCP Agent 时间线",
   "version": "1.0.0",
-  "description": "为 Agent 生成按月时间线和一句话摘要，并通过 [[VCPTimeLine::Agent]] 或 [[VCPTimeLine::Agent:K:Threshold]] 注入全量月摘要及语义相关的完整月度时间线。",
+  "description": "为 Agent 生成按月时间线和一句话摘要。[[VCPTimeLineSummary::Agent]] 仅注入月度总览，[[VCPTimeLineRecall::Agent:K:Threshold]] 仅注入语义相关的完整月份；保留 [[VCPTimeLine::Agent]] 和带参数形式的总览＋召回兼容行为。三个入口共用可信规则，每种仅接受首个可信声明。",
   "author": "VCPToolBox",
   "pluginType": "hybridservice",
   "entryPoint": {
