@@ -17,6 +17,7 @@ function formatDiagnostics(plugin, request, response) {
         return output + '- RiverMemo 未执行（候选池为空或原生未返回），没有可用的传播图和读出诊断。\n';
     }
     output += `- 资产：${cell(river.artifactSig || observation.artifactSig || '未返回')}；查询 ID：${cell(river.queryId || observation.queryId || '未返回')}\n`;
+    output += `- 原生读出版本：${cell(river.algorithmVersion || '未返回')}\n`;
     output += `- Ω / 河网状态：${json(river.omega)}\n`;
     output += `- 查询形态：${json(river.queryMorphology)}\n\n`;
     const section = (title, parameters) => {
@@ -60,9 +61,9 @@ function formatDiagnostics(plugin, request, response) {
     section('EPA', observation.epa);
     section('残差金字塔', observation.pyramid);
     output += '### RiverMemo 候选解释\n\n';
-    output += '| Chunk | 角色 | 基础分 | 拓扑加分 | 直锚加分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---|---|\n';
+    output += '| Chunk | 角色 | 语义基础分 | 路径奖励 | 图奖励 | 拓扑合计 | 直锚奖励 | 截断扣分 | 最终分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n';
     for (const item of river.results || []) {
-        output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
+        output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
     }
     output += '\n详细测绘（拓扑可靠性、锚点可靠性、覆盖率、路径几何和 Ω 门控）：\n\n';
     for (const item of river.results || []) {

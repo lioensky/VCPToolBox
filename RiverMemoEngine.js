@@ -433,6 +433,9 @@ class RiverMemoEngine {
                 score: clamp01(item.score),
                 originalScore: Number(item.originalScore) || 0,
                 baseScore: clamp01(item.baseScore),
+                pathBonus: clamp01(item.pathBonus),
+                graphBonus: clamp01(item.graphBonus),
+                scoreClipping: Math.max(0, Number(item.scoreClipping) || 0),
                 topologyBonus: clamp01(item.topologyBonus),
                 anchorBonus: clamp01(item.anchorBonus),
                 matchedTags,
@@ -469,7 +472,7 @@ class RiverMemoEngine {
         return Object.freeze({
             schema: RESULT_SCHEMA,
             version: VERSION,
-            algorithmVersion: ALGORITHM_VERSION,
+            algorithmVersion: nativeResult.algorithmVersion || ALGORITHM_VERSION,
             artifactSig: artifact.artifactSig,
             artifactGeneration: artifact.generation,
             queryId: queryState.queryId,
