@@ -3,7 +3,7 @@
   "upstreamUrl": "http://127.0.0.1:6005",
   "upstreamKey": "",
   "upstreamType": "chat",
-  "defaultModel": "gpt-4.1-mini",
+  "defaultModel": "deepseek-v4.1-flash",
   "systemPrompt": "",
   "hijackMode": "off",
   "modelMap": {},

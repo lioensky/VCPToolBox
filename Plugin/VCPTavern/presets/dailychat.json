@@ -1,5 +1,6 @@
 {
   "description": "日常聊天优化",
+  "placeholderAllowlist": [],
   "rules": [
     {
       "id": "rule-1753202869499",
