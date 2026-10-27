@@ -18,6 +18,11 @@
             "type": "integer",
             "default": 1,
             "description": "托盘注入深度：0 为上下文末尾，1 为末条消息之前；超出长度时置于开头连续 system 块之后"
+        },
+        "MEMORY_THINKING_TRAY_CACHE_BREAKPOINT": {
+            "type": "boolean",
+            "default": false,
+            "description": "实验性缓存断点：在托盘前最近的 user/assistant 消息的最后一个非空文本块添加 ephemeral 缓存标记；需上游支持，默认关闭"
         }
     }
 }

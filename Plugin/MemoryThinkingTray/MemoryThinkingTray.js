@@ -71,6 +71,42 @@ function extractTray(content) {
     return { content: cleanedContent, bodies };
 }
 
+function markPrefixCacheBreakpoint(messages, insertionIndex) {
+    for (let index = insertionIndex - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (message?.role !== 'user' && message?.role !== 'assistant') continue;
+        const content = message.content;
+        if (typeof content === 'string' && content.trim()) {
+            messages[index] = {
+                ...message,
+                content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }]
+            };
+            return index;
+        }
+        if (Array.isArray(content)) {
+            for (let partIndex = content.length - 1; partIndex >= 0; partIndex--) {
+                const part = content[partIndex];
+                if (part?.type !== 'text' || typeof part.text !== 'string' || !part.text.trim()) continue;
+                if (!part.cache_control) {
+                    const parts = content.slice();
+                    parts[partIndex] = { ...part, cache_control: { type: 'ephemeral' } };
+                    messages[index] = { ...message, content: parts };
+                }
+                return index;
+            }
+        } else if (content && typeof content.text === 'string' && content.text.trim()) {
+            if (!content.cache_control) {
+                messages[index] = {
+                    ...message,
+                    content: { ...content, cache_control: { type: 'ephemeral' } }
+                };
+            }
+            return index;
+        }
+    }
+    return -1;
+}
+
 class MemoryThinkingTray {
     constructor() {
         this.config = {};
@@ -119,9 +155,11 @@ class MemoryThinkingTray {
         let index = Math.max(leadingSystemCount, output.length - depth);
         // Do not split native assistant tool_calls and their tool result sequence.
         while (index > leadingSystemCount && output[index]?.role === 'tool') index--;
+        const cacheEnabled = String(effective.MEMORY_THINKING_TRAY_CACHE_BREAKPOINT).toLowerCase() === 'true';
+        const cacheIndex = cacheEnabled ? markPrefixCacheBreakpoint(output, index) : -1;
         output.splice(index, 0, { role: 'user', content: `[系统提示:]\n${body}` });
         if (effective.DebugMode === true) {
-            console.log(`[MemoryThinkingTray] 已搬移 ${bodies.length} 个托盘区，depth=${depth}, index=${index}`);
+            console.log(`[MemoryThinkingTray] 已搬移 ${bodies.length} 个托盘区，depth=${depth}, index=${index}, cacheIndex=${cacheIndex}`);
         }
         return output;
     }

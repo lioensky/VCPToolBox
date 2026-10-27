@@ -152,7 +152,87 @@ test('configured order places the tray immediately before RAG and timeline', () 
     assert(index >= 0);
     assert.deepEqual(order.slice(index, index + 3), ['MemoryThinkingTray', 'RAGDiaryPlugin', 'VCPTimeLine']);
     const manifest = require('../Plugin/MemoryThinkingTray/plugin-manifest.json');
-    assert.deepEqual(Object.keys(manifest.configSchema), ['MEMORY_THINKING_TRAY_DEPTH']);
+    assert.deepEqual(Object.keys(manifest.configSchema), [
+        'MEMORY_THINKING_TRAY_DEPTH', 'MEMORY_THINKING_TRAY_CACHE_BREAKPOINT'
+    ]);
+    assert.equal(manifest.configSchema.MEMORY_THINKING_TRAY_CACHE_BREAKPOINT.default, false);
+});
+
+test('cache breakpoint is opt-in and marks the prefix without mutating input', async () => {
+    const messages = input('memory');
+    const snapshot = JSON.stringify(messages);
+    for (const value of [undefined, false, 'false', 'bad']) {
+        const result = await tray.processMessages(messages, { MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: value });
+        assert.strictEqual(result[2], messages[2]);
+    }
+    for (const value of [true, 'true', 'TRUE']) {
+        const result = await tray.processMessages(messages, { MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: value });
+        assert.deepEqual(result[2].content, [{
+            type: 'text', text: 'old answer', cache_control: { type: 'ephemeral' }
+        }]);
+        assert.equal(result[3].content, '[系统提示:]\nmemory');
+        assert.strictEqual(result[1], messages[1]);
+        assert.strictEqual(result[4], messages[3]);
+        assert.strictEqual(await tray.processMessages(result, {
+            MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: true
+        }), result);
+    }
+    assert.equal(JSON.stringify(messages), snapshot);
+});
+
+test('cache breakpoint preserves multimodal parts and existing cache policy', async () => {
+    const image = { type: 'image_url', image_url: { url: 'https://example.com/image.png' } };
+    const messages = input('memory');
+    messages[2].content = [
+        { type: 'text', text: 'first' },
+        { type: 'text', text: 'last', custom: 1 },
+        image
+    ];
+    const snapshot = JSON.stringify(messages);
+    const result = await tray.processMessages(messages, { MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: true });
+    assert.strictEqual(result[2].content[0], messages[2].content[0]);
+    assert.strictEqual(result[2].content[2], image);
+    assert.deepEqual(result[2].content[1], {
+        type: 'text', text: 'last', custom: 1, cache_control: { type: 'ephemeral' }
+    });
+    assert.equal(JSON.stringify(messages), snapshot);
+    messages[2].content[1].cache_control = { type: 'ephemeral', ttl: '1h' };
+    const preserved = await tray.processMessages(messages, { MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: true });
+    assert.strictEqual(preserved[2], messages[2]);
+});
+
+test('cache breakpoint follows actual depth and skips unsupported or absent prefix text', async () => {
+    const config = { MEMORY_THINKING_TRAY_CACHE_BREAKPOINT: true };
+    for (const [depth, expected] of [[0, 3], [1, 2], [2, 1]]) {
+        const result = await tray.processMessages(input('memory'), {
+            ...config, MEMORY_THINKING_TRAY_DEPTH: depth
+        });
+        assert.equal(result[expected].content[0].cache_control.type, 'ephemeral');
+    }
+    const clamped = await tray.processMessages(input('memory'), {
+        ...config, MEMORY_THINKING_TRAY_DEPTH: 9999
+    });
+    assert.equal(clamped[0].content, 'prefixsuffix');
+    assert.equal(clamped[2].content, 'old query');
+    const messages = input('memory');
+    messages[2] = { role: 'assistant', content: null, tool_calls: [{ id: 'a' }] };
+    messages.splice(3, 0, { role: 'tool', content: 'result', tool_call_id: 'a' });
+    const result = await tray.processMessages(messages, {
+        ...config, MEMORY_THINKING_TRAY_DEPTH: 2
+    });
+    assert.equal(result[1].content[0].cache_control.type, 'ephemeral');
+    assert.equal(result[2].content, '[系统提示:]\nmemory');
+    assert.strictEqual(result[3], messages[2]);
+    assert.strictEqual(result[4], messages[3]);
+    messages[2] = { role: 'assistant', content: { text: 'answer', custom: 1 } };
+    const objectResult = await tray.processMessages(messages, config);
+    assert.deepEqual(objectResult[2].content, {
+        text: 'answer', custom: 1, cache_control: { type: 'ephemeral' }
+    });
+    const noMarkers = [{ role: 'user', content: 'query' }];
+    assert.strictEqual(await tray.processMessages(noMarkers, config), noMarkers);
+    const empty = await tray.processMessages(input(' \n '), config);
+    assert.equal(empty[2].content, 'old answer');
 });
 
 test('depth 9999 always stays below all leading system messages', async () => {
