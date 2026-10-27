@@ -48,10 +48,16 @@ export interface DailyWeather {
  * 天气数据响应
  */
 export interface WeatherResponse {
+  now?: (HourlyWeather & { obsTime?: string }) | null
   /** 小时预报列表 */
   hourly: HourlyWeather[]
   /** 每日预报列表 */
   daily: DailyWeather[]
   /** 更新时间 */
   updateTime?: string
+  /** 获取时间 */
+  lastUpdate?: string
+  /** 数据源观测时间 */
+  sourceUpdatedAt?: string
+  provider?: "uapi" | "qweather"
 }

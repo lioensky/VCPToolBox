@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "WeatherReporter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "天气预报员",
-  "description": "提供实时的天气信息，并将其集成到系统提示词的 {{VCPWeatherInfo}} 占位符中。",
+  "description": "提供天气、预报与空气质量，支持 UAPI 免 Key 接口及和风天气，并将来源与更新时间集成到 {{VCPWeatherInfo}}。",
   "author": "System",
   "pluginType": "static",
   "entryPoint": {
@@ -11,7 +11,7 @@
     "command": "node weather-reporter.js"
   },
   "communication": {
-    "protocol": "stdio" 
+    "protocol": "stdio"
   },
   "capabilities": {
     "systemPromptPlaceholders": [
@@ -20,7 +20,7 @@
         "description": "当前的实时天气信息。"
       }
     ],
-    "invocationCommands": [] 
+    "invocationCommands": []
   },
   "configSchema": {
     "VarCity": "string",
@@ -42,7 +42,12 @@
       "description": "24小时天气预报总共显示的条目数。",
       "default": 12,
       "min": 1
+    },
+    "WeatherProvider": {
+      "type": "string",
+      "default": "auto",
+      "description": "天气数据源：auto、uapi 或 qweather。auto 在和风配置缺失、旧 Host 或请求失败时使用 UAPI。"
     }
   },
-  "refreshIntervalCron": "0 */6 * * *"
+  "refreshIntervalCron": "0 * * * *"
 }
