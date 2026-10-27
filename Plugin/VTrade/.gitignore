@@ -1,0 +1,6 @@
+data/
+runs/
+imports/
+config.env
+__pycache__/
+*.pyc
