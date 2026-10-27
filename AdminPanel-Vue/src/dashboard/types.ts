@@ -11,10 +11,10 @@ export interface DashboardForecastDay {
 
 export interface DashboardWeatherDisplay {
   icon: string;
-  temp: number;
+  temp: number | null;
   text: string;
-  humidity: number;
+  humidity: number | null;
   wind: string;
-  pressure: number;
+  pressure: number | null;
   forecast: DashboardForecastDay[];
 }
