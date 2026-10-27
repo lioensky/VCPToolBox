@@ -106,11 +106,23 @@ class TradeService {
             { timeoutMs: this.timeoutMs, signal: controller.signal });
             return { intraday: toolOutput(result) };
         }
-        const market = this.marketDirectory();
-        if (input.action === 'status') return { status: { ...await market.status(), origin: market.origin } };
-        if (input.action === 'list') return { securities: await market.securities() };
-        if (input.action === 'quotes') return { quotes: await market.quotes(input.symbols) };
-        if (input.action === 'bars') return { chart: await market.bars(input.symbol, input.limit ?? 5000) };
+        const market = this.marketDirectory(false);
+        if (input.action === 'status') {
+            if (!market) return { status: { directory: null, stocks: 0, indices: 0, funds: 0, lastDate: null, origin: null } };
+            return { status: { ...await market.status(), origin: market.origin } };
+        }
+        if (input.action === 'list') {
+            if (!market) return { securities: [] };
+            return { securities: await market.securities() };
+        }
+        if (input.action === 'quotes') {
+            if (!market) return { quotes: [] };
+            return { quotes: await market.quotes(input.symbols) };
+        }
+        if (input.action === 'bars') {
+            if (!market) return { chart: { symbol: input.symbol, bars: [] } };
+            return { chart: await market.bars(input.symbol, input.limit ?? 5000) };
+        }
         check(false, 'INVALID_ARGUMENT', '未知的行情操作。');
     }
     // 对决: the page and orchestrator interface (authenticated page only) and the Agents' tool commands.

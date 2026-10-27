@@ -1,3 +1,17 @@
+// Safe crypto polyfill
+if (typeof crypto !== 'undefined' && typeof crypto.randomUUID !== 'function') {
+    crypto.randomUUID = function() {
+        if (typeof crypto.getRandomValues === 'function') {
+            return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, function(c) {
+                return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);
+            });
+        }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    };
+}
 import VCPUI from '../vendor/vcp-ui/vcp-ui.js';
 import { DockLayout, LINKS, uid, normalize } from './dock.mjs';
 import { PANELS, simulationOnly, setBoardStore } from './panels.mjs';
@@ -9,7 +23,7 @@ import { SettingsView } from './settings.mjs';
 const store = new Store(), market = new MarketStore(), boardStore = new BoardStore();
 setBoardStore(boardStore);
 const body = document.body;
-const notify = (message, variant = 'info') => VCPUI.feedback.toast(message, { variant });
+const notify = (message, variant = 'info') => VCPUI.feedback.toast(message, { variant: variant === 'danger' ? 'critical' : variant });
 const h = (tag, className, text) => { const e = document.createElement(tag); if (className) e.className = className; if (text) e.textContent = text; return e; };
 
 // Preferences live in this browser only: look and feel, plus order-ticket defaults.

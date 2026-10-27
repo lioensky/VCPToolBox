@@ -53,7 +53,7 @@ export function select(options, value, onChange, { size = 'md', label } = {}) {
         options.map(([v, text]) => h('option', { value: String(v), selected: String(v) === String(value) }, text)));
     return element;
 }
-export const notify = (message, variant = 'info') => VCPUI.feedback.toast(message, { variant });
+export const notify = (message, variant = 'info') => VCPUI.feedback.toast(message, { variant: variant === 'danger' ? 'critical' : variant });
 export function modal({ title, content, actions = [], size = 'md', dismissible = true, onClose }) {
     const dialog = VCPUI.create('Modal', { title, size, content, actions: actions.map(a => a.control || a), closeOnBackdrop: dismissible, dismissible, onClose });
     document.body.append(dialog.element);

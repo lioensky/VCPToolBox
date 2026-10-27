@@ -1,5 +1,20 @@
 import { COMPONENT_MANIFEST } from './component-manifest.js';
 
+const safeUUID = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+        );
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+};
+
 const COMPONENTS = new Map();
 const ENHANCERS = new Map();
 const controllerByElement = new WeakMap();
@@ -476,7 +491,7 @@ function settingsSectionEnhancer(element, options = {}, { removeOnDestroy = fals
     const originalExpanded = toggle.getAttribute('aria-expanded');
     const originalControls = toggle.getAttribute('aria-controls');
     const generatedContentId = !content.id;
-    if (generatedContentId) content.id = `vcp-ui-settings-section-${crypto.randomUUID()}`;
+    if (generatedContentId) content.id = `vcp-ui-settings-section-${safeUUID()}`;
     const state = { collapsed: undefined, manageToggle: false, ...options };
     let observer;
     let controller;
@@ -557,7 +572,7 @@ function fieldEnhancer(element, options = {}) {
     const originalDescribedBy = control.getAttribute('aria-describedby');
     const originalHelperText = helper?.textContent || '';
     const generatedHelperId = Boolean(helper && !helper.id);
-    if (generatedHelperId) helper.id = `vcp-ui-field-help-${crypto.randomUUID()}`;
+    if (generatedHelperId) helper.id = `vcp-ui-field-help-${safeUUID()}`;
     const state = { invalid: undefined, error: '', ...options };
     let controller;
 
@@ -1235,7 +1250,7 @@ function fieldFactory(options = {}) {
             if (controlHost.firstChild !== control) controlHost.replaceChildren(control);
             const native = control.matches?.('input, textarea, select') ? control : control.querySelector?.('input, textarea, select');
             if (native) {
-                if (!native.id) native.id = `vcp-ui-field-${crypto.randomUUID()}`;
+                if (!native.id) native.id = `vcp-ui-field-${safeUUID()}`;
                 label.htmlFor = native.id;
                 native.required = Boolean(current.required);
                 native.setAttribute('aria-invalid', String(Boolean(current.error)));
@@ -1537,7 +1552,7 @@ function tooltipFactory(options = {}) {
     const trigger = options.trigger?.element || options.trigger;
     const wa = waControl('tooltip');
     if (wa && trigger) {
-        if (!trigger.id) trigger.id = `vcp-ui-wa-tip-${crypto.randomUUID()}`;
+        if (!trigger.id) trigger.id = `vcp-ui-wa-tip-${safeUUID()}`;
         wa.setAttribute('for', trigger.id);
         const state = { content: '', placement: 'top', open: false, ...options };
         return makeController(wa, state, current => {
@@ -1549,7 +1564,7 @@ function tooltipFactory(options = {}) {
     element.className = 'vcp-ui-tooltip';
     const bubble = document.createElement('span');
     bubble.className = 'vcp-ui-tooltip-bubble';
-    bubble.id = `vcp-ui-tooltip-${crypto.randomUUID()}`;
+    bubble.id = `vcp-ui-tooltip-${safeUUID()}`;
     bubble.setAttribute('role', 'tooltip');
     const state = { content: '', placement: 'top', open: false, ...options };
     let triggerNode = null;
