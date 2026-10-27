@@ -16,7 +16,7 @@ use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.safe-stoploss-v1";
+const ALGORITHM_VERSION: &str = "rivermemo.safe-stoploss-v1.1";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -1965,6 +1965,7 @@ struct AnchorOutput {
     exact_contacts: usize,
     semantic_contacts: usize,
     mean_closure: f64,
+    implicit_only: bool,
 }
 
 fn anchor_contacts(
@@ -2012,21 +2013,25 @@ fn compute_anchors(
     config: &NativeConfig,
     fallback: bool,
     cosines: &CosineCache,
+    explicit_ids: &HashSet<i64>,
 ) -> Vec<AnchorOutput> {
     let contacts: Vec<Vec<(i64, i64, bool, f64, f64, f64)>> = curves
         .par_iter()
         .map(|curve| anchor_contacts(curve, seeds, seed_vectors, config, cosines))
         .collect();
-    let max_seed_mass = seeds
-        .iter()
-        .map(|seed| positive(seed.1))
-        .fold(0.0, f64::max);
+    let explicit_max = seeds.iter().filter(|s| explicit_ids.contains(&s.0))
+        .map(|s| positive(s.1)).fold(0.0, f64::max);
+    let max_seed_mass = if explicit_max > 0.0 { explicit_max } else {
+        seeds.iter().map(|seed| positive(seed.1)).fold(0.0, f64::max)
+    };
     contacts
         .into_par_iter()
         .map(|candidate_contacts| {
             let mut no_contact_probability = 1.0;
             let mut closure_sum = 0.0;
             let mut exact = 0usize;
+            let implicit_only = explicit_max > 0.0
+                && !candidate_contacts.iter().any(|c| explicit_ids.contains(&c.0));
             for contact in &candidate_contacts {
                 let inbound = artifact.inbound.get(&contact.1).copied().unwrap_or(0.0);
                 let specificity = if artifact.max_inbound > 0.0 {
@@ -2051,8 +2056,11 @@ fn compute_anchors(
                         (contact.3 - config.semantic_anchor_threshold.max(0.88))
                             / (1.0 - config.semantic_anchor_threshold.max(0.88)).max(1e-9))
                 };
+                let grounding_gain = if explicit_max > 0.0 && !explicit_ids.contains(&contact.0) {
+                    0.35
+                } else { 1.0 };
                 let contribution =
-                    clamp01(normalized_mass * specificity * contact.5 * rarity * match_weight);
+                    clamp01(normalized_mass * specificity * contact.5 * rarity * match_weight * grounding_gain);
                 no_contact_probability *= 1.0 - contribution;
                 closure_sum += contact.5;
             }
@@ -2070,10 +2078,13 @@ fn compute_anchors(
             if fallback {
                 reliability = reliability.min(config.fallback_reliability_cap);
             }
+            if implicit_only { reliability = reliability.min(0.35); }
             AnchorOutput {
                 score,
                 reliability,
-                strength: clamp01(score * reliability),
+                strength: if implicit_only { clamp01(score * reliability).min(0.035) }
+                    else { clamp01(score * reliability) },
+                implicit_only,
                 contacted_seeds: contacted,
                 exact_contacts: exact,
                 semantic_contacts: contacted.saturating_sub(exact),
@@ -2440,7 +2451,7 @@ fn assign_v3_scores(
     for item in work.iter_mut() {
         let direct_answer = mode != "atomic"
             && item.observables.closure >= 0.55
-            && item.anchor.exact_contacts > 0;
+            && item.anchor.exact_contacts > 0 && !item.anchor.implicit_only;
         let structural = (item.topology.matched_edge_coverage
             * item.topology.reliability
             * item.observables.closure)
@@ -2807,7 +2818,7 @@ pub(crate) fn run_native_with_connection(
         .field_provenance
         .iter()
         .filter(|entry| {
-            entry.hop == 0 && (entry.source_type == "core" || entry.source_type == "seed")
+            entry.hop == 0 && matches!(entry.source_type.as_str(), "core" | "lexical_seed" | "seed")
         })
         .map(|entry| entry.id)
         .collect();
@@ -2832,7 +2843,8 @@ pub(crate) fn run_native_with_connection(
 
     let maximum_seed = seeds.iter().map(|s| s.1).fold(0.0, f64::max);
     let core_ids: HashSet<i64> = input.query_state.field_provenance.iter()
-        .filter(|p| p.source_type == "core").map(|p| p.id).collect();
+        .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
+        .map(|p| p.id).collect();
     seeds.retain(|s| s.1 >= maximum_seed * 0.2 || core_ids.contains(&s.0));
 
     // Query River 节点和 Direct Anchor/Seed 共享一次分块 Tag 向量读取。
@@ -2870,6 +2882,7 @@ pub(crate) fn run_native_with_connection(
         &input.config,
         fallback_anchor,
         &cosines,
+        &core_ids,
     );
     let core_tag_names: HashSet<String> = input
         .query_state
@@ -3009,6 +3022,7 @@ pub(crate) fn run_native_with_connection(
                     "anchorScore": item.anchor.score,
                     "anchorReliability": item.anchor.reliability,
                     "anchorStrength": item.anchor.strength,
+                    "implicitOnlyAnchor": item.anchor.implicit_only,
                     "anchorBonus": item.anchor_bonus,
                     "contactedSeeds": item.anchor.contacted_seeds,
                     "exactContacts": item.anchor.exact_contacts,
@@ -3432,12 +3446,33 @@ mod stoploss_tests {
     }
 
     #[test]
+    fn explicit_focus_normalizes_independently_and_implicit_collision_cannot_win_anchor() {
+        let curves = vec![curve(vec![tag(9, vec![0.0, 1.0])]),
+            curve(vec![tag(1, vec![1.0, 0.0])])];
+        let vectors: TagVectorPool = [(9, Arc::from(vec![0.0_f32, 1.0])),
+            (1, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
+        let cache = CosineCache::build(&curves, &[0.0, 1.0], [1, 9], &vectors);
+        let explicit = HashSet::from([9]);
+        let anchors = compute_anchors(&curves, &[(9, 0.2), (1, 0.8)], &vectors,
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &explicit);
+        assert!((anchors[0].score - 0.81).abs() < 1e-12);
+        assert!(!anchors[0].implicit_only);
+        assert!(anchors[1].implicit_only);
+        assert!(anchors[1].strength <= 0.035);
+        assert!(anchors[1].reliability <= 0.35);
+        let fallback = compute_anchors(&curves, &[(9, 0.2), (1, 0.8)], &vectors,
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::new());
+        assert!(!fallback[1].implicit_only);
+        assert!(fallback[1].strength > 0.2);
+    }
+
+    #[test]
     fn one_exact_focus_has_no_seed_count_discount() {
         let curves = vec![curve(vec![tag(9, vec![1.0, 0.0])])];
         let vectors: TagVectorPool = [(9, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
         let cache = CosineCache::build(&curves, &[1.0, 0.0], [9], &vectors);
         let anchors = compute_anchors(&curves, &[(9, 1.0)], &vectors,
-            &NativeArtifact::default(), &NativeConfig::default(), false, &cache);
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::new());
         assert!((anchors[0].reliability - 0.9).abs() < 1e-12);
         assert_eq!(anchors[0].contacted_seeds, 1);
     }

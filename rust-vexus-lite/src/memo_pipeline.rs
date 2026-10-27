@@ -20,7 +20,7 @@ use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
 use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "memo.safe-stoploss-v1";
+const PIPELINE_ALGORITHM: &str = "memo.safe-stoploss-v1.1";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -82,7 +82,7 @@ struct PipelineInput {
     #[serde(default)]
     query_id: Option<String>,
     #[serde(default, rename = "queryText")]
-    _query_text: String,
+    query_text: String,
     #[serde(default)]
     query_vector: Vec<f32>,
     #[serde(default)]
@@ -714,7 +714,7 @@ fn analyze_pyramid_with_pool(
         let (projection, next_residual, coefficients) =
             orthogonal_projection(&residual, &tags, dimension);
         for (tag, coefficient) in tags.iter_mut().zip(coefficients.iter()) {
-            tag.contribution = *coefficient / original_energy.sqrt();
+            tag.contribution = *coefficient / current_energy.sqrt().max(1e-12);
         }
         let handshake = analyze_handshakes(&residual, &mut tags, dimension);
         let residual_magnitude = magnitude(&next_residual);
@@ -787,6 +787,39 @@ struct GatedTag {
     name: String,
     weight: f64,
     is_core: bool,
+    lexical: bool,
+}
+
+// ASCII words have token boundaries; CJK uses adjacent bigrams (singletons
+// only for one-character runs). Punctuation never joins unrelated ASCII words.
+fn lexical_tokens(text: &str) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    let mut ascii = String::new();
+    let mut cjk = Vec::new();
+    let flush = |ascii: &mut String, cjk: &mut Vec<char>, tokens: &mut HashSet<String>| {
+        if !ascii.is_empty() { tokens.insert(std::mem::take(ascii)); }
+        if cjk.len() == 1 { tokens.insert(cjk[0].to_string()); }
+        for pair in cjk.windows(2) { tokens.insert(pair.iter().collect()); }
+        cjk.clear();
+    };
+    for ch in text.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if !cjk.is_empty() { flush(&mut ascii, &mut cjk, &mut tokens); }
+            ascii.push(ch);
+        } else if ('\u{4e00}'..='\u{9fff}').contains(&ch) {
+            if !ascii.is_empty() { flush(&mut ascii, &mut cjk, &mut tokens); }
+            cjk.push(ch);
+        } else { flush(&mut ascii, &mut cjk, &mut tokens); }
+    }
+    flush(&mut ascii, &mut cjk, &mut tokens);
+    tokens
+}
+
+fn lexical_grounding(query: &str, name: &str) -> f64 {
+    let query = lexical_tokens(query);
+    let tag = lexical_tokens(name);
+    if tag.is_empty() { return 0.0; }
+    tag.intersection(&query).count() as f64 / tag.len() as f64
 }
 
 fn range_value(values: &[f64], index: usize, fallback: f64) -> f64 {
@@ -819,6 +852,7 @@ fn gate_tags(
     pyramid: &PyramidOutput,
     core_tags: &[String],
     config: &PipelineConfig,
+    query_text: &str,
 ) -> (Vec<GatedTag>, f64, f64) {
     let activation_min = range_value(&config.activation_multiplier, 0, 0.5);
     let activation_max = range_value(&config.activation_multiplier, 1, 1.5);
@@ -859,9 +893,23 @@ fn gate_tags(
             if tag.id <= 0 || seen.contains(&tag.id) {
                 continue;
             }
-            if !is_core && (tag.contribution < threshold || tag.similarity <= 0.0) {
+            let grounding = lexical_grounding(query_text, &tag.name);
+            let lexical = grounding >= 0.5;
+            // Only already independently supported peers can lend amplitude.
+            // A low-contribution alias cannot recursively sponsor other aliases.
+            let sponsor = tags.iter().filter(|peer| peer.id != tag.id
+                && peer.contribution >= threshold && peer.similarity > 0.0
+                && cosine(&peer.vector, &tag.vector) >= 0.80)
+                .map(|peer| peer.contribution).fold(0.0, f64::max);
+            let alias = tag.similarity >= 0.20 && sponsor > 0.0;
+            if !is_core && !lexical && !alias
+                && (tag.contribution < threshold || tag.similarity <= 0.0) {
                 continue;
             }
+            let effective_contribution = if lexical || alias {
+                tag.contribution.max(0.6 * sponsor)
+                    .max(if lexical { 0.6 * maximum } else { 0.0 })
+            } else { tag.contribution };
             seen.insert(tag.id);
             // Cosine zero is a measured orthogonal relationship, not a
             // missing-score sentinel. Every pyramid candidate is measured
@@ -873,7 +921,7 @@ fn gate_tags(
                 1.0
             };
             let mut language_gain = 1.0;
-            if config.lang_confidence_enabled && technical_name(&tag.name, true) && !technical_world
+            if !lexical && config.lang_confidence_enabled && technical_name(&tag.name, true) && !technical_world
             {
                 let penalty = if world == "Unknown" {
                     config.lang_penalty_unknown
@@ -889,17 +937,29 @@ fn gate_tags(
             }
             let decay = config.layer_decay.clamp(0.0, 1.0).powi(level as i32);
             // Restore, never amplify, strong residual foci in accepted layers.
-            let independent_support = clamp01(tag.contribution / maximum.max(1e-12));
-            let layer_gain = decay + (1.0 - decay) * independent_support;
-            let weight = positive(tag.contribution) * layer_gain * language_gain * core_gain;
+            let independent_support = clamp01(effective_contribution / maximum.max(1e-12));
+            let layer_gain = if lexical { 1.0 } else {
+                decay + (1.0 - decay) * independent_support
+            };
+            let raw_weight = positive(effective_contribution) * layer_gain * language_gain * core_gain
+                * if lexical && !is_core { 1.6 } else { 1.0 };
+            let weight = if is_core { raw_weight } else { raw_weight.min(1.0) };
             if weight > 0.0 {
                 gated.push(GatedTag {
                     id: tag.id,
                     name: tag.name.clone(),
                     weight,
                     is_core,
+                    lexical,
                 });
             }
+        }
+    }
+    let explicit_max = gated.iter().filter(|t| t.is_core || t.lexical)
+        .map(|t| t.weight).fold(0.0, f64::max);
+    if explicit_max > 0.0 {
+        for tag in &mut gated {
+            if !tag.is_core && !tag.lexical { tag.weight = tag.weight.min(0.35 * explicit_max); }
         }
     }
     (gated, effective_boost.clamp(0.0, 1.0), dynamic_core_boost)
@@ -965,6 +1025,7 @@ fn fuse_observation_with_pool(
                 name: seed.name.clone(),
                 weight: seed.weight.max(node.energy),
                 is_core: seed.is_core,
+                lexical: seed.lexical,
             });
         } else {
             emergent.push(GatedTag {
@@ -972,6 +1033,7 @@ fn fuse_observation_with_pool(
                 name: String::new(),
                 weight: node.energy,
                 is_core: false,
+                lexical: false,
             });
         }
     }
@@ -1030,6 +1092,7 @@ fn fuse_observation_with_pool(
                 name,
                 weight: max_base_weight * dynamic_core_boost,
                 is_core: true,
+                lexical: false,
             });
             supplemented_core_count += 1;
         }
@@ -1856,7 +1919,7 @@ fn run_pipeline_with_connection(
 
     let gating_started = Instant::now();
     let (gated_tags, effective_tag_boost, dynamic_core_boost) =
-        gate_tags(&level_tags, &epa, &pyramid, &input.core_tags, &input.config);
+        gate_tags(&level_tags, &epa, &pyramid, &input.core_tags, &input.config, &input.query_text);
     // 空 Pyramid 门控不再中止：Spike 生成合法空观测，随后字符串 Core/幽灵
     // 仍按 JS SOTA 在传播后注入；若最终仍为空，融合层返回原查询向量。
     let seeds: Vec<SenseSeed> = gated_tags
@@ -1866,6 +1929,8 @@ fn run_pipeline_with_connection(
             energy: tag.weight,
             source_type: if tag.is_core {
                 "core".to_string()
+            } else if tag.lexical {
+                "lexical_seed".to_string()
             } else {
                 "seed".to_string()
             },
@@ -2207,7 +2272,7 @@ mod audit_gate_tests {
             }).collect::<Vec<_>>()];
         let names = levels[0].iter().map(|tag| tag.name.clone()).collect::<Vec<_>>();
         let (gated, _, core_boost) = gate_tags(
-            &levels, &epa, &pyramid, &names, &PipelineConfig::default(),
+            &levels, &epa, &pyramid, &names, &PipelineConfig::default(), "",
         );
         assert_eq!(gated.len(), 3);
         for (tag, cosine) in gated.iter().zip([-1.0, 0.0, 1.0]) {
@@ -2609,15 +2674,82 @@ mod stoploss_gate_tests {
             baseline_coverage: 0.0, background_ratio: 0.0,
         };
         let make = |id, contribution, similarity| PyramidTagWork {
-            id, name: format!("标签{id}"), vector: Arc::from(vec![1.0_f32, 0.0]),
+            id, name: format!("标签{id}"), vector: Arc::from(
+                if id == 2 || id == 4 { vec![0.0_f32, 1.0] } else { vec![1.0_f32, 0.0] }),
             similarity, contribution, handshake_magnitude: 0.0,
         };
         let levels = vec![vec![make(1, 0.66, 0.66), make(2, 0.02, 0.6)],
             vec![make(3, 0.2, 0.32), make(4, 0.01, 0.1), make(5, 0.1, -0.1)]];
         let pyramid = PyramidOutput { levels: vec![], total_explained_energy: 0.68,
             features: PyramidFeatures::default() };
-        let (gated, _, _) = gate_tags(&levels, &epa, &pyramid, &[], &PipelineConfig::default());
+        let (gated, _, _) = gate_tags(&levels, &epa, &pyramid, &[], &PipelineConfig::default(), "");
         assert_eq!(gated.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 3]);
         assert!((gated[1].weight - 0.2).abs() < 1e-12);
+    }
+}
+
+
+#[cfg(test)]
+mod lexical_patch_tests {
+    use super::*;
+
+    fn epa() -> EpaOutput {
+        EpaOutput { logic_depth: 0.5, entropy: 0.5, resonance: 0.0,
+            dominant_axes: vec![], bridges: vec![], basis_count: 0,
+            cache_available: false, out_of_domain: 1.0,
+            semantic_explained_ratio: 0.0, in_domain_gate: 0.0,
+            baseline_coverage: 0.0, background_ratio: 0.0 }
+    }
+
+    #[test]
+    fn lexical_grounding_respects_ascii_boundaries_and_mixed_names() {
+        let query = "小冰，还记得那个 Lunarium 星之旅吗？";
+        for name in ["Lunarium星之旅", "Lunarium", "星之旅"] {
+            assert_eq!(lexical_grounding(query, name), 1.0);
+        }
+        assert_eq!(lexical_grounding(query, "AI自编自演Galgame"), 0.0);
+        assert_eq!(lexical_grounding("chair", "AI"), 0.0);
+        assert_eq!(lexical_grounding("", "Lunarium"), 0.0);
+        assert_eq!(lexical_grounding("测试", ""), 0.0);
+    }
+
+    #[test]
+    fn grounded_residual_and_short_alias_survive_and_ignite_without_lowering_threshold() {
+        let make = |id, name: &str, contribution, similarity, vector: Vec<f32>| PyramidTagWork {
+            id, name: name.into(), contribution, similarity,
+            vector: Arc::from(vector), handshake_magnitude: 0.0,
+        };
+        // Realistic layer-normalized coefficients; short alias loses its
+        // independent component under Gram-Schmidt but retains identity.
+        let levels = vec![
+            vec![make(1, "AI自编自演Galgame", 0.6604, 0.66, vec![1.0, 0.0])],
+            vec![make(2, "Lunarium星之旅", 0.2109 / 0.6648, 0.32, vec![0.0, 1.0]),
+                 make(3, "Lunarium", 0.0288 / 0.6648, 0.23, vec![0.0, 1.0])],
+        ];
+        let pyramid = PyramidOutput { levels: vec![], total_explained_energy: 0.68,
+            features: PyramidFeatures::default() };
+        let (gated, _, _) = gate_tags(&levels, &epa(), &pyramid, &[],
+            &PipelineConfig::default(), "Lunarium 星之旅有问题");
+        let focus = gated.iter().find(|t| t.id == 2).unwrap();
+        let alias = gated.iter().find(|t| t.id == 3).unwrap();
+        let implicit = gated.iter().find(|t| t.id == 1).unwrap();
+        assert!(focus.lexical && alias.lexical);
+        assert!(focus.weight > 0.5);
+        assert!(alias.weight > 0.3); // ASCII language penalty must not suppress literal names.
+        assert!(implicit.weight <= focus.weight * 0.35);
+        let graph = crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![1, 2, 3, 4],
+            node_index: [(1,0), (2,1), (3,2), (4,3)].into_iter().collect(),
+            row_offsets: vec![0,0,1,1,1], targets: vec![3], weights: vec![0.1],
+            ..crate::rivermemo_topology_v3::NativeArtifact::default()
+        }.prepared();
+        let output = sense_typed(&graph, "lexical-test", SenseInput {
+            query_id: None,
+            seeds: gated.iter().map(|t| SenseSeed { id: t.id, energy: t.weight,
+                source_type: if t.lexical { "lexical_seed" } else { "seed" }.into() }).collect(),
+            config: SenseConfig::default(),
+        }).unwrap();
+        assert!(output.edges.iter().any(|e| e.source_id == 2 && e.target_id == 4));
+        assert_eq!(output.nodes.iter().find(|n| n.id == 2).unwrap().source_type, "lexical_seed");
     }
 }
