@@ -46,7 +46,7 @@ pub(crate) struct SenseSeed {
     pub(crate) source_type: String,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SenseConfig {
     pub(crate) max_safe_hops: usize,

@@ -182,6 +182,7 @@ impl Task for LightMemoTask {
                         || !input["observationHandle"].is_string() {
                         return Err("LIGHTMEMO_RIVER_OBSERVATION_UNAVAILABLE".into());
                     }
+                    input["includeTrace"] = json!(plan.ab_mode);
                     input["dimension"] = json!(self.dimension);
                     input["topK"] = json!(plan.k);
                     input["candidates"] = json!(candidates);
@@ -190,6 +191,37 @@ impl Task for LightMemoTask {
                     river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_connection(
                         &self.runtime, connection, &plan.artifact_sig, &input.to_string(),
                     )?).map_err(|e| e.to_string())?;
+                    if plan.ab_mode {
+                        // Export a bounded read-only view of this exact observation, never
+                        // truncate the graph used by propagation or topology scoring.
+                        let cached = self.runtime.get_query_observation(
+                            input["observationHandle"].as_str().unwrap(), &plan.artifact_sig)?;
+                        let observation = &cached.observation;
+                        let nodes = observation.nodes.iter().take(128).collect::<Vec<_>>();
+                        let node_ids = nodes.iter().map(|node| node.id).collect::<HashSet<_>>();
+                        let edges = observation.edges.iter()
+                            .filter(|edge| node_ids.contains(&edge.source_id)
+                                && node_ids.contains(&edge.target_id))
+                            .take(256).collect::<Vec<_>>();
+                        let mut names = connection.prepare("SELECT name FROM tags WHERE id=?1")
+                            .map_err(|e| e.to_string())?;
+                        let nodes = nodes.iter().map(|node| {
+                            let mut value = serde_json::to_value(node).map_err(|e| e.to_string())?;
+                            let name: Option<String> = names.query_row([node.id], |row| row.get(0))
+                                .optional().map_err(|e| e.to_string())?;
+                            value["name"] = json!(name);
+                            Ok(value)
+                        }).collect::<std::result::Result<Vec<Value>, String>>()?;
+                        river["queryRiverGraph"] = json!({
+                            "nodes": nodes, "edges": edges,
+                            "totalNodes": observation.nodes.len(),
+                            "totalEdges": observation.edges.len(),
+                            "truncated": nodes.len() < observation.nodes.len()
+                                || edges.len() < observation.edges.len(),
+                            "diagnostics": observation.diagnostics
+                        });
+                        river["parameters"] = input["config"].clone();
+                    }
                     let originals = candidates.iter().map(|c| (c["id"].as_i64().unwrap(), c))
                         .collect::<std::collections::HashMap<_,_>>();
                     if let Some(results) = river["results"].as_array_mut() {

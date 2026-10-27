@@ -158,6 +158,7 @@ async function laboratory(args = {}) {
         });
         output += `| ${id} | ${this._escapeMarkdownCell(String(item.text || '').replace(/\s+/g, ' ').slice(0, 100))} | ${cells.join(' | ')} |\n`;
     }
+    output += require('./abDiagnostics').formatDiagnostics(this, request, response);
     return output;
 }
 

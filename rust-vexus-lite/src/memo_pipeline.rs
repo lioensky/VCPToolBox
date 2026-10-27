@@ -1749,6 +1749,7 @@ struct PipelineMetadataOutput {
     matched_tags: Vec<String>,
     core_tags_matched: Vec<String>,
     effective_tag_boost: f64,
+    propagation_parameters: SenseConfig,
     diagnostics: PipelineDiagnostics,
 }
 
@@ -1949,6 +1950,7 @@ fn run_pipeline_with_connection(
         matched_tags,
         core_tags_matched,
         effective_tag_boost,
+        propagation_parameters: input.config.spike_routing.clone(),
         diagnostics: PipelineDiagnostics {
             backend: "rust-unified-memo-pipeline".to_string(),
             runtime_ownership: "vexus-index-instance".to_string(),

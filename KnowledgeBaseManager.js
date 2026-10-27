@@ -1768,6 +1768,24 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         result.tdbTopK = (result.tdbTopK || []).map(normalize);
         result.comparisonPool = (result.comparisonPool || []).map(normalize);
         if (Array.isArray(result.river?.results)) result.river.results = result.river.results.map(normalize);
+        if (options.abMode === true && prepared) {
+            const source = prepared.sourceObservationResult;
+            result.memoObservation = {
+                artifactSig: prepared.artifact.artifactSig,
+                queryId: prepared.observation?.queryId ?? null,
+                queryTags: {
+                    requestedCoreTags: options.coreTags || [],
+                    matchedTags: source.matchedTags,
+                    coreTagsMatched: source.coreTagsMatched,
+                    sourceMode: source.sourceMode
+                },
+                effectiveTagBoost: source.effectiveTagBoost,
+                propagation: source.propagation,
+                epa: source.epa,
+                pyramid: source.pyramid,
+                diagnostics: source.diagnostics?.nativePipeline || null
+            };
+        }
         return result;
         } finally {
             if (prepared) this.releaseMemoObservation?.(prepared);
@@ -2409,7 +2427,10 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             queryRiverGraph,
             epa: Object.freeze({ ...(pipeline.epa || {}) }),
             pyramid,
-            propagation: Object.freeze({ native: null }),
+            propagation: Object.freeze({
+                parameters: pipeline.propagationParameters || null,
+                diagnostics: pipeline.diagnostics?.sensing || null
+            }),
             matchedTags: Object.freeze(
                 Array.isArray(pipeline.matchedTags)
                     ? pipeline.matchedTags.slice()
