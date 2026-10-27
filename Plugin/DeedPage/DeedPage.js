@@ -45,6 +45,50 @@ function normalizeArguments(input) {
     return { name, arguments: args };
 }
 
+function sanitizeResult(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('deed.page 返回的数据格式无效。');
+    }
+    // 远端响应是不可信数据：仅投影已知业务字段，不透传文案、原始 content 或未知嵌套对象。
+    const result = {};
+    const patterns = {
+        slug: SLUG_PATTERN,
+        version: /^v[0-9]+$/,
+        plan: /^[a-z0-9_-]{1,32}$/,
+        token: /^deed_tok_[A-Za-z0-9_-]{1,256}$/,
+        expires_at: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/,
+        error: /^[a-zA-Z0-9_-]{1,64}$/
+    };
+    for (const [key, pattern] of Object.entries(patterns)) {
+        if (typeof data[key] === 'string' && pattern.test(data[key])) result[key] = data[key];
+    }
+    for (const key of ['ok', 'unchanged', 'permanent']) {
+        if (typeof data[key] === 'boolean') result[key] = data[key];
+    }
+    for (const key of ['bytes', 'files']) {
+        if (Number.isSafeInteger(data[key]) && data[key] >= 0) result[key] = data[key];
+    }
+    for (const key of ['url', 'path_url', 'version_url', 'manifest_url']) {
+        const value = data[key];
+        // 限定 HTTPS deed.page 地址及路径字符，拒绝外站、凭据、查询参数和夹带的自由文本。
+        if (typeof value === 'string' && value.length <= 2048 &&
+            /^https:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)?deed\.page\/[a-zA-Z0-9/_-]*$/.test(value)) {
+            result[key] = value;
+        }
+    }
+    if (typeof data.deleted === 'boolean' ||
+        (typeof data.deleted === 'string' && SLUG_PATTERN.test(data.deleted))) {
+        result.deleted = data.deleted;
+    }
+    if (data.listing && typeof data.listing.listed === 'boolean') {
+        result.listing = { listed: data.listing.listed };
+    }
+    if (result.token) {
+        result.token_note = '请记住站点 slug 与对应 token，以便后续更新或删除；令牌是私密管理凭据，不要写入公开网页或分享给无关人员。后续调用须显式传入该站点的 token，插件不会自动保存或跨站点复用。';
+    }
+    return result;
+}
+
 async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {}) {
     const params = normalizeArguments(input);
     const token = input.token === undefined ? '' : input.token.trim();
@@ -66,15 +110,17 @@ async function processRequest(input, { fetch: fetchImpl = globalThis.fetch } = {
         const { tools } = await client.listTools({}, options);
         if (!tools.some(tool => tool.name === params.name)) throw new Error(`服务未提供 ${params.name}。`);
         const response = await client.callTool(params, undefined, options);
-        const content = response.content;
-        const text = content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+        const text = (response.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
         let data = response.structuredContent;
         if (!data) {
-            try { data = JSON.parse(text); } catch { data = {}; }
+            try { data = JSON.parse(text); } catch {
+                return { status: 'error', error: 'deed.page 返回了无法解析的工具结果。' };
+            }
         }
-        const result = { ...data, content };
-        if (response.isError || data.ok === false) {
-            return { status: 'error', error: text || 'deed.page MCP 工具调用失败。', result };
+        const result = sanitizeResult(data);
+        if (response.isError || result.ok === false) {
+            // 错误路径同样不回显远端自由文本，避免清洗后的内容从 error 字段重新进入上下文。
+            return { status: 'error', error: `deed.page MCP 工具调用失败${result.error ? `（${result.error}）` : ''}。`, result };
         }
         return { status: 'success', result };
     } finally {
