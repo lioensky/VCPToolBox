@@ -95,6 +95,22 @@ export interface KnowledgeBaseDiaryIndexMemoryItem {
   dateIndexItems: number;
 }
 
+export interface RiverMemoMemoryProfile {
+  available: boolean;
+  resident?: boolean;
+  estimatedBytes: number;
+  nativeRuntime?: {
+    available: boolean;
+    resident: boolean;
+    generation: number;
+    nodeCount: number;
+    edgeCount: number;
+    csrLowerBoundBytes: number;
+    error?: string | null;
+    note?: string;
+  };
+}
+
 export interface KnowledgeBaseMemoryProfile {
   module: string;
   initialized: boolean;
@@ -127,6 +143,7 @@ export interface KnowledgeBaseMemoryProfile {
     diaryDateIndexCount: number;
     diaryDateIndexEstimatedBytes: number;
   };
+  riverMemo?: RiverMemoMemoryProfile;
   tagMemo: {
     available: boolean;
     modelSig?: string | null;
