@@ -18,8 +18,11 @@ use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 #[path = "rivermemo_wormhole.rs"]
 mod wormhole;
 
+#[path = "rivermemo_router.rs"]
+mod router;
+
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.5-confidence-rrf";
+const ALGORITHM_VERSION: &str = "rivermemo.topology-router-v2.6-test3";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -2903,6 +2906,8 @@ pub(crate) fn run_native_with_connection(
     let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
     let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
     wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input)?;
+    let admitted = wormhole::admitted_pairs(&wormhole_model);
+    // Keep the complete original observation through every baseline calculation.
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -3018,7 +3023,16 @@ pub(crate) fn run_native_with_connection(
             })
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
-    let wormhole_traces = wormhole::fuse_rrf(&mut work, &wormhole_model, &input, &omega);
+    // Only the correction head sees the filtered explanation graph.
+    // Baseline geometry, fields, morphology, anchors and Omega are already frozen.
+    let original_nodes = input.query_state.river_nodes.clone();
+    let original_edges = input.query_state.river_edges.clone();
+    router::explain(&mut input, &artifact, &admitted);
+    let explanation_edges = input.query_state.river_edges.len();
+    let explanation_omega = compute_omega(&input);
+    let wormhole_traces = router::route(&mut work, &input, &query_and_seed_tag_vectors, &explanation_omega);
+    input.query_state.river_nodes = original_nodes;
+    input.query_state.river_edges = original_edges;
     // Stable sort retains the complete baseline comparator for equal fusion scores.
     work.sort_by(|a, b| b.final_score.total_cmp(&a.final_score));
     let ranked_count = work.len();
@@ -3086,7 +3100,7 @@ pub(crate) fn run_native_with_connection(
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
                 })).map(|mut trace| {
-                    trace["wormholeRrf"] = wormhole_traces
+                    trace["dynamicRouter"] = wormhole_traces
                         .get(&item.curve.id).cloned().unwrap_or(Value::Null);
                     trace
                 })
@@ -3162,10 +3176,13 @@ pub(crate) fn run_native_with_connection(
             "wormholeGate": wormhole_gate,
             "wormholeEligibleRoutes": wormhole_model.eligible_routes,
             "wormholeAcceptedRoutes": wormhole_model.routes.len(),
-            "wormholeScoring": "strict-global-gate; explanation-weighted-RRF; untouched-baseline-channel",
-            "wormholeRrfK": 60,
-            "wormholeStrongFlowRatio": 0.5,
-            "wormholeWeightReference": "maximum observed non-return ordinary edge flow; observation maximum if absent",
+            "wormholeScoring": "admission-only; unified-explanation-graph; no-wormhole-RRF",
+            "rankingRouter": "complete-original-baseline-plus-candidate-local-positive-correction",
+            "topologyAvailability": "candidate-local-continuous-tag-and-body-grounding-times-omega",
+            "explanationGraphEdges": explanation_edges,
+            "explanationOmega": explanation_omega,
+            "endpointBodyFloor": 0.48,
+            "endpointBodySaturation": 0.65,
             "baselineAlgorithm": "rivermemo.conservative-topology-v2.2",
             "fieldResonanceCap": 0.03,
             "fieldSupportPotentialSaturation": 0.02,

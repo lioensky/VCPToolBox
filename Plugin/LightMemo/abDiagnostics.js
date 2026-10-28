@@ -80,6 +80,26 @@ function formatDiagnostics(plugin, request, response) {
         section('RiverMemo 读出诊断', river.diagnostics);
         return output;
     }
+    const routerMode = river.algorithmVersion?.includes('topology-router-');
+    if (routerMode) {
+        const correctionMode = river.parameters?.rankingRouter ===
+            'complete-original-baseline-plus-candidate-local-positive-correction';
+        output += correctionMode
+            ? '实验局部纠偏：门控虫洞只参与统一解释图，无虫洞专属 RRF。完整主干使用未过滤河网，保留原拓扑、Ω、场共振与直锚。最终分＝原主干分＋(1－原主干分)×候选自身置信度×局部分支分。弱证据不改变原分；相对流量第一不代表查询相关。\n\n'
+            : '实验动态路由：门控虫洞只参与统一解释图，无虫洞专属 RRF。最终分＝拓扑权重×拓扑分＋直锚权重×直锚分＋向量权重×原始余弦。\n\n';
+        output += correctionMode
+            ? '| Chunk | 原主干分 | 局部分支分 | 落地覆盖 | 终点闭合 | 自身置信度 | 纠偏增量 | 原余弦 | 最终分 | 路由明细 |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n'
+            : '| Chunk | 拓扑分 | 落地覆盖 | 终点闭合 | 拓扑权重 | 直锚权重 | 向量权重 | 直锚分 | 原余弦 | 最终分 | 路由明细 |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n';
+        for (const item of explained) {
+            const r = item.topologyV3?.dynamicRouter || {};
+            output += correctionMode
+                ? `| ${item.chunkId ?? item.id} | ${number(r.baselineScore)} | ${number(r.topologyScore)} | ${number(r.groundedCoverage)} | ${number(r.endpointClosure)} | ${number(r.topologyGate)} | ${number(r.correction)} | ${number(r.vectorScore)} | ${number(item.score)} | ${json(r)} |\n`
+                : `| ${item.chunkId ?? item.id} | ${number(r.topologyScore)} | ${number(r.groundedCoverage)} | ${number(r.endpointClosure)} | ${number(r.topologyWeight)} | ${number(r.anchorWeight)} | ${number(r.vectorWeight)} | ${number(r.anchorScore)} | ${number(r.vectorScore)} | ${number(item.score)} | ${json(r)} |\n`;
+        }
+        section('原生检索诊断', response.diagnostics);
+        section('RiverMemo 读出诊断', river.diagnostics);
+        return output;
+    }
     const rrfMode = river.algorithmVersion?.includes('confidence-rrf');
     if (rrfMode) {
         output += '严格全局门控后的解释力度 RRF：原 RiverMemo 排名保留为基线通道；有效虫洞贡献按相对普通传播的流量力度与 Ω 加权。最终分为融合分，不是下方原评分分项之和；未触发时保留原分。\n\n';

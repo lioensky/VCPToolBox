@@ -30,6 +30,10 @@ pub(super) struct GateDecision {
     refined_evidence: Option<Value>,
 }
 
+pub(super) fn admitted_pairs(model: &Model) -> HashSet<(i64, i64)> {
+    model.routes.iter().map(|r| (r.source_id, r.target_id)).collect()
+}
+
 pub(super) fn gate(model: &mut Model, connection: &Connection)
     -> std::result::Result<Vec<GateDecision>, String> {
     // Global graph evidence, independent of candidate and retrieval scopes.

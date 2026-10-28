@@ -176,3 +176,24 @@ test('confidence RRF exposes baseline rank, explanation weight and separate fusi
     }
     assert.ok(!output.includes('虫洞辅助加权（保留原拓扑'));
 });
+
+test('test3 local correction exposes pristine baseline and candidate confidence without literal newlines', () => {
+    const data = response();
+    data.river.algorithmVersion = 'rivermemo.topology-router-v2.6-test3';
+    data.river.parameters.rankingRouter =
+        'complete-original-baseline-plus-candidate-local-positive-correction';
+    data.river.results[0].topologyV3.dynamicRouter = {
+        baselineScore: 0.7, topologyScore: 0.6, groundedCoverage: 0.03,
+        endpointClosure: 0.6, topologyGate: 0.2, correction: 0.036,
+        vectorScore: 0.65,
+        strongestBranch: { tagSimilarity: 0.71, tagBodyClosure: 0.6 }
+    };
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['未过滤河网', '候选自身置信度', '原主干分', '纠偏增量',
+        '0.7000', '0.0360', 'tagSimilarity', 'tagBodyClosure', '无虫洞专属 RRF']) {
+        assert.ok(output.includes(text), text);
+    }
+    assert.ok(!output.includes('\\n'));
+    assert.ok(!output.includes('直锚权重'));
+    assert.match(output, /\|---:\|[^\n]+\n\| 11 \|/);
+});
