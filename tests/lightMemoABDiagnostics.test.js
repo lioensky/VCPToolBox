@@ -87,3 +87,21 @@ test('laboratory appends diagnostics but normal search keeps its original output
     assert.match(output, /confidence/);
     assert.equal(await search.call(plugin, args), 'ordinary search');
 });
+
+test('2.4 diagnostics exposes out-of-top-k candidates and intent route ledger', () => {
+    const data = response();
+    data.river.candidateDiagnostics = [{
+        ...data.river.results[0], id: 10640, chunkId: 10640,
+        topologyV3: { intentReadout: {
+            available: true, satisfaction: 0.6, directSatisfaction: 0.3, wormholeLift: 0.3,
+            ledger: [{ seedIds: [1], weight: 1, residualEnergy: 0.8,
+                directSupport: 0.3, wormholeSupport: 0.6, satisfaction: 0.6,
+                routeSource: 1, routeTarget: 2 }]
+        } }
+    }];
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['10640', '意图账本', '虫洞提升 0.3000',
+        '核心\\|标签 → 传播', '包含 Top-K 之外']) {
+        assert.ok(output.includes(text), text);
+    }
+});

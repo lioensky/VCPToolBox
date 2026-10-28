@@ -15,8 +15,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
+#[path = "rivermemo_intent.rs"]
+mod intent;
+
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.2";
+const ALGORITHM_VERSION: &str = "rivermemo.intent-wormhole-v2.4";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -296,6 +299,10 @@ struct RiverEdge {
     flow: f64,
     #[serde(default)]
     normalized_flow: f64,
+    #[serde(default)]
+    wormhole: bool,
+    #[serde(default)]
+    immediate_return: bool,
 }
 
 #[derive(Deserialize)]
@@ -2209,6 +2216,7 @@ struct ScoredWork {
     direct_evidence: f64,
     role: String,
     anchor: AnchorOutput,
+    intent: intent::IntentOutput,
     v2_bonus: f64,
     gated_bonus: f64,
     path_bonus: f64,
@@ -2581,7 +2589,9 @@ fn assign_v3_scores(
         } else { 0.25 };
         let requested = positive(config.topology_bonus_cap) * item.graph_score
             * confidence * direction * precision_grounding(&item.topology);
-        item.v2_bonus = clamp01(requested.min(positive(config.topology_bonus_cap)));
+        // Alternative evidence for the same budget, never an additive second vote.
+        let arrival = positive(config.topology_bonus_cap) * item.intent.wormhole_lift;
+        item.v2_bonus = clamp01(requested.max(arrival).min(positive(config.topology_bonus_cap)));
     }
 
     // Absolute activation: unrelated candidates cannot change eligibility.
@@ -2599,7 +2609,9 @@ fn assign_v3_scores(
         } else {
             1.0
         };
-        item.anchor_bonus = config.anchor_bonus_cap * activation;
+        item.anchor_bonus = config.anchor_bonus_cap * if item.intent.available {
+            item.intent.satisfaction
+        } else { activation };
         if omega.omega < config.struct_role_min_omega
             && item.role == "structural_explanation"
         {
@@ -2737,6 +2749,8 @@ pub(crate) fn run_native_with_connection(
                 target_id: edge.target_id,
                 flow: edge.flow,
                 normalized_flow: edge.normalized_flow,
+                wormhole: edge.wormhole,
+                immediate_return: edge.immediate_return,
             })
             .collect();
         input.query_state.field_provenance = cached
@@ -2926,6 +2940,7 @@ pub(crate) fn run_native_with_connection(
         })
         .collect();
 
+    let intent_model = intent::build(&seeds, &core_ids, &query_and_seed_tag_vectors, &input, &artifact);
     let mut work: Vec<ScoredWork> = curves
         .into_par_iter()
         .zip(anchor_results.into_par_iter())
@@ -2966,6 +2981,7 @@ pub(crate) fn run_native_with_connection(
                     + morphology.propositional_weight * propositional_score
                     + morphology.narrative_weight * narrative_score,
             );
+            let intent = intent::evaluate(&intent_model, &curve, &query_and_seed_tag_vectors, &cosines);
             ScoredWork {
                 curve,
                 geometry,
@@ -2978,6 +2994,7 @@ pub(crate) fn run_native_with_connection(
                 graph_score,
                 role: String::new(),
                 anchor,
+                intent,
                 v2_bonus: 0.0,
                 gated_bonus: 0.0,
                 path_bonus,
@@ -3026,8 +3043,8 @@ pub(crate) fn run_native_with_connection(
                 .cloned()
                 .collect();
             let topology_v3 = if input.include_trace {
-                Some(serde_json::json!({
-                    "mode": "conservative_candidate_self_topology_v2.2",
+                let mut trace = serde_json::json!({
+                    "mode": "intent_conditioned_wormhole_v2.4",
                     "branchNodeCoverage": clamp01(item.topology.matched_node_coverage / 0.35),
                     "branchEdgeCoverage": clamp01(item.topology.matched_edge_coverage / 0.20),
                     "branchCoverage": branch_coverage(&item.topology, mode),
@@ -3068,7 +3085,10 @@ pub(crate) fn run_native_with_connection(
                     "requestedGraphBonus": item.v2_bonus * omega.omega.powf(input.config.omega_gamma.max(0.0)),
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
-                }))
+                });
+                trace["intentReadout"] = serde_json::to_value(&item.intent)
+                    .expect("finite intent diagnostics");
+                Some(trace)
             } else {
                 None
             };
@@ -3154,7 +3174,14 @@ pub(crate) fn run_native_with_connection(
             "softMatchQualityThreshold": 0.65,
             "softMatchDiscount": 0.65,
             "graphConfidence": "sqrt(branchCoverage*meanClosure*nodeAlignmentScore)",
-            "graphReward": "candidate-self-no-role-multiplier",
+            "graphReward": "max(candidate-self, intent-wormhole-lift)-shared-budget",
+            "intentReadout": {
+                "aliasCosine": 0.95, "residualEnergyFloor": 0.02,
+                "satisfactionFloor": 0.05, "flowHalfSaturation": 0.03,
+                "aggregation": "weighted-geometric-conjunction",
+                "anchorReward": "anchorBonusCap*intentSatisfaction",
+                "ignitionUnchanged": true
+            },
             "retiredControls": ["conditionalBandwidth", "conditionalClosureBandwidth",
                 "conditionalDirectBandwidth", "minimumPeers", "minimumEffectivePeers",
                 "innovationConfidenceZ", "innovationScale", "anchorActivationZ",
@@ -3486,6 +3513,7 @@ mod stoploss_tests {
             role: String::new(),
             anchor: AnchorOutput { exact_contacts: exact, explicit_exact_contacts: exact,
                 strength, ..AnchorOutput::default() },
+            intent: intent::IntentOutput::default(),
             v2_bonus: 0.0, gated_bonus: 0.0, path_bonus: 0.03,
             anchor_bonus: 0.0, final_score: 0.0,
         }
@@ -3612,7 +3640,8 @@ mod conservative_topology_tests {
             observables: ObservableOutput { closure: 0.8, ..ObservableOutput::default() },
             pure_score: 0.64, field_score: 0.64, field_resonance_bonus: 0.0,
             graph_score: 0.6, direct_evidence: 0.8, role: String::new(),
-            anchor: AnchorOutput::default(), v2_bonus: 0.0, gated_bonus: 0.0,
+            anchor: AnchorOutput::default(), intent: intent::IntentOutput::default(),
+            v2_bonus: 0.0, gated_bonus: 0.0,
             path_bonus: 0.02, anchor_bonus: 0.0, final_score: 0.0,
         }
     }
