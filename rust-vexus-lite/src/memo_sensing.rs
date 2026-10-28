@@ -46,7 +46,7 @@ pub(crate) struct SenseSeed {
     pub(crate) source_type: String,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SenseConfig {
     pub(crate) max_safe_hops: usize,
@@ -180,6 +180,14 @@ pub(crate) struct ObservationEdge {
 pub(crate) struct SenseDiagnostics {
     pub(crate) backend: String,
     pub(crate) seed_nodes: usize,
+    pub(crate) accepted_seed_nodes: usize,
+    pub(crate) missing_seed_nodes: usize,
+    pub(crate) invalid_seed_nodes: usize,
+    pub(crate) duplicate_seed_nodes: usize,
+    pub(crate) observed_seed_nodes: usize,
+    pub(crate) missing_seed_ids: Vec<i64>,
+    pub(crate) missing_explicit_seed_ids: Vec<i64>,
+    pub(crate) missing_seed_ids_truncated: bool,
     pub(crate) reached_nodes: usize,
     pub(crate) active_edges: usize,
     pub(crate) maximum_node_energy: f64,
@@ -397,14 +405,27 @@ pub(crate) fn sense_with_context(
     let mut edge_flows: HashMap<(usize, usize), EdgeFlow> = HashMap::new();
     let mut parents: HashMap<usize, Parent> = HashMap::new();
 
+    let mut missing_seed_nodes = 0usize;
+    let mut duplicate_seed_nodes = 0usize;
+    let mut missing_seed_ids = Vec::new();
+    let mut missing_explicit_seed_ids = Vec::new();
+    let invalid_seed_nodes = input.seeds.iter().filter(|s|
+        s.id <= 0 || !s.energy.is_finite() || s.energy <= 0.0).count();
     for seed in input
         .seeds
         .iter()
-        .filter(|seed| seed.id > 0 && seed.energy > 0.0)
+        .filter(|seed| seed.id > 0 && seed.energy.is_finite() && seed.energy > 0.0)
     {
         let Some(&node_index) = artifact.node_index.get(&seed.id) else {
+            missing_seed_nodes += 1;
+            if missing_seed_ids.len() < 64 { missing_seed_ids.push(seed.id); }
+            if matches!(seed.source_type.as_str(), "core" | "lexical_seed")
+                && missing_explicit_seed_ids.len() < 64 {
+                missing_explicit_seed_ids.push(seed.id);
+            }
             continue;
         };
+        duplicate_seed_nodes += usize::from(active.contains_key(&(None, node_index)));
         let energy = positive(seed.energy);
         let source_type = if seed.source_type.is_empty() {
             "seed".to_string()
@@ -433,6 +454,8 @@ pub(crate) fn sense_with_context(
             seed_id: Some(seed.id),
         });
     }
+
+    let accepted_seed_nodes = active.len();
 
     // 空种子是合法的请求级观测：JavaScript SOTA 在 Pyramid 未召回 Tag 时
     // 跳过 Spike，但仍允许传播后补入字符串 Core/幽灵节点参与最终融合；
@@ -792,6 +815,14 @@ pub(crate) fn sense_with_context(
         diagnostics: SenseDiagnostics {
             backend: "rust-shared-memo-runtime".to_string(),
             seed_nodes: input.seeds.len(),
+            accepted_seed_nodes,
+            missing_seed_nodes,
+            invalid_seed_nodes,
+            duplicate_seed_nodes,
+            observed_seed_nodes: nodes.iter().filter(|n| n.hop == 0).count(),
+            missing_seed_ids_truncated: missing_seed_nodes > missing_seed_ids.len(),
+            missing_seed_ids,
+            missing_explicit_seed_ids,
             reached_nodes: nodes.len(),
             active_edges: edges.len(),
             maximum_node_energy,
@@ -1036,5 +1067,38 @@ mod deterministic_order_tests {
         for other in &runs[1..] {
             assert!(other.0 == runs[0].0, "output depends on the HashMap hash seed");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod seed_admission_tests {
+    use super::*;
+
+    #[test]
+    fn isolated_seed_survives_missing_seed_is_reported_and_duplicates_merge() {
+        let artifact = NativeArtifact {
+            node_ids: vec![1], node_index: HashMap::from([(1, 0)]),
+            row_offsets: vec![0, 0], ..NativeArtifact::default()
+        }.prepared();
+        let output = sense_typed(&artifact, "admission", SenseInput {
+            query_id: None, config: SenseConfig::default(),
+            seeds: vec![
+                SenseSeed { id: 1, energy: 0.4, source_type: "lexical_seed".into() },
+                SenseSeed { id: 1, energy: 0.1, source_type: "seed".into() },
+                SenseSeed { id: 9, energy: 0.5, source_type: "lexical_seed".into() },
+                SenseSeed { id: 0, energy: 0.5, source_type: "seed".into() },
+            ],
+        }).unwrap();
+        assert_eq!(output.diagnostics.seed_nodes, 4);
+        assert_eq!(output.diagnostics.accepted_seed_nodes, 1);
+        assert_eq!(output.diagnostics.observed_seed_nodes, 1);
+        assert_eq!(output.diagnostics.missing_seed_nodes, 1);
+        assert_eq!(output.diagnostics.invalid_seed_nodes, 1);
+        assert_eq!(output.diagnostics.duplicate_seed_nodes, 1);
+        assert_eq!(output.diagnostics.missing_explicit_seed_ids, vec![9]);
+        assert_eq!(output.nodes[0].source_type, "lexical_seed");
+        assert_eq!(output.nodes[0].hop, 0);
+        assert!(output.edges.is_empty());
     }
 }

@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 
-const RESERVED: usize = 8;
+const RESERVED: usize = 2;
 const STATE_LIMIT: usize = 8192;
 const EDGE_LIMIT: usize = 65536;
 const BATCH: usize = 4;

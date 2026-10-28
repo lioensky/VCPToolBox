@@ -20,8 +20,8 @@
         </div>
         <div class="dashboard-card-panel summary-item">
           <span class="summary-label">RiverMemo</span>
-          <strong>{{ formatBytes(knowledgeBaseProfile.tagMemo.estimatedBytes) }}</strong>
-          <small>{{ formatNumber(knowledgeBaseProfile.tagMemo.cooccurrenceEdges ?? 0) }} 条矩阵边</small>
+          <strong>{{ nativeRiverMemo.resident && nativeRiverMemo.available ? `≥ ${formatBytes(nativeRiverMemo.csrLowerBoundBytes)}` : "—" }}</strong>
+          <small>{{ riverMemoStatus }} · CSR 内存下界</small>
         </div>
         <div class="dashboard-card-panel summary-item">
           <span class="summary-label">冷知识库</span>
@@ -49,26 +49,24 @@
 
         <section class="dashboard-card-panel detail-section">
           <div class="section-title">
-            <span>RiverMemo 矩阵</span>
-            <small :class="{ active: knowledgeBaseProfile.tagMemo.matrixRebuilding }">
-              {{ knowledgeBaseProfile.tagMemo.matrixRebuilding ? "重建中" : "就绪" }}
-            </small>
+            <span>RiverMemo 原生图</span>
+            <small :title="nativeRiverMemo.error || ''">{{ riverMemoStatus }}</small>
           </div>
           <div class="metric-list">
             <div class="metric-row">
-              <span>Pairwise</span>
-              <strong>{{ formatNumber(knowledgeBaseProfile.tagMemo.pairwiseSimilarities ?? 0) }}</strong>
-              <small>{{ formatBytes(knowledgeBaseProfile.tagMemo.pairwiseEstimatedBytes ?? 0) }}</small>
+              <span>节点</span>
+              <strong>{{ nativeRiverMemo.available ? formatNumber(nativeRiverMemo.nodeCount) : "—" }}</strong>
+              <small>Rust</small>
             </div>
             <div class="metric-row">
-              <span>共现源</span>
-              <strong>{{ formatNumber(knowledgeBaseProfile.tagMemo.cooccurrenceSources ?? 0) }}</strong>
-              <small>{{ formatBytes(knowledgeBaseProfile.tagMemo.cooccurrenceEstimatedBytes ?? 0) }}</small>
+              <span>传输边</span>
+              <strong>{{ nativeRiverMemo.available ? formatNumber(nativeRiverMemo.edgeCount) : "—" }}</strong>
+              <small>CSR</small>
             </div>
             <div class="metric-row">
-              <span>内生残差</span>
-              <strong>{{ formatNumber(knowledgeBaseProfile.tagMemo.intrinsicResiduals ?? 0) }}</strong>
-              <small>{{ formatBytes(knowledgeBaseProfile.tagMemo.intrinsicEstimatedBytes ?? 0) }}</small>
+              <span>驻留代际</span>
+              <strong>{{ nativeRiverMemo.available && nativeRiverMemo.resident ? formatNumber(nativeRiverMemo.generation) : "—" }}</strong>
+              <small>只读诊断</small>
             </div>
           </div>
         </section>
@@ -116,7 +114,7 @@
         </section>
       </div>
 
-      <p class="profile-note">{{ profile.note }}</p>
+      <p class="profile-note">{{ profile.note }} RiverMemo 单列 Rust CSR 下界，不含分配器等开销，也不叠加进总估算。</p>
     </div>
   </div>
 </template>
@@ -155,18 +153,6 @@ const emptyKnowledgeBaseProfile = {
     diaryNameVectorEstimatedBytes: 0,
     diaryDateIndexCount: 0,
     diaryDateIndexEstimatedBytes: 0,
-  },
-  tagMemo: {
-    available: false,
-    estimatedBytes: 0,
-    pairwiseSimilarities: 0,
-    pairwiseEstimatedBytes: 0,
-    cooccurrenceSources: 0,
-    cooccurrenceEdges: 0,
-    cooccurrenceEstimatedBytes: 0,
-    intrinsicResiduals: 0,
-    intrinsicEstimatedBytes: 0,
-    matrixRebuilding: false,
   },
 };
 
@@ -207,11 +193,25 @@ const knowledgeBaseProfile = computed(() => ({
     ...emptyKnowledgeBaseProfile.caches,
     ...(props.profile?.knowledgeBase?.caches ?? {}),
   },
-  tagMemo: {
-    ...emptyKnowledgeBaseProfile.tagMemo,
-    ...(props.profile?.knowledgeBase?.tagMemo ?? {}),
-  },
 }));
+
+// 原生统计缺失不伪装成 0 B；不回退到退休的 JS TagMemo。
+const nativeRiverMemo = computed(() => ({
+  resident: false,
+  generation: 0,
+  nodeCount: 0,
+  edgeCount: 0,
+  csrLowerBoundBytes: 0,
+  error: null as string | null,
+  ...props.profile?.knowledgeBase?.riverMemo?.nativeRuntime,
+  available: props.profile?.knowledgeBase?.riverMemo?.nativeRuntime?.available === true,
+}));
+
+const riverMemoStatus = computed(() =>
+  !nativeRiverMemo.value.available
+    ? "诊断不可用"
+    : nativeRiverMemo.value.resident ? "已驻留" : "未驻留"
+);
 
 const tdbKnowledgeProfile = computed(() => ({
   ...emptyTdbKnowledgeProfile,

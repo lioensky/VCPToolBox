@@ -409,6 +409,32 @@
                     @update:model-value="updateDedupInteger('minSemanticCandidates', $event, 0)"
                   />
                 </label>
+                <label class="dedup-field">
+                  <span>候选向量补取批大小</span>
+                  <code>hydrationBatchSize</code>
+                  <small>去重时分批补取候选向量。默认 500，最大 900；调大可减少补取次数。</small>
+                  <UiInput
+                    :model-value="dedupNumber('hydrationBatchSize', 500)"
+                    type="number"
+                    :min="1"
+                    :max="900"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('hydrationBatchSize', $event, 1, 900)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>详细耗时统计门槛</span>
+                  <code>slowLogMs</code>
+                  <small>总耗时达到该毫秒数时，日志附加分阶段耗时；默认 25，0 表示始终附加。</small>
+                  <UiInput
+                    :model-value="dedupNumber('slowLogMs', 25)"
+                    type="number"
+                    :min="0"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('slowLogMs', $event, 0)"
+                  />
+                </label>
               </div>
             </article>
 
@@ -686,7 +712,8 @@
                       :id="entry.fieldId"
                       v-model.number="(section.raw as Record<string, number>)[entry.key]"
                       type="number"
-                      :step="getNumberStep(entry.value)"
+                      :min="section.name === 'RAGDiaryPlugin' && entry.key === 'base64MemoLimit' ? 1 : undefined"
+                      :step="section.name === 'RAGDiaryPlugin' && entry.key === 'base64MemoLimit' ? 1 : getNumberStep(entry.value)"
                     />
                   </div>
 
@@ -1216,11 +1243,12 @@ function updateDedupNumber(key: string, rawValue: string | number): void {
 function updateDedupInteger(
   key: string,
   rawValue: string | number,
-  minimum: number
+  minimum: number,
+  maximum = Number.POSITIVE_INFINITY
 ): void {
   const value = Number(rawValue);
   if (!Number.isFinite(value)) return;
-  updateDedupNumber(key, Math.max(minimum, Math.round(value)));
+  updateDedupNumber(key, Math.min(maximum, Math.max(minimum, Math.round(value))));
 }
 
 function updateDedupSourcePriority(
