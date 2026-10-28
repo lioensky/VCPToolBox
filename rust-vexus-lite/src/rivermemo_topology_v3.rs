@@ -15,8 +15,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
+#[path = "rivermemo_wormhole.rs"]
+mod wormhole;
+
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.2";
+const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.5-confidence-rrf";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -296,6 +299,10 @@ struct RiverEdge {
     flow: f64,
     #[serde(default)]
     normalized_flow: f64,
+    #[serde(default)]
+    wormhole: bool,
+    #[serde(default)]
+    immediate_return: bool,
 }
 
 #[derive(Deserialize)]
@@ -2737,6 +2744,8 @@ pub(crate) fn run_native_with_connection(
                 target_id: edge.target_id,
                 flow: edge.flow,
                 normalized_flow: edge.normalized_flow,
+                wormhole: edge.wormhole,
+                immediate_return: edge.immediate_return,
             })
             .collect();
         input.query_state.field_provenance = cached
@@ -2885,10 +2894,15 @@ pub(crate) fn run_native_with_connection(
         .map(|node| node.id)
         .collect();
     requested_tag_ids.extend(seeds.iter().map(|seed| seed.0));
+    requested_tag_ids.extend(input.query_state.river_edges.iter()
+        .filter(|edge| edge.wormhole).map(|edge| edge.target_id));
     let query_stats = ensure_tag_vectors_loaded(
         connection, &mut tag_vectors, &requested_tag_ids, dimension)?;
     let query_tag_sql_batches = query_stats.sql_batches;
     let query_and_seed_tag_vectors = tag_vectors;
+    let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
+    let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
+    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input)?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -3004,6 +3018,9 @@ pub(crate) fn run_native_with_connection(
             })
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
+    let wormhole_traces = wormhole::fuse_rrf(&mut work, &wormhole_model, &input, &omega);
+    // Stable sort retains the complete baseline comparator for equal fusion scores.
+    work.sort_by(|a, b| b.final_score.total_cmp(&a.final_score));
     let ranked_count = work.len();
 
     let results: Vec<NativeResultItem> = work
@@ -3068,7 +3085,11 @@ pub(crate) fn run_native_with_connection(
                     "requestedGraphBonus": item.v2_bonus * omega.omega.powf(input.config.omega_gamma.max(0.0)),
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
-                }))
+                })).map(|mut trace| {
+                    trace["wormholeRrf"] = wormhole_traces
+                        .get(&item.curve.id).cloned().unwrap_or(Value::Null);
+                    trace
+                })
             } else {
                 None
             };
@@ -3085,7 +3106,8 @@ pub(crate) fn run_native_with_connection(
                 path_bonus: item.path_bonus,
                 graph_bonus: item.gated_bonus,
                 score_clipping: positive(item.pure_score + item.path_bonus + item.gated_bonus
-                    + item.anchor_bonus - item.final_score),
+                    + item.anchor_bonus - wormhole_traces.get(&item.curve.id)
+                        .and_then(|v| v["baselineScore"].as_f64()).unwrap_or(item.final_score)),
                 role: item.role,
                 omega: omega.omega,
                 river_regime: omega.regime.clone(),
@@ -3135,6 +3157,16 @@ pub(crate) fn run_native_with_connection(
         results,
         parameters: serde_json::json!({
             "parsedConfig": input.config,
+            "wormholeGateMode": "global-two-joint-files-distinct-checksums-third-tag-explicit-focus",
+            "wormholeEvidenceScope": "global-file-tag-graph; independent-of-candidate-and-retrieval-scope",
+            "wormholeGate": wormhole_gate,
+            "wormholeEligibleRoutes": wormhole_model.eligible_routes,
+            "wormholeAcceptedRoutes": wormhole_model.routes.len(),
+            "wormholeScoring": "strict-global-gate; explanation-weighted-RRF; untouched-baseline-channel",
+            "wormholeRrfK": 60,
+            "wormholeStrongFlowRatio": 0.5,
+            "wormholeWeightReference": "maximum observed non-return ordinary edge flow; observation maximum if absent",
+            "baselineAlgorithm": "rivermemo.conservative-topology-v2.2",
             "fieldResonanceCap": 0.03,
             "fieldSupportPotentialSaturation": 0.02,
             "fieldSupportCoverageSaturation": 0.5,
@@ -3494,6 +3526,71 @@ mod stoploss_tests {
         OmegaOutput { omega: 0.95, omega_edge: 1.0, omega_emerge: 1.0,
             omega_flow: 0.85, regime: "dense".into(), active_edges: 16,
             seed_nodes: 7, reached_nodes: 23, emergent_nodes: 16, complete_observation: true }
+    }
+
+    #[test]
+    fn confidence_rrf_corrects_event_order_without_changing_baseline_components() {
+        let input: NativeInput = serde_json::from_value(serde_json::json!({
+            "query": {"vector": [1,0]}, "queryState": {
+                "fieldProvenance": [{"id":1,"hop":0,"sourceType":"lexical_seed"}],
+                "riverEdges": [
+                    {"sourceId":1,"targetId":2,"flow":0.108,"wormhole":true},
+                    {"sourceId":1,"targetId":3,"flow":0.029,"wormhole":false}
+                ]
+            }
+        })).unwrap();
+        let artifact = NativeArtifact {
+            node_ids: vec![1,2], node_index: HashMap::from([(1,0),(2,1)]),
+            row_offsets: vec![0,1,1], targets: vec![1], weights: vec![1.0],
+            ..NativeArtifact::default()
+        };
+        let vectors = HashMap::from([(2, Arc::from(vec![0.0_f32,1.0]))]);
+        let model = wormhole::build(&input, &vectors, &artifact);
+        let mut phone = work(1, 0.15);
+        phone.curve.id = 10;
+        phone.curve.tags = vec![tag(9, vec![1.0,0.0])];
+        phone.final_score = 0.75;
+        let mut event = work(0, 0.0);
+        event.curve.id = 20;
+        event.curve.chunk_vector = Arc::from(vec![0.0_f32,1.0]);
+        event.curve.tags = vec![tag(2, vec![0.0,1.0])];
+        event.final_score = 0.53;
+        let mut candidates = vec![phone.clone(),event.clone()];
+        let traces = wormhole::fuse_rrf(&mut candidates, &model, &input, &omega());
+        assert!(candidates[1].final_score > candidates[0].final_score);
+        assert_eq!(candidates[0].anchor_bonus, phone.anchor_bonus);
+        assert_eq!(candidates[1].gated_bonus, event.gated_bonus);
+        assert_eq!(traces[&10]["wormholeContribution"], 0.0);
+        let mut unchanged = vec![phone,event];
+        let bits: Vec<_> = unchanged.iter().map(|c| c.final_score.to_bits()).collect();
+        wormhole::fuse_rrf(&mut unchanged, &wormhole::Model::default(), &input, &omega());
+        assert_eq!(bits, unchanged.iter().map(|c| c.final_score.to_bits()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn wormhole_auxiliary_preserves_baseline_and_original_budget() {
+        let config = NativeConfig::default();
+        let mut candidate = work(1, 0.15);
+        assign_v3_scores(std::slice::from_mut(&mut candidate), "narrative", &omega(), &config);
+        let baseline = candidate.clone();
+        wormhole::augment(&mut candidate, &wormhole::Readout::default(), &omega(), &config);
+        assert_eq!(candidate.final_score.to_bits(), baseline.final_score.to_bits());
+        assert_eq!(candidate.gated_bonus.to_bits(), baseline.gated_bonus.to_bits());
+        let evidence = wormhole::Readout { available: true, score: 1.0,
+            ..wormhole::Readout::default() };
+        let mut zero = omega();
+        zero.omega = 0.0;
+        wormhole::augment(&mut candidate, &evidence, &zero, &config);
+        assert_eq!(candidate.final_score.to_bits(), baseline.final_score.to_bits());
+        wormhole::augment(&mut candidate, &evidence, &omega(), &config);
+        assert!(candidate.final_score >= baseline.final_score);
+        assert_eq!(candidate.pure_score, baseline.pure_score);
+        assert_eq!(candidate.anchor_bonus, baseline.anchor_bonus);
+        assert_eq!(candidate.path_bonus, baseline.path_bonus);
+        assert_eq!(candidate.role, baseline.role);
+        assert!(candidate.path_bonus + candidate.gated_bonus <= config.topology_bonus_cap);
+        assert!((candidate.final_score - candidate.pure_score - candidate.path_bonus
+            - candidate.gated_bonus - candidate.anchor_bonus).abs() < 1e-12);
     }
 
     #[test]

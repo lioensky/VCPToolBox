@@ -184,7 +184,7 @@ impl Task for LightMemoTask {
                     }
                     input["includeTrace"] = json!(plan.ab_mode);
                     input["dimension"] = json!(self.dimension);
-                    input["topK"] = json!(plan.k);
+                    input["topK"] = json!(if plan.ab_mode { candidates.len() } else { plan.k });
                     input["candidates"] = json!(candidates);
                     input["allowedFileIds"] = json!(candidates.iter()
                         .filter_map(|c| c["fileId"].as_i64()).collect::<HashSet<_>>());
@@ -238,6 +238,14 @@ impl Task for LightMemoTask {
                                 "anchorBonus":item["anchorBonus"]
                             });
                         }
+                    }
+                    if plan.ab_mode {
+                        river["candidateDiagnostics"] = river["results"].clone();
+                        if let Some(results) = river["results"].as_array_mut() {
+                            results.truncate(plan.k);
+                        }
+                        river["diagnostics"]["returnedCandidates"] = json!(
+                            river["results"].as_array().map_or(0, Vec::len));
                     }
                 }
                 let results = if plan.engine_mode == "rivermemo" {
