@@ -33,7 +33,7 @@ function formatDiagnostics(plugin, request, response) {
         output += '\n';
     };
     section('传播参数（原生解析值）', observation.propagation?.parameters);
-    section('Topology 读出参数（传入原生；未列项采用原生默认值）', river.parameters);
+    section('Topology 读出参数（原生解析值；retiredControls 所列字段不再生效）', river.parameters);
     const graph = river.queryRiverGraph;
     output += '### 查询传播图\n\n';
     if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
@@ -61,9 +61,10 @@ function formatDiagnostics(plugin, request, response) {
     section('EPA', observation.epa);
     section('残差金字塔', observation.pyramid);
     output += '### RiverMemo 候选解释\n\n';
-    output += '| Chunk | 角色 | 语义基础分 | 路径奖励 | 图奖励 | 拓扑合计 | 直锚奖励 | 截断扣分 | 最终分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n';
+    output += '基础分已包含场共振增益；最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分，勿重复累加场共振。\n\n';
+    output += '| Chunk | 角色 | 语义基础分 | 场分 | 场共振增益 | 路径奖励 | 图奖励 | 拓扑合计 | 直锚奖励 | 截断扣分 | 最终分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n';
     for (const item of river.results || []) {
-        output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
+        output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.fieldScore)} | ${number(item.fieldResonanceBonus)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
     }
     output += '\n详细测绘（拓扑可靠性、锚点可靠性、覆盖率、路径几何和 Ω 门控）：\n\n';
     for (const item of river.results || []) {
