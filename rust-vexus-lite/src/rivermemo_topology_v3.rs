@@ -16,7 +16,7 @@ use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2";
+const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.1";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -1690,7 +1690,7 @@ fn support_density(supported: f64, total: usize) -> f64 {
 }
 
 /// Query cosine is the floor; fields only contribute bounded positive surplus.
-fn field_resonance(curve: &Curve, input: &NativeInput) -> (f64, f64, f64) {
+fn field_resonance(curve: &Curve, input: &NativeInput, support: f64) -> (f64, f64, f64) {
     let local = if input.local_vector.iter().all(|v| v.is_finite())
         && squared_norm(&input.local_vector) > 1e-12 {
         positive(input.config.pure_local_weight)
@@ -1706,7 +1706,8 @@ fn field_resonance(curve: &Curve, input: &NativeInput) -> (f64, f64, f64) {
             + transfer * clamp01(curve.transfer_score)) / total)
     } else { query };
     let lambda = clamp01(total / (positive(input.config.pure_query_weight) + total).max(1e-12));
-    let gain = (lambda * positive(field - query)).min(0.03).min(1.0 - query);
+    let gain = ((lambda * positive(field - query)).min(0.03) * clamp01(support))
+        .min(1.0 - query);
     (query + gain, field, gain)
 }
 
@@ -1937,6 +1938,16 @@ struct ObservableOutput {
     local_potential: f64,
     transfer_potential: f64,
     tail_only_ratio: f64,
+    field_support: f64,
+}
+
+fn scalar_field_support(coverage: f64, potential: f64) -> f64 {
+    let potential = positive(potential);
+    let covered = clamp01(coverage / 0.5);
+    let saturated = clamp01(potential / 0.02);
+    let domain = (covered * saturated).sqrt();
+    let tail = 0.1 * (potential / (potential + 0.02)).sqrt();
+    clamp01(domain.max(tail))
 }
 
 fn evaluate_observables(
@@ -1947,7 +1958,9 @@ fn evaluate_observables(
     visible: bool,
     cosines: &CosineCache,
 ) -> ObservableOutput {
-    let chain_size = curve.tags.len().max(1) as f64;
+    let mut seen_ids = HashSet::new();
+    let tags: Vec<&TagData> = curve.tags.iter().filter(|t| seen_ids.insert(t.id)).collect();
+    let chain_size = tags.len().max(1) as f64;
     let mut exact_seed_hits = 0usize;
     let mut local_contacts = 0usize;
     let mut transfer_contacts = 0usize;
@@ -1956,7 +1969,7 @@ fn evaluate_observables(
     let mut tail_only = 0usize;
     let mut boundary: f64 = 0.0;
 
-    for tag in &curve.tags {
+    for tag in &tags {
         let local = workspace.local.get(&tag.id).copied().unwrap_or(0.0);
         let transfer = workspace.transfer.get(&tag.id).copied().unwrap_or(0.0);
         exact_seed_hits += usize::from(workspace.source_ids.contains(&tag.id));
@@ -2007,6 +2020,8 @@ fn evaluate_observables(
         local_potential: local_mean,
         transfer_potential: transfer_mean,
         tail_only_ratio: tail_ratio,
+        field_support: scalar_field_support(local_coverage, local_mean)
+            .max(scalar_field_support(transfer_coverage, transfer_mean)),
     }
 }
 
@@ -2087,7 +2102,7 @@ fn compute_anchors(
             let mut no_contact_probability = 1.0;
             let mut closure_sum = 0.0;
             let mut exact = 0usize;
-            let implicit_only = explicit_max > 0.0
+            let implicit_only = !candidate_contacts.is_empty()
                 && !candidate_contacts.iter().any(|c| explicit_ids.contains(&c.0));
             for contact in &candidate_contacts {
                 let inbound = artifact.inbound.get(&contact.1).copied().unwrap_or(0.0);
@@ -2113,7 +2128,7 @@ fn compute_anchors(
                         (contact.3 - config.semantic_anchor_threshold.max(0.88))
                             / (1.0 - config.semantic_anchor_threshold.max(0.88)).max(1e-9))
                 };
-                let grounding_gain = if explicit_max > 0.0 && !explicit_ids.contains(&contact.0) {
+                let grounding_gain = if !explicit_ids.contains(&contact.0) {
                     0.35
                 } else { 1.0 };
                 let contribution =
@@ -2515,8 +2530,7 @@ fn assign_v3_scores(
     for item in work.iter_mut() {
         let direct_answer = mode != "atomic"
             && item.observables.closure >= 0.55
-            && item.anchor.exact_contacts > 0 && !item.anchor.implicit_only
-            && (!item.anchor.has_explicit_focus || item.anchor.explicit_exact_contacts > 0);
+            && item.anchor.explicit_exact_contacts > 0;
         let structural = (item.topology.matched_edge_coverage
             * item.topology.reliability
             * item.observables.closure)
@@ -2905,7 +2919,8 @@ pub(crate) fn run_native_with_connection(
             let visible = true; // 越权候选已在进入候选池前删除。
             let observables =
                 evaluate_observables(&curve, &geometry, &input, &workspace, visible, &cosines);
-            let (semantic_base, field_score, field_resonance_bonus) = field_resonance(&curve, &input);
+            let (semantic_base, field_score, field_resonance_bonus) =
+                field_resonance(&curve, &input, observables.field_support);
             let topology_raw = clamp01(
                 0.625 * geometry.path_quality
                     + 0.375
@@ -2994,7 +3009,9 @@ pub(crate) fn run_native_with_connection(
                 .collect();
             let topology_v3 = if input.include_trace {
                 Some(serde_json::json!({
-                    "mode": "conservative_candidate_self_topology_v2",
+                    "mode": "conservative_candidate_self_topology_v2.1",
+                    "fieldSupport": item.observables.field_support,
+                    "fieldResonanceBeforeSupport": field_resonance(&item.curve, &input, 1.0).2,
                     "queryScore": clamp01(item.curve.query_score),
                     "fieldScore": item.field_score,
                     "fieldResonanceBonus": item.field_resonance_bonus,
@@ -3095,6 +3112,11 @@ pub(crate) fn run_native_with_connection(
         parameters: serde_json::json!({
             "parsedConfig": input.config,
             "fieldResonanceCap": 0.03,
+            "fieldSupportPotentialSaturation": 0.02,
+            "fieldSupportCoverageSaturation": 0.5,
+            "fieldSupportTailCap": 0.1,
+            "implicitContactDiscount": 0.35,
+            "implicitStrengthCap": 0.035,
             "weakSemanticPivot": 0.65,
             "span2Discount": 0.7,
             "globalOnlyPathGain": 0.5,
@@ -3430,7 +3452,8 @@ mod stoploss_tests {
             pure_score: 0.7, field_score: 0.7, field_resonance_bonus: 0.0,
             graph_score: 0.5, direct_evidence: 0.9,
             role: String::new(),
-            anchor: AnchorOutput { exact_contacts: exact, strength, ..AnchorOutput::default() },
+            anchor: AnchorOutput { exact_contacts: exact, explicit_exact_contacts: exact,
+                strength, ..AnchorOutput::default() },
             v2_bonus: 0.0, gated_bonus: 0.0, path_bonus: 0.03,
             anchor_bonus: 0.0, final_score: 0.0,
         }
@@ -3471,8 +3494,18 @@ mod stoploss_tests {
         assert!(anchors[1].reliability <= 0.35);
         let fallback = compute_anchors(&curves, &[(9, 0.2), (1, 0.8)], &vectors,
             &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::new());
-        assert!(!fallback[1].implicit_only);
-        assert!(fallback[1].strength > 0.2);
+        assert!(fallback[1].implicit_only);
+        assert!(fallback[1].strength <= 0.035);
+        let mut candidate = work(1, fallback[1].strength);
+        candidate.anchor = fallback[1].clone();
+        assign_v3_scores(std::slice::from_mut(&mut candidate), "narrative",
+            &omega(), &NativeConfig::default());
+        assert_eq!(candidate.anchor_bonus, 0.0);
+        assert_ne!(candidate.role, "direct_answer");
+        // No candidate-side hit on the explicit focus changes the denominator.
+        let only_implicit = compute_anchors(&curves[1..], &[(9, 0.2), (1, 0.8)], &vectors,
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &explicit);
+        assert_eq!(only_implicit[0].score, anchors[1].score);
     }
 
     #[test]
@@ -3481,7 +3514,7 @@ mod stoploss_tests {
         let vectors: TagVectorPool = [(9, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
         let cache = CosineCache::build(&curves, &[1.0, 0.0], [9], &vectors);
         let anchors = compute_anchors(&curves, &[(9, 1.0)], &vectors,
-            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::new());
+            &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::from([9]));
         assert!((anchors[0].reliability - 0.9).abs() < 1e-12);
         assert_eq!(anchors[0].contacted_seeds, 1);
     }
@@ -3554,21 +3587,48 @@ mod conservative_topology_tests {
     }
 
     #[test]
+    fn calibrated_support_preserves_cross_hop_scale_and_rejects_outside_field() {
+        assert_eq!(scalar_field_support(0.0, 0.0), 0.0);
+        assert!(scalar_field_support(0.0, 0.0001) < 0.01);
+        assert!((scalar_field_support(0.125, 0.009) - 0.3354101966).abs() < 1e-9);
+        assert!(scalar_field_support(0.25, 0.015) > 0.6);
+        assert_eq!(scalar_field_support(0.5, 0.044), 1.0);
+        let input = input();
+        let c = curve(vec![tag(1, 0, vec![1.0, 0.0]), tag(9, 1, vec![0.0, 1.0])]);
+        let mut duplicate = c.clone();
+        duplicate.tags.extend(c.tags.clone());
+        let workspace = FieldWorkspace {
+            local: HashMap::new(), transfer: HashMap::from([(1, 0.03)]),
+            local_domain: HashSet::new(), transfer_domain: HashSet::from([1]),
+            source_ids: HashSet::new(), active_edges: HashMap::new(),
+        };
+        let cache = CosineCache::build(&[c.clone(), duplicate.clone()], &[1.0, 0.0],
+            [], &TagVectorPool::new());
+        let a = evaluate_observables(&c, &GeometryOutput::default(), &input, &workspace, true, &cache);
+        let b = evaluate_observables(&duplicate, &GeometryOutput::default(),
+            &input, &workspace, true, &cache);
+        assert_eq!(a.field_support, b.field_support);
+        assert!(a.field_support > 0.8);
+    }
+
+    #[test]
     fn field_floor_positive_surplus_cap_and_missing_fields() {
         let mut input = input();
         let mut c = curve(vec![]);
-        assert_eq!(field_resonance(&c, &input).0, c.query_score);
+        assert_eq!(field_resonance(&c, &input, 1.0).0, c.query_score);
         c.local_score = 0.70;
         c.transfer_score = 0.70;
-        let (base, field, gain) = field_resonance(&c, &input);
+        let (base, field, gain) = field_resonance(&c, &input, 1.0);
         assert!((field - 0.70).abs() < 1e-12);
         assert!((gain - 0.3 * (0.70 - c.query_score)).abs() < 1e-12);
         assert_eq!(base, c.query_score + gain);
         c.query_score = 0.1; c.local_score = 1.0; c.transfer_score = 1.0;
-        assert_eq!(field_resonance(&c, &input).2, 0.03);
-        assert!(field_resonance(&c, &input).0 < 0.64);
+        assert_eq!(field_resonance(&c, &input, 1.0).2, 0.03);
+        assert!(field_resonance(&c, &input, 1.0).0 < 0.64);
+        assert_eq!(field_resonance(&c, &input, 0.0).2, 0.0);
+        assert!((field_resonance(&c, &input, 0.1).2 - 0.003).abs() < 1e-12);
         input.local_vector.fill(0.0); input.transfer_vector.fill(0.0);
-        assert_eq!(field_resonance(&c, &input), (0.1, 0.1, 0.0));
+        assert_eq!(field_resonance(&c, &input, 1.0), (0.1, 0.1, 0.0));
     }
 
     #[test]
