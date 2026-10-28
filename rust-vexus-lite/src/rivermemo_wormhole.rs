@@ -1,5 +1,5 @@
 //! Auxiliary evidence from observed wormholes, never a replacement scorer.
-//! Admission is file-based; rewards share the original topology budget and Omega.
+//! Strict global admission enables a separate correction key; baseline scores stay intact.
 use super::*;
 
 #[derive(Clone, Serialize)]
@@ -208,6 +208,53 @@ pub(super) fn evaluate(model: &Model, curve: &Curve, artifact: &NativeArtifact) 
     output
 }
 
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Correction {
+    pub eligible: bool,
+    pub evidence: f64,
+    pub source_id: Option<i64>,
+    pub target_id: Option<i64>,
+    pub matched_tag_id: Option<i64>,
+    pub tag_similarity: f64,
+    pub body_cosine: f64,
+    pub relative_flow: f64,
+}
+
+pub(super) fn correction(model: &Model, curve: &Curve, input: &NativeInput,
+    omega: &OmegaOutput) -> Correction {
+    let mut best = Correction::default();
+    if !input.query_state.complete_observation || omega.omega <= 0.0 { return best; }
+    let explicit: HashSet<i64> = input.query_state.field_provenance.iter()
+        .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
+        .map(|p| p.id).collect();
+    for route in &model.routes {
+        // Original observation denominator, never renormalized after admission.
+        if route.relative_flow < 0.5 || !explicit.contains(&route.source_id) { continue; }
+        let body = clamp01(cosine(&route.vector, &curve.chunk_vector));
+        if body <= 0.0 { continue; }
+        let matched = curve.tags.iter().filter_map(|tag| {
+            let similarity = if tag.id == route.target_id { 1.0 }
+                else { cosine(&route.vector, &tag.vector) };
+            (similarity > input.config.semantic_node_threshold && tag.chunk_cosine > 0.0)
+                .then_some((tag.id, similarity, tag.chunk_cosine))
+        }).max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+        let Some((tag, similarity, _closure)) = matched else { continue };
+        let evidence = route.relative_flow * body
+            * omega.omega.powf(input.config.omega_gamma.max(0.0));
+        if best.eligible && evidence <= best.evidence { continue; }
+        best = Correction { eligible: true, evidence, source_id: Some(route.source_id),
+            target_id: Some(route.target_id), matched_tag_id: Some(tag),
+            tag_similarity: similarity, body_cosine: body, relative_flow: route.relative_flow };
+    }
+    best
+}
+
+pub(super) fn compare(a: &Correction, b: &Correction) -> Ordering {
+    b.eligible.cmp(&a.eligible)
+        .then_with(|| b.evidence.total_cmp(&a.evidence))
+}
+
 pub(super) fn augment(item: &mut ScoredWork, readout: &Readout,
     omega: &OmegaOutput, config: &NativeConfig) {
     if !readout.available || readout.score <= 0.0 { return; }
@@ -362,4 +409,61 @@ mod gate_regressions {
         // to the global file-tag graph, not the returned candidate pool.
         assert_eq!(both.routes[0].target_id, 2);
     }
+}
+
+/// `work` must already be sorted by the untouched baseline comparator.
+pub(super) fn fuse_rrf(work: &mut [ScoredWork], model: &Model,
+    input: &NativeInput, omega: &OmegaOutput) -> HashMap<i64, Value> {
+    const K: f64 = 60.0;
+    let ordinary_max = input.query_state.river_edges.iter()
+        .filter(|e| !e.wormhole && !e.immediate_return && e.source_id != e.target_id)
+        .map(|e| positive(e.flow)).fold(0.0_f64, f64::max);
+    // With no ordinary edge use the original observation maximum, not epsilon.
+    let reference = if ordinary_max > 0.0 { ordinary_max } else {
+        input.query_state.river_edges.iter().map(|e| positive(e.flow))
+            .fold(0.0_f64, f64::max)
+    };
+    let mut traces = HashMap::new();
+    if reference <= 0.0 || work.is_empty() { return traces; }
+    let mut contributions = vec![0.0_f64; work.len()];
+    let mut winners = vec![Value::Null; work.len()];
+    for route in &model.routes {
+        let single = Model { routes: vec![route.clone()], eligible_routes: 1 };
+        let mut ranked: Vec<(usize, Correction)> = work.iter().enumerate()
+            .filter_map(|(i, item)| {
+                let evidence = correction(&single, &item.curve, input, omega);
+                evidence.eligible.then_some((i, evidence))
+            }).collect();
+        ranked.sort_by(|a, b| b.1.evidence.total_cmp(&a.1.evidence)
+            .then_with(|| a.0.cmp(&b.0)));
+        let weight = route.flow / reference
+            * omega.omega.powf(input.config.omega_gamma.max(0.0));
+        for (rank, (i, evidence)) in ranked.into_iter().enumerate() {
+            let contribution = weight / (K + (rank + 1) as f64);
+            if contribution <= contributions[i] { continue; }
+            contributions[i] = contribution;
+            winners[i] = serde_json::json!({
+                "sourceId": route.source_id, "targetId": route.target_id,
+                "flow": route.flow, "relativeFlow": route.relative_flow,
+                "referenceFlow": reference, "weight": weight,
+                "routeRank": rank + 1, "contribution": contribution,
+                "grounding": evidence
+            });
+        }
+    }
+    let active = contributions.iter().any(|v| *v > 0.0);
+    for (i, item) in work.iter_mut().enumerate() {
+        let baseline = item.final_score;
+        let baseline_rrf = 1.0 / (K + (i + 1) as f64);
+        if active { item.final_score = baseline_rrf + contributions[i]; }
+        traces.insert(item.curve.id, serde_json::json!({
+            "active": active, "k": K, "baselineRank": i + 1,
+            "baselineScore": baseline, "baselineContribution": baseline_rrf,
+            "wormholeContribution": contributions[i], "winner": winners[i],
+            "fusedScore": item.final_score,
+            "referenceMode": if ordinary_max > 0.0 { "maximum-observed-ordinary-flow" }
+                else { "maximum-observed-flow-no-ordinary-edge" }
+        }));
+    }
+    traces
 }

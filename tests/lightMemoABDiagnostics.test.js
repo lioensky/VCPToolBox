@@ -159,3 +159,20 @@ test('auxiliary wormholes retain topology explanation and expose additive accoun
     assert.ok(!output.includes('独立虫洞通道'));
     assert.ok(!output.includes('回退查询余弦'));
 });
+
+test('confidence RRF exposes baseline rank, explanation weight and separate fusion score', () => {
+    const data = response();
+    data.river.algorithmVersion = 'rivermemo.conservative-topology-v2.5-confidence-rrf';
+    data.river.parameters.wormholeScoring = 'explanation-weighted-RRF';
+    data.river.results[0].topologyV3.wormholeRrf = {
+        active: true, baselineRank: 24, baselineScore: 0.5344,
+        baselineContribution: 1 / 84, wormholeContribution: 0.0587,
+        winner: { weight: 3.58, routeRank: 1, sourceId: 1, targetId: 2 }
+    };
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['解释力度 RRF', '原排名', '0.5344', '3.58',
+        '不是下方原评分分项之和', 'matchedEdgeCoverage']) {
+        assert.ok(output.includes(text), text);
+    }
+    assert.ok(!output.includes('虫洞辅助加权（保留原拓扑'));
+});

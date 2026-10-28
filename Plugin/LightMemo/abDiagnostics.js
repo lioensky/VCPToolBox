@@ -80,15 +80,24 @@ function formatDiagnostics(plugin, request, response) {
         section('RiverMemo 读出诊断', river.diagnostics);
         return output;
     }
+    const rrfMode = river.algorithmVersion?.includes('confidence-rrf');
+    if (rrfMode) {
+        output += '严格全局门控后的解释力度 RRF：原 RiverMemo 排名保留为基线通道；有效虫洞贡献按相对普通传播的流量力度与 Ω 加权。最终分为融合分，不是下方原评分分项之和；未触发时保留原分。\n\n';
+        output += '| Chunk | 原排名 | 原评分 | 基线 RRF | 虫洞 RRF | 最终分 | 路线解释 |\n|---:|---:|---:|---:|---:|---:|---|\n';
+        for (const item of explained) {
+            const fusion = item.topologyV3?.wormholeRrf || {};
+            output += `| ${item.chunkId ?? item.id} | ${fusion.baselineRank ?? '—'} | ${number(fusion.baselineScore)} | ${number(fusion.baselineContribution)} | ${number(fusion.wormholeContribution)} | ${number(item.score)} | ${json(fusion.winner)} |\n`;
+        }
+    }
     const endpointMode = river.algorithmVersion?.startsWith('rivermemo.source-endpoint-');
-    output += endpointMode
+    output += rrfMode ? '下表保留原评分分项供审计；最终分列为上述融合结果。\n\n' : endpointMode
         ? '有效意图候选：基础分为原查询余弦；直锚列为直接意图证据分账，图奖励列为来源条件化传播的边际分账，共享单一预算；旧场共振、路径和图形匹配只作诊断。无有效意图候选保留兼容回退。最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分。\n\n'
         : '基础分已包含场共振增益；最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分，勿重复累加场共振。\n\n';
     output += '| Chunk | 角色 | 语义基础分 | 场分 | 场共振增益 | 路径奖励 | 图奖励 | 拓扑合计 | 直锚奖励 | 截断扣分 | 最终分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n';
     for (const item of explained) {
         output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.fieldScore)} | ${number(item.fieldResonanceBonus)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
     }
-    if (river.parameters?.wormholeScoring) {
+    if (river.parameters?.wormholeScoring && !rrfMode) {
         output += '\n### 虫洞辅助加权（保留原拓扑与 Ω 门控）\n\n';
         output += '虫洞只在原拓扑预算内增加图奖励，不替换基础分、路径、直锚或 Ω。无合格证据时增量为零；两个文件重复关联不等于独立证据。\n\n';
         output += '| Chunk | 原最终分 | 原图奖励 | 新增图奖励 | 最终分增量 | 路线证据 |\n|---:|---:|---:|---:|---:|---|\n';
