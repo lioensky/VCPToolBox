@@ -63,22 +63,25 @@ function formatDiagnostics(plugin, request, response) {
     const explained = river.candidateDiagnostics || river.results || [];
     output += '### RiverMemo 候选解释\n\n';
     output += `解释候选 ${explained.length} 条（包含 Top-K 之外的共同池候选，如原生已提供）。\n\n`;
-    output += '基础分已包含场共振增益；最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分，勿重复累加场共振。\n\n';
+    const endpointMode = river.algorithmVersion?.startsWith('rivermemo.source-endpoint-');
+    output += endpointMode
+        ? '有效意图候选：基础分为原查询余弦；直锚列为直接意图证据分账，图奖励列为来源条件化传播的边际分账，共享单一预算；旧场共振、路径和图形匹配只作诊断。无有效意图候选保留兼容回退。最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分。\n\n'
+        : '基础分已包含场共振增益；最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分，勿重复累加场共振。\n\n';
     output += '| Chunk | 角色 | 语义基础分 | 场分 | 场共振增益 | 路径奖励 | 图奖励 | 拓扑合计 | 直锚奖励 | 截断扣分 | 最终分 | 标签 | CoreTag |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|\n';
     for (const item of explained) {
         output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.fieldScore)} | ${number(item.fieldResonanceBonus)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
     }
     output += '\n### 意图账本（点火能量与区分权重分离）\n\n';
-    output += '| Chunk | 意图种子 | 权重 | 留一残差能量 | 直接支持 | 虫洞支持 | 满足度 | 虫洞路线 |\n|---:|---|---:|---:|---:|---:|---:|---|\n';
     for (const item of explained) {
         const intent = item.topologyV3?.intentReadout;
         if (!intent?.available) continue;
-        output += `\nChunk ${item.chunkId ?? item.id}：合取满足度 ${number(intent.satisfaction)}；直接满足度 ${number(intent.directSatisfaction)}；虫洞提升 ${number(intent.wormholeLift)}。\n\n`;
+        output += `\nChunk ${item.chunkId ?? item.id}：合取满足度 ${number(intent.satisfaction)}；直接满足度 ${number(intent.directSatisfaction)}；${endpointMode ? '传播边际提升' : '虫洞提升'} ${number(intent.wormholeLift)}。\n\n`;
+        output += '| Chunk | 意图种子 | 权重 | 留一残差能量 | 查询独立解释量 | 直接支持 | 传播支持 | 满足度 | 路线 | 电流校准 | 终点落地 | 虫洞 |\n|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---|\n';
         for (const axis of intent.ledger || []) {
             const name = id => (graph?.nodes || []).find(node => node.id === id)?.name || `Tag#${id}`;
             const route = axis.routeTarget == null ? '—'
                 : `${name(axis.routeSource)} → ${name(axis.routeTarget)}`;
-            output += `| ${item.chunkId ?? item.id} | ${cell((axis.seedIds || []).map(name).join(' / '))} | ${number(axis.weight)} | ${number(axis.residualEnergy)} | ${number(axis.directSupport)} | ${number(axis.wormholeSupport)} | ${number(axis.satisfaction)} | ${cell(route)} |\n`;
+            output += `| ${item.chunkId ?? item.id} | ${cell((axis.seedIds || []).map(name).join(' / '))} | ${number(axis.weight)} | ${number(axis.residualEnergy)} | ${number(axis.queryExplanation)} | ${number(axis.directSupport)} | ${number(axis.wormholeSupport)} | ${number(axis.satisfaction)} | ${cell(route)} | ${number(axis.routeCurrent)} | ${number(axis.endpointGrounding)} | ${axis.routeIsWormhole === true} |\n`;
         }
     }
     output += '\n详细测绘（拓扑可靠性、锚点可靠性、覆盖率、路径几何和 Ω 门控）：\n\n';

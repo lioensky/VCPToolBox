@@ -2,7 +2,6 @@
 use super::*;
 
 const ALIAS_COSINE: f64 = 0.95;
-const RESIDUAL_FLOOR: f64 = 0.02;
 const SATISFACTION_FLOOR: f64 = 0.05;
 
 struct IntentAxis {
@@ -10,12 +9,13 @@ struct IntentAxis {
     vector: Vec<f32>,
     residual: Vec<f32>,
     residual_energy: f64,
+    query_explanation: f64,
     weight: f64,
 }
 
 pub(super) struct IntentModel {
     axes: Vec<IntentAxis>,
-    routes: Vec<(i64, i64, f64)>,
+    routes: Vec<(i64, i64, f64, bool)>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -24,11 +24,15 @@ pub(super) struct IntentEvidence {
     seed_ids: Vec<i64>,
     weight: f64,
     residual_energy: f64,
+    query_explanation: f64,
     direct_support: f64,
     wormhole_support: f64,
     satisfaction: f64,
     route_source: Option<i64>,
     route_target: Option<i64>,
+    route_current: f64,
+    endpoint_grounding: f64,
+    route_is_wormhole: bool,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -37,6 +41,7 @@ pub(super) struct IntentOutput {
     pub(super) available: bool,
     pub(super) satisfaction: f64,
     pub(super) direct_satisfaction: f64,
+    /// Compatibility name: marginal lift from all source-attributed observed edges.
     pub(super) wormhole_lift: f64,
     pub(super) ledger: Vec<IntentEvidence>,
 }
@@ -110,21 +115,31 @@ pub(super) fn build(
     }).collect();
     let mut axes: Vec<IntentAxis> = groups.iter().enumerate().map(|(i, group)| {
         let (residual, energy) = leave_one_out(&representatives, i);
+        // The tag's independent energy is not its importance to this query.
+        // Positive projection prevents an opposite independent direction gaining a vote.
+        let query_explanation = if energy > 1e-10 {
+            positive(cosine(&input.query.vector, &residual)).powi(2)
+        } else { 0.0 };
         IntentAxis {
             ids: group.iter().map(|&j| entries[j].0).collect(),
             vector: representatives[i].clone(), residual,
-            residual_energy: energy, weight: energy.max(RESIDUAL_FLOOR),
+            residual_energy: energy, query_explanation, weight: query_explanation,
         }
     }).collect();
     let total: f64 = axes.iter().map(|a| a.weight).sum();
-    for axis in &mut axes { axis.weight /= total.max(1e-12); }
+    let count = axes.len().max(1) as f64;
+    for axis in &mut axes {
+        // If independent directions explain nothing, do not amplify numerical noise.
+        axis.weight = if total > 1e-8 { axis.weight / total } else { 1.0 / count };
+    }
     // Absolute current calibration; max-normalized flow alone is not confidence.
-    let mut routes: Vec<(i64, i64, f64)> = input.query_state.river_edges.iter()
-        .filter(|e| e.wormhole && !e.immediate_return && e.source_id != e.target_id
+    let mut routes: Vec<(i64, i64, f64, bool)> = input.query_state.river_edges.iter()
+        .filter(|e| !e.immediate_return && e.source_id != e.target_id
+            && axes.iter().any(|a| a.ids.contains(&e.source_id))
             && artifact.edge_weight(e.source_id, e.target_id) > 0.0)
         .filter_map(|e| {
             let flow = positive(e.flow);
-            (flow > 0.0).then_some((e.source_id, e.target_id, flow / (flow + 0.03)))
+            (flow > 0.0).then_some((e.source_id, e.target_id, flow / (flow + 0.03), e.wormhole))
         }).collect();
     routes.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
     routes.truncate(input.config.maximum_river_edges.max(1));
@@ -162,40 +177,46 @@ pub(super) fn evaluate(
             let identity = if exact { 1.0 } else { clamp01((similarity - 0.48) / 0.52) };
             identity * tag.chunk_cosine
         }).fold(0.0_f64, f64::max);
-        let residual_gain = if model.axes.len() > 1 && axis.residual_energy >= RESIDUAL_FLOOR {
-            let residual_match = clamp01(cosine(&axis.residual, &curve.chunk_vector));
-            0.25 + 0.75 * residual_match.sqrt()
+        // Direct semantic contact must also express the independent query direction.
+        // This is NOT applied to transferred evidence: a real edge supplies that relation.
+        let residual_gain = if model.axes.len() > 1 && axis.residual_energy > 1e-10 {
+            clamp01(cosine(&axis.residual, &curve.chunk_vector)).sqrt()
         } else { 1.0 };
         let direct = clamp01(tag_support.max(0.7 * body) * residual_gain);
         let mut route_best = 0.0;
         let mut source = None;
         let mut target = None;
-        for &(from, to, flow) in &model.routes {
+        let mut route_current = 0.0;
+        let mut endpoint_grounding = 0.0;
+        let mut route_is_wormhole = false;
+        for &(from, to, flow, wormhole) in &model.routes {
+            // Exact source ownership replaces destination-to-source similarity.
+            // Aggregated observations cannot establish arbitrary multi-hop lineage.
+            if !axis.ids.contains(&from) { continue; }
             let Some(vector) = vectors.get(&to) else { continue };
-            let relevance = clamp01((cosine(&axis.vector, vector) - 0.35) / 0.65);
-            let residual = if model.axes.len() > 1 && axis.residual_energy >= RESIDUAL_FLOOR {
-                clamp01(cosine(&axis.residual, vector)).sqrt()
-            } else { 1.0 };
-            let support = flow * relevance * residual
-                * endpoint_support(to, vector, curve, cosines);
+            let grounding = endpoint_support(to, vector, curve, cosines);
+            let support = flow * grounding;
             if support > route_best {
                 route_best = support; source = Some(from); target = Some(to);
+                route_current = flow; endpoint_grounding = grounding;
+                route_is_wormhole = wormhole;
             }
         }
         let satisfaction = direct.max(route_best);
-        log_direct += axis.weight * direct.max(SATISFACTION_FLOOR).ln();
-        log_total += axis.weight * satisfaction.max(SATISFACTION_FLOOR).ln();
+        log_direct += axis.weight * (SATISFACTION_FLOOR + direct).ln();
+        log_total += axis.weight * (SATISFACTION_FLOOR + satisfaction).ln();
         ledger.push(IntentEvidence {
             seed_ids: axis.ids.clone(), weight: axis.weight,
-            residual_energy: axis.residual_energy, direct_support: direct,
+            residual_energy: axis.residual_energy, query_explanation: axis.query_explanation,
+            direct_support: direct,
             wormhole_support: route_best, satisfaction,
             route_source: source, route_target: target,
+            route_current, endpoint_grounding, route_is_wormhole,
         });
     }
     // Remove the numerical floor: no evidence must produce exactly zero reward.
     let calibrate = |v: f64| {
-        let score = clamp01((v.exp() - SATISFACTION_FLOOR)
-            / (1.0 - SATISFACTION_FLOOR));
+        let score = clamp01(v.exp() - SATISFACTION_FLOOR);
         if score < 1e-12 { 0.0 } else { score }
     };
     let satisfaction = calibrate(log_total);
@@ -220,7 +241,7 @@ mod tests {
     #[test]
     fn conjunction_rejects_one_of_two_and_zero_has_no_reward() {
         let conjunction = |a: f64, b: f64|
-            (((a.max(0.05).ln() + b.max(0.05).ln()) / 2.0).exp() - 0.05) / 0.95;
+            (((a + 0.05).ln() + (b + 0.05).ln()) / 2.0).exp() - 0.05;
         assert!(conjunction(0.8, 0.8) > conjunction(1.0, 0.0) * 3.0);
         assert!(conjunction(0.0, 0.0).abs() < 1e-12);
     }
@@ -290,7 +311,7 @@ mod readout_tests {
                 0 => input.query_state.river_edges[0].flow = 0.0,
                 1 => input.query_state.river_edges[0].immediate_return = true,
                 2 => artifact.weights[0] = 0.0,
-                _ => input.query_state.river_edges[0].wormhole = false,
+                _ => input.query_state.river_edges[0].source_id = 99,
             }
             let model = build(&[(1,1.0)], &HashSet::from([1]), &pool, &input, &artifact);
             let cache = CosineCache::build(std::slice::from_ref(&curve),
@@ -298,6 +319,51 @@ mod readout_tests {
             let result = evaluate(&model, &curve, &pool, &cache);
             assert_eq!(result.wormhole_lift, 0.0);
         }
+    }
+
+    #[test]
+    fn orthogonal_endpoint_multi_intent_is_source_owned_and_small_lifts_survive() {
+        let (mut input, artifact, mut pool, mut curve) = fixture();
+        input.query.vector = vec![1.0, 1.0, 0.0];
+        pool.insert(2, Arc::from(vec![0.0_f32, 1.0, 0.0]));
+        pool.insert(3, Arc::from(vec![0.0_f32, 0.0, 1.0]));
+        curve.tags[0].vector = pool[&3].clone();
+        curve.chunk_vector = pool[&3].clone();
+        let run = |input: &NativeInput| {
+            let model = build(&[(1, 1.0), (2, 1.0)], &HashSet::from([1, 2]),
+                &pool, input, &artifact);
+            let cache = CosineCache::build(std::slice::from_ref(&curve),
+                &input.query.vector, [1, 2, 3], &pool);
+            evaluate(&model, &curve, &pool, &cache)
+        };
+        let result = run(&input);
+        assert_eq!(cosine(&pool[&1], &pool[&3]), 0.0);
+        assert!(result.wormhole_lift > 0.1);
+        assert!(result.ledger[0].wormhole_support > 0.9);
+        assert_eq!(result.ledger[1].wormhole_support, 0.0);
+        assert_eq!(result.ledger[1].route_target, None);
+        input.query_state.river_edges[0].flow = 0.0001;
+        let small = run(&input);
+        assert!(small.wormhole_lift > 0.0 && small.wormhole_lift < result.wormhole_lift);
+        // Wormhole flag explains propagation; it is not a second reward multiplier.
+        input.query_state.river_edges[0].wormhole = false;
+        assert_eq!(small.satisfaction, run(&input).satisfaction);
+        input.query_state.river_edges.clear();
+        assert_eq!(run(&input).satisfaction, 0.0);
+    }
+
+    #[test]
+    fn query_projection_not_tag_independence_allocates_votes() {
+        let (mut input, artifact, mut pool, _) = fixture();
+        pool.insert(2, Arc::from(vec![0.0_f32, 1.0, 0.0]));
+        pool.insert(3, Arc::from(vec![0.0_f32, 0.0, 1.0]));
+        input.query.vector = vec![0.0, 1.0, 1.0];
+        let model = build(&[(1, 1.0), (2, 1.0), (3, 1.0)],
+            &HashSet::from([1, 2, 3]), &pool, &input, &artifact);
+        assert_eq!(model.axes[0].residual_energy, 1.0);
+        assert_eq!(model.axes[0].weight, 0.0);
+        assert!((model.axes[1].weight - 0.5).abs() < 1e-12);
+        assert!((model.axes[2].weight - 0.5).abs() < 1e-12);
     }
 
     #[test]

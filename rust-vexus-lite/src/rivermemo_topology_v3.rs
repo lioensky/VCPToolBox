@@ -19,7 +19,7 @@ use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 mod intent;
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.intent-wormhole-v2.4";
+const ALGORITHM_VERSION: &str = "rivermemo.source-endpoint-v2.4.1";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -2581,6 +2581,23 @@ fn assign_v3_scores(
     }
 
     for item in work.iter_mut() {
+        if item.intent.available {
+            // A candidate reads an endpoint; it need not reproduce query geometry.
+            // One bounded evidence budget, partitioned by the direct-only ablation.
+            // Field and legacy topology remain observables, never parallel votes.
+            let budget = positive(config.anchor_bonus_cap) + positive(config.topology_bonus_cap);
+            item.pure_score = clamp01(item.curve.query_score);
+            item.field_resonance_bonus = 0.0;
+            item.path_bonus = 0.0;
+            item.anchor_bonus = budget * item.intent.direct_satisfaction;
+            item.v2_bonus = budget * item.intent.wormhole_lift;
+            item.gated_bonus = item.v2_bonus;
+            item.final_score = clamp01(item.pure_score + item.anchor_bonus + item.gated_bonus);
+            item.role = if item.intent.wormhole_lift > 1e-12 {
+                "source_grounded_endpoint"
+            } else { "direct_intent_evidence" }.into();
+            continue;
+        }
         // Candidate-self evidence, not exceptionalness among its peers. Roles
         // explain evidence and never allocate ranking privilege.
         let confidence = branch_confidence(&item.topology, mode);
@@ -2599,6 +2616,7 @@ fn assign_v3_scores(
     let graph_gate = omega.omega.powf(config.omega_gamma.max(0.0));
 
     for item in work.iter_mut() {
+        if item.intent.available { continue; }
         let activation = if item.anchor.strength <= threshold {
             0.0
         } else if config.anchor_saturation - threshold > 1e-12 {
@@ -3044,7 +3062,8 @@ pub(crate) fn run_native_with_connection(
                 .collect();
             let topology_v3 = if input.include_trace {
                 let mut trace = serde_json::json!({
-                    "mode": "intent_conditioned_wormhole_v2.4",
+                    "mode": if item.intent.available { "source_conditioned_endpoint_v2.4.1" }
+                        else { "legacy_no_explicit_intent_fallback" },
                     "branchNodeCoverage": clamp01(item.topology.matched_node_coverage / 0.35),
                     "branchEdgeCoverage": clamp01(item.topology.matched_edge_coverage / 0.20),
                     "branchCoverage": branch_coverage(&item.topology, mode),
@@ -3063,7 +3082,8 @@ pub(crate) fn run_native_with_connection(
                     "omegaEmerge": omega.omega_emerge,
                     "omegaFlow": omega.omega_flow,
                     "omegaGamma": input.config.omega_gamma,
-                    "graphGate": omega.omega.powf(input.config.omega_gamma.max(0.0)),
+                    "graphGate": if item.intent.available { 1.0 }
+                        else { omega.omega.powf(input.config.omega_gamma.max(0.0)) },
                     "v2Bonus": item.v2_bonus,
                     "gatedV2Bonus": item.gated_bonus,
                     "anchorScore": item.anchor.score,
@@ -3082,7 +3102,8 @@ pub(crate) fn run_native_with_connection(
                     "pureScore": item.pure_score,
                     "pathBonus": item.path_bonus,
                     "graphBonus": item.gated_bonus,
-                    "requestedGraphBonus": item.v2_bonus * omega.omega.powf(input.config.omega_gamma.max(0.0)),
+                    "requestedGraphBonus": item.v2_bonus * if item.intent.available { 1.0 }
+                        else { omega.omega.powf(input.config.omega_gamma.max(0.0)) },
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
                 });
@@ -3174,12 +3195,18 @@ pub(crate) fn run_native_with_connection(
             "softMatchQualityThreshold": 0.65,
             "softMatchDiscount": 0.65,
             "graphConfidence": "sqrt(branchCoverage*meanClosure*nodeAlignmentScore)",
-            "graphReward": "max(candidate-self, intent-wormhole-lift)-shared-budget",
+            "graphReward": "source-attributed-endpoint-marginal-lift",
             "intentReadout": {
-                "aliasCosine": 0.95, "residualEnergyFloor": 0.02,
-                "satisfactionFloor": 0.05, "flowHalfSaturation": 0.03,
-                "aggregation": "weighted-geometric-conjunction",
-                "anchorReward": "anchorBonusCap*intentSatisfaction",
+                "aliasCosine": 0.95,
+                "smoothingEpsilon": 0.05, "flowHalfSaturation": 0.03,
+                "weight": "positive-query-independent-direction-projection-squared",
+                "aggregation": "exp(sum(weight*ln(epsilon+support)))-epsilon",
+                "budget": "positive(anchorBonusCap)+positive(topologyBonusCap)",
+                "anchorReward": "budget*directSatisfaction",
+                "graphReward": "budget*(totalSatisfaction-directSatisfaction)",
+                "sourceOwnership": "exact-explicit-seed-or-alias-id; no inferred lineage",
+                "omega": "diagnostic-only-when-intent-available",
+                "legacyFieldPathTopology": "diagnostic-only-when-intent-available",
                 "ignitionUnchanged": true
             },
             "retiredControls": ["conditionalBandwidth", "conditionalClosureBandwidth",
@@ -3577,6 +3604,36 @@ mod stoploss_tests {
             &NativeArtifact::default(), &NativeConfig::default(), false, &cache, &HashSet::from([9]));
         assert!((anchors[0].reliability - 0.9).abs() < 1e-12);
         assert_eq!(anchors[0].contacted_seeds, 1);
+    }
+
+    #[test]
+    fn endpoint_budget_is_single_counted_and_legacy_observables_cannot_vote() {
+        let config = NativeConfig::default();
+        let mut candidate = work(1, 1.0);
+        candidate.curve.query_score = 0.6;
+        candidate.intent = intent::IntentOutput {
+            available: true, satisfaction: 0.5, direct_satisfaction: 0.2,
+            wormhole_lift: 0.3, ledger: vec![],
+        };
+        let mut candidates = vec![candidate.clone()];
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &config);
+        let budget = config.anchor_bonus_cap + config.topology_bonus_cap;
+        assert_eq!(candidates[0].path_bonus, 0.0);
+        assert_eq!(candidates[0].field_resonance_bonus, 0.0);
+        assert!((candidates[0].anchor_bonus - budget * 0.2).abs() < 1e-12);
+        assert!((candidates[0].gated_bonus - budget * 0.3).abs() < 1e-12);
+        assert!((candidates[0].final_score - (0.6 + budget * 0.5)).abs() < 1e-12);
+        let prior = candidates[0].final_score;
+        candidate.graph_score = 0.0;
+        candidate.path_bonus = 1.0;
+        candidate.pure_score = 1.0;
+        candidate.field_resonance_bonus = 1.0;
+        let mut collapsed = omega();
+        collapsed.omega = 0.0;
+        candidates = vec![candidate, work(0, 0.0)];
+        assign_v3_scores(&mut candidates, "atomic", &collapsed, &config);
+        assert_eq!(candidates[0].final_score, prior);
+        assert_eq!(candidates[0].role, "source_grounded_endpoint");
     }
 
     #[test]

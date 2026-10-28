@@ -105,3 +105,19 @@ test('2.4 diagnostics exposes out-of-top-k candidates and intent route ledger', 
         assert.ok(output.includes(text), text);
     }
 });
+
+test('source endpoint diagnostics explains shared accounting and contiguous ledger tables', () => {
+    const data = response();
+    data.river.algorithmVersion = 'rivermemo.source-endpoint-v2.4.1';
+    data.river.results[0].topologyV3.intentReadout = {
+        available: true, satisfaction: 0.5, directSatisfaction: 0.2, wormholeLift: 0.3,
+        ledger: [{ seedIds: [1], weight: 1, residualEnergy: 0.8, queryExplanation: 0.4,
+            directSupport: 0.2, wormholeSupport: 0.5, satisfaction: 0.5,
+            routeSource: 1, routeTarget: 2, routeCurrent: 0.8,
+            endpointGrounding: 0.625, routeIsWormhole: true }]
+    };
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['共享单一预算', '传播边际提升 0.3000', '查询独立解释量',
+        '电流校准', '终点落地', '0.6250']) assert.ok(output.includes(text), text);
+    assert.match(output, /\|---:\|---\|[^\n]+\n\| 11 \|/);
+});
