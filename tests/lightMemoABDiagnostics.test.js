@@ -141,3 +141,21 @@ test('wormhole readout exposes independent score and honest approximate address 
     assert.ok(!output.includes('意图账本'));
     assert.ok(!output.includes('共享单一预算'));
 });
+
+test('auxiliary wormholes retain topology explanation and expose additive accounting', () => {
+    const data = response();
+    data.river.algorithmVersion = 'rivermemo.conservative-topology-v2.5fix-test2';
+    data.river.parameters.wormholeScoring = 'auxiliary-only; existing topology budget; Omega gated';
+    data.river.results[0].topologyV3.wormholeAuxiliary = {
+        originalFinalScore: 0.68, originalGraphBonus: 0.01,
+        addedGraphBonus: 0.02, addedFinalScore: 0.02,
+        readout: { available: true, sourceId: 1, targetId: 2 }
+    };
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['保留原拓扑与 Ω 门控', '原最终分', '0.6800', '0.0200',
+        '勿重复累加场共振', 'matchedEdgeCoverage', 'pathQuality']) {
+        assert.ok(output.includes(text), text);
+    }
+    assert.ok(!output.includes('独立虫洞通道'));
+    assert.ok(!output.includes('回退查询余弦'));
+});

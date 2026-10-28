@@ -1,5 +1,5 @@
-//! Independent readout of observed wormholes. This is a ranking signal, not a
-//! relevance probability. Source/query similarity is deliberately not re-tested.
+//! Auxiliary evidence from observed wormholes, never a replacement scorer.
+//! Admission is file-based; rewards share the original topology budget and Omega.
 use super::*;
 
 #[derive(Clone, Serialize)]
@@ -19,6 +19,44 @@ pub(super) struct Model {
     pub eligible_routes: usize,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GateDecision {
+    source_id: i64,
+    target_id: i64,
+    witness_file_ids: Vec<i64>,
+    accepted: bool,
+}
+
+pub(super) fn gate(model: &mut Model, connection: &Connection, allowed: Option<&HashSet<i64>>)
+    -> std::result::Result<Vec<GateDecision>, String> {
+    // Two distinct files are repeated association, NOT proof of independence.
+    // Apply scope before LIMIT so hidden files cannot admit a route.
+    let scope = allowed.map(|ids| serde_json::to_string(ids).unwrap());
+    let mut statement = connection.prepare_cached(
+        "SELECT DISTINCT s.file_id FROM file_tags s
+         JOIN file_tags t ON t.file_id=s.file_id AND t.tag_id=?2
+         WHERE s.tag_id=?1 AND (?3 IS NULL OR s.file_id IN
+             (SELECT value FROM json_each(?3)))
+         ORDER BY s.file_id LIMIT 2"
+    ).map_err(|e| format!("prepare wormhole cross gate: {e}"))?;
+    let mut decisions = Vec::new();
+    for route in &model.routes {
+        let rows = statement.query_map(
+            rusqlite::params![route.source_id, route.target_id, scope], |row| row.get::<_, i64>(0)
+        ).map_err(|e| format!("query wormhole cross gate: {e}"))?;
+        let files = rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("decode wormhole cross gate: {e}"))?;
+        decisions.push(GateDecision {
+            source_id: route.source_id, target_id: route.target_id,
+            accepted: files.len() >= 2, witness_file_ids: files,
+        });
+    }
+    model.routes.retain(|route| decisions.iter().any(|d|
+        d.source_id == route.source_id && d.target_id == route.target_id && d.accepted));
+    Ok(decisions)
+}
+ 
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Readout {
@@ -81,8 +119,7 @@ pub(super) fn evaluate(model: &Model, curve: &Curve, artifact: &NativeArtifact) 
         ..Readout::default()
     };
     for route in &model.routes {
-        // No threshold, tag-closure multiplier, source similarity, query cosine,
-        // conjunction, Omega gate or bounded additive reward.
+        // Endpoint evidence only. Budget and Omega are applied by augment().
         let endpoint_body_cosine = cosine(&route.vector, &curve.chunk_vector);
         let score = route.relative_flow * clamp01(endpoint_body_cosine);
         if output.source_id.is_some() && score <= output.score { continue; }
@@ -103,6 +140,20 @@ pub(super) fn evaluate(model: &Model, curve: &Curve, artifact: &NativeArtifact) 
         };
     }
     output
+}
+
+pub(super) fn augment(item: &mut ScoredWork, readout: &Readout,
+    omega: &OmegaOutput, config: &NativeConfig) {
+    if !readout.available || readout.score <= 0.0 { return; }
+    let cap = positive(config.topology_bonus_cap);
+    let gate = omega.omega.powf(config.omega_gamma.max(0.0));
+    let proposed = (cap * clamp01(readout.score) * gate)
+        .min(positive(cap - item.path_bonus));
+    // Never reduce old evidence; never stack another topology budget.
+    if proposed <= item.gated_bonus { return; }
+    item.gated_bonus = proposed;
+    item.final_score = clamp01(item.pure_score + item.path_bonus
+        + item.gated_bonus + item.anchor_bonus);
 }
 
 #[cfg(test)]
@@ -126,12 +177,14 @@ mod tests {
 
     fn curve(vector: Vec<f32>) -> Curve {
         Curve { id: 7, file_id: 8, tags: vec![], chunk_vector: Arc::from(vector),
-            query_score: 0.99 }
+            query_score: 0.99, denoised_score: 0.99, local_score: 0.99,
+            transfer_score: 0.99, bm25_score: 0.0, time_score: 0.0,
+            anchor_score: 0.0, union_score: 0.0, union_rank: 1, sources: vec![] }
 
     }
 
     #[test]
-    fn strongest_wormhole_reads_endpoint_without_source_similarity_or_query_floor() {
+    fn endpoint_evidence_does_not_retest_source_similarity() {
         let input = input(serde_json::json!([
             {"sourceId": 1, "targetId": 2, "flow": 0.1, "wormhole": true},
             {"sourceId": 1, "targetId": 3, "flow": 0.02, "wormhole": true},
@@ -179,5 +232,39 @@ mod tests {
         assert!(after.edge_source_file);
         assert_eq!(after.location, "edge-source-file");
         assert_eq!(evaluate(&model, &curve(vec![0.0, -1.0]), &artifact).score, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod gate_regressions {
+    use super::*;
+
+    fn model() -> Model {
+        Model { eligible_routes: 1, routes: vec![Route {
+            source_id: 1, target_id: 2, flow: 1.0, relative_flow: 1.0,
+            vector: Arc::from(vec![0.0_f32, 1.0]),
+        }] }
+    }
+
+    #[test]
+    fn gate_counts_distinct_files_not_rows_and_applies_scope_before_admission() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE INDEX tags_lookup ON file_tags(tag_id,file_id);
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,2),(11,1);").unwrap();
+        let mut single = model();
+        let decisions = gate(&mut single, &db, None).unwrap();
+        assert!(!decisions[0].accepted);
+        assert_eq!(decisions[0].witness_file_ids, vec![10]);
+        assert!(single.routes.is_empty());
+        db.execute("INSERT INTO file_tags VALUES (11,2)", []).unwrap();
+        let mut both = model();
+        assert!(gate(&mut both, &db, None).unwrap()[0].accepted);
+        assert_eq!(both.routes.len(), 1);
+        for scope in [HashSet::new(), HashSet::from([10])] {
+            let mut restricted = model();
+            assert!(!gate(&mut restricted, &db, Some(&scope)).unwrap()[0].accepted);
+            assert!(restricted.routes.is_empty());
+        }
     }
 }

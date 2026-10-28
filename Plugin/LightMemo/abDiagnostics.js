@@ -88,6 +88,16 @@ function formatDiagnostics(plugin, request, response) {
     for (const item of explained) {
         output += `| ${item.chunkId ?? item.id} | ${cell(item.role)} | ${number(item.baseScore)} | ${number(item.fieldScore)} | ${number(item.fieldResonanceBonus)} | ${number(item.pathBonus)} | ${number(item.graphBonus)} | ${number(item.topologyBonus)} | ${number(item.anchorBonus)} | ${number(item.scoreClipping)} | ${number(item.score)} | ${json(item.matchedTags)} | ${json(item.coreTagsMatched)} |\n`;
     }
+    if (river.parameters?.wormholeScoring) {
+        output += '\n### 虫洞辅助加权（保留原拓扑与 Ω 门控）\n\n';
+        output += '虫洞只在原拓扑预算内增加图奖励，不替换基础分、路径、直锚或 Ω。无合格证据时增量为零；两个文件重复关联不等于独立证据。\n\n';
+        output += '| Chunk | 原最终分 | 原图奖励 | 新增图奖励 | 最终分增量 | 路线证据 |\n|---:|---:|---:|---:|---:|---|\n';
+        for (const item of explained) {
+            const aux = item.topologyV3?.wormholeAuxiliary;
+            if (!aux) continue;
+            output += `| ${item.chunkId ?? item.id} | ${number(aux.originalFinalScore)} | ${number(aux.originalGraphBonus)} | ${number(aux.addedGraphBonus)} | ${number(aux.addedFinalScore)} | ${json(aux.readout)} |\n`;
+        }
+    }
     output += '\n### 意图账本（点火能量与区分权重分离）\n\n';
     for (const item of explained) {
         const intent = item.topologyV3?.intentReadout;
