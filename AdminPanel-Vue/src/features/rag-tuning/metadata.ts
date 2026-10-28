@@ -53,7 +53,7 @@ export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
     title: "触发与点火",
     summary: "决定什么时候跨域跳转，以及首次跳跃时带着多少动量起步。",
     icon: "bolt",
-    keys: ["tensionThreshold", "firingThreshold", "baseMomentum"],
+    keys: ["tensionThreshold", "firingThreshold", "minimumInjectedCurrent", "baseMomentum"],
   },
   {
     id: "spread",
@@ -186,6 +186,14 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "建议区间: 0.02 ~ 0.15",
       tone: "sensitive",
     },
+    contextWeights: {
+      label: "折叠参考向量权重",
+      summary: "折叠参考向量中，用户输入与 AI 上下文的权重。",
+      logic: "用户权重越高越贴近当前问题，AI 权重越高越重视最近的模型上下文。",
+      range: "非负权重，建议 [0.7, 0.3]；不要同时设为 0。",
+      tone: "sensitive",
+      tupleLabels: ["用户输入", "AI 上下文"],
+    },
     fuzzyEmbedding: {
       label: "Embedding Fuzzy 复用",
       summary: "折叠链路与动态工具折叠用于复用近似相同上下文向量的高阈值模糊缓存策略，避免 AI 输出因微小文本差异重复向量化。",
@@ -230,6 +238,13 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
     },
   },
   RAGDiaryPlugin: {
+    base64MemoLimit: {
+      label: "回忆附件数量上限",
+      summary: "一次回忆最多注入的去重附件数量。",
+      logic: "环境变量 BASE64_MEMO_LIMIT 优先；调高会增加多模态请求体积和处理成本。",
+      range: "正整数，默认 5",
+      tone: "sensitive",
+    },
     noise_penalty: {
       label: "语义宽度惩罚",
       summary: "抑制对话发散时的标签误触发，避免噪音上下文把检索带偏。",
@@ -421,7 +436,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       label: "虫洞脉冲路由",
       summary: "RiverMemo 的传播引擎，负责跳跃、衰减、扩散上限和新节点涌现。",
       logic: "这是最敏感的一组参数，建议一次只改一项并观察检索结果。",
-      range: "共 8 个子参数，优先关注 tensionThreshold、baseMomentum 与两个 decay。",
+      range: "点火、扩散与衰减分组含 9 个子参数，优先关注 tensionThreshold、baseMomentum 与两个 decay。",
       tone: "critical",
     },
     "spikeRouting.maxSafeHops": {
@@ -460,6 +475,13 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       summary: "节点向下传播所需的最低内部能量，用来清理弱信号尾流。",
       range: "建议 0.05 ~ 0.20",
       tone: "stable",
+    },
+    "spikeRouting.minimumInjectedCurrent": {
+      label: "最小注入电流",
+      summary: "单次传播的最小注入电流，过滤过弱的传播信号。",
+      logic: "与节点放电阈值不同，它约束每条传播边注入的电流。调高会削弱弱边尾流，调低会扩大传播覆盖与计算量。",
+      range: "非负数，默认 0.01；步长 0.001",
+      tone: "sensitive",
     },
     "spikeRouting.baseDecay": {
       label: "常规区衰减",
@@ -820,6 +842,10 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
 
   if (leafKey === "maxprojectionnodes") {
     return { min: 0, max: Math.max(4096, typeof subVal === "number" ? subVal : 0), step: 1 };
+  }
+
+  if (leafKey === "minimuminjectedcurrent") {
+    return { min: 0, max: 1, step: 0.001 };
   }
 
   // Wormhole routing explicit ranges (must be checked before generic threshold rules).

@@ -7,6 +7,10 @@
     ],
     "lWeight": 0.05,
     "sWeight": 0.05,
+    "contextWeights": [
+      0.7,
+      0.3
+    ],
     "fuzzyEmbedding": {
       "threshold": 0.975,
       "minLength": 80,
@@ -17,6 +21,7 @@
   },
   "RAGDiaryPlugin": {
     "noise_penalty": 0.05,
+    "base64MemoLimit": 5,
     "tagWeightRange": [
       0.2,
       0.65
@@ -51,6 +56,8 @@
       "finalSemanticThreshold": 0.97,
       "maxResults": 1000,
       "minSemanticCandidates": 2,
+      "hydrationBatchSize": 500,
+      "slowLogMs": 25,
       "sourcePriority": {
         "rag": 50,
         "time": 45,
@@ -192,6 +199,7 @@
       "maxSafeHops": 4,
       "baseMomentum": 2,
       "firingThreshold": 0.1,
+      "minimumInjectedCurrent": 0.01,
       "baseDecay": 0.25,
       "wormholeDecay": 0.7,
       "tensionThreshold": 1,

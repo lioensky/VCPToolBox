@@ -20,7 +20,7 @@ use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
 use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "memo.safe-stoploss-v1.1";
+const PIPELINE_ALGORITHM: &str = "memo.conservative-topology-v2.2";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -644,7 +644,7 @@ fn analyze_pyramid(
     dimension: usize,
     config: &PipelineConfig,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>), String> {
-    analyze_pyramid_with_pool(index, connection, query, dimension, config, &mut TagVectorPool::new())
+    analyze_pyramid_with_pool(index, connection, query, dimension, config, &mut TagVectorPool::new(), None)
         .map(|(output, tags, _)| (output, tags))
 }
 
@@ -655,6 +655,7 @@ fn analyze_pyramid_with_pool(
     dimension: usize,
     config: &PipelineConfig,
     tag_vectors: &mut TagVectorPool,
+    eligible: Option<&HashMap<i64, usize>>,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
     let original_energy = magnitude(query).powi(2);
     if original_energy <= 1e-12 {
@@ -686,7 +687,10 @@ fn analyze_pyramid_with_pool(
         if matches.is_empty() {
             break;
         }
-        let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64).collect();
+        // Filter before Gram-Schmidt: graph-external tags cannot consume energy
+        // that no admitted propagation seed can carry. Do not require outdegree.
+        let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64)
+            .filter(|id| eligible.map_or(true, |nodes| nodes.contains_key(id))).collect();
         drop(guard);
         ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
         let mut tags = Vec::new();
@@ -752,6 +756,15 @@ fn analyze_pyramid_with_pool(
         if residual_energy / original_energy < config.min_energy_ratio.clamp(0.0, 1.0) {
             break;
         }
+    }
+
+    // One pre-strip residual per accepted layer, followed by the unexplained
+    // tail. The tail supplies routing evidence only, never another seed layer.
+    let tail_energy = magnitude(&residual).powi(2);
+    if config.spike_routing.dynamic_wormholes && !levels_work.is_empty()
+        && tail_energy.is_finite() && tail_energy > 1e-12
+        && tail_energy / original_energy >= 0.02 {
+        residuals.push(residual);
     }
 
     let coverage = clamp01(total_explained);
@@ -846,6 +859,7 @@ fn technical_name(value: &str, allow_space: bool) -> bool {
         })
 }
 
+#[cfg(test)]
 fn gate_tags(
     levels: &[Vec<PyramidTagWork>],
     epa: &EpaOutput,
@@ -853,6 +867,28 @@ fn gate_tags(
     core_tags: &[String],
     config: &PipelineConfig,
     query_text: &str,
+) -> (Vec<GatedTag>, f64, f64) {
+    gate_tags_for_graph(levels, epa, pyramid, core_tags, config, query_text, None)
+}
+
+fn scale_implicit_seeds(gated: &mut [GatedTag], eligible: Option<&HashMap<i64, usize>>) {
+    let explicit_max = gated.iter().filter(|t| (t.is_core || t.lexical)
+        && eligible.map_or(true, |ids| ids.contains_key(&t.id)))
+        .map(|t| t.weight).fold(0.0, f64::max);
+    let implicit_max = gated.iter().filter(|t| !t.is_core && !t.lexical)
+        .map(|t| t.weight).fold(0.0, f64::max);
+    if explicit_max > 0.0 && implicit_max > 0.35 * explicit_max {
+        let scale = 0.35 * explicit_max / implicit_max;
+        for tag in gated {
+            if !tag.is_core && !tag.lexical { tag.weight *= scale; }
+        }
+    }
+}
+
+fn gate_tags_for_graph(
+    levels: &[Vec<PyramidTagWork>], epa: &EpaOutput, pyramid: &PyramidOutput,
+    core_tags: &[String], config: &PipelineConfig, query_text: &str,
+    eligible: Option<&HashMap<i64, usize>>,
 ) -> (Vec<GatedTag>, f64, f64) {
     let activation_min = range_value(&config.activation_multiplier, 0, 0.5);
     let activation_max = range_value(&config.activation_multiplier, 1, 1.5);
@@ -888,6 +924,12 @@ fn gate_tags(
         let maximum = tags.iter().map(|tag| positive(tag.contribution)).fold(0.0, f64::max);
         let threshold = (maximum * config.seed_contribution_ratio.clamp(0.0, 1.0))
             .max(config.seed_contribution_floor.max(0.0));
+        let dominant = tags.first().filter(|tag|
+            tag.contribution.powi(2) > 0.85 && tag.similarity > 0.0);
+        // At most two redundant directions borrow amplitude; the sum is bounded.
+        // Raw orthogonal contributions and residuals remain untouched.
+        let mut redundancy_left = dominant.map_or(0.0, |tag| 0.3 * tag.contribution);
+        let mut redundancy_slots = 2usize;
         for tag in tags {
             let is_core = core_names.contains(&tag.name.to_lowercase());
             if tag.id <= 0 || seen.contains(&tag.id) {
@@ -898,17 +940,38 @@ fn gate_tags(
             // Only already independently supported peers can lend amplitude.
             // A low-contribution alias cannot recursively sponsor other aliases.
             let sponsor = tags.iter().filter(|peer| peer.id != tag.id
-                && peer.contribution >= threshold && peer.similarity > 0.0
-                && cosine(&peer.vector, &tag.vector) >= 0.80)
-                .map(|peer| peer.contribution).fold(0.0, f64::max);
+                && peer.contribution >= threshold && peer.similarity > 0.0)
+                .filter_map(|peer| {
+                    let tightness = clamp01(cosine(&peer.vector, &tag.vector));
+                    (tightness >= 0.80).then_some(peer.contribution * tightness)
+                }).fold(0.0, f64::max);
             let alias = tag.similarity >= 0.20 && sponsor > 0.0;
+            let collapsed_redundant = !is_core && !lexical && tag.contribution < 1e-6
+                && tag.similarity >= 0.75
+                && dominant.is_some_and(|first| first.id != tag.id
+                    && cosine(&first.vector, &tag.vector) >= 0.90);
+            let redundant = collapsed_redundant && redundancy_slots > 0;
+            if collapsed_redundant && !redundant { continue; }
+            let redundancy_floor = if redundant {
+                let first = dominant.unwrap();
+                let borrowed = (0.15 * first.contribution
+                    * clamp01(tag.similarity / first.similarity)
+                    * clamp01(cosine(&first.vector, &tag.vector))).min(redundancy_left);
+                redundancy_left -= borrowed;
+                redundancy_slots -= 1;
+                borrowed
+            } else { 0.0 };
             if !is_core && !lexical && !alias
                 && (tag.contribution < threshold || tag.similarity <= 0.0) {
                 continue;
             }
-            let effective_contribution = if lexical || alias {
-                tag.contribution.max(0.6 * sponsor)
-                    .max(if lexical { 0.6 * maximum } else { 0.0 })
+            let effective_contribution = if lexical {
+                // Preserve 1.1 literal-focus ignition independently of alias policy.
+                tag.contribution.max(0.6 * sponsor).max(0.6 * maximum)
+            } else if redundant {
+                tag.contribution.max(redundancy_floor)
+            } else if alias {
+                tag.contribution.max(0.6 * sponsor * tag.similarity.clamp(0.2, 1.0))
             } else { tag.contribution };
             seen.insert(tag.id);
             // Cosine zero is a measured orthogonal relationship, not a
@@ -955,13 +1018,7 @@ fn gate_tags(
             }
         }
     }
-    let explicit_max = gated.iter().filter(|t| t.is_core || t.lexical)
-        .map(|t| t.weight).fold(0.0, f64::max);
-    if explicit_max > 0.0 {
-        for tag in &mut gated {
-            if !tag.is_core && !tag.lexical { tag.weight = tag.weight.min(0.35 * explicit_max); }
-        }
-    }
+    scale_implicit_seeds(&mut gated, eligible);
     (gated, effective_boost.clamp(0.0, 1.0), dynamic_core_boost)
 }
 
@@ -1819,6 +1876,8 @@ struct PipelineDiagnostics {
     dual_field_domain_ms: f64,
     total_ms: f64,
     seed_nodes: usize,
+    routing_residual_count: usize,
+    routing_tail_appended: bool,
     observation_cached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     observation_cache_error: Option<String>,
@@ -1914,12 +1973,14 @@ fn run_pipeline_with_connection(
         dimensions,
         &input.config,
         &mut tag_vectors,
+        Some(&artifact.node_index),
     )?;
     let pyramid_ms = pyramid_started.elapsed().as_secs_f64() * 1000.0;
 
     let gating_started = Instant::now();
     let (gated_tags, effective_tag_boost, dynamic_core_boost) =
-        gate_tags(&level_tags, &epa, &pyramid, &input.core_tags, &input.config, &input.query_text);
+        gate_tags_for_graph(&level_tags, &epa, &pyramid, &input.core_tags, &input.config,
+            &input.query_text, Some(&artifact.node_index));
     // 空 Pyramid 门控不再中止：Spike 生成合法空观测，随后字符串 Core/幽灵
     // 仍按 JS SOTA 在传播后注入；若最终仍为空，融合层返回原查询向量。
     let seeds: Vec<SenseSeed> = gated_tags
@@ -1943,6 +2004,8 @@ fn run_pipeline_with_connection(
     for (level, tags) in level_tags.iter().enumerate() {
         for tag in tags { seed_levels.entry(tag.id).or_insert(level); }
     }
+    let routing_residual_count = residuals.len();
+    let routing_tail_appended = residuals.len() > level_tags.len();
     let mut wormholes = DynamicWormholeContext::new(
         connection, &mut tag_vectors, residuals, seed_levels,
     );
@@ -2057,6 +2120,8 @@ fn run_pipeline_with_connection(
             dual_field_domain_ms: dual_field_diagnostics.domain_ms,
             total_ms: total_started.elapsed().as_secs_f64() * 1000.0,
             seed_nodes,
+            routing_residual_count,
+            routing_tail_appended,
             observation_cached,
             observation_cache_error: None,
             dual_field: dual_field_diagnostics,
@@ -2751,5 +2816,155 @@ mod lexical_patch_tests {
         }).unwrap();
         assert!(output.edges.iter().any(|e| e.source_id == 2 && e.target_id == 4));
         assert_eq!(output.nodes.iter().find(|n| n.id == 2).unwrap().source_type, "lexical_seed");
+    }
+}
+
+
+#[cfg(test)]
+mod v21_seed_tests {
+    use super::*;
+
+    fn tag(id: i64, weight: f64, lexical: bool) -> GatedTag {
+        GatedTag { id, name: id.to_string(), weight, lexical, is_core: false }
+    }
+    fn epa() -> EpaOutput {
+        EpaOutput { logic_depth: 0.5, entropy: 0.5, resonance: 0.0,
+            dominant_axes: vec![], bridges: vec![], basis_count: 0, cache_available: false,
+            out_of_domain: 1.0, semantic_explained_ratio: 0.0, in_domain_gate: 0.0,
+            baseline_coverage: 0.0, background_ratio: 0.0 }
+    }
+
+    #[test]
+    fn proportional_scaling_preserves_ratios_and_ignores_missing_explicit_node() {
+        let original = vec![tag(1, 0.4, true), tag(2, 0.8, false), tag(3, 0.4, false)];
+        let mut accepted = original.clone();
+        scale_implicit_seeds(&mut accepted, Some(&HashMap::from([(1, 0)])));
+        assert!((accepted[1].weight - 0.14).abs() < 1e-12);
+        assert!((accepted[1].weight / accepted[2].weight - 2.0).abs() < 1e-12);
+        let mut missing = original.clone();
+        scale_implicit_seeds(&mut missing, Some(&HashMap::from([(2, 0), (3, 1)])));
+        assert_eq!(missing.iter().map(|t| t.weight).collect::<Vec<_>>(), vec![0.4, 0.8, 0.4]);
+    }
+
+    #[test]
+    fn sponsorship_has_gradient_and_collapsed_rescue_is_bounded_without_rewriting_energy() {
+        let make = |id, similarity, contribution| PyramidTagWork {
+            id, name: format!("标签{id}"), similarity, contribution,
+            vector: Arc::from(vec![1.0, 0.0]), handshake_magnitude: 0.0,
+        };
+        let pyramid = PyramidOutput { levels: vec![], total_explained_energy: 1.0,
+            features: PyramidFeatures::default() };
+        let config = PipelineConfig::default();
+        let levels = vec![vec![make(1, 0.8, 0.8), make(2, 0.7, 0.01), make(3, 0.4, 0.01)]];
+        let (gated, _, _) = gate_tags(&levels, &epa(), &pyramid, &[], &config, "");
+        assert!(gated[1].weight > gated[2].weight);
+        assert!((gated[1].weight / gated[2].weight - 1.75).abs() < 1e-12);
+        let levels = vec![vec![make(1, 0.96, 0.96), make(2, 0.90, 1e-9),
+            make(3, 0.80, 1e-10), make(4, 0.76, 1e-11)]];
+        let (gated, _, _) = gate_tags(&levels, &epa(), &pyramid, &[], &config, "");
+        assert_eq!(gated.len(), 3);
+        assert!(gated[1].weight > gated[2].weight);
+        assert!(gated[1..].iter().map(|t| t.weight).sum::<f64>() <= 0.3 * 0.96);
+        assert!(gated.iter().all(|t| !t.lexical && !t.is_core));
+        assert_eq!(levels[0][1].contribution, 1e-9);
+        assert_eq!(pyramid.total_explained_energy, 1.0);
+    }
+}
+
+
+#[cfg(test)]
+mod v22_residual_tests {
+    use super::*;
+    use crate::rivermemo_topology_v3::NativeArtifact;
+
+    fn fixture() -> (Connection, crate::VexusIndex) {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);").unwrap();
+        let index = crate::VexusIndex::new(3, 16).unwrap();
+        for (id, v) in [(1, [1.0_f32,0.0,0.0]), (2, [0.0,1.0,0.0]),
+            (3, [0.0,0.0,1.0]), (99, [3.0,2.0,1.0])] {
+            let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            db.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![id, format!("tag{id}"), bytes]).unwrap();
+            if id != 3 { index.index.write().unwrap().add(id as u64, &v).unwrap(); }
+        }
+        db.execute_batch("BEGIN").unwrap();
+        (db, index)
+    }
+
+    #[test]
+    fn graph_external_tag_is_filtered_before_projection_but_isolated_member_survives() {
+        let (db, index) = fixture();
+        let config = PipelineConfig { max_levels: 1, pyramid_top_k: 3, ..PipelineConfig::default() };
+        let eligible = HashMap::from([(1,0)]);
+        let (p, tags, residuals) = analyze_pyramid_with_pool(&index.index, &db,
+            &[3.0,2.0,1.0], 3, &config, &mut TagVectorPool::new(), Some(&eligible)).unwrap();
+        assert_eq!(tags[0].iter().map(|t| t.id).collect::<Vec<_>>(), vec![1]);
+        assert!((p.total_explained_energy - 9.0/14.0).abs() < 1e-6);
+        assert_eq!(residuals.len(), 2);
+        assert_eq!(residuals[1], vec![0.0,2.0,1.0]);
+        let empty = HashMap::new();
+        let (p, tags, residuals) = analyze_pyramid_with_pool(&index.index, &db,
+            &[3.0,2.0,1.0], 3, &config, &mut TagVectorPool::new(), Some(&empty)).unwrap();
+        assert!(p.levels.is_empty() && tags.is_empty() && residuals.is_empty());
+    }
+
+    #[test]
+    fn final_tail_routes_single_and_last_accepted_layer_without_extra_seeds() {
+        let (db, index) = fixture();
+        // Remove the graph-external top hit from the index for the one-hit layer test.
+        // SQL remains authoritative; a separate index has only the two seed axes.
+        let axes = crate::VexusIndex::new(3,16).unwrap();
+        axes.index.write().unwrap().add(1, &[1.0,0.0,0.0]).unwrap();
+        axes.index.write().unwrap().add(2, &[0.0,1.0,0.0]).unwrap();
+        let graph = NativeArtifact {
+            node_ids: vec![1,2,3], node_index: HashMap::from([(1,0),(2,1),(3,2)]),
+            row_offsets: vec![0,1,2,2], targets: vec![2,2], weights: vec![0.2,0.2],
+            ..NativeArtifact::default()
+        }.prepared();
+        for depth in [1,2] {
+            let config = PipelineConfig { max_levels: depth, pyramid_top_k: 1,
+                ..PipelineConfig::default() };
+            let mut pool = TagVectorPool::new();
+            let (p, tags, residuals) = analyze_pyramid_with_pool(&axes.index, &db,
+                &[3.0,2.0,1.0], 3, &config, &mut pool, Some(&graph.node_index)).unwrap();
+            assert_eq!(p.levels.len(), depth);
+            assert_eq!(tags.len(), depth);
+            assert_eq!(residuals.len(), depth + 1);
+            let last = tags.last().unwrap()[0].id;
+            let mut ctx = DynamicWormholeContext::new(&db, &mut pool, residuals,
+                HashMap::from([(last,depth-1)]));
+            let output = sense_with_context(&graph, "tail-test", SenseInput {
+                query_id: None,
+                seeds: vec![SenseSeed { id: last, energy: 1.0, source_type: "seed".into() }],
+                config: SenseConfig { max_safe_hops: 1, ..SenseConfig::default() },
+            }, Some(&mut ctx)).unwrap();
+            assert_eq!(output.diagnostics.accepted_seed_nodes, 1);
+            assert!(output.diagnostics.dynamic_wormhole_candidates > 0);
+            assert_eq!(output.diagnostics.dynamic_wormhole_edges_fired, 1);
+            assert!(output.edges.iter().all(|e| e.source_id == last && e.target_id == 3));
+        }
+        drop(index);
+    }
+
+    #[test]
+    fn disabled_tiny_exhausted_and_unaccepted_tails_are_not_appended() {
+        let (db, index) = fixture();
+        let eligible = HashMap::from([(1,0)]);
+        for (enabled, query, minimum, expected_layers, expected_residuals) in [
+            (false, [3.0,2.0,1.0], 0.03, 1, 0),
+            (true, [10.0,1.0,0.0], 0.03, 1, 1),
+            (true, [1.0,0.0,0.0], 0.03, 1, 1),
+            (true, [3.0,2.0,1.0], 0.99, 0, 0),
+        ] {
+            let config = PipelineConfig { max_levels: 1, pyramid_top_k: 3,
+                min_layer_explained_energy: minimum,
+                spike_routing: SenseConfig { dynamic_wormholes: enabled, ..SenseConfig::default() },
+                ..PipelineConfig::default() };
+            let (p, _, residuals) = analyze_pyramid_with_pool(&index.index, &db,
+                &query, 3, &config, &mut TagVectorPool::new(), Some(&eligible)).unwrap();
+            assert_eq!(p.levels.len(), expected_layers);
+            assert_eq!(residuals.len(), expected_residuals);
+        }
     }
 }
