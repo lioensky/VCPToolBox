@@ -26,30 +26,29 @@ pub(super) struct GateDecision {
     target_id: i64,
     witness_file_ids: Vec<i64>,
     accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refined_evidence: Option<Value>,
 }
 
-pub(super) fn gate(model: &mut Model, connection: &Connection, allowed: Option<&HashSet<i64>>)
+pub(super) fn gate(model: &mut Model, connection: &Connection)
     -> std::result::Result<Vec<GateDecision>, String> {
+    // Global graph evidence, independent of candidate and retrieval scopes.
     // Two distinct files are repeated association, NOT proof of independence.
-    // Apply scope before LIMIT so hidden files cannot admit a route.
-    let scope = allowed.map(|ids| serde_json::to_string(ids).unwrap());
     let mut statement = connection.prepare_cached(
         "SELECT DISTINCT s.file_id FROM file_tags s
          JOIN file_tags t ON t.file_id=s.file_id AND t.tag_id=?2
-         WHERE s.tag_id=?1 AND (?3 IS NULL OR s.file_id IN
-             (SELECT value FROM json_each(?3)))
-         ORDER BY s.file_id LIMIT 2"
+         WHERE s.tag_id=?1 ORDER BY s.file_id LIMIT 2"
     ).map_err(|e| format!("prepare wormhole cross gate: {e}"))?;
     let mut decisions = Vec::new();
     for route in &model.routes {
         let rows = statement.query_map(
-            rusqlite::params![route.source_id, route.target_id, scope], |row| row.get::<_, i64>(0)
+            rusqlite::params![route.source_id, route.target_id], |row| row.get::<_, i64>(0)
         ).map_err(|e| format!("query wormhole cross gate: {e}"))?;
         let files = rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| format!("decode wormhole cross gate: {e}"))?;
         decisions.push(GateDecision {
             source_id: route.source_id, target_id: route.target_id,
-            accepted: files.len() >= 2, witness_file_ids: files,
+            accepted: files.len() >= 2, witness_file_ids: files, refined_evidence: None,
         });
     }
     model.routes.retain(|route| decisions.iter().any(|d|
@@ -57,6 +56,73 @@ pub(super) fn gate(model: &mut Model, connection: &Connection, allowed: Option<&
     Ok(decisions)
 }
  
+pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
+    connection: &Connection, input: &NativeInput)
+    -> std::result::Result<(), String> {
+    const FILE_LIMIT: usize = 128;
+    const TAG_LIMIT: usize = 128;
+    let focus: HashSet<i64> = input.query_state.field_provenance.iter()
+        .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
+        .map(|p| p.id).collect();
+    let mut files_query = connection.prepare_cached(
+        "SELECT DISTINCT s.file_id, f.checksum FROM file_tags s
+         JOIN file_tags t ON t.file_id=s.file_id AND t.tag_id=?2
+         JOIN files f ON f.id=s.file_id
+         WHERE s.tag_id=?1 ORDER BY s.file_id LIMIT 129"
+    ).map_err(|e| e.to_string())?;
+    let mut tags_query = connection.prepare_cached(
+        "SELECT DISTINCT tag_id FROM file_tags WHERE file_id=?1 ORDER BY tag_id LIMIT 129"
+    ).map_err(|e| e.to_string())?;
+    for decision in decisions.iter_mut().filter(|d| d.accepted) {
+        let files = files_query.query_map(
+            rusqlite::params![decision.source_id, decision.target_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        ).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        let mut truncated = files.len() > FILE_LIMIT;
+        let mut evidence = Vec::new();
+        for (id, checksum) in files.into_iter().take(FILE_LIMIT) {
+            let tags = tags_query.query_map([id], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            truncated |= tags.len() > TAG_LIMIT;
+            evidence.push((id, checksum, tags.into_iter().take(TAG_LIMIT).collect::<HashSet<_>>()));
+        }
+        let mut witness = None;
+        if !truncated {
+            'pairs: for (i, left) in evidence.iter().enumerate() {
+                for right in evidence.iter().skip(i + 1) {
+                    let (Some(a), Some(b)) = (&left.1, &right.1) else { continue };
+                    if a.is_empty() || b.is_empty() || a == b { continue; }
+                    let other_focus = focus.iter().copied().filter(|id|
+                        *id != decision.source_id && *id != decision.target_id
+                        && (left.2.contains(id) || right.2.contains(id))).min();
+                    let Some(anchor) = other_focus else { continue };
+                    let bridge = left.2.intersection(&right.2).copied().filter(|id|
+                        *id != decision.source_id && *id != decision.target_id
+                        && !focus.contains(id)).min();
+                    if let Some(bridge) = bridge {
+                        witness = Some(serde_json::json!({
+                            "fileIds": [left.0, right.0], "focusId": anchor,
+                            "bridgeTagId": bridge, "differentChecksums": true
+                        }));
+                        break 'pairs;
+                    }
+                }
+            }
+        }
+        decision.accepted = witness.is_some();
+        decision.refined_evidence = Some(serde_json::json!({
+            "witness": witness, "truncated": truncated,
+            "examinedFiles": evidence.len(), "fileLimit": FILE_LIMIT, "tagLimit": TAG_LIMIT,
+            "note": "cross-file association; different checksums do not prove independence"
+        }));
+    }
+    model.routes.retain(|r| decisions.iter().any(|d|
+        d.source_id == r.source_id && d.target_id == r.target_id && d.accepted));
+    Ok(())
+}
+
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Readout {
@@ -247,24 +313,53 @@ mod gate_regressions {
     }
 
     #[test]
-    fn gate_counts_distinct_files_not_rows_and_applies_scope_before_admission() {
+    fn refined_requires_distinct_content_bridge_and_another_explicit_focus() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE INDEX tags_lookup ON file_tags(tag_id,file_id);
+            CREATE TABLE files(id INTEGER PRIMARY KEY, checksum TEXT);
+            INSERT INTO files VALUES (10,'same'),(11,'same');
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,3),(10,9),
+                (11,1),(11,2),(11,9);").unwrap();
+        let input: NativeInput = serde_json::from_value(serde_json::json!({
+            "query": {"vector": [1,0]}, "queryState": {"fieldProvenance": [
+                {"id":1,"hop":0,"sourceType":"lexical_seed"},
+                {"id":3,"hop":0,"sourceType":"lexical_seed"}
+            ]}
+        })).unwrap();
+        let check = |db: &Connection| {
+            let mut m = model();
+            let mut d = gate(&mut m, db).unwrap();
+            refine(&mut m, &mut d, db, &input).unwrap();
+            d[0].accepted
+        };
+        assert!(!check(&db), "same content cannot qualify");
+        db.execute("UPDATE files SET checksum='different' WHERE id=11", []).unwrap();
+        assert!(check(&db));
+        db.execute("DELETE FROM file_tags WHERE file_id=11 AND tag_id=9", []).unwrap();
+        assert!(!check(&db), "route endpoints cannot act as third-tag witness");
+        db.execute("INSERT INTO file_tags VALUES (11,9)", []).unwrap();
+        db.execute("DELETE FROM file_tags WHERE tag_id=3", []).unwrap();
+        assert!(!check(&db), "implicit context alone cannot qualify");
+    }
+
+    #[test]
+    fn global_gate_counts_distinct_files_not_rows() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
             CREATE INDEX tags_lookup ON file_tags(tag_id,file_id);
             INSERT INTO file_tags VALUES (10,1),(10,2),(10,2),(11,1);").unwrap();
         let mut single = model();
-        let decisions = gate(&mut single, &db, None).unwrap();
+        let decisions = gate(&mut single, &db).unwrap();
         assert!(!decisions[0].accepted);
         assert_eq!(decisions[0].witness_file_ids, vec![10]);
         assert!(single.routes.is_empty());
         db.execute("INSERT INTO file_tags VALUES (11,2)", []).unwrap();
         let mut both = model();
-        assert!(gate(&mut both, &db, None).unwrap()[0].accepted);
+        assert!(gate(&mut both, &db).unwrap()[0].accepted);
         assert_eq!(both.routes.len(), 1);
-        for scope in [HashSet::new(), HashSet::from([10])] {
-            let mut restricted = model();
-            assert!(!gate(&mut restricted, &db, Some(&scope)).unwrap()[0].accepted);
-            assert!(restricted.routes.is_empty());
-        }
+        // Admission has no candidate/retrieval-scope argument: witnesses belong
+        // to the global file-tag graph, not the returned candidate pool.
+        assert_eq!(both.routes[0].target_id, 2);
     }
 }

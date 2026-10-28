@@ -19,7 +19,7 @@ use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 mod wormhole;
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.5fix-test2";
+const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.5fix-test2-refined";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -2901,7 +2901,8 @@ pub(crate) fn run_native_with_connection(
     let query_tag_sql_batches = query_stats.sql_batches;
     let query_and_seed_tag_vectors = tag_vectors;
     let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
-    let wormhole_gate = wormhole::gate(&mut wormhole_model, connection, allowed.as_ref())?;
+    let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
+    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input)?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -3165,7 +3166,8 @@ pub(crate) fn run_native_with_connection(
         results,
         parameters: serde_json::json!({
             "parsedConfig": input.config,
-            "wormholeGateMode": "two-distinct-joint-endpoint-files",
+            "wormholeGateMode": "global-two-joint-files-distinct-checksums-third-tag-explicit-focus",
+            "wormholeEvidenceScope": "global-file-tag-graph; independent-of-candidate-and-retrieval-scope",
             "wormholeGate": wormhole_gate,
             "wormholeEligibleRoutes": wormhole_model.eligible_routes,
             "wormholeAcceptedRoutes": wormhole_model.routes.len(),
