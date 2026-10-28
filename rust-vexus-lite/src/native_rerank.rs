@@ -147,6 +147,12 @@ impl Ranker {
         let _permit = limit.acquire_owned().await.map_err(|_| "RERANK_CLOSED")?;
         let key = &self.keys[KEY_CURSOR.fetch_add(1, Ordering::Relaxed) % self.keys.len()];
         let mut request = self.client.post(self.url.clone()).bearer_auth(key).json(&body);
+        if self.jev && jev_long_context(&body)? {
+            if !self.provider.is_empty() && self.provider != "typesafe" {
+                return Err("JEV_LONG_CONTEXT_UNSUPPORTED".into());
+            }
+            request = request.header("TypeSafe-Danger-Zone-Long-Context", "true");
+        }
         if self.jev && self.provider == "openrouter" {
             request = request.header("X-OpenRouter-Title", &self.title);
             if !self.referer.is_empty() { request = request.header("HTTP-Referer", &self.referer); }
@@ -232,6 +238,24 @@ impl Ranker {
     }
 }
 
+fn jev_long_context(body: &Value) -> Result<bool, String> {
+    // Same local cl100k estimate as JS; not an official tokenizer guarantee.
+    let count = |value: Value| tiktoken_rs::cl100k_base_singleton()
+        .encode_ordinary(&value.to_string()).len();
+    let state = &body["state"];
+    let questions = body["questions"].as_object().ok_or("JEV_INVALID_QUESTIONS")?;
+    let total = count(json!({"state":state,"questions":questions}));
+    let mut largest = 0;
+    for (key, question) in questions {
+        let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
+        largest = largest.max(count(json!({"state":state,"questions":single})));
+    }
+    if total > 240000 || largest > 240000 {
+        return Err("JEV_CONTEXT_TOO_LARGE".into());
+    }
+    Ok(largest > 32000 || total > 64000)
+}
+
 fn estimate_tokens(text: &str) -> usize {
     text.chars().map(|c| if ('\u{4e00}'..='\u{9fff}').contains(&c) { 6 } else { 1 }).sum::<usize>().div_ceil(4)
 }
@@ -304,6 +328,23 @@ pub(crate) fn fuse(mut river: Vec<Value>, external: &[(i64, f64)], alpha: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_context_budget_checks_single_questions_and_request_total() {
+        let question = |text: String| json!({"type":"noul","instructions":text});
+        let body = |questions: Value| json!({"state":"query","questions":questions});
+        assert!(!jev_long_context(&body(json!({"q":question("hello".into())}))).unwrap());
+        assert!(jev_long_context(&body(json!({"q":question(" hello".repeat(33000))}))).unwrap());
+        // Each question fits 32k, but the complete request exceeds 64k.
+        assert!(jev_long_context(&body(json!({
+            "a":question(" hello".repeat(22000)),
+            "b":question(" hello".repeat(22000)),
+            "c":question(" hello".repeat(22000))
+        }))).unwrap());
+        assert_eq!(jev_long_context(&body(json!({
+            "q":question(" hello".repeat(241000))
+        }))).unwrap_err(), "JEV_CONTEXT_TOO_LARGE");
+    }
     #[tokio::test]
     async fn local_http_protocols() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

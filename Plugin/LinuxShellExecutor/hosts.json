@@ -8,8 +8,7 @@
             "name": "本地执行",
             "description": "在 VCP 服务器本地执行（需要 Linux 环境）",
             "type": "local",
-            "enabled": true,
-            "securityLevel": "standard"
+            "enabled": true
         },
         "DB1": {
             "name": "本地服务器",

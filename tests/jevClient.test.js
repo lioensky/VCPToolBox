@@ -245,3 +245,42 @@ test('支持显式禁用 keepAlive 配置', async () => {
     assert.equal(capturedOption.httpsAgent?.keepAlive, false);
     client.destroy();
 });
+
+test('按单题32k和整次64k估算条件添加实验长上下文头', async () => {
+    const client = new JevClient({ apiKey: 'fixture', provider: 'typesafe', maxRetries: 0 });
+    const captured = [];
+    const question = text => ({ type: 'noul', instructions: text });
+    try {
+        await withMockedPost(async (_url, _body, options) => {
+            captured.push(options.headers['TypeSafe-Danger-Zone-Long-Context']);
+            return successfulResponse();
+        }, async () => {
+            await client.decide(STATE, QUESTIONS);
+            await client.decide(STATE, { q: question(' hello'.repeat(33000)) });
+            await client.decide(STATE, Object.fromEntries(['a', 'b', 'c'].map(key =>
+                [key, question(' hello'.repeat(22000))]
+            )));
+        });
+        assert.deepEqual(captured, [undefined, 'true', 'true']);
+    } finally {
+        client.destroy();
+    }
+});
+
+test('超过240k和非TypeSafe长上下文在发请求前拒绝', async () => {
+    const client = new JevClient({ apiKey: 'fixture', provider: 'typesafe', maxRetries: 0 });
+    try {
+        await withMockedPost(async () => {
+            assert.fail('不应发出网络请求');
+        }, async () => {
+            await assert.rejects(client.decide(STATE, {
+                q: { type: 'noul', instructions: ' hello'.repeat(241000) }
+            }), { code: 'JEV_CONTEXT_TOO_LARGE' });
+            await assert.rejects(client.decide(STATE, {
+                q: { type: 'noul', instructions: ' hello'.repeat(33000) }
+            }, { provider: 'openrouter' }), { code: 'JEV_LONG_CONTEXT_UNSUPPORTED' });
+        });
+    } finally {
+        client.destroy();
+    }
+});

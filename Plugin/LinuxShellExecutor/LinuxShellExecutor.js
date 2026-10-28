@@ -155,7 +155,7 @@ try {
 }
 
 const HOSTS_CONFIG_PATH = path.join(__dirname, 'hosts.json');
-const DEFAULT_HOSTS_TEMPLATE_MD5 = 'b1d6472eba3a65b9354a096ce21d3f3e';
+const DEFAULT_HOSTS_TEMPLATE_MD5 = '30e87419ff3817a98da972ffe69c4752';
 
 function createLocalOnlyHostsConfig() {
     return {
@@ -163,8 +163,7 @@ function createLocalOnlyHostsConfig() {
             local: {
                 name: '本地执行',
                 type: 'local',
-                enabled: true,
-                securityLevel: 'standard'
+                enabled: true
             }
         },
         defaultHost: 'local',

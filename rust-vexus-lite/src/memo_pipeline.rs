@@ -868,7 +868,7 @@ fn gate_tags(
     config: &PipelineConfig,
     query_text: &str,
 ) -> (Vec<GatedTag>, f64, f64) {
-    gate_tags_for_graph(levels, epa, pyramid, core_tags, config, query_text, None)
+    gate_tags_for_graph(levels, epa, pyramid, core_tags, config, query_text, None, &[])
 }
 
 fn scale_implicit_seeds(gated: &mut [GatedTag], eligible: Option<&HashMap<i64, usize>>) {
@@ -885,10 +885,47 @@ fn scale_implicit_seeds(gated: &mut [GatedTag], eligible: Option<&HashMap<i64, u
     }
 }
 
+/// Resolve explicit names against SQL originals without inventing graph nodes.
+/// Hard ghosts may bind to real Tags; soft and unknown ghosts stay fusion-only.
+fn resolve_core_seeds(
+    connection: &Connection,
+    core_tags: &[String],
+    ghost_tags: &[GhostTagInput],
+    eligible: &HashMap<i64, usize>,
+    pool: &mut TagVectorPool,
+    dimension: usize,
+) -> std::result::Result<Vec<(i64, String)>, String> {
+    let mut statement = connection.prepare(
+        "SELECT id, name FROM tags WHERE lower(name) = lower(?1) LIMIT 1"
+    ).map_err(|error| format!("prepare Memo core seed query failed: {error}"))?;
+    let mut resolved = Vec::new();
+    let mut seen = HashSet::new();
+    for name in core_tags.iter().map(String::as_str)
+        .chain(ghost_tags.iter().filter(|tag| tag.is_core).map(|tag| tag.name.as_str())) {
+        let name = name.trim();
+        if name.is_empty() { continue; }
+        let row = statement.query_row(rusqlite::params![name], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        });
+        match row {
+            Ok((id, name)) if id > 0 && eligible.contains_key(&id) && seen.insert(id) => {
+                resolved.push((id, name));
+            }
+            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(error) => return Err(format!("query Memo core seed failed: {error}")),
+        }
+    }
+    let ids: Vec<i64> = resolved.iter().map(|tag| tag.0).collect();
+    ensure_tag_vectors_loaded(connection, pool, &ids, dimension)?;
+    resolved.retain(|(id, _)| pool.get(id).is_some_and(|v| magnitude(v) > 1e-12));
+    Ok(resolved)
+}
+
 fn gate_tags_for_graph(
     levels: &[Vec<PyramidTagWork>], epa: &EpaOutput, pyramid: &PyramidOutput,
     core_tags: &[String], config: &PipelineConfig, query_text: &str,
     eligible: Option<&HashMap<i64, usize>>,
+    explicit_cores: &[(i64, String)],
 ) -> (Vec<GatedTag>, f64, f64) {
     let activation_min = range_value(&config.activation_multiplier, 0, 0.5);
     let activation_max = range_value(&config.activation_multiplier, 1, 1.5);
@@ -906,7 +943,8 @@ fn gate_tags_for_graph(
     let core_min = range_value(&config.core_boost_range, 0, 1.2);
     let core_max = range_value(&config.core_boost_range, 1, 1.4);
     let dynamic_core_boost = core_min + core_metric * (core_max - core_min);
-    let core_names: HashSet<String> = core_tags.iter().map(|name| name.to_lowercase()).collect();
+    let core_names: HashSet<String> = core_tags.iter().map(|name| name.trim().to_lowercase())
+        .chain(explicit_cores.iter().map(|(_, name)| name.to_lowercase())).collect();
     let world = epa
         .dominant_axes
         .first()
@@ -1018,6 +1056,19 @@ fn gate_tags_for_graph(
             }
         }
     }
+    // Explicit focus has unit base amplitude, independent of ANN recall and
+    // Gram-Schmidt contribution. Promote existing IDs instead of duplicating them.
+    for (id, name) in explicit_cores {
+        if let Some(tag) = gated.iter_mut().find(|tag| tag.id == *id) {
+            tag.is_core = true;
+            tag.weight = tag.weight.max(dynamic_core_boost);
+        } else {
+            gated.push(GatedTag {
+                id: *id, name: name.clone(), weight: dynamic_core_boost,
+                is_core: true, lexical: false,
+            });
+        }
+    }
     scale_implicit_seeds(&mut gated, eligible);
     (gated, effective_boost.clamp(0.0, 1.0), dynamic_core_boost)
 }
@@ -1121,8 +1172,7 @@ fn fuse_observation_with_pool(
         .fold(0.0, f64::max)
         .max(if merged.is_empty() { 1.0 } else { 0.0 });
 
-    // 字符串 Core 不参与本轮 Spike 扩散；传播完成后按名称从数据库补入，
-    // 保持 JS 的“最终融合锚点”语义。
+    // 图内有效 Core 已提前作为 Spike 起点；此处保留未入图 Core 的融合回退。
     let mut present_names: HashSet<String> = merged
         .iter()
         .filter(|tag| !tag.name.is_empty())
@@ -1181,6 +1231,11 @@ fn fuse_observation_with_pool(
     let mut ghost_id = -1i64;
     let mut accepted_ghosts = 0usize;
     for ghost in ghost_tags {
+        // A hard ghost bound to a real core seed already contributes its SQL vector.
+        if ghost.is_core && gated_tags.iter().any(|tag|
+            tag.is_core && tag.name.eq_ignore_ascii_case(ghost.name.trim())) {
+            continue;
+        }
         if ghost.vector.len() != dimension || magnitude(&ghost.vector) <= 1e-12 {
             continue;
         }
@@ -1978,11 +2033,13 @@ fn run_pipeline_with_connection(
     let pyramid_ms = pyramid_started.elapsed().as_secs_f64() * 1000.0;
 
     let gating_started = Instant::now();
+    let explicit_cores = resolve_core_seeds(connection, &input.core_tags, &input.ghost_tags,
+        &artifact.node_index, &mut tag_vectors, dimensions)?;
     let (gated_tags, effective_tag_boost, dynamic_core_boost) =
         gate_tags_for_graph(&level_tags, &epa, &pyramid, &input.core_tags, &input.config,
-            &input.query_text, Some(&artifact.node_index));
-    // 空 Pyramid 门控不再中止：Spike 生成合法空观测，随后字符串 Core/幽灵
-    // 仍按 JS SOTA 在传播后注入；若最终仍为空，融合层返回原查询向量。
+            &input.query_text, Some(&artifact.node_index), &explicit_cores);
+    // Even an empty Pyramid can ignite valid explicit cores. Unknown/out-of-graph
+    // cores and ghosts retain their fusion-only fallback.
     let seeds: Vec<SenseSeed> = gated_tags
         .iter()
         .map(|tag| SenseSeed {
@@ -2966,5 +3023,78 @@ mod v22_residual_tests {
             assert_eq!(p.levels.len(), expected_layers);
             assert_eq!(residuals.len(), expected_residuals);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod explicit_core_seed_tests {
+    use super::*;
+
+    #[test]
+    fn sql_cores_and_hard_anchors_ignite_without_pyramid_but_soft_ghosts_do_not() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);").unwrap();
+        for (id, name, vector) in [
+            (1, "尊界", [1.0_f32, 0.0]), (2, "问界", [0.0, 1.0]),
+            (3, "软标签", [1.0, 1.0]), (4, "图外", [1.0, 0.0]),
+            (5, "坏向量", [0.0, 0.0]),
+        ] {
+            let bytes: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            db.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![id, name, bytes]).unwrap();
+        }
+        let ghost = |name: &str, is_core| GhostTagInput {
+            name: name.into(), vector: vec![1.0, 0.0], is_core,
+        };
+        let ghosts = vec![ghost("问界", true), ghost("软标签", false),
+            ghost("不存在", true)];
+        let cores = vec![" 尊界 ".into(), "尊界".into(), "图外".into(), "坏向量".into()];
+        let graph = crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![1, 2, 3, 5],
+            node_index: HashMap::from([(1, 0), (2, 1), (3, 2), (5, 3)]),
+            row_offsets: vec![0, 1, 1, 1, 1], targets: vec![2], weights: vec![0.5],
+            ..crate::rivermemo_topology_v3::NativeArtifact::default()
+        }.prepared();
+        let resolved = resolve_core_seeds(&db, &cores, &ghosts,
+            &graph.node_index, &mut TagVectorPool::new(), 2).unwrap();
+        assert_eq!(resolved, vec![(1, "尊界".into()), (2, "问界".into())]);
+        let epa = EpaOutput {
+            logic_depth: 0.0, entropy: 1.0, resonance: 0.0, dominant_axes: vec![],
+            bridges: vec![], basis_count: 0, cache_available: false, out_of_domain: 1.0,
+            semantic_explained_ratio: 0.0, in_domain_gate: 0.0,
+            baseline_coverage: 0.0, background_ratio: 0.0,
+        };
+        let pyramid = PyramidOutput { levels: vec![], total_explained_energy: 0.0,
+            features: PyramidFeatures::default() };
+        let (gated, _, boost) = gate_tags_for_graph(&[], &epa, &pyramid, &cores,
+            &PipelineConfig::default(), "", Some(&graph.node_index), &resolved);
+        assert_eq!(gated.len(), 2);
+        assert!(gated.iter().all(|t| t.is_core && t.weight == boost));
+        let observation = sense_typed(&graph, "explicit-core", SenseInput {
+            query_id: None, config: SenseConfig::default(),
+            seeds: gated.iter().map(|t| SenseSeed {
+                id: t.id, energy: t.weight, source_type: "core".into(),
+            }).collect(),
+        }).unwrap();
+        assert_eq!(observation.diagnostics.accepted_seed_nodes, 2);
+        for id in [1, 2] {
+            let node = observation.nodes.iter().find(|n| n.id == id).unwrap();
+            assert_eq!(node.hop, 0);
+            assert_eq!(node.source_type, "core");
+        }
+        assert!(!observation.edges.is_empty());
+        let (_, fusion, _) = fuse_observation(&db, &[1.0, 0.0], &observation,
+            &gated, &[], &ghosts[..1], boost, 2, 0.2, &PipelineConfig::default()).unwrap();
+        assert_eq!(fusion.ghost_count, 0);
+
+        let levels = vec![vec![PyramidTagWork {
+            id: 1, name: "尊界".into(), vector: Arc::from(vec![1.0, 0.0]),
+            similarity: 0.2, contribution: 0.01, handshake_magnitude: 0.0,
+        }]];
+        let (promoted, _, boost) = gate_tags_for_graph(&levels, &epa, &pyramid, &cores,
+            &PipelineConfig::default(), "", Some(&graph.node_index), &resolved);
+        assert_eq!(promoted.len(), 2);
+        assert!(promoted.iter().all(|t| t.is_core && t.weight >= boost));
     }
 }

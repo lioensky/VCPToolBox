@@ -362,6 +362,33 @@ class JevClient {
         }
     }
 
+    _contextHeaders(state, questions, config) {
+        // cl100k is a local estimate, not the provider's tokenizer contract.
+        // Lazy loading avoids TextChunker's dotenv side effects.
+        if (!this.contextEncoding) {
+            this.contextEncoding = require('@dqbd/tiktoken').get_encoding('cl100k_base');
+        }
+        const count = value => this.contextEncoding.encode(JSON.stringify(value), [], []).length;
+        const total = count({ state, questions });
+        const largest = Math.max(...Object.entries(questions).map(([key, question]) =>
+            count({ state, questions: { [key]: question } })
+        ));
+        if (total > 240000 || largest > 240000) {
+            throw new JevClientError('Jev 上下文估算超过 240000 tokens，已取消请求。', {
+                code: 'JEV_CONTEXT_TOO_LARGE',
+                provider: config.provider
+            });
+        }
+        if (largest <= 32000 && total <= 64000) return {};
+        if (config.provider !== 'typesafe') {
+            throw new JevClientError('当前 Jev provider 未声明支持 TypeSafe 实验长上下文。', {
+                code: 'JEV_LONG_CONTEXT_UNSUPPORTED',
+                provider: config.provider
+            });
+        }
+        return { 'TypeSafe-Danger-Zone-Long-Context': 'true' };
+    }
+
     _buildHeaders(config, extraHeaders = {}) {
         const headers = {
             Authorization: `Bearer ${config.apiKey}`,
@@ -422,6 +449,10 @@ class JevClient {
     }
 
     destroy() {
+        if (this.contextEncoding) {
+            this.contextEncoding.free();
+            this.contextEncoding = null;
+        }
         for (const agent of this.directAgents.values()) {
             if (typeof agent?.destroy === 'function') {
                 agent.destroy();
@@ -462,7 +493,10 @@ class JevClient {
             state,
             questions
         };
-        const headers = this._buildHeaders(requestConfig, options.headers);
+        const headers = this._buildHeaders(requestConfig, {
+            ...options.headers,
+            ...this._contextHeaders(state, questions, requestConfig)
+        });
         const keepAliveOptions = {
             keepAlive: requestConfig.keepAlive,
             keepAliveMsecs: requestConfig.keepAliveMsecs,
