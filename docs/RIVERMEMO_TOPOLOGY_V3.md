@@ -1,3 +1,10 @@
+---
+title: RiverMemo V3 · Topology V3 与 Ω 统一泛函
+summary: RiverMemo Topology V3 的最终算法与实现契约，涵盖 AGS 背景几何、图内残差与动态虫洞、请求河网与双场、一对一拓扑对齐，以及候选自身证据驱动的四项评分、共享预算和部署验证边界。
+updatedAt: 2026-10-28
+category: guide
+---
+
 # RiverMemo Topology V3：最终算法与实现
 
 > 架构版本：**RiverMemo Topology V3**
