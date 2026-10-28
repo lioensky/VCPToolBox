@@ -63,6 +63,23 @@ function formatDiagnostics(plugin, request, response) {
     const explained = river.candidateDiagnostics || river.results || [];
     output += '### RiverMemo 候选解释\n\n';
     output += `解释候选 ${explained.length} 条（包含 Top-K 之外的共同池候选，如原生已提供）。\n\n`;
+    const wormholeMode = river.algorithmVersion?.startsWith('rivermemo.wormhole-readout-');
+    if (wormholeMode) {
+        output += '独立虫洞通道：最终分＝最强路线的相对流量 × 终点正文正余弦；不是原查询底分加奖励，也不是相关性概率。无可用虫洞才整通道回退查询余弦。精确标签／来源文件仅为文件级地址诊断，不证明该 Chunk 回答问题。\n\n';
+        output += '| Chunk | 排名 | 通道 | 原查询余弦 | 路线 | 原始流量 | 相对流量 | 终点正文余弦 | 最终分 | 地址定位 | 精确终点标签 | 边来源文件 |\n|---:|---:|---|---:|---|---:|---:|---:|---:|---|---|---|\n';
+        const name = id => (graph?.nodes || []).find(node => node.id === id)?.name || `Tag#${id}`;
+        for (const item of explained) {
+            const trace = item.topologyV3 || {};
+            const readout = trace.wormholeReadout || {};
+            const route = readout.sourceId == null ? '—'
+                : `${name(readout.sourceId)} → ${name(readout.targetId)}`;
+            output += `| ${item.chunkId ?? item.id} | ${item.rank ?? '—'} | ${cell(item.role)} | ${number(trace.queryScore ?? item.vectorScore)} | ${cell(route)} | ${number(readout.flow)} | ${number(readout.relativeFlow)} | ${number(readout.endpointBodyCosine)} | ${number(item.score)} | ${cell(readout.location || '未返回')} | ${readout.exactTargetTag === true} | ${readout.edgeSourceFile === true} |\n`;
+        }
+        output += '\n';
+        section('原生检索诊断', response.diagnostics);
+        section('RiverMemo 读出诊断', river.diagnostics);
+        return output;
+    }
     const endpointMode = river.algorithmVersion?.startsWith('rivermemo.source-endpoint-');
     output += endpointMode
         ? '有效意图候选：基础分为原查询余弦；直锚列为直接意图证据分账，图奖励列为来源条件化传播的边际分账，共享单一预算；旧场共振、路径和图形匹配只作诊断。无有效意图候选保留兼容回退。最终分＝基础分＋路径奖励＋图奖励＋直锚奖励－截断扣分。\n\n'

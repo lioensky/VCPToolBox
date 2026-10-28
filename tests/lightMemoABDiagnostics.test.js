@@ -121,3 +121,23 @@ test('source endpoint diagnostics explains shared accounting and contiguous ledg
         '电流校准', '终点落地', '0.6250']) assert.ok(output.includes(text), text);
     assert.match(output, /\|---:\|---\|[^\n]+\n\| 11 \|/);
 });
+
+test('wormhole readout exposes independent score and honest approximate address outside top-k', () => {
+    const data = response();
+    data.river.algorithmVersion = 'rivermemo.wormhole-readout-v2.5';
+    data.river.candidateDiagnostics = [{
+        id: 10640, rank: 2, score: 0.5375, role: 'wormhole_endpoint',
+        topologyV3: { queryScore: 0.5547, wormholeReadout: {
+            available: true, sourceId: 1, targetId: 2, flow: 0.1076,
+            relativeFlow: 1, endpointBodyCosine: 0.5375,
+            exactTargetTag: false, edgeSourceFile: false,
+            location: 'semantic-body-approximation'
+        } }
+    }];
+    const output = formatDiagnostics({ _escapeMarkdownCell: cell }, request, data);
+    for (const text of ['独立虫洞通道', '不是原查询底分加奖励', '10640',
+        '0.5375', '0.5547', 'semantic-body-approximation', '核心\\|标签 → 传播',
+        '文件级地址诊断', '包含 Top-K 之外']) assert.ok(output.includes(text), text);
+    assert.ok(!output.includes('意图账本'));
+    assert.ok(!output.includes('共享单一预算'));
+});
