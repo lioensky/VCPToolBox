@@ -16,7 +16,7 @@ use crate::memo_sensing::SenseOutput;
 use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.1";
+const ALGORITHM_VERSION: &str = "rivermemo.conservative-topology-v2.2";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -1666,6 +1666,7 @@ struct TopologyOutput {
     matched_edge_coverage: f64,
     mean_closure: f64,
     candidate_support_density: f64,
+    strongest_node_match_quality: f64,
     exact_matched_nodes: usize,
     semantic_matched_nodes: usize,
     matched_nodes: usize,
@@ -1683,10 +1684,32 @@ struct Alignment {
 }
 
 fn support_density(supported: f64, total: usize) -> f64 {
-    // Eight unsupported opportunities are tolerated; valid rich annotation is
-    // not penalized merely for being long.
+    // Penalize unsupported opportunities, not richly supported annotation.
     let unsupported = positive(total as f64 - supported);
-    1.0 / (1.0 + positive(unsupported - 8.0) / 32.0)
+    1.0 / (1.0 + positive(unsupported - 6.0) / 16.0)
+}
+
+/// Saturate at a single supported tributary, not coverage of the whole river.
+/// Raw coverage remains available separately in the topology diagnostics.
+fn branch_coverage(topology: &TopologyOutput, mode: &str) -> f64 {
+    let nodes = clamp01(topology.matched_node_coverage / 0.35);
+    let edges = clamp01(topology.matched_edge_coverage / 0.20);
+    if mode == "atomic" { nodes }
+    else if topology.matched_edges == 0 { 0.35 * nodes }
+    else { 0.70 * edges + 0.30 * nodes }
+}
+
+fn precision_grounding(topology: &TopologyOutput) -> f64 {
+    if topology.exact_matched_nodes == 0 && topology.strongest_node_match_quality < 0.65 {
+        0.65
+    } else { 1.0 }
+}
+
+/// Coverage, closure and alignment enter confidence once. The legacy
+/// reliability still describes raw full-river coverage but is not multiplied in.
+fn branch_confidence(topology: &TopologyOutput, mode: &str) -> f64 {
+    clamp01(branch_coverage(topology, mode) * clamp01(topology.mean_closure)
+        * clamp01(topology.node_alignment_score)).sqrt()
 }
 
 /// Query cosine is the floor; fields only contribute bounded positive surplus.
@@ -1770,6 +1793,8 @@ fn evaluate_topology(
         used_tags.insert(tag_id);
         output.exact_matched_nodes += usize::from(exact);
         output.semantic_matched_nodes += usize::from(!exact);
+        output.strongest_node_match_quality =
+            output.strongest_node_match_quality.max(alignment.quality);
         matched_node_weight += weight * alignment.quality;
         node_quality_mass += weight * alignment.quality * alignment.quality;
         alignments.insert(node_id, alignment);
@@ -2550,19 +2575,12 @@ fn assign_v3_scores(
     for item in work.iter_mut() {
         // Candidate-self evidence, not exceptionalness among its peers. Roles
         // explain evidence and never allocate ranking privilege.
-        let coverage = if mode == "atomic" {
-            item.topology.matched_node_coverage
-        } else {
-            0.75 * item.topology.matched_edge_coverage
-                + 0.25 * item.topology.matched_node_coverage
-        };
-        let confidence = clamp01(coverage * item.topology.reliability
-            * item.observables.closure).sqrt();
+        let confidence = branch_confidence(&item.topology, mode);
         let direction = if item.topology.matched_edges > 0 {
             0.25 + 0.75 * item.topology.direction_score
         } else { 0.25 };
         let requested = positive(config.topology_bonus_cap) * item.graph_score
-            * confidence * direction;
+            * confidence * direction * precision_grounding(&item.topology);
         item.v2_bonus = clamp01(requested.min(positive(config.topology_bonus_cap)));
     }
 
@@ -3009,7 +3027,13 @@ pub(crate) fn run_native_with_connection(
                 .collect();
             let topology_v3 = if input.include_trace {
                 Some(serde_json::json!({
-                    "mode": "conservative_candidate_self_topology_v2.1",
+                    "mode": "conservative_candidate_self_topology_v2.2",
+                    "branchNodeCoverage": clamp01(item.topology.matched_node_coverage / 0.35),
+                    "branchEdgeCoverage": clamp01(item.topology.matched_edge_coverage / 0.20),
+                    "branchCoverage": branch_coverage(&item.topology, mode),
+                    "branchConfidence": branch_confidence(&item.topology, mode),
+                    "strongestNodeMatchQuality": item.topology.strongest_node_match_quality,
+                    "precisionGrounding": precision_grounding(&item.topology),
                     "fieldSupport": item.observables.field_support,
                     "fieldResonanceBeforeSupport": field_resonance(&item.curve, &input, 1.0).2,
                     "queryScore": clamp01(item.curve.query_score),
@@ -3120,8 +3144,16 @@ pub(crate) fn run_native_with_connection(
             "weakSemanticPivot": 0.65,
             "span2Discount": 0.7,
             "globalOnlyPathGain": 0.5,
-            "unsupportedTagAllowance": 8,
-            "unsupportedTagScale": 32,
+            "unsupportedTagAllowance": 6,
+            "unsupportedTagScale": 16,
+            "branchNodeSaturation": 0.35,
+            "branchEdgeSaturation": 0.20,
+            "branchEdgeWeight": 0.70,
+            "branchNodeWeight": 0.30,
+            "branchNodeOnlyWeight": 0.35,
+            "softMatchQualityThreshold": 0.65,
+            "softMatchDiscount": 0.65,
+            "graphConfidence": "sqrt(branchCoverage*meanClosure*nodeAlignmentScore)",
             "graphReward": "candidate-self-no-role-multiplier",
             "retiredControls": ["conditionalBandwidth", "conditionalClosureBandwidth",
                 "conditionalDirectBandwidth", "minimumPeers", "minimumEffectivePeers",
@@ -3574,6 +3606,8 @@ mod conservative_topology_tests {
             curve: curve(vec![]), geometry: GeometryOutput::default(),
             topology: TopologyOutput { matched_node_coverage: 0.8, matched_edge_coverage: 0.8,
                 reliability: 0.8, direction_score: direction, matched_edges: 1,
+                node_alignment_score: 0.8, mean_closure: 0.8,
+                strongest_node_match_quality: 0.8, exact_matched_nodes: 1,
                 ..TopologyOutput::default() },
             observables: ObservableOutput { closure: 0.8, ..ObservableOutput::default() },
             pure_score: 0.64, field_score: 0.64, field_resonance_bonus: 0.0,
@@ -3681,6 +3715,52 @@ mod conservative_topology_tests {
         let duplicate = evaluate_path(&repeated, &workspace, &artifact, &config);
         assert!(duplicate.path_quality <= global.path_quality);
         assert_eq!(duplicate.supported_segments, 1);
+    }
+
+    #[test]
+    fn branch_reward_saturates_once_and_soft_only_matches_are_discounted() {
+        let config = NativeConfig::default();
+        let mut focused = work(1.0);
+        focused.path_bonus = 0.0;
+        focused.topology.matched_node_coverage = 0.175;
+        focused.topology.matched_edge_coverage = 0.10;
+        assert!((branch_coverage(&focused.topology, "narrative") - 0.5).abs() < 1e-12);
+        let expected = (0.5_f64 * 0.8 * 0.8).sqrt();
+        assert!((branch_confidence(&focused.topology, "narrative") - expected).abs() < 1e-12);
+        let mut candidates = vec![focused.clone()];
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &config);
+        let reward = candidates[0].gated_bonus;
+        assert!(reward > 0.0);
+        // Legacy raw reliability cannot apply a second coverage penalty.
+        candidates[0].topology.reliability = 0.00001;
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &config);
+        assert_eq!(reward, candidates[0].gated_bonus);
+        // Coverage above one-tributary saturation does not keep increasing reward.
+        focused.topology.matched_node_coverage = 0.35;
+        focused.topology.matched_edge_coverage = 0.20;
+        let mut saturated = focused.clone();
+        saturated.topology.matched_node_coverage = 1.0;
+        saturated.topology.matched_edge_coverage = 1.0;
+        assert_eq!(branch_confidence(&focused.topology, "narrative"),
+            branch_confidence(&saturated.topology, "narrative"));
+        focused.topology.exact_matched_nodes = 0;
+        focused.topology.strongest_node_match_quality = 0.64;
+        assert_eq!(precision_grounding(&focused.topology), 0.65);
+        let mut strong_alias = focused.clone();
+        strong_alias.topology.strongest_node_match_quality = 0.65;
+        let mut pair = vec![focused.clone(), strong_alias];
+        assign_v3_scores(&mut pair, "narrative", &omega(), &config);
+        assert!((pair[0].gated_bonus / pair[1].gated_bonus - 0.65).abs() < 1e-12);
+        focused.topology.exact_matched_nodes = 1;
+        assert_eq!(precision_grounding(&focused.topology), 1.0);
+        focused.topology.matched_edges = 0;
+        assert!((branch_coverage(&focused.topology, "narrative") - 0.35).abs() < 1e-12);
+        assert_eq!(branch_coverage(&focused.topology, "atomic"), 1.0);
+        focused.topology.matched_node_coverage = 0.0;
+        assert_eq!(branch_confidence(&focused.topology, "narrative"), 0.0);
+        assert_eq!(support_density(0.0, 6), 1.0);
+        assert_eq!(support_density(0.0, 22), 0.5);
+        assert_eq!(support_density(24.0, 24), 1.0);
     }
 
     #[test]

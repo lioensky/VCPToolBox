@@ -1,5 +1,46 @@
 # RiverMemo 两阶段读出实验
 
+## 最新交付：Step 2.2（2026-10-28）
+
+本节优先于下方历史版本状态。2.2 已完成实现、回归、Windows x64 MSVC 发布编译、原生加载验证与独立备份；未提交或推送。
+
+### 实现及边界
+
+- 原生读出版本：rivermemo.conservative-topology-v2.2；管线版本：memo.conservative-topology-v2.2。
+- 金字塔在现有 Top-K 标签池内、正交投影前排除当前 CSR node_index 外的标签，不扩池补位；图内无出边节点仍有资格。
+- 开启 dynamicWormholes、至少接受一层、尾残差能量有限且大于 1e-12、占原始查询能量至少 0.02 时，追加最终尾残差。它只供路由，不增加标签/种子层、不改写已解释能量。拒绝后续低解释层时保留的是最后已接受层的真正尾残差，不采用被拒层的剥离结果。
+- 新增管线诊断 routingResidualCount、routingTailAppended。满足条件时，接受 L 层对应 L+1 个路由残差；关闭动态虫洞则不存残差。
+- 动态虫洞仍只选择真实 CSR 邻边，维持原有共振、电流、请求向量预算及默认 2 个席位限制；追加尾残差解除资格阻断，不保证每个查询都会触发虫洞。
+- 支流节点覆盖 CN=clamp01(rawNodeCoverage/0.35)，边覆盖 CE=clamp01(rawEdgeCoverage/0.20)。原子模式取 CN；非原子且匹配边大于零取 0.70*CE+0.30*CN；非原子无边取 0.35*CN。
+- 图奖励置信项为 sqrt(branchCoverage*meanClosure*nodeAlignmentScore)，不再乘入旧 reliability。旧 reliability 保留原始全网覆盖语义供诊断及角色解释，不参与奖励乘法链。原有 graphScore、方向项、Omega 门控、路径/图奖励共享预算维持。
+- 无支持标签免罚额度 6、尺度 16：density=1/(1+positive(unsupported-6)/16)。
+- 完全零精确节点命中，且最强已接受节点对齐质量小于 0.65 时，图奖励乘 0.65。这里质量是已有 alignment quality（包含闭合及弱匹配折减），不是原始余弦；有精确命中或强软别名不触发此项。
+- 新增 trace：branchNodeCoverage、branchEdgeCoverage、branchCoverage、branchConfidence、strongestNodeMatchQuality、precisionGrounding；原始覆盖仍保留。parameters 同步发布固定校准常量。
+- 候选召回边界、持久化图格式、数据库和传播阈值均未修改。
+
+### 验证与产物
+
+- Rust 全集：182 通过，0 失败；包含图外标签投影前过滤、图内孤点资格、单/双层最终尾残差到实际传播联动、关闭/微小/零/拒绝层边界、支流饱和及旧可靠性独立、软匹配折减边界、候选池不变性与共享预算回归。
+- 相关 Node 接口测试：12 通过，0 失败。
+- git diff --check 通过；发布编译成功，本次 release 无编译警告；原生模块加载成功。
+- 正式产物：rust-vexus-lite/vexus-lite.win32-x64-msvc.node，14674944 字节。
+- 独立备份：rust-vexus-lite/vexus-lite.win32-x64-msvc.conservative-topology-v2.2.node.bak；以排他创建方式生成，未覆盖历史备份。
+- 二者 SHA256：5eef96675b99141d3e34215dc485a3a05a767d35b34eabf64719f2e2f4f77ad3。
+- 2.1 回退备份保持 14662144 字节，SHA256：39a9cfc2e606657ad7e9a2ff1f5e3479c856d440054ebaa1d3a12efe9232cf06。
+- 本轮开工时工作区干净；本轮仅更改两份 Rust 源码、Windows 平台产物与本施工文档。未自动暂存、提交、推送或修改运行数据。
+- 测试通过只证明实现契约，不等同于真实查询排序效果或全库召回率。
+
+### 伊朗传播图复测
+
+1. 停止服务后替换平台产物并重启，确认读出及管线均为 2.2；已加载的原生模块不能热替换。
+2. 单层且尾能量至少 2% 时检查 routingResidualCount=2、routingTailAppended=true；双层相应为 3。种子数不得因尾残差直接增加。
+3. 图外标签不应出现在本次金字塔分解中；若它占满 Top-K，过滤后可能减少种子甚至没有层，本补丁不扩大池补位。
+4. 检查 dynamicWormholeCandidates/Selected/EdgesFired 及真实边；没有触发需结合邻边、残差余弦、电流和预算判断，不能仅凭零计数断言本补丁失效。
+5. 对照 raw coverage 与饱和支流覆盖、branchConfidence、precisionGrounding、requestedGraphBonus 和最终 graphBonus。后者仍可能受 Omega 和路径共享预算削减。
+6. 以相同资产、候选身份、范围和配置对比 2.1/2.2；核对精炼战果和长标签综述，不硬编码任何 Chunk 的目标名次。
+
+---
+
 ## 最新交付：Step 2.1（2026-10-28）
 
 本节优先于后文各历史版本状态。用户已授权完成 2.1；当前实现、验证、Windows 编译和独立备份均完成，真实伊朗查询传播图由用户验证。
