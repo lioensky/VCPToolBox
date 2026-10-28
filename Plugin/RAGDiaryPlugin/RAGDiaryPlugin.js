@@ -1513,7 +1513,7 @@ class RAGDiaryPlugin {
             // V3.1: userContent 已由 findLastRealUserMessage 通过统一 sanitizer 净化；
             // 这里仅保留 assistant 净化，避免重复处理并确保独立 [系统通知] 空块不会被误当作查询。
             // 🌟 V6: 解析并剥离 AI 锚点 (Ghost Nodes)
-            const anchorRegex = /\[@(!)?([^\]]+)\]/g;
+            const anchorRegex = /(?:\[@(!)?([^\]】]+)\]|【@(!)?([^\]】]+)】)/g;
             const hardTagNames = [];
             const softTagNames = [];
             let anchorMatch;
@@ -1522,13 +1522,13 @@ class RAGDiaryPlugin {
                 // 在净化之前提取锚点信息
                 let tempAiContent = aiContent;
                 while ((anchorMatch = anchorRegex.exec(tempAiContent)) !== null) {
-                    const tagName = anchorMatch[2].trim();
+                    const tagName = (anchorMatch[2] ?? anchorMatch[4]).trim();
                     if (Array.from(tagName).length > 25) continue; // 防幻觉截断
 
                     // 🌟 屏蔽示例标签
                     if (tagName === 'tag' || tagName === 'tag名称') continue;
 
-                    if (anchorMatch[1]) hardTagNames.push(tagName);
+                    if (anchorMatch[1] || anchorMatch[3]) hardTagNames.push(tagName);
                     else softTagNames.push(tagName);
                 }
 
