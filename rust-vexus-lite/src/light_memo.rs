@@ -220,7 +220,7 @@ impl Task for LightMemoTask {
                                 || edges.len() < observation.edges.len(),
                             "diagnostics": observation.diagnostics
                         });
-                        river["parameters"] = input["config"].clone();
+                        river["requestedParameters"] = input["config"].clone();
                     }
                     let originals = candidates.iter().map(|c| (c["id"].as_i64().unwrap(), c))
                         .collect::<std::collections::HashMap<_,_>>();

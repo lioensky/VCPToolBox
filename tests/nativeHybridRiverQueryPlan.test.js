@@ -29,6 +29,8 @@ function nativePayload(id, candidateSources = ['time']) {
             score: 0.8,
             originalScore: 0.7,
             baseScore: 0.75,
+            fieldScore: 0.8,
+            fieldResonanceBonus: 0.03,
             topologyBonus: 0.03,
             anchorBonus: 0.02,
             matchedTags: [],
@@ -253,6 +255,8 @@ test('hybrid River ABI receives flattened vectors and structured plan', async ()
     assert.equal(result.results[0].source, 'time');
     assert.equal(result.results[0].text, 'time final text');
     assert.equal(result.diagnostics.nativeTopologyV3.hybridPlanUsed, true);
+    assert.equal(result.results[0].fieldScore, 0.8);
+    assert.equal(result.results[0].fieldResonanceBonus, 0.03);
 });
 
 test('BM25 native source remains distinguishable from Time output', async () => {

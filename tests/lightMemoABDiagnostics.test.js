@@ -15,6 +15,7 @@ const response = () => ({
         propagation: { parameters: { maxSafeHops: 4, firGamma: 0.6 } }
     },
     river: {
+        algorithmVersion: 'rivermemo.conservative-topology-v2',
         omega: { omega: 0.8, omegaEdge: 1, omegaEmerge: 0.7, omegaFlow: 0.9,
             completeObservation: true },
         queryMorphology: { confidence: 0.75, narrativeWeight: 0.6 },
@@ -29,7 +30,8 @@ const response = () => ({
                 normalizedFlow: 1, wormhole: true, immediateReturn: false }]
         },
         results: [{ id: 11, chunkId: 11, score: 0.7, role: 'direct_answer',
-            baseScore: 0.6, topologyBonus: 0.02, anchorBonus: 0.08,
+            baseScore: 0.6, fieldScore: 0.65, fieldResonanceBonus: 0.015,
+            topologyBonus: 0.02, anchorBonus: 0.08,
             coreTagsMatched: ['核心'], matchedTags: ['核心'],
             topologyV3: { graphGate: 0.8, anchorReliability: 0.9 },
             relativeTopology: { reliability: 0.8, matchedEdgeCoverage: 0.5 },
@@ -42,7 +44,8 @@ test('AB diagnostics retains omega, confidence, mapping, core tags and bounded p
     for (const text of ['omegaEdge', 'omegaEmerge', 'omegaFlow', 'confidence',
         'maxSafeHops', 'firGamma', '实际命中 CoreTag', 'anchorReliability',
         'matchedEdgeCoverage', 'pathQuality', 'graphGate', '核心\\|标签',
-        '展示已截断，计算仍使用完整观测', '→']) {
+        '展示已截断，计算仍使用完整观测', '→', '场共振增益', '0.0150',
+        '勿重复累加场共振', 'conservative-topology-v2', '原生解析值']) {
         assert.ok(output.includes(text), text);
     }
 });
