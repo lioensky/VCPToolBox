@@ -1,7 +1,7 @@
 ---
 title: Vexus-Lite · 读写搜一体化原生记忆数据库
-summary: Vexus-Lite 原生记忆数据库架构指南，介绍 SQLite 权威事实存储、TDB 2-bit 检索、AGS 统一几何、有界传播与动态虫洞、RiverMemo 双场及四项评分，以及 RAGDiary 被动记忆和 LightMemo 主动回忆的协作与部署边界。
-updatedAt: 2026-10-28
+summary: Vexus-Lite 原生记忆数据库架构指南，介绍 SQLite 权威事实存储、TDB 2-bit 检索、AGS 统一几何、有界传播与动态虫洞、RiverMemo 双场及四项基线评分、边缘稀疏场景的条件式虫洞排序修正，以及主动与被动记忆渠道的协作与部署边界。
+updatedAt: 2026-10-29
 category: guide
 ---
 
@@ -9,7 +9,7 @@ category: guide
 
 > **SQLite 权威事实层 × TDB 2-bit 冲程检索 × AGS 统一背景场 × Spike 有界传播与请求级动态虫洞 × RiverMemo 共享预算双场投影与统一泛函**
 >
-> 更新日期：2026-10-28。本文说明当前数据库实现：原空间重正交化 AGS 统一几何、图内残差与尾残差路由、双场投影预算、请求级向量复用，以及候选自身证据驱动的四项评分和原生并发双排与事实存储、检索的协作方式。
+> 更新日期：2026-10-29。本文说明当前数据库实现：原空间重正交化 AGS 统一几何、图内残差与尾残差路由、双场投影预算、请求级向量复用，以及完整四项基线评分、边缘稀疏场景的条件式排序修正和原生并发双排与事实存储、检索的协作方式。
 
 Vexus-Lite 已不只是一个“由 JavaScript 调用的向量索引”。它是 VCPToolBox 的嵌入式原生知识与记忆数据引擎：从事实事务、向量路由、几何预计算、传播观测，到候选精排和结果回填，在同一个 Rust 原生模块中协作完成。
 
@@ -390,15 +390,15 @@ u_\alpha=(1-\alpha)(I-\alpha T)^{-1}S
 3. 正边流是否具有非退化分布；
 4. 观测是否完整。
 
-候选不能靠自身“看起来关系很多”来授予自己无限排序权限。Ω 只门控图奖励，不门控路径或锚奖励；其几何平均采用 epsilon 底值，空图不代表 Ω 必然严格为零，没有候选结构证据时图奖励仍为零。高 Ω 表示传播可观测，不证明主题正确、实体同一或正文因果成立。实现见 [`compute_omega()`](src/rivermemo_topology_v3.rs:2483)。
+候选不能靠自身“看起来关系很多”来授予自己无限排序权限。在四项基线中，Ω 只门控图奖励，不门控路径或锚奖励；其几何平均采用 epsilon 底值，空图不代表 Ω 必然严格为零，没有候选结构证据时图奖励仍为零。高 Ω 表示传播可观测，不证明主题正确、实体同一或正文因果成立。条件式虫洞修正另使用 Ω 校准路线证据与权重，见第 6.5 节；这不改变基线预算。Ω 的稀疏／稠密工况不是主题资料密度，也不是该修正的直接开关。实现见 [`compute_omega()`](src/rivermemo_topology_v3.rs:2483)。
 
-### 6.4 最终统一评分
+### 6.4 常规主干：完整四项基线评分
 
-Topology V3 的最终分由四项独立记账：
+Topology V3 的常规排序主干由四项独立记账：
 
 \[
 \boxed{
-S(c)=\operatorname{clip}_{[0,1]}
+S_0(c)=\operatorname{clip}_{[0,1]}
 \left[B(c)+P(c)+G(c)+A(c)\right]
 }
 \]
@@ -414,11 +414,38 @@ S(c)=\operatorname{clip}_{[0,1]}
 
 直接锚采用精确优先、双侧一对一接触，最多三个独立接触；隐式接触永久折减，纯隐式锚强度上限 0.035，低于默认激活阈值 0.05，因此默认不产生锚奖励。非原子候选被解释为直接答案，还须有真实显式精确接触及至少 0.55 的观测正文闭合；语义相似不等于显式身份。
 
-原生结果提供 [基础分](src/rivermemo_topology_v3.rs:3080)、[场共振](src/rivermemo_topology_v3.rs:3082)、[路径奖励](src/rivermemo_topology_v3.rs:3085)、[图奖励](src/rivermemo_topology_v3.rs:3086)、[锚奖励](src/rivermemo_topology_v3.rs:3084)及[截断扣分](src/rivermemo_topology_v3.rs:3087)，可按“四项合计减截断扣分”复算最终分。场共振已含在基础分中，拓扑奖励已是路径与图之和，均不可重复相加。公共接口不保证透出全部原生顶层字段或详细诊断。
+原生结果保留基础分、场共振、路径奖励、图奖励、锚奖励及截断扣分，可按“四项合计减截断扣分”复算基线分。场共振已含在基础分中，拓扑奖励已是路径与图之和，均不可重复相加。启用条件式 RRF 时，最终融合分另行记账，截断扣分仍相对于基线计算，不能用四项之和复算融合分。见 [结果组装](src/rivermemo_topology_v3.rs:3108) 与 [RRF 明细](src/rivermemo_wormhole.rs:459)。公共接口不保证透出全部原生顶层字段或详细诊断。
 
-原始查询分是分数下限，不是名次下限；非负增益不保证真实排序收益。兼容配置中的条件同伴、创新系数与批级锚异常／前沿控制等不参与最终奖励，以 [已退役控制回执](src/rivermemo_topology_v3.rs:3158) 为准。
+原始查询分是基础分下限，不是启用 RRF 后的最终分下限，也不是名次下限；非负基线增益不保证真实排序收益。兼容配置中的条件同伴、创新系数与批级锚异常／前沿控制等不参与基线奖励，以 [已退役控制回执](src/rivermemo_topology_v3.rs:3158) 为准。
 
 评分实现见 [`assign_v3_scores()`](src/rivermemo_topology_v3.rs:2549)、[场共振](src/rivermemo_topology_v3.rs:1716) 与 [路径奖励计算](src/rivermemo_topology_v3.rs:2929)，完整数学契约见 [`RIVERMEMO_TOPOLOGY_V3.md`](../docs/RIVERMEMO_TOPOLOGY_V3.md)。
+
+### 6.5 边缘稀疏场景：严格门控的虫洞 RRF 回归修正
+
+**虫洞 RRF 不是普遍情况，不是常驻全局评分因子，也不是 RiverMemo 的常规排序主干。** 它针对极端边缘稀疏知识场景：图构建已经发现了有事实支持的逻辑关联，查询传播也实际经过了这条关系，但候选正文与查询的表面语义距离较远，常规读出未能充分反映这条已发现的关联。此时才允许以严格验证的路线提供条件式排序修正，而不是要求所有查询都经过虫洞融合。
+
+这里的“逻辑链”指图关系及其正文落地证据，不把共现直接当作形式逻辑或因果证明。“边缘稀疏”描述适用问题，**实现并不新增一个按 Ω 工况标签判定的稀疏开关**；局部河网即使显示稠密，也不代表该主题资料充分。实际触发必须通过以下约束：
+
+1. **真实观测路线**：正电流、非自环、非即时回流的虫洞，且存在同方向正权 CSR 关系和有效目标向量；不是仅凭背景有边就参与排序。
+2. **严格全局见证**：至少两个同时包含路线两端的不同文件，校验和非空且不同；两文件还须共享排除两端与全部显式焦点的第三标签，并在至少一个文件中包含另一个显式焦点。每路线最多检查 128 个文件、每文件 128 个标签，检测到超限则不放行。
+3. **强度与来源**：完整请求观测、正 Ω、来源为零跳核心／字面焦点，且原始观测中的相对流量至少 0.5；过滤后不重新归一化。
+4. **候选落地**：目标与候选正文正相关，且候选文件标签具有精确目标 ID 或超过默认 0.48 阈值的语义匹配，该标签与正文也必须正相关。精确 ID 在实现中按相似度 1 统一通过阈值检查。
+
+**全局见证是图证据，不是全局排序因子。** 见证读取不受共同候选文件范围限制，但不扩大候选权限、不把见证文件补入结果，也不替代候选自身落地。不同校验和不证明见证相互独立。
+
+每条合格路线按“相对流量 × 目标—正文正余弦 × Ω 的幂”排列具有落地资格的候选，得到从 1 开始的路线名次 \(r_e(c)\)；完整基线名次记为 \(r_0(c)\)。路线权重由原始电流相对于普通传播的解释力度确定：
+
+\[
+w_e=\frac{f_e}{f_{\mathrm{ref}}}\Omega^\gamma,\qquad
+S(c)=\frac{1}{60+r_0(c)}
++\max_{e:\,c\text{ 具有落地资格}}\frac{w_e}{60+r_e(c)}
+\]
+
+参照电流是原始观测中非虫洞、非即时回流、非自环普通边的最大正电流；没有这种边时使用原始观测全部边的最大正电流。多路线取最大贡献，不叠加相关支路的票数；最终稳定排序，平分保留基线顺序。权重可以大于 1，融合分不是余弦或概率，也不占用或改写基线的拓扑、锚点预算。
+
+**只有至少一个候选获得实际正路线贡献，才启用上述融合；否则基线分数逐位不变、排序不变。** 未触发不是功能缺失；常规、资料充分的查询由完整拓扑、直锚与 Ω 正常完成排序，不需要虫洞 RRF 来证明读出有效。
+
+路线、门控及融合实现见 [`rivermemo_wormhole.rs`](src/rivermemo_wormhole.rs:33)，两阶段排序接入见 [基线与条件式融合](src/rivermemo_topology_v3.rs:3006)。该通道是 RiverMemo 内部的特殊修正，不是第 8 节外部 Rerank+ 与 RiverMemo 的排位融合。
 
 ---
 
@@ -519,7 +546,7 @@ RAGDiary 的被动渠道有明确的控制面，而不是每轮无差别地执�
 
 ### 8.4 RAGDiary 原生多索引 / RiverMemo 联合路径
 
-显式日记权限与候选计划 → 原生 ANN → 合并、展开、去重与投影 → 同代观测读出 → 候选级并行路径、拓扑与锚接触计算 → 查询形态、Ω、候选自身奖励及共享预算 → 最终排序。
+显式日记权限与候选计划 → 原生 ANN → 合并、展开、去重与投影 → 同代观测读出 → 候选级并行路径、拓扑与锚接触计算 → 查询形态、Ω、候选自身奖励及共享预算 → 完整基线排序 → 仅在严格路线与候选落地条件满足时执行虫洞 RRF 修正 → 最终结果。
 
 权限过滤先于候选归一化和统计，显式空权限集合表示无权限。拓扑读出只处理共同候选边界内的内容，内部候选超集默认上限 300，不从全库补回池外漏召回项；该边界不等于各入口的原始 ANN 数量。实现见 [权限过滤](src/rivermemo_topology_v3.rs:2773) 与 [`select_superset()`](src/rivermemo_topology_v3.rs:1362)。
 
@@ -573,7 +600,7 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 - **动态虫洞配置**：原生输入路径为 config → spikeRouting，字段为 [dynamicWormholes](src/memo_sensing.rs)、[dynamicWormholeThreshold](src/memo_sensing.rs)、[dynamicWormholeSlots](src/memo_sensing.rs)、[dynamicWormholeMaxTargets](src/memo_sensing.rs)，默认依次为 true、0.2、2、4096。关闭开关、席位为 0 或目标预算为 0 均退回静态选边，阈值校验仍执行。
 - **不要假设上层自动透传**：动态虫洞技术节点未修改上层配置构造或调参文件；原生支持字段不代表管理器会透传任意新增字段。通过上层覆盖前须核对 [`KnowledgeBaseManager.js`](../KnowledgeBaseManager.js)，缺省调用使用 Rust 默认值。
 - 两个节点不要求数据库表结构迁移；动态虫洞不写持久化图，CSR 预处理可从旧资产冷加载派生。但源码更新不等于部署生效，必须重新构建匹配的原生产物并验证加载。Windows 部署需停止占用模块的进程、备份旧产物、核对新产物校验值后再启动；未透传动态开关时，不应把修改上层配置当成可靠的紧急关闭方式。
-- **版本验证**：Topology V3 是架构名称；当前 [原生读出标识](src/rivermemo_topology_v3.rs:19) 为 rivermemo.conservative-topology-v2.2，[统一管线标识](src/memo_pipeline.rs:23) 为 memo.conservative-topology-v2.2，其中 v2.2 是实现编号，不表示 RiverMemo V2。原生结果协议为 rivermemo-topology-v3-native-result-v1。停止占用模块的服务、替换对应平台产物并重启后，应核对真实查询返回的原生标识；空候选快捷返回、日志标题或公共门面的兼容常量不能证明原生模块已加载。单纯同步本文不触发编译、背景重建或数据库修改。
+- **版本验证**：Topology V3 是架构名称；当前 [原生读出标识](src/rivermemo_topology_v3.rs:22) 为 rivermemo.conservative-topology-v2.5-confidence-rrf，[统一管线标识](src/memo_pipeline.rs:23) 为 memo.conservative-topology-v2.2，两者分别标识读出与观测管线，不要求编号相同。原生结果协议为 rivermemo-topology-v3-native-result-v1。停止占用模块的服务、替换对应平台产物并重启后，应核对真实查询返回的原生标识；空候选快捷返回、日志标题或公共门面的兼容常量不能证明原生模块已加载。单纯同步本文不触发编译、背景重建或数据库修改。
 - 专项回归测试验证工程契约，不替代生产 release 验证、并发内存测量和真实检索质量验收；没有固定新增延迟或无损召回承诺。比较效果时须固定查询、资产、配置、权限和候选身份，并记录实际加载版本与耗时。详细步骤见 [`MEMO_DYNAMIC_WORMHOLES.md`](../docs/MEMO_DYNAMIC_WORMHOLES.md) 与 [`RIVERMEMO_TOPOLOGY_V3.md`](../docs/RIVERMEMO_TOPOLOGY_V3.md)。
 
 ---
@@ -595,6 +622,7 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 | 共享预算投影与流域扩展 | [`memo_projection.rs`](src/memo_projection.rs)、[`MEMO_FIELD_PROJECTION_BUDGET.md`](../docs/MEMO_FIELD_PROJECTION_BUDGET.md) |
 | 请求级动态虫洞、原生配置与部署 | [`memo_sensing.rs`](src/memo_sensing.rs)、[`MEMO_DYNAMIC_WORMHOLES.md`](../docs/MEMO_DYNAMIC_WORMHOLES.md) |
 | 观测运行时、拓扑与统一评分 | [`rivermemo_topology_v3.rs`](src/rivermemo_topology_v3.rs) |
+| 严格全局见证与边缘场景虫洞 RRF | [`rivermemo_wormhole.rs`](src/rivermemo_wormhole.rs) |
 | RiverMemo 数学详解 | [`RIVERMEMO_TOPOLOGY_V3.md`](../docs/RIVERMEMO_TOPOLOGY_V3.md) |
 | 全项目文档入口 | [`DOCUMENTATION_INDEX.md`](../docs/DOCUMENTATION_INDEX.md) |
 
