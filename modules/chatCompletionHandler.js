@@ -3,6 +3,7 @@ const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const roleDivider = require('./roleDivider.js');
+const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
 const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
@@ -1220,7 +1221,7 @@ class ChatCompletionHandler {
       });
 
       const willStreamResponse = isOriginalRequestStreaming;
-      const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
+      const finalUpstreamBody = projectToolBatchForUpstream({ ...originalBody, stream: willStreamResponse });
 
       finalContextStore.setLastFinalContext(finalUpstreamBody, {
         requestId: req.body.requestId || null,

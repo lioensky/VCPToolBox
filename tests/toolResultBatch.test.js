@@ -35,7 +35,8 @@ test('timestamps are unique, matching, and empty output stays empty', () => {
         const batch = formatToolResultBatch(['text'], false);
         const match = createBatchStartScanner().exec(batch);
         assert.ok(match);
-        assert.equal(new Date(match[1]).toISOString(), match[1]);
+        assert.ok(Number.isFinite(new Date(match[1]).getTime()));
+        assert.match(match[1], /[+-]\d{2}:\d{2}$/);
         assert.ok(!seen.has(match[1]));
         seen.add(match[1]);
         assert.equal(batch.slice(findBatchEnd(batch, match)).trim(), '');
