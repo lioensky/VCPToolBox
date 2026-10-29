@@ -9,6 +9,36 @@ const {
   shouldConvertReasoningForModel
 } = require('../reasoningContentAdapter.js');
 
+async function streamUpstreamErrorAndEnd(res, nextAiAPIResponse, originalModel, label = 'Tool Loop') {
+  let errorBodyText = '';
+  try {
+    errorBodyText = await nextAiAPIResponse.text();
+  } catch (e) {
+    errorBodyText = e.message || '';
+  }
+  const status = nextAiAPIResponse.status;
+  console.error(`[StreamHandler Upstream Error] (${label}) Upstream returned status ${status}: ${errorBodyText}`);
+
+  if (!res.writableEnded && !res.destroyed) {
+    const errorContent = `\n\n> [!WARNING]\n> **上游API错误 (${status})**: ${errorBodyText || nextAiAPIResponse.statusText || '未知错误'}\n`;
+    try {
+      res.write(`data: ${JSON.stringify({
+        id: `chatcmpl-VCP-tool-upstream-error-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: originalModel || 'unknown',
+        choices: [{ index: 0, delta: { content: errorContent }, finish_reason: 'stop' }],
+      })}\n\n`);
+      res.write('data: [DONE]\n\n', () => {
+        try { res.end(); } catch (e) { }
+      });
+    } catch (writeErr) {
+      console.error('[StreamHandler Upstream Error] Failed to write error to stream:', writeErr.message);
+      try { res.end(); } catch (e) { }
+    }
+  }
+}
+
 class StreamHandler {
   constructor(context) {
     this.context = context;
@@ -575,7 +605,11 @@ class StreamHandler {
           recursionDepth++;
           continue;
         }
-        break; // 异步工具错误后的上游失败，不得当作正常工具终结轮。
+        if (!nextAiAPIResponse.ok) {
+          await streamUpstreamErrorAndEnd(res, nextAiAPIResponse, originalBody?.model, 'Async Tool Loop');
+          completed = false;
+          break; // 异步工具错误后的上游失败，不得当作正常工具终结轮。
+        }
       }
 
       if (normalCalls.length === 0) {
@@ -731,7 +765,11 @@ class StreamHandler {
         { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
       );
 
-      if (!nextAiAPIResponse.ok) break;
+      if (!nextAiAPIResponse.ok) {
+        await streamUpstreamErrorAndEnd(res, nextAiAPIResponse, originalBody?.model, 'Normal Tool Loop');
+        completed = false;
+        break;
+      }
 
       let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
       validUpstreamTurns = validUpstreamTurns && nextAIResponseData.completed;
