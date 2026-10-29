@@ -474,10 +474,16 @@ async function fetchWithRetry(
       }
 
       if (shouldRetryStatus) {
+        if (i === maxAttempts - 1) {
+          if (debugMode) {
+            console.warn(`[Fetch Retry] Received status ${response.status}. All retries exhausted (${i + 1}/${maxAttempts}). Returning last response.`);
+          }
+          return response;
+        }
         const currentDelay = delay * (i + 1);
         if (debugMode) {
           console.warn(
-            `[Fetch Retry] Received status ${response.status}. Retrying in ${currentDelay}ms... (${i + 1}/${retries})`,
+            `[Fetch Retry] Received status ${response.status}. Retrying in ${currentDelay}ms... (${i + 1}/${maxAttempts})`,
           );
         }
         if (onRetry) {

@@ -20,7 +20,17 @@ async function streamUpstreamErrorAndEnd(res, nextAiAPIResponse, originalModel, 
   console.error(`[StreamHandler Upstream Error] (${label}) Upstream returned status ${status}: ${errorBodyText}`);
 
   if (!res.writableEnded && !res.destroyed) {
-    const errorContent = `\n\n> [!WARNING]\n> **上游API错误 (${status})**: ${errorBodyText || nextAiAPIResponse.statusText || '未知错误'}\n`;
+    let readableError = errorBodyText;
+    try {
+      const parsed = JSON.parse(errorBodyText);
+      if (parsed?.error?.message) {
+        readableError = parsed.error.message;
+      } else if (parsed?.message) {
+        readableError = parsed.message;
+      }
+    } catch (_) {}
+
+    const errorContent = `\n\n> [!WARNING]\n> **上游API错误 (HTTP ${status})**: ${readableError || nextAiAPIResponse.statusText || '未知错误'}\n`;
     try {
       res.write(`data: ${JSON.stringify({
         id: `chatcmpl-VCP-tool-upstream-error-${Date.now()}`,
