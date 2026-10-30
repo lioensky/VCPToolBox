@@ -367,9 +367,11 @@ class IndexRepository {
         return this.onDiaryIndexRemoved(String(diaryName || '').trim());
     }
 
-    deletePersisted(diaryName) {
-        if (!this.shouldPersist(diaryName)) return;
+    deletePersisted(diaryName, options = {}) {
+        const force = options === true || options?.force === true;
+        if (!force && !this.shouldPersist(diaryName)) return;
         const normalized = String(diaryName || '').trim();
+        if (!normalized) return;
         const safeName = this._diarySafeName(normalized);
         const legacyPath = path.join(
             this.config.storePath,

@@ -426,7 +426,7 @@ impl Task for TagConsistencyCommitTask {
                 ],
             ).map_err(|error| error.to_string())?;
             tx.execute(
-                "UPDATE kbm_prepared_plans SET status='committed' WHERE token=?1",
+                "UPDATE kbm_prepared_plans SET status='committed', plan_json='{}' WHERE token=?1",
                 [&plan.token],
             ).map_err(|error| error.to_string())?;
             details_for_write
@@ -914,7 +914,7 @@ impl Task for TagConsistencyPrepareTask {
         with_registered_write(&request.db_path, move |tx| {
             crate::storage::ensure_generation(tx, source_generation)?;
             tx.execute(
-                "DELETE FROM kbm_prepared_plans WHERE expires_at < ?1 AND status != 'committed'",
+                "DELETE FROM kbm_prepared_plans WHERE expires_at < ?1",
                 [now],
             ).map_err(|error| error.to_string())?;
             let count: i64 = tx.query_row(
