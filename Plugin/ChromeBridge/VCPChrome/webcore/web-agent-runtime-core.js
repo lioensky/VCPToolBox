@@ -471,6 +471,8 @@
                 if (response.result) response.result.fallbackUsed = true;
                 return response;
             }
+            const dispatchIdentity = await this.adapter.getTargetIdentity(request.targetContext);
+            const dispatchDocument = await this.adapter.getDocumentState(dispatchIdentity);
             const desired = parseBooleanParam(params.checked, true);
             if (action !== 'check' || state.currentChecked !== desired) {
                 const plan = action === 'type' ? { type: 'insert-text', text: String(params.value ?? params.text ?? '') }
@@ -489,8 +491,40 @@
                     occlusion: state.occlusion, actionPoint: state.point, targetResolution: state.targetResolution
                 }, request);
             } catch (error) {
+                // 物理分派后文档可能已经替换。只观察同一标签的身份切换，
+                // 不把旧句柄交给新页面重定位，也不把导航当成业务验证成功。
+                if (action === 'click') {
+                    try {
+                        const currentIdentity = await this.adapter.getTargetIdentity(request.targetContext);
+                        const currentDocument = await this.adapter.getDocumentState(currentIdentity);
+                        const sameTarget = dispatchIdentity.targetId != null &&
+                            String(currentIdentity.targetId) === String(dispatchIdentity.targetId);
+                        const runtimeChanged = dispatchIdentity.runtimeInstanceId != null &&
+                            currentIdentity.runtimeInstanceId != null &&
+                            currentIdentity.runtimeInstanceId !== dispatchIdentity.runtimeInstanceId;
+                        const generationChanged = dispatchDocument.documentGeneration != null &&
+                            currentDocument.documentGeneration != null &&
+                            String(currentDocument.documentGeneration) !== String(dispatchDocument.documentGeneration);
+                        if (sameTarget && (runtimeChanged || generationChanged)) {
+                            return {
+                                status: 'success', code: 'ACTION_DISPATCHED_DOCUMENT_CHANGED',
+                                message: '点击已分派，观察到同一标签文档切换；请读取新快照确认结果，勿重复点击',
+                                backendUsed, fallbackUsed,
+                                result: {
+                                    attempted: true, dispatched: true, verified: null,
+                                    navigationObserved: true, requiresFreshSnapshot: true,
+                                    retrySafe: false, backendUsed, fallbackUsed,
+                                    beforeIdentity: { ...dispatchIdentity, ...dispatchDocument },
+                                    afterIdentity: { ...currentIdentity, ...currentDocument },
+                                    verificationError: { code: error.code || null, message: error.message }
+                                }
+                            };
+                        }
+                    } catch (_) { /* 无法确权文档切换，保留原始失败。 */ }
+                }
                 error.backendUsed = backendUsed;
-                error.details = { ...error.details, backendUsed, fallbackUsed };
+                error.details = { ...error.details, backendUsed, fallbackUsed,
+                    dispatched: true, retrySafe: false, requiresFreshSnapshot: true };
                 throw error;
             }
             response.backendUsed = backendUsed;
