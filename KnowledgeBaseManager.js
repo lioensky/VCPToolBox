@@ -1091,10 +1091,22 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             )]
             : [];
 
+        const emptyDiaries = Array.isArray(result?.emptyDiaries)
+            ? [...new Set(
+                result.emptyDiaries
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )]
+            : [];
+
         // SQL cleanup invalidates affected runtime scopes atomically. Preserve
-        // endorsed disk baselines; restore replays authoritative deletions in memory.
+        // endorsed disk baselines for active diaries; remove disk files for vanished diaries.
         for (const diaryName of affectedDiaries) {
             this.diaryDateIndexCache.delete(diaryName);
+        }
+        for (const diaryName of emptyDiaries) {
+            this.diaryDateIndexCache.delete(diaryName);
+            this._deletePersistedDiaryIndex(diaryName, { force: true });
         }
 
         const missingFiles = Math.max(
@@ -1115,13 +1127,15 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             || orphanChunks > 0
             || orphanFileTags > 0
             || affectedDiaries.length > 0
+            || emptyDiaries.length > 0
         ) {
             console.warn(
                 `[KnowledgeBase] 🧹 Rust startup cleanup complete. ` +
                 `Removed ${missingFiles} missing file record(s), ` +
                 `${orphanChunks} orphan chunk(s), ` +
                 `${orphanFileTags} orphan file-tag relation(s), ` +
-                `touched ${affectedDiaries.length} diary index(es).`
+                `touched ${affectedDiaries.length} diary index(es), ` +
+                `pruned ${emptyDiaries.length} empty diary baseline(s).`
             );
         }
 
@@ -1129,14 +1143,14 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             missingFiles,
             orphanChunks,
             orphanFileTags,
-            affectedDiaries
+            affectedDiaries,
+            emptyDiaries
         };
     }
 
-    _deletePersistedDiaryIndex(diaryName) {
-        return this.indexRepository.deletePersisted(diaryName);
+    _deletePersistedDiaryIndex(diaryName, options = {}) {
+        return this.indexRepository.deletePersisted(diaryName, options);
     }
-
     _deleteAllPersistedDiaryIndexes() {
         return this.indexRepository.deleteAllPersisted();
     }
