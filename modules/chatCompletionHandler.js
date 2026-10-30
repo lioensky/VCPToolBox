@@ -3,6 +3,7 @@ const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const roleDivider = require('./roleDivider.js');
+const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
 const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
@@ -453,7 +454,7 @@ async function fetchWithRetry(
       });
       cleanup();
 
-      let shouldRetryStatus = response.status === 500 || response.status === 503 || response.status === 429;
+      let shouldRetryStatus = response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504 || response.status === 429;
       let retryMessage = response.statusText;
 
       // Gemini / NewAPI 偶发特殊空回：上游可能以 401 返回包含 token 的错误文本
@@ -474,10 +475,16 @@ async function fetchWithRetry(
       }
 
       if (shouldRetryStatus) {
+        if (i === maxAttempts - 1) {
+          if (debugMode) {
+            console.warn(`[Fetch Retry] Received status ${response.status}. All retries exhausted (${i + 1}/${maxAttempts}). Returning last response.`);
+          }
+          return response;
+        }
         const currentDelay = delay * (i + 1);
         if (debugMode) {
           console.warn(
-            `[Fetch Retry] Received status ${response.status}. Retrying in ${currentDelay}ms... (${i + 1}/${retries})`,
+            `[Fetch Retry] Received status ${response.status}. Retrying in ${currentDelay}ms... (${i + 1}/${maxAttempts})`,
           );
         }
         if (onRetry) {
@@ -1214,7 +1221,7 @@ class ChatCompletionHandler {
       });
 
       const willStreamResponse = isOriginalRequestStreaming;
-      const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
+      const finalUpstreamBody = projectToolBatchForUpstream({ ...originalBody, stream: willStreamResponse });
 
       finalContextStore.setLastFinalContext(finalUpstreamBody, {
         requestId: req.body.requestId || null,
@@ -1434,15 +1441,28 @@ class ChatCompletionHandler {
               response: { error: true, message: error.message }
             } ]);
         }
-      } else if (!res.writableEnded) {
+      } else if (!res.writableEnded && !res.destroyed) {
         // Headers already sent (error during streaming loop)
         console.error(
-          '[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.',
+          '[STREAM ERROR] Headers already sent. Streaming error chunk to client before ending stream:',
+          error.message,
         );
+        const errorContent = `\n\n> [!WARNING]\n> **流式响应中断 (上游连接异常)**: ${error.message}\n`;
+        try {
+          res.write(`data: ${JSON.stringify({
+            id: `chatcmpl-VCP-stream-error-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: originalBody?.model || 'unknown',
+            choices: [{ index: 0, delta: { content: errorContent }, finish_reason: 'stop' }],
+          })}\n\n`);
+        } catch (writeErr) {
+          console.error('[Stream Error Chunk Failed]:', writeErr.message);
+        }
         // Send [DONE] marker before ending the stream for graceful termination
         try {
           res.write('data: [DONE]\n\n', () => {
-            res.end();
+            try { res.end(); } catch (e) { }
           });
         } catch (writeError) {
           console.error('[Error Handler Stream Cleanup] Failed to write [DONE]:', writeError.message);

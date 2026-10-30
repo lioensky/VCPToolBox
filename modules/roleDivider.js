@@ -8,6 +8,8 @@
  * <<<[ROLE_DIVIDE_USER]>>> ... <<<[END_ROLE_DIVIDE_USER]>>>
  */
 
+const { createBatchStartScanner, findBatchEnd } = require('./toolResultBatch');
+
 const TAGS = {
     SYSTEM: {
         START: '<<<[ROLE_DIVIDE_SYSTEM]>>>',
@@ -77,8 +79,11 @@ function protectToolContent(message) {
         { start: '[[VCP调用结果信息汇总:', end: 'VCP调用结果结束]]' }
     ];
     const ranges = [];
+    const batchScanner = createBatchStartScanner();
     let cursor = 0;
     while (cursor < text.length) {
+        batchScanner.lastIndex = cursor;
+        const batch = batchScanner.exec(text);
         let selected = null;
         let start = -1;
         for (const marker of markers) {
@@ -87,6 +92,12 @@ function protectToolContent(message) {
                 selected = marker;
                 start = index;
             }
+        }
+        if (batch && (start === -1 || batch.index <= start)) {
+            const end = findBatchEnd(text, batch);
+            ranges.push({ start: batch.index, end });
+            cursor = end;
+            continue;
         }
         if (!selected) break;
 
