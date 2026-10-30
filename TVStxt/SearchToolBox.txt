@@ -30,7 +30,8 @@ danmaku_num:「始」(可选) 弹幕数量「末」,
 comment_num:「始」(可选) 评论数量「末」,
 snapshots:「始」(可选) 时间点截图，逗号分隔「末」,
 hd_snapshot:「始」true「末」, //是否调用 ffmpeg 获取超清截图
-need_subs:「始」true「末」, //是否获取字幕
+need_subs:「始」(可选) 提供截图时间点时默认 false，普通获取默认 true「末」,
+need_pbp:「始」(可选) 提供截图时间点时默认 false，普通获取默认 true「末」,
 
 ### 检索 B 站视频/UP主
 action:「始」search「末」,
