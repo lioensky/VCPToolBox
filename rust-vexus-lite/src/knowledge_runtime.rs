@@ -3367,6 +3367,7 @@ impl NativeKnowledgeRuntime {
         &self,
         db_path: String,
         root_path: String,
+        store_path: Option<String>,
     ) -> Result<AsyncTask<TrackedTask<OrphanCleanupTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
@@ -3382,6 +3383,7 @@ impl NativeKnowledgeRuntime {
         Ok(self.tracked_task(OrphanCleanupTask {
             db_path,
             root_path,
+            store_path,
         }))
     }
 

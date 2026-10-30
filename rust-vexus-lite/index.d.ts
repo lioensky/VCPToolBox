@@ -240,7 +240,7 @@ export declare class NativeKnowledgeRuntime {
    * 文件系统扫描在 N-API 后台任务中执行，数据库删除统一提交到
    * NativeKnowledgeRuntime 所属的 SQLite Write Actor。
    */
-  cleanupDatabaseOrphans(dbPath: string, rootPath: string): Promise<unknown>
+  cleanupDatabaseOrphans(dbPath: string, rootPath: string, storePath?: string | undefined | null): Promise<unknown>
   /**
    * 在 Rust Read Pool 中确认当前 pairwise 模型已有健康缓存后，
    * 通过 Write Actor 删除旧模型签名的 pairwise 数值。

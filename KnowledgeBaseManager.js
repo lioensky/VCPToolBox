@@ -1080,7 +1080,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
         const raw = await this.nativeKnowledgeRuntime.cleanupDatabaseOrphans(
             this.dbPath,
-            this.config.rootPath
+            this.config.rootPath,
+            this.config.storePath
         );
         const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
         const affectedDiaries = Array.isArray(result?.affectedDiaries)
@@ -1099,14 +1100,23 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             )]
             : [];
 
-        // SQL cleanup invalidates affected runtime scopes atomically. Preserve
-        // endorsed disk baselines for active diaries; remove disk files for vanished diaries.
+        const pendingAssetCleanup = Array.isArray(result?.pendingAssetCleanup)
+            ? result.pendingAssetCleanup
+            : [];
+        if (pendingAssetCleanup.length > 0) {
+            console.warn(
+                `[KnowledgeBase] Diary asset cleanup deferred for ${pendingAssetCleanup.length} ` +
+                'diary index(es); durable tasks will be retried at the next startup.'
+            );
+        }
+
+        // Rust owns retirement, disk removal and durable retry under the publication gate.
+        // JavaScript only invalidates its lightweight date cache.
         for (const diaryName of affectedDiaries) {
             this.diaryDateIndexCache.delete(diaryName);
         }
         for (const diaryName of emptyDiaries) {
             this.diaryDateIndexCache.delete(diaryName);
-            this._deletePersistedDiaryIndex(diaryName, { force: true });
         }
 
         const missingFiles = Math.max(
@@ -1144,7 +1154,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             orphanChunks,
             orphanFileTags,
             affectedDiaries,
-            emptyDiaries
+            emptyDiaries,
+            pendingAssetCleanup
         };
     }
 

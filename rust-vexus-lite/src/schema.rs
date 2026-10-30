@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS migration_deleted_chunks (
     PRIMARY KEY(cache_file_id, chunk_index),
     FOREIGN KEY(cache_file_id) REFERENCES migration_deleted_files(id) ON DELETE CASCADE
 );
+-- Durable outbox: SQL retirement and disk deletion cannot commit atomically.
+CREATE TABLE IF NOT EXISTS kbm_pending_diary_asset_cleanup (
+    diary_name TEXT PRIMARY KEY NOT NULL,
+    created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS chunk_index_baselines (
     diary_name TEXT NOT NULL,
     generation INTEGER NOT NULL,

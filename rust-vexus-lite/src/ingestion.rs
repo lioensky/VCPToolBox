@@ -1941,11 +1941,35 @@ pub(crate) struct OrphanCleanupResult {
     pub(crate) orphan_file_tags: usize,
     pub(crate) affected_diaries: Vec<String>,
     pub(crate) empty_diaries: Vec<String>,
+    pub(crate) pending_asset_cleanup: Vec<String>,
 }
 
 pub struct OrphanCleanupTask {
     pub(crate) db_path: String,
     pub(crate) root_path: String,
+    pub(crate) store_path: Option<String>,
+}
+
+// Only fixed, hashed diary asset names may be removed. Never remove directories.
+fn remove_diary_assets(store: &std::path::Path, diary: &str) -> bool {
+    let hash = format!("{:x}", md5::compute(diary.trim().as_bytes()));
+    let mut complete = true;
+    for suffix in ["", "_a", "_b", "_slot_a", "_slot_b"] {
+        for extension in ["vec", "usearch"] {
+            for temporary in ["", ".tmp"] {
+                let path = store.join(format!("index_diary_{}{}.{}{}", hash, suffix, extension, temporary));
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        complete = false;
+                        eprintln!("[KBM] Diary asset cleanup deferred for {}: {}", path.display(), error);
+                    }
+                }
+            }
+        }
+    }
+    complete
 }
 
 impl Task for OrphanCleanupTask {
@@ -2184,6 +2208,13 @@ impl Task for OrphanCleanupTask {
                     }
                 }
             }
+            for diary in &empty_diaries {
+                tx.execute(
+                    "INSERT OR IGNORE INTO kbm_pending_diary_asset_cleanup(diary_name,created_at)
+                     VALUES (?1,?2)",
+                    params![diary, now],
+                ).map_err(|error| format!("Queue diary asset cleanup failed: {}", error))?;
+            }
             if !empty_diaries.is_empty() {
                 tx.execute(
                     "DELETE FROM chunk_index_baseline_entries
@@ -2226,6 +2257,45 @@ impl Task for OrphanCleanupTask {
             .take()
             .ok_or_else(|| Error::from_reason("Orphan cleanup completed without details"))?;
 
+        // The publication gate remains held across filesystem removal and acknowledgement.
+        // A crash at any point leaves an idempotent task for the next startup.
+        let pending = with_registered_read(&self.db_path, |connection| {
+            let mut statement = connection.prepare(
+                "SELECT diary_name FROM kbm_pending_diary_asset_cleanup ORDER BY diary_name",
+            ).map_err(|error| error.to_string())?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())
+        }).map_err(Error::from_reason)?;
+        let mut pending_asset_cleanup = Vec::new();
+        for diary in pending {
+            let has_new_baseline = with_registered_read(&self.db_path, |connection| {
+                connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chunk_index_baselines WHERE diary_name=?1)",
+                    [&diary], |row| row.get::<_, bool>(0),
+                ).map_err(|error| error.to_string())
+            }).map_err(Error::from_reason)?;
+            let complete = has_new_baseline || self.store_path.as_ref()
+                .filter(|store| !store.trim().is_empty())
+                .map(|store| remove_diary_assets(std::path::Path::new(store), &diary))
+                .unwrap_or(false);
+            if complete {
+                with_registered_write(&self.db_path, move |tx| {
+                    tx.execute(
+                        "DELETE FROM kbm_pending_diary_asset_cleanup WHERE diary_name=?1",
+                        [&diary],
+                    ).map_err(|error| error.to_string())?;
+                    Ok(WriteReceipt {
+                        operation: "ack_diary_asset_cleanup".into(),
+                        database_generation: 0,
+                        facts_changed: false,
+                    })
+                }).map_err(Error::from_reason)?;
+            } else {
+                pending_asset_cleanup.push(diary);
+            }
+        }
+
         let mut affected_diaries: Vec<String> = affected_diaries.into_iter().collect();
         affected_diaries.sort();
         empty_diaries.sort();
@@ -2236,6 +2306,7 @@ impl Task for OrphanCleanupTask {
             orphan_file_tags,
             affected_diaries,
             empty_diaries,
+            pending_asset_cleanup,
         })
         .map_err(|error| Error::from_reason(format!(
             "Encode orphan cleanup result failed: {}",
@@ -2382,13 +2453,14 @@ mod audit_orphan_tests {
         storage.submit_write(|tx| {
             tx.execute_batch(
                 "INSERT INTO files(path,diary_name,checksum,mtime,size)
-                 VALUES ('missing.txt','test','hash',0,0);
+                 VALUES ('missing.txt','test','hash',0,0), ('live.txt','test','live',0,0);
                  INSERT INTO chunks(file_id,chunk_index,content) VALUES (1,0,'gone');
                  INSERT INTO kbm_index_states VALUES ('diary:test','ready',1,1,NULL,0);"
             ).map_err(|error| error.to_string())?;
             Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
         }).unwrap();
-        OrphanCleanupTask { db_path: db.clone(), root_path: root.to_string_lossy().into_owned() }
+        std::fs::write(root.join("live.txt"), "live").unwrap();
+        OrphanCleanupTask { db_path: db.clone(), root_path: root.to_string_lossy().into_owned(), store_path: None }
             .compute().unwrap();
         let state: (String, i64, i64) = storage.read(|connection| {
             connection.query_row(
