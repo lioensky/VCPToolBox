@@ -1080,7 +1080,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
 
         const raw = await this.nativeKnowledgeRuntime.cleanupDatabaseOrphans(
             this.dbPath,
-            this.config.rootPath
+            this.config.rootPath,
+            this.config.storePath
         );
         const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
         const affectedDiaries = Array.isArray(result?.affectedDiaries)
@@ -1091,9 +1092,30 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             )]
             : [];
 
-        // SQL cleanup invalidates affected runtime scopes atomically. Preserve
-        // endorsed disk baselines; restore replays authoritative deletions in memory.
+        const emptyDiaries = Array.isArray(result?.emptyDiaries)
+            ? [...new Set(
+                result.emptyDiaries
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+            )]
+            : [];
+
+        const pendingAssetCleanup = Array.isArray(result?.pendingAssetCleanup)
+            ? result.pendingAssetCleanup
+            : [];
+        if (pendingAssetCleanup.length > 0) {
+            console.warn(
+                `[KnowledgeBase] Diary asset cleanup deferred for ${pendingAssetCleanup.length} ` +
+                'diary index(es); durable tasks will be retried at the next startup.'
+            );
+        }
+
+        // Rust owns retirement, disk removal and durable retry under the publication gate.
+        // JavaScript only invalidates its lightweight date cache.
         for (const diaryName of affectedDiaries) {
+            this.diaryDateIndexCache.delete(diaryName);
+        }
+        for (const diaryName of emptyDiaries) {
             this.diaryDateIndexCache.delete(diaryName);
         }
 
@@ -1115,13 +1137,15 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             || orphanChunks > 0
             || orphanFileTags > 0
             || affectedDiaries.length > 0
+            || emptyDiaries.length > 0
         ) {
             console.warn(
                 `[KnowledgeBase] 🧹 Rust startup cleanup complete. ` +
                 `Removed ${missingFiles} missing file record(s), ` +
                 `${orphanChunks} orphan chunk(s), ` +
                 `${orphanFileTags} orphan file-tag relation(s), ` +
-                `touched ${affectedDiaries.length} diary index(es).`
+                `touched ${affectedDiaries.length} diary index(es), ` +
+                `pruned ${emptyDiaries.length} empty diary baseline(s).`
             );
         }
 
@@ -1129,14 +1153,15 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             missingFiles,
             orphanChunks,
             orphanFileTags,
-            affectedDiaries
+            affectedDiaries,
+            emptyDiaries,
+            pendingAssetCleanup
         };
     }
 
-    _deletePersistedDiaryIndex(diaryName) {
-        return this.indexRepository.deletePersisted(diaryName);
+    _deletePersistedDiaryIndex(diaryName, options = {}) {
+        return this.indexRepository.deletePersisted(diaryName, options);
     }
-
     _deleteAllPersistedDiaryIndexes() {
         return this.indexRepository.deleteAllPersisted();
     }

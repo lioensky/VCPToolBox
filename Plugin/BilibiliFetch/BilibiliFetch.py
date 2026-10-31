@@ -808,11 +808,17 @@ def get_accessible_url(local_path: str) -> str:
     prefix = "file://" if file_path.startswith('/') else "file:///"
     return prefix + urllib.parse.quote(file_path, safe='/:')
 
-def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> str:
+def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool | None = None, need_pbp: bool | None = None, hd_snapshot: bool = False) -> str:
     """
     Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, snapshots, and PBP.
     Returns a dictionary suitable for VCP multimodal output.
     """
+    # 时间点截图默认仅取画面；调用者可显式开启字幕和高能进度条。
+    if need_subs is None:
+        need_subs = not bool(snapshot_at_times)
+    if need_pbp is None:
+        need_pbp = not bool(snapshot_at_times)
+
     # 1. Resolve short URL
     resolved_url = resolve_short_url(video_input)
     
@@ -1327,27 +1333,27 @@ def handle_single_request(data: dict):
         if isinstance(snapshots_raw, list):
             snapshot_at_times = snapshots_raw
         elif isinstance(snapshots_raw, str) and snapshots_raw.strip():
-            snapshot_at_times = [s.strip() for s in snapshots_raw.split(',')]
+            snapshot_at_times = [s.strip() for s in snapshots_raw.split(',') if s.strip()]
 
         if not url:
             raise ValueError("Missing required argument: url")
 
         # Robust boolean parsing
-        need_subs = data.get('need_subs', True)
+        need_subs = data.get('need_subs', not bool(snapshot_at_times))
         if isinstance(need_subs, str):
-            need_subs = need_subs.lower() != 'false'
+            need_subs = need_subs.strip().lower() not in ('false', '0', 'no', 'off', '')
         else:
             need_subs = bool(need_subs)
 
-        need_pbp = data.get('need_pbp', True)
+        need_pbp = data.get('need_pbp', not bool(snapshot_at_times))
         if isinstance(need_pbp, str):
-            need_pbp = need_pbp.lower() != 'false'
+            need_pbp = need_pbp.strip().lower() not in ('false', '0', 'no', 'off', '')
         else:
             need_pbp = bool(need_pbp)
             
         hd_snapshot = data.get('hd_snapshot', False)
         if isinstance(hd_snapshot, str):
-            hd_snapshot = hd_snapshot.lower() in ('true', '1', 'yes')
+            hd_snapshot = hd_snapshot.strip().lower() in ('true', '1', 'yes', 'on')
         else:
             hd_snapshot = bool(hd_snapshot)
 

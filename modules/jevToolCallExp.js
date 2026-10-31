@@ -435,7 +435,7 @@ class JevToolCallExp {
 
         if (toolKey === 'bilibili_fetch') {
             args.url = main;
-            this._applyBilibiliConstraints(args, constraints);
+            this._applyBilibiliConstraints(args, constraints, parsed.raw);
             return args;
         }
 
@@ -538,32 +538,54 @@ class JevToolCallExp {
         return match ? match[1] : null;
     }
 
-    _applyBilibiliConstraints(args, constraints) {
-        const joined = constraints.join(' ');
+    _applyBilibiliConstraints(args, constraints, raw = '') {
+        // 任务负载中的标题/URL 不参与内容意图判断；自然句和 [] 约束共同生效。
+        const intent = (raw || constraints.join(' ')).replace(/【[\s\S]*?】/g, ' ');
+        const contentWords = '高能进度条|高能时间点|高能进度|高能点|弹幕热度|PBP|字幕|(?:热门)?评论|(?:热门)?弹幕|截图|快照';
+        const negative = new RegExp(
+            `(?:不要|无需|不用|不需要|不带|不|跳过|关闭|省略)(?:再|重复)?(?:获取|返回|附带|带上|包含)?\\s*((?:(?:${contentWords})(?:\\s*(?:、|和|及|与|以及|，|,)\\s*)?)+)`,
+            'gi'
+        );
+        const excluded = [];
+        const positive = intent.replace(negative, (match, words) => {
+            excluded.push(words);
+            return ' ';
+        });
+        const excludedText = excluded.join(' ');
+        const selection = positive.match(/(?:只|仅)(?:需(?:要)?|要|获取|返回|看|取|补(?:充)?|截)[\s\S]*/);
+        const requested = selection ? selection[0] : positive;
+        const wantsSnapshots = /截图|快照|snapshot/i.test(requested);
         const snapshots = [];
-        for (const constraint of constraints) {
-            if (!/截图|快照|snapshot/i.test(constraint)) continue;
-            const values = constraint.match(/\d+(?=\s*(?:秒|s\b|[,，]|$))/gi) || [];
-            snapshots.push(...values);
+        const timePattern = /(?:截图|快照|snapshots?)\s*(?:时间点|时间)?\s*(?:在)?\s*[:：]?\s*(\d+(?:\.\d+)?(?:\s*(?:秒|s\b)?\s*[,，、]\s*\d+(?:\.\d+)?)*\s*(?:秒|s\b)?)/gi;
+        for (const match of requested.matchAll(timePattern)) {
+            snapshots.push(...match[1].match(/\d+(?:\.\d+)?/g));
         }
-        if (snapshots.length > 0) {
-            args.snapshots = uniqueStrings(snapshots).join(',');
-            args.hd_snapshot = 'true';
-        } else {
-            const screenshotHint = parseBooleanHint(
-                joined,
-                ['截图', '快照', 'snapshot'],
-                ['不要截图', '无需截图', '不截图']
-            );
-            if (screenshotHint === true) args.hd_snapshot = 'true';
-            if (screenshotHint === false) args.hd_snapshot = 'false';
-        }
+        if (snapshots.length > 0) args.snapshots = uniqueStrings(snapshots).join(',');
+        if (wantsSnapshots) args.hd_snapshot = 'true';
+        if (/截图|快照|snapshot/i.test(excludedText)) args.hd_snapshot = 'false';
 
-        const danmaku = joined.match(/弹幕\s*(\d+)/);
-        const comments = joined.match(/评论\s*(\d+)/);
-        if (danmaku) args.danmaku_num = danmaku[1];
-        if (comments) args.comment_num = comments[1];
-        if (/不要字幕|无需字幕/.test(joined)) args.need_subs = 'false';
+        const defaults = { ...args };
+        // 截图与“只要…”采用按需选择；普通视频获取保留完整内容默认值。
+        if (wantsSnapshots || selection) {
+            args.need_subs = 'false';
+            args.need_pbp = 'false';
+            args.danmaku_num = '0';
+            args.comment_num = '0';
+        }
+        for (const [pattern, key, isCount] of [
+            [/字幕/, 'need_subs', false],
+            [/高能进度条|高能时间点|高能进度|高能点|弹幕热度|PBP/i, 'need_pbp', false],
+            [/弹幕(?!热度)/, 'danmaku_num', true],
+            [/评论/, 'comment_num', true]
+        ]) {
+            if (pattern.test(requested)) args[key] = isCount ? (defaults[key] || '20') : 'true';
+            if (pattern.test(excludedText)) args[key] = isCount ? '0' : 'false';
+        }
+        for (const [word, key] of [['弹幕', 'danmaku_num'], ['评论', 'comment_num']]) {
+            if (new RegExp(word).test(excludedText)) continue;
+            const count = requested.match(new RegExp(`${word}\\s*(\\d+)|(?:取|获取|返回)?\\s*(\\d+)\\s*条\\s*(?:热门)?${word}`));
+            if (count) args[key] = count[1] || count[2];
+        }
     }
 
     _resolveUrlFetchMode(constraints, tool, raw = '') {

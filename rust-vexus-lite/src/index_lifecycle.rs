@@ -730,6 +730,12 @@ impl Task for IndexCheckpointTask {
                     }
                     transaction
                         .execute(
+                            "DELETE FROM chunk_index_baseline_entries WHERE diary_name = ?1 AND generation != ?2",
+                            rusqlite::params![diary, generation as i64],
+                        )
+                        .map_err(|error| format!("Prune diary baseline entries failed: {}", error))?;
+                    transaction
+                        .execute(
                             "DELETE FROM chunk_index_baselines WHERE diary_name = ?1 AND generation != ?2",
                             rusqlite::params![diary, generation as i64],
                         )
@@ -789,6 +795,12 @@ impl Task for IndexCheckpointTask {
                             }).to_string()],
                         )
                         .map_err(|error| format!("Publish Tag active baseline failed: {}", error))?;
+                    transaction
+                        .execute(
+                            "DELETE FROM tag_index_baseline_entries WHERE generation != ?1",
+                            rusqlite::params![generation as i64],
+                        )
+                        .map_err(|error| format!("Prune Tag baseline entries failed: {}", error))?;
                     transaction
                         .execute(
                             "DELETE FROM tag_index_baselines WHERE generation != ?1",

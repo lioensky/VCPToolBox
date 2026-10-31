@@ -497,7 +497,68 @@
             return ` value=${JSON.stringify(value)}`;
         }
 
+        // 点击入口拥有自己的视觉语义，不依赖正文图片的尺寸、评分与16张配额。
+        function getInteractiveMedia(element) {
+            const media = [];
+            const seen = new WeakSet();
+            let remaining = 512;
+            function visit(node, inheritedTitle = '') {
+                if (!node || seen.has(node) || remaining-- <= 0 || media.length >= 4) return;
+                seen.add(node);
+                if (node.nodeType !== NodeObject.ELEMENT_NODE || !isVisible(node)) return;
+                if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME'].includes(node.tagName)) return;
+                // 不借用独立子操作的名称，也不把它的图标算到外层入口上。
+                if (node !== element && node.matches(
+                    'a,button,input,textarea,select,[role="button"],[role="link"],[onclick],[tabindex],[contenteditable]'
+                ) && pageCore.isInteractive(node) &&
+                    !['IMG', 'VIDEO'].includes(node.tagName)) {
+                    const sameLink = element.tagName === 'A' && node.tagName === 'A' &&
+                        element.href && element.href === node.href;
+                    if (!sameLink) return;
+                }
+                const title = pageCore.normalizeAttribute(
+                    node.getAttribute('aria-label') || node.getAttribute('title') || inheritedTitle
+                ).slice(0, 240);
+                if (['IMG', 'VIDEO'].includes(node.tagName)) {
+                    let url = '';
+                    const source = node.tagName === 'VIDEO'
+                        ? node.poster
+                        : (node.currentSrc || node.getAttribute('src') || node.getAttribute('data-src'));
+                    try {
+                        const parsed = new URL(source || '', documentObject.baseURI);
+                        if (source && ['http:', 'https:'].includes(parsed.protocol)) url = parsed.href;
+                    } catch (_) { /* 无效或非网络图片不暴露为资源URL。 */ }
+                    const alt = pageCore.normalizeAttribute(node.getAttribute('alt')).slice(0, 240);
+                    media.push({ title: title || alt, alt, url });
+                    return;
+                }
+                if (node.shadowRoot) {
+                    for (const child of node.shadowRoot.children) visit(child, title);
+                }
+                for (const child of node.children) visit(child, title);
+            }
+            visit(element);
+            // 覆盖链接可能与封面互为兄弟，名字属于当前 Shadow 宿主。
+            // 仅在根内所有链接均指向同一目的地时借用，避免多卡片串名。
+            const root = element.getRootNode?.();
+            const host = root?.host;
+            if (!media.length && element.tagName === 'A' && element.href && host &&
+                (host.getAttribute('title') || host.getAttribute('aria-label'))) {
+                const links = Array.from(root.querySelectorAll('a[href]'));
+                if (links.length && links.every(link => link.href === element.href)) {
+                    // 宿主本身不是另一项操作；遍历仍会跳过其独立子操作。
+                    for (const child of root.children) {
+                        visit(child, pageCore.normalizeAttribute(
+                            host.getAttribute('aria-label') || host.getAttribute('title')
+                        ).slice(0, 240));
+                    }
+                }
+            }
+            return media;
+        }
+
         function registerElement(element, context) {
+            const media = pageCore.isInputLikeElement(element) ? [] : getInteractiveMedia(element);
             const ordinal = context.elements.length + 1;
             const signature = pageCore.createElementSignature(element);
             const elementKind = pageCore.getElementKind(element);
@@ -512,6 +573,7 @@
                 : '') ||
                 signature.accessibleName ||
                 signature.text ||
+                media.find(item => item.title)?.title ||
                 element.name ||
                 element.id ||
                 '无标题元素';
@@ -556,6 +618,7 @@
                 elementKind,
                 kindIndex,
                 label,
+                media,
                 kind: elementKind,
                 regionId,
                 contentBlockId: blockId,
@@ -610,7 +673,10 @@
             };
             context.elements.push(record);
             if (block) block.handleIds.push(handleId);
-            return `【${label} ${agentRef}｜${handleId}｜${strictHandle}】${formatInputValueForMarkdown(record)}`;
+            const mediaText = media.filter(item => item.url).map(item =>
+                ` [封面 title=${JSON.stringify(item.title)} url=${JSON.stringify(item.url)}]`
+            ).join('');
+            return `【${label} ${agentRef}｜${handleId}｜${strictHandle}】${formatInputValueForMarkdown(record)}${mediaText}`;
         }
 
         function buildScrollContext(elements) {
@@ -742,14 +808,24 @@
                     return String(node.textContent || '').replace(/\s+/g, ' ').trim() + ' ';
                 }
                 if (node.nodeType !== NodeObject.ELEMENT_NODE) return '';
-                if (!isVisible(node) || ignored.has(node.tagName)) return '';
+                if (ignored.has(node.tagName)) return '';
+                const nodeStyle = windowObject.getComputedStyle(node);
+                // display:none/透明子树不可见；零尺寸包装层仍可能包含溢出或
+                // Shadow DOM 中正常布局的子节点，不能按包装层矩形剪掉整树。
+                if (nodeStyle.display === 'none' || nodeStyle.visibility === 'hidden' ||
+                    Number.parseFloat(nodeStyle.opacity || '1') <= 0) return '';
+                const nodeVisible = isVisible(node);
                 // 上一轮快照写入的 data-vcp-handle 不得导致当前快照跳过整棵子树。
                 // processed 已负责本轮去重；交互节点分支也会优先扫描其内部视觉对象。
                 if (node.tagName === 'IMG' || node.tagName === 'VIDEO') {
                     processed.add(node);
-                    return registerPageImage(node, context);
+                    return nodeVisible ? registerPageImage(node, context) : '';
                 }
-                if (pageCore.isInteractive(node)) {
+                const explicitActionSelector =
+                    'a,button,input,textarea,select,[role="button"],[role="link"],[onclick],[tabindex],[contenteditable]';
+                const shadowHasExplicitAction = node.shadowRoot?.querySelector(explicitActionSelector);
+                const heuristicShadowWrapper = shadowHasExplicitAction && !node.matches(explicitActionSelector);
+                if (nodeVisible && !heuristicShadowWrapper && pageCore.isInteractive(node)) {
                     processed.add(node);
                     const visualMarkers = Array.from(node.querySelectorAll('img,video'))
                         .filter(visual => !processed.has(visual))
@@ -1371,7 +1447,17 @@
             const hits = [];
             let occluder = null;
             for (const point of points) {
-                const hit = documentObject.elementFromPoint(point.x, point.y);
+                let hit = documentObject.elementFromPoint(point.x, point.y);
+                // document 命中 Shadow 宿主并不表示目标被遮挡。
+                // 沿同一坐标继续命中，必须到达真实目标，不能仅凭宿主关系放行。
+                const visitedHits = new Set();
+                for (let depth = 0; hit?.shadowRoot && depth < 32; depth++) {
+                    if (visitedHits.has(hit)) break;
+                    visitedHits.add(hit);
+                    const innerHit = hit.shadowRoot.elementFromPoint?.(point.x, point.y);
+                    if (!innerHit || innerHit === hit) break;
+                    hit = innerHit;
+                }
                 const related = hit === element || element.contains(hit) || hit?.contains?.(element) ||
                     (hit?.tagName === 'LABEL' && hit.htmlFor === element.id) ||
                     (element.tagName === 'LABEL' && element.control === hit);

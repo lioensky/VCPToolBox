@@ -123,6 +123,8 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
     Ok(())
 }
 
+// Legacy additive readout retained only for regression tests; production uses RRF.
+#[cfg(test)]
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Readout {
@@ -178,6 +180,7 @@ pub(super) fn build(input: &NativeInput, vectors: &TagVectorPool, artifact: &Nat
     Model { routes, eligible_routes }
 }
 
+#[cfg(test)]
 pub(super) fn evaluate(model: &Model, curve: &Curve, artifact: &NativeArtifact) -> Readout {
     let mut output = Readout {
         available: !model.routes.is_empty(),
@@ -250,11 +253,7 @@ pub(super) fn correction(model: &Model, curve: &Curve, input: &NativeInput,
     best
 }
 
-pub(super) fn compare(a: &Correction, b: &Correction) -> Ordering {
-    b.eligible.cmp(&a.eligible)
-        .then_with(|| b.evidence.total_cmp(&a.evidence))
-}
-
+#[cfg(test)]
 pub(super) fn augment(item: &mut ScoredWork, readout: &Readout,
     omega: &OmegaOutput, config: &NativeConfig) {
     if !readout.available || readout.score <= 0.0 { return; }
