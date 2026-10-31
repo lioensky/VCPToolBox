@@ -400,6 +400,35 @@ class JevToolCallExp {
             return args;
         }
 
+        if (toolKey === 'yousearch') {
+            const effortAliases = {
+                lite: ['lite', '轻量', '快速', '快速查证'],
+                standard: ['standard', '标准', '标准研究'],
+                deep: ['deep', '深度', '深度研究']
+            };
+            const remaining = [];
+            let selectedEffort = null;
+            for (const constraint of constraints) {
+                const explicit = constraint.match(/^(?:档位|研究深度|research_effort)\s*[:：]\s*(.+)$/i);
+                const value = (explicit ? explicit[1] : constraint).trim().toLowerCase();
+                const effort = Object.keys(effortAliases).find(key => effortAliases[key].includes(value));
+                if (explicit && !effort) {
+                    throw new Error('YouSearch 档位仅支持 lite、standard、deep。');
+                }
+                if (effort) {
+                    if (selectedEffort && selectedEffort !== effort) {
+                        throw new Error('YouSearch 一次调用只能指定一个研究档位。');
+                    }
+                    selectedEffort = effort;
+                } else {
+                    remaining.push(constraint);
+                }
+            }
+            if (selectedEffort) args.research_effort = selectedEffort;
+            args.SearchTopic = [main, ...remaining].join('\n');
+            return args;
+        }
+
         if (toolKey === 'google') {
             args.q = [main, ...constraints].join(' ');
             this._applyGoogleLocale(args, constraints);

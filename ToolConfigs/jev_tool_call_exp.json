@@ -15,6 +15,13 @@
             "ShowURL": "false"
           }
         },
+        "yousearch": {
+          "plugin": "YouSearch",
+          "aliases": ["yousearch", "you.com", "you搜索", "优搜索"],
+          "fixedArgs": {
+            "research_effort": "standard"
+          }
+        },
         "google": {
           "plugin": "SerpSearch",
           "aliases": ["google", "谷歌", "谷歌搜索"],
