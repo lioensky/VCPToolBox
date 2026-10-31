@@ -17,7 +17,7 @@
   "configSchema": {
     "YouSearchKey": {
       "type": "string",
-      "description": "You.com API Key，通过 X-API-Key 请求头发送。"
+      "description": "You.com API Key，支持用逗号或竖线分隔多个 Key；每次请求随机选择一个，通过 X-API-Key 请求头发送。"
     },
     "YouSearchUrl": {
       "type": "string",

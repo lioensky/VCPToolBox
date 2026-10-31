@@ -2,6 +2,7 @@
 
 const path = require('path');
 const axios = require('axios');
+const { randomInt } = require('crypto');
 const dotenv = require('dotenv');
 const manifest = require('./plugin-manifest.json');
 
@@ -114,8 +115,9 @@ function describeError(error) {
 async function main(request, { env = process.env, http = axios } = {}) {
     try {
         const payload = buildPayload(request, env);
-        const key = env.YouSearchKey?.trim();
-        if (!key) throw new Error('请在插件配置中设置 YouSearchKey。');
+        const keys = [...new Set(String(env.YouSearchKey || '').split(/[,|]/).map(key => key.trim()).filter(Boolean))];
+        if (keys.length === 0) throw new Error('请在插件配置中设置 YouSearchKey。');
+        const key = keys[randomInt(keys.length)];
         const url = new URL(env.YouSearchUrl || 'https://api.you.com/v1/research');
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
             throw new Error('YouSearchUrl 必须是无内嵌认证信息的 HTTP(S) 地址。');
