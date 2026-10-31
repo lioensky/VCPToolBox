@@ -1360,6 +1360,26 @@ class TDBKnowledgeManager {
     _estimateOpenLibraryBytes(handle) {
         if (!handle) return 0;
 
+        // 优先使用 TriviumDB 0.9.0+ 免锁 instanceStats().memory.estimated_memory_bytes 或 estimatedMemory()
+        if (typeof handle.db?.instanceStats === 'function') {
+            try {
+                const inst = handle.db.instanceStats();
+                const instBytes = Number(inst?.memory?.estimated_memory_bytes);
+                if (Number.isFinite(instBytes) && instBytes >= 0) {
+                    return Math.round(instBytes);
+                }
+            } catch (_) { }
+        }
+
+        if (typeof handle.db?.estimatedMemory === 'function') {
+            try {
+                const exactBytes = Number(handle.db.estimatedMemory());
+                if (Number.isFinite(exactBytes) && exactBytes >= 0) {
+                    return Math.round(exactBytes);
+                }
+            } catch (_) { }
+        }
+
         let diskSize = 0;
         try {
             if (handle.path && fsSync.existsSync(handle.path)) {
@@ -1368,7 +1388,7 @@ class TDBKnowledgeManager {
             }
         } catch (_) { }
 
-        // TriviumDB 原生句柄的常驻内存没有统一 JS API；用磁盘库大小的活跃窗口 + 基础句柄开销做诊断级估算。
+        // 旧版回退：用磁盘库大小的活跃窗口 + 基础句柄开销做诊断级估算。
         const activeWindowBytes = Math.min(diskSize, 256 * 1024 * 1024) * 0.25;
         return Math.round((16 * 1024 * 1024) + activeWindowBytes);
     }
@@ -1376,7 +1396,7 @@ class TDBKnowledgeManager {
     _safeLibraryStats(handle) {
         if (!handle?.db) return null;
 
-        for (const methodName of ['stats', 'getStats', 'memoryUsage', 'memory_usage']) {
+        for (const methodName of ['instanceStats', 'storageInfo', 'stats', 'getStats', 'memoryUsage', 'memory_usage']) {
             if (typeof handle.db[methodName] !== 'function') continue;
             try {
                 return {
