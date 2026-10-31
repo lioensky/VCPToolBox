@@ -7,65 +7,11 @@ const dotenv = require('dotenv');
 const { buildDynamicFoldObject, hasFoldMarkers } = require('./foldProtocol');
 
 const PRIVATE_CONFIG_RELATIVE_PATH = path.join('Plugin', 'DynamicToolBridge', 'config.env');
-const LIGHT_LIST_TOKEN_BUDGET = 15;
-const DEFAULT_BRIEF_TOKEN_BUDGET = 6;
-const MIN_BRIEF_TOKEN_BUDGET = 3;
-
-const DEFAULT_CONFIG = Object.freeze({
-    version: 1,
-    enabled: true,
-    placeholder: '{{VCPDynamicTools}}',
-    maxBriefListItems: 120,
-    maxExpandedPlugins: 4,
-    maxForcedCategoryPlugins: 12,
-    maxInjectionChars: 16000,
-    classificationDebounceMs: 1000,
-    classifierTimeoutMs: 30000,
-    useRagEmbeddings: true,
-    manualOverrides: {
-        excludedOriginKeys: [],
-        pinnedOriginKeys: [],
-        categoryAliases: {},
-        descriptionOverrides: {}
-    },
-    smallModel: {
-        enabled: false,
-        useMainConfig: true,
-        endpoint: '',
-        model: ''
-    }
-});
-
-const CATEGORY_RULES = [
-    {
-        category: 'search',
-        keywords: ['search', 'web', 'lookup', 'query', 'retrieval', 'google', 'tavily', 'serp', 'url', 'paper', 'citation', '搜索', '检索', '网页', '查询', '论文', '资料']
-    },
-    {
-        category: 'file_code',
-        keywords: ['file', 'code', 'read', 'write', 'edit', 'patch', 'repo', 'git', 'directory', '文件', '代码', '仓库', '读取', '写入', '编辑']
-    },
-    {
-        category: 'image_media',
-        keywords: ['image', 'photo', 'picture', 'media', 'video', 'audio', 'ocr', 'screenshot', '图片', '图像', '视频', '音频', '截图']
-    },
-    {
-        category: 'memory_knowledge',
-        keywords: ['memory', 'knowledge', 'rag', 'diary', 'note', 'vector', 'context', '知识', '记忆', '日记', '笔记', '向量']
-    },
-    {
-        category: 'agent_task',
-        keywords: ['agent', 'task', 'schedule', 'plan', 'workflow', 'assistant', '任务', '计划', '调度', '代理']
-    },
-    {
-        category: 'communication',
-        keywords: ['mail', 'email', 'message', 'notification', 'push', 'forum', 'wechat', 'telegram', '邮件', '消息', '通知', '推送']
-    },
-    {
-        category: 'data',
-        keywords: ['json', 'csv', 'excel', 'sql', 'database', 'table', 'parse', '数据', '表格', '数据库', '解析']
-    }
-];
+const {
+    DEFAULT_CONFIG, DEFAULT_CATEGORY_RULES: CATEGORY_RULES, validateConfigPatch, mergeConfig,
+    estimateTokenCount, truncateToTokenBudget, hasFragmentedChinese, keywordMatches,
+    parseModelContent, validateClassification
+} = require('./dynamicToolSemantics');
 
 function cloneJson(value) {
     return JSON.parse(JSON.stringify(value));
@@ -94,23 +40,6 @@ function cleanText(value, maxLength = 240) {
     return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
 }
 
-function tokenPieces(value) {
-    return String(value || '').match(/[A-Za-z0-9_.-]+|[\u3400-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/g) || [];
-}
-
-function estimateTokenCount(value) {
-    return tokenPieces(value).length;
-}
-
-function truncateToTokenBudget(value, maxTokens) {
-    const text = cleanText(value, 500);
-    const budget = Math.max(1, Math.trunc(Number(maxTokens) || 1));
-    const pieces = tokenPieces(text);
-    if (pieces.length <= budget) return text;
-    if (pieces.length === 0) return cleanText(text, Math.max(12, budget * 8));
-    return cleanText(`${pieces.slice(0, budget).join(' ')}...`, Math.max(24, budget * 14));
-}
-
 function parseEnvBoolean(value, fallback = false) {
     if (value === undefined || value === null || value === '') return fallback;
     return String(value).trim().toLowerCase() === 'true';
@@ -127,42 +56,6 @@ function normalizeOpenAIChatEndpoint(value) {
 
 function normalizeName(value) {
     return String(value || '').trim().toLowerCase();
-}
-
-function mergeConfig(base, fileConfig, overrideConfig) {
-    const merged = {
-        ...cloneJson(base),
-        ...(fileConfig && typeof fileConfig === 'object' ? fileConfig : {}),
-        ...(overrideConfig && typeof overrideConfig === 'object' ? overrideConfig : {})
-    };
-
-    merged.manualOverrides = {
-        ...cloneJson(base.manualOverrides),
-        ...(fileConfig && fileConfig.manualOverrides ? fileConfig.manualOverrides : {}),
-        ...(overrideConfig && overrideConfig.manualOverrides ? overrideConfig.manualOverrides : {})
-    };
-    merged.smallModel = {
-        ...cloneJson(base.smallModel),
-        ...(fileConfig && fileConfig.smallModel ? fileConfig.smallModel : {}),
-        ...(overrideConfig && overrideConfig.smallModel ? overrideConfig.smallModel : {})
-    };
-    delete merged.smallModel.apiKey;
-    delete merged.smallModel.apiKeyEnv;
-
-    merged.maxBriefListItems = clampInteger(merged.maxBriefListItems, 1, 500, DEFAULT_CONFIG.maxBriefListItems);
-    merged.maxExpandedPlugins = clampInteger(merged.maxExpandedPlugins, 0, 50, DEFAULT_CONFIG.maxExpandedPlugins);
-    merged.maxForcedCategoryPlugins = clampInteger(merged.maxForcedCategoryPlugins, 1, 100, DEFAULT_CONFIG.maxForcedCategoryPlugins);
-    merged.maxInjectionChars = clampInteger(merged.maxInjectionChars, 1000, 120000, DEFAULT_CONFIG.maxInjectionChars);
-    merged.classificationDebounceMs = clampInteger(merged.classificationDebounceMs, 0, 60000, DEFAULT_CONFIG.classificationDebounceMs);
-    merged.classifierTimeoutMs = clampInteger(merged.classifierTimeoutMs, 100, 120000, DEFAULT_CONFIG.classifierTimeoutMs);
-    merged.enabled = merged.enabled !== false;
-    return merged;
-}
-
-function clampInteger(value, min, max, fallback) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return fallback;
-    return Math.max(min, Math.min(max, Math.trunc(number)));
 }
 
 function extractMessageText(messages) {
@@ -243,6 +136,9 @@ class DynamicToolRegistry {
         this._configWatchers = [];
         this._configReloadTimer = null;
         this._configReloadPromise = Promise.resolve();
+        this._configMutationPromise = Promise.resolve();
+        this.configGeneration = 0;
+        this._activeClassifierControllers = new Set();
     }
 
     async initialize(options = {}) {
@@ -266,12 +162,15 @@ class DynamicToolRegistry {
         this.classifier = classifier || null;
 
         await fs.mkdir(this.toolConfigsDir, { recursive: true });
-        const fileConfig = await this._readJson(this.configPath, null);
-        this.persistedConfig = mergeConfig(DEFAULT_CONFIG, fileConfig, config);
-        this.config = cloneJson(this.persistedConfig);
-        this.privateConfig = await this._readPrivatePluginConfig();
-        this._applyPrivateConfig();
-        await this._writeConfigIfMissingOrSanitized(fileConfig, this.persistedConfig);
+        const fileConfig = await this._readConfigFile();
+        let candidate = mergeConfig(DEFAULT_CONFIG, config, fileConfig);
+        if (!fileConfig || fileConfig.version !== 2) {
+            const legacy = await this._readPrivatePluginConfig();
+            candidate = mergeConfig(candidate, legacy);
+        }
+        await this._writeConfigIfMissingOrSanitized(fileConfig, candidate);
+        this.persistedConfig = cloneJson(candidate);
+        this.config = cloneJson(candidate);
 
         await this._loadCatalog();
         await this._loadCategories();
@@ -521,12 +420,16 @@ class DynamicToolRegistry {
                 for (const item of items) {
                     const current = this.catalog.get(item.record.originKey);
                     if (!current || current.sourceHash !== item.record.sourceHash) continue;
+                    const generation = this.configGeneration;
+                    this._activeClassificationRecord = current;
                     try {
                         const classification = await this._classifyRecord(current, item.reason);
+                        if (generation !== this.configGeneration || this.catalog.get(current.originKey)?.sourceHash !== current.sourceHash) continue;
                         this.categories.set(current.originKey, {
                             pluginName: current.pluginName,
                             sourceHash: current.sourceHash,
                             brief: classification.brief || current.brief,
+                            ...(classification.baseClassification ? { baseClassification: classification.baseClassification } : {}),
                             categories: asArray(classification.categories).map(String).filter(Boolean),
                             keywords: asArray(classification.keywords).map(String).filter(Boolean),
                             classifiedBy: classification.classifiedBy || 'keyword_fallback',
@@ -534,6 +437,7 @@ class DynamicToolRegistry {
                             confidence: Number.isFinite(Number(classification.confidence)) ? Number(classification.confidence) : 0.5
                         });
                     } catch (error) {
+                        if (generation !== this.configGeneration || this.catalog.get(current.originKey)?.sourceHash !== current.sourceHash) continue;
                         this.lastError = error.message;
                         const fallback = this._fallbackClassify(current);
                         this.categories.set(current.originKey, {
@@ -546,6 +450,8 @@ class DynamicToolRegistry {
                             classifiedAt: new Date().toISOString(),
                             confidence: fallback.confidence
                         });
+                    } finally {
+                        this._activeClassificationRecord = null;
                     }
                 }
                 await this._writeCategories();
@@ -684,32 +590,98 @@ class DynamicToolRegistry {
     }
 
     async updateConfig(nextConfig = {}) {
-        this.persistedConfig = mergeConfig(DEFAULT_CONFIG, this.persistedConfig, nextConfig);
-        this.config = cloneJson(this.persistedConfig);
-        this._applyPrivateConfig();
-        await this._queueWrite(this.configPath, this._redactConfig(this.persistedConfig));
-        return this._redactConfig(this.config);
+        const patch = validateConfigPatch(nextConfig);
+        return this._mutateConfig(() => patch);
+    }
+
+    async updateOverride(payload) {
+        const invalid = () => { const error = new Error('动态工具覆盖配置无效'); error.status = 400; throw error; };
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) invalid();
+        if (Object.keys(payload).some((key) => !['originKey', 'excluded', 'pinned', 'manualOverrides'].includes(key))) invalid();
+        const has = (key) => Object.prototype.hasOwnProperty.call(payload, key);
+        const hasFlags = has('excluded') || has('pinned');
+        if (!hasFlags && !has('manualOverrides')) invalid();
+        if (has('originKey') && (typeof payload.originKey !== 'string' || !payload.originKey.trim() || payload.originKey.length > 300)) invalid();
+        if (hasFlags && !has('originKey')) invalid();
+        for (const key of ['excluded', 'pinned']) if (has(key) && typeof payload[key] !== 'boolean') invalid();
+        const patch = has('manualOverrides') ? validateConfigPatch({ manualOverrides: payload.manualOverrides }) : { manualOverrides: {} };
+        return this._mutateConfig((current) => {
+            for (const field of ['excluded', 'pinned']) {
+                if (!has(field)) continue;
+                const key = field === 'excluded' ? 'excludedOriginKeys' : 'pinnedOriginKeys';
+                const list = new Set(patch.manualOverrides[key] || current.manualOverrides[key]);
+                if (payload[field]) list.add(payload.originKey.trim());
+                else list.delete(payload.originKey.trim());
+                patch.manualOverrides[key] = [...list].sort();
+            }
+            return patch;
+        });
+    }
+
+    async _mutateConfig(makePatch) {
+        this._configMutationPromise = this._configMutationPromise.catch(() => {}).then(async () => {
+            const candidate = mergeConfig(this.persistedConfig, makePatch(this.persistedConfig));
+            await this._queueWrite(this.configPath, candidate);
+            this._activateConfig(candidate);
+            await this._syncAfterConfigCommit('config_saved');
+            return this._redactConfig(this.config);
+        });
+        return this._configMutationPromise;
+    }
+
+    async _syncAfterConfigCommit(reason) {
+        if (!this.pluginManager?.plugins) return;
+        const warning = '配置已保存并生效，工具目录同步失败；请重试目录同步';
+        // The previous failure was already reported; do not replay its raw message.
+        this.syncPromise = this.syncPromise.catch(() => {});
+        try {
+            await this.syncFromPluginManager(reason);
+            if (this.lastError === warning) this.lastError = null;
+        } catch { this.lastError = warning; }
     }
 
     async reloadConfigFromDisk(reason = 'config_file_changed') {
-        this._configReloadPromise = this._configReloadPromise
-            .catch((error) => {
-                this.lastError = error.message;
-            })
-            .then(async () => {
-                const fileConfig = await this._readJson(this.configPath, null);
-                this.persistedConfig = mergeConfig(DEFAULT_CONFIG, fileConfig, {});
-                this.config = cloneJson(this.persistedConfig);
-                this.privateConfig = await this._readPrivatePluginConfig();
-                this._applyPrivateConfig();
-                await this._writeConfigIfMissingOrSanitized(fileConfig, this.persistedConfig);
-                this._refreshClassificationOverrides();
-                if (this.pluginManager && this.pluginManager.plugins) {
-                    await this.syncFromPluginManager(reason);
-                }
+        this._configMutationPromise = this._configMutationPromise.catch(() => {}).then(async () => {
+            try {
+                const fileConfig = await this._readConfigFile();
+                if (!fileConfig) throw new Error('配置文件不存在');
+                // Legacy env is consumed only during initialization's v1 -> v2 migration.
+                const candidate = mergeConfig(DEFAULT_CONFIG, fileConfig);
+                await this._writeConfigIfMissingOrSanitized(fileConfig, candidate);
+                this._activateConfig(candidate);
+            } catch (error) {
+                this.lastError = error.status === 400 ? error.message : '动态工具配置重载失败：JSON 或文件读取无效，保留上次有效配置';
                 return this.getAdminState();
-            });
+            }
+            await this._syncAfterConfigCommit(reason);
+            return this.getAdminState();
+        });
+        this._configReloadPromise = this._configMutationPromise;
         return this._configReloadPromise;
+    }
+
+    _activateConfig(candidate) {
+        if (stableStringify(candidate) === stableStringify(this.config)) return;
+        this.configGeneration += 1;
+        for (const controller of this._activeClassifierControllers) controller.abort();
+        this.persistedConfig = cloneJson(candidate);
+        this.config = cloneJson(candidate);
+        this.categoryEmbeddingCache.clear();
+        for (const record of this.catalog.values()) record.available = this._isAvailable(record);
+        this._refreshClassificationOverrides();
+        if (this._activeClassificationRecord) this.enqueueClassification(this._activeClassificationRecord, 'config_changed');
+        this._scheduleClassificationFlush();
+    }
+
+    async _readConfigFile() {
+        let content;
+        try { content = await fs.readFile(this.configPath, 'utf8'); }
+        catch (error) { if (error.code === 'ENOENT') return null; throw new Error('动态工具配置读取失败'); }
+        try {
+            const value = JSON.parse(content);
+            if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+            return value;
+        } catch { throw new Error('动态工具配置 JSON 无效'); }
     }
 
     async forceRebuild(options = {}) {
@@ -824,7 +796,7 @@ class DynamicToolRegistry {
                 descriptionHash,
                 sourceHash,
                 commandIdentifiers: commands.map((cmd) => cmd.commandIdentifier || cmd.command || manifest.name).filter(Boolean),
-                brief: cleanText(descriptionOverride.brief || manifest.description || commands.map((cmd) => cmd.description).find(Boolean) || ''),
+                brief: String(manifest.description || commands.map((cmd) => cmd.description).find(Boolean) || '').trim(),
                 fullDescription,
                 lastSeenAt: now
             };
@@ -976,7 +948,7 @@ class DynamicToolRegistry {
             };
         }
         return {
-            brief: typeof value.brief === 'string' ? cleanText(value.brief, 240) : '',
+            brief: typeof value.brief === 'string' ? value.brief.trim() : '',
             fullDescription: typeof value.fullDescription === 'string' ? value.fullDescription : '',
             categories: asArray(value.categories).map(String).map((item) => item.trim()).filter(Boolean),
             keywords: asArray(value.keywords).map(String).map((item) => item.trim()).filter(Boolean)
@@ -984,6 +956,7 @@ class DynamicToolRegistry {
     }
 
     async _classifyRecord(record, reason) {
+        const generation = this.configGeneration;
         if (this.classifier) {
             const result = await withTimeout(
                 Promise.resolve(this.classifier(record, { reason, config: this._redactConfig(this.config) })),
@@ -994,75 +967,98 @@ class DynamicToolRegistry {
         }
 
         const smallModelResult = await this._classifyWithSmallModel(record, reason);
+        if (generation !== this.configGeneration) throw new Error('分类配置已变更，旧任务结束');
         if (smallModelResult) return smallModelResult;
         const embeddingResult = await this._classifyWithEmbeddings(record);
+        if (generation !== this.configGeneration) throw new Error('分类配置已变更，旧任务结束');
         if (embeddingResult) return embeddingResult;
         return this._fallbackClassify(record);
     }
 
     async _classifyWithSmallModel(record, reason) {
-        const smallModel = this.config.smallModel || {};
+        const config = this.config;
+        const generation = this.configGeneration;
+        const smallModel = config.smallModel;
         const requestConfig = this._resolveSmallModelRequestConfig(smallModel);
         if (!requestConfig) return null;
-
+        const controller = new AbortController();
+        this._activeClassifierControllers.add(controller);
+        const timeout = setTimeout(() => controller.abort(new Error('分类总预算超时')), config.classifierTimeoutMs);
+        const aborted = new Promise((_, reject) => {
+            controller.signal.addEventListener('abort', () => reject(new Error('分类已取消或超时')), { once: true });
+        });
+        const withinDeadline = (promise) => Promise.race([promise, aborted]);
         const prompt = [
-            'Classify this VCP plugin into concise semantic categories.',
-            'Return strict JSON: {"brief": "...", "categories": ["..."], "keywords": ["..."], "confidence": 0.0}.',
-            `Keep "brief" extremely compact: target ${DEFAULT_BRIEF_TOKEN_BUDGET} tokens, and keep plugin name + categories + brief within ${LIGHT_LIST_TOKEN_BUDGET} tokens for lightweight tool lists.`,
-            `Reason: ${reason}`,
-            `Name: ${record.pluginName}`,
-            `Display: ${record.displayName}`,
-            `Description: ${record.description}`,
-            `Usage: ${cleanText(record.fullDescription, 2000)}`
+            'Classify this VCP plugin using the capability definitions below; choose the most specific category IDs.',
+            'Return strict JSON: {"brief":"...","categories":["..."],"keywords":["..."],"confidence":0.0}. All fields are required.',
+            `Write a short complete capability phrase in the description language. Target ${config.summary.briefTokenBudget} tokens, name + categories + brief target ${config.summary.lightListTokenBudget} tokens; semantic completeness overrides this soft target. Never split Chinese words or insert spaces between characters.`,
+            `Select at most ${config.classification.maxCategories} categories. Definitions: ${JSON.stringify(config.classification.categoryRules)}`,
+            `Reason: ${reason}`, `Name: ${record.pluginName}`, `Display: ${record.displayName}`,
+            `Description: ${record.description}`, `Usage: ${cleanText(record.fullDescription, 2000)}`
         ].join('\n');
-
+        const messages = [{ role: 'system', content: 'You classify tool capabilities. Return JSON only; preserve complete phrases.' }, { role: 'user', content: prompt }];
+        let diagnostic = '请求失败';
         try {
-            const response = await withTimeout(fetch(requestConfig.endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(requestConfig.apiKey ? { Authorization: `Bearer ${requestConfig.apiKey}` } : {})
-                },
-                body: JSON.stringify({
-                    model: requestConfig.model,
-                    messages: [
-                        { role: 'system', content: 'You classify tool plugins. Return JSON only.' },
-                        { role: 'user', content: prompt }
-                    ],
-                    temperature: 0.1,
-                    max_tokens: 220
-                })
-            }), this.config.classifierTimeoutMs, 'small model classification request');
-
-            if (!response.ok) throw new Error(`small model HTTP ${response.status}`);
-            const data = await response.json();
-            const content = data?.choices?.[0]?.message?.content || data?.content || '';
-            const jsonText = String(content).match(/\{[\s\S]*\}/)?.[0];
-            if (!jsonText) throw new Error('small model returned no JSON object');
-            return this._normalizeClassification(JSON.parse(jsonText), record, 'small_model');
-        } catch (error) {
-            this.lastError = error.message;
-            if (this.debugMode) console.warn('[DynamicToolRegistry] small model classification failed:', error.message);
-            return null;
+            for (let attempt = 0; attempt <= smallModel.maxRetries; attempt++) {
+                if (controller.signal.aborted) break;
+                try {
+                    const response = await withinDeadline(fetch(requestConfig.endpoint, {
+                        method: 'POST', signal: controller.signal,
+                        headers: { 'Content-Type': 'application/json', ...(requestConfig.apiKey ? { Authorization: `Bearer ${requestConfig.apiKey}` } : {}) },
+                        body: JSON.stringify({ model: requestConfig.model, messages, temperature: smallModel.temperature, max_tokens: smallModel.maxTokens })
+                    }));
+                    if (!response.ok) {
+                        diagnostic = `HTTP ${response.status}`;
+                        // Do not leave unsuccessful HTTP response bodies downloading across retries.
+                        if (response.body?.cancel) Promise.resolve(response.body.cancel()).catch(() => {});
+                        if (response.status !== 429 && !(response.status >= 500 && response.status <= 599)) break;
+                    } else {
+                        let data;
+                        try { data = await withinDeadline(response.json()); }
+                        catch (error) { if (controller.signal.aborted) throw error; diagnostic = '格式错误：响应不是 JSON'; }
+                        if (data !== undefined) {
+                            try {
+                                const allowed = new Set(config.classification.categoryRules.flatMap((rule) => [rule.category, rule.parent].filter(Boolean)).concat('general'));
+                                const result = parseModelContent(data?.choices?.[0]?.message?.content ?? data?.content ?? data, (candidate) => {
+                                    validateClassification(candidate);
+                                    if (candidate.categories.some((category) => !allowed.has(category.trim()))) throw new Error('结构错误：categories 必须使用给定类别 ID');
+                                    if (candidate.categories.length > config.classification.maxCategories) throw new Error('结构错误：categories 数量超过 maxCategories');
+                                    return candidate;
+                                });
+                                const normalized = this._normalizeClassification(result, record, 'small_model');
+                                if (generation === this.configGeneration && this.lastError?.startsWith(`小模型分类失败：${record.pluginName}（`)) this.lastError = null;
+                                return normalized;
+                            } catch (error) { diagnostic = error.message; }
+                        }
+                    }
+                } catch {
+                    diagnostic = controller.signal.aborted ? '已取消或超时' : '网络请求失败';
+                    if (controller.signal.aborted) break;
+                }
+                if (attempt < smallModel.maxRetries) {
+                    messages.push({ role: 'user', content: `Previous response failed validation: ${diagnostic}. Return the complete JSON object with brief:string, categories:string[], keywords:string[], confidence:number 0..1. No missing fields or wrong types.` });
+                    if (smallModel.retryDelayMs) {
+                        let delay;
+                        try { await withinDeadline(new Promise((resolve) => { delay = setTimeout(resolve, smallModel.retryDelayMs); })); }
+                        finally { clearTimeout(delay); }
+                    }
+                }
+            }
+        } catch {
+            diagnostic = controller.signal.aborted ? '已取消或超时' : diagnostic;
+        } finally {
+            clearTimeout(timeout);
+            this._activeClassifierControllers.delete(controller);
         }
+        if (generation === this.configGeneration) this.lastError = `小模型分类失败：${record.pluginName}（${diagnostic}；最多 ${smallModel.maxRetries + 1} 次请求）`;
+        return null;
     }
 
     _resolveSmallModelRequestConfig(smallModel = {}) {
         if (!smallModel.enabled || !smallModel.model) return null;
-        const useMainConfig = smallModel.useMainConfig !== false;
-        const endpoint = useMainConfig
-            ? normalizeOpenAIChatEndpoint(process.env.API_URL)
-            : normalizeOpenAIChatEndpoint(smallModel.endpoint);
+        const endpoint = normalizeOpenAIChatEndpoint(process.env.API_URL);
         if (!endpoint) return null;
-
-        const apiKey = useMainConfig
-            ? (process.env.API_Key || '')
-            : (smallModel.apiKey || (smallModel.apiKeyEnv ? process.env[smallModel.apiKeyEnv] : ''));
-        return {
-            endpoint,
-            apiKey,
-            model: smallModel.model
-        };
+        return { endpoint, apiKey: process.env.API_Key || '', model: smallModel.model };
     }
 
     _normalizeClassification(result, record, classifiedBy) {
@@ -1083,15 +1079,17 @@ class DynamicToolRegistry {
 
     _applyDescriptionOverrideToClassification(record, classification) {
         const override = this._descriptionOverrideFor(record.originKey);
-        const categories = override.categories.length > 0 ? override.categories : classification.categories;
+        const base = classification.baseClassification || classification;
+        const categories = override.categories.length > 0 ? override.categories : base.categories;
+        const hasOverride = Boolean(override.brief || override.categories.length || override.keywords.length);
+        const { baseClassification, ...metadata } = classification;
         return {
-            ...classification,
-            brief: override.brief ? this._compactBrief(record, categories, override.brief) : classification.brief,
+            ...metadata,
+            brief: override.brief ? this._compactBrief(record, categories, override.brief) : base.brief,
             categories,
-            keywords: override.keywords.length > 0 ? override.keywords : classification.keywords,
-            classifiedBy: override.brief || override.categories.length > 0 || override.keywords.length > 0
-                ? `${classification.classifiedBy || 'keyword_fallback'}+manual_override`
-                : classification.classifiedBy
+            keywords: override.keywords.length > 0 ? override.keywords : base.keywords,
+            classifiedBy: hasOverride ? `${base.classifiedBy || 'keyword_fallback'}+manual_override` : base.classifiedBy,
+            ...(hasOverride ? { baseClassification: { brief: base.brief, categories: base.categories, keywords: base.keywords, classifiedBy: base.classifiedBy } } : {})
         };
     }
 
@@ -1118,7 +1116,7 @@ class DynamicToolRegistry {
             if (!Array.isArray(pluginVector) || pluginVector.length === 0) return null;
 
             const scored = [];
-            for (const rule of CATEGORY_RULES) {
+            for (const rule of this.config.classification.categoryRules) {
                 const categoryVector = await this._getCategoryEmbedding(rule, getEmbedding);
                 if (!categoryVector) continue;
                 scored.push({
@@ -1128,17 +1126,17 @@ class DynamicToolRegistry {
                 });
             }
             scored.sort((a, b) => b.score - a.score);
-            const selected = scored.filter((item) => item.score >= 0.34).slice(0, 3);
+            const selected = scored.filter((item) => item.score >= this.config.classification.embeddingThreshold).slice(0, this.config.classification.maxCategories);
             if (selected.length === 0) return null;
             const keywords = selected.flatMap((item) => item.keywords.slice(0, 6));
             const categories = selected.map((item) => item.category);
-            return {
+            return this._applyDescriptionOverrideToClassification(record, {
                 brief: this._compactBrief(record, categories, record.brief || record.description || `${record.pluginName} provides a VCP tool.`),
                 categories,
                 keywords: Array.from(new Set(keywords)),
                 classifiedBy: 'rag_embedding_fallback',
                 confidence: Math.max(0.45, Math.min(0.95, selected[0].score))
-            };
+            });
         } catch (error) {
             this.lastError = error.message;
             if (this.debugMode) console.warn('[DynamicToolRegistry] RAG embedding classification failed:', error.message);
@@ -1147,17 +1145,18 @@ class DynamicToolRegistry {
     }
 
     async _getCategoryEmbedding(rule, getEmbedding) {
-        if (this.categoryEmbeddingCache.has(rule.category)) {
-            return this.categoryEmbeddingCache.get(rule.category);
+        const cacheKey = stableStringify(rule);
+        if (this.categoryEmbeddingCache.has(cacheKey)) {
+            return this.categoryEmbeddingCache.get(cacheKey);
         }
-        const text = `${rule.category}: ${rule.keywords.join(', ')}`;
+        const text = `${rule.category} (${rule.parent || ''}): ${rule.description}; ${rule.keywords.join(', ')}`;
         const vector = await withTimeout(
             Promise.resolve(getEmbedding(text)),
             this.config.classifierTimeoutMs,
             'RAG embedding category classification'
         );
         if (Array.isArray(vector) && vector.length > 0) {
-            this.categoryEmbeddingCache.set(rule.category, vector);
+            this.categoryEmbeddingCache.set(cacheKey, vector);
             return vector;
         }
         return null;
@@ -1212,29 +1211,19 @@ class DynamicToolRegistry {
     }
 
     _fallbackClassify(record) {
-        const text = `${record.pluginName} ${record.displayName} ${record.description} ${record.fullDescription}`.toLowerCase();
-        const categories = [];
-        const keywords = new Set();
-        for (const rule of CATEGORY_RULES) {
-            const matched = rule.keywords.filter((keyword) => text.includes(keyword.toLowerCase()));
-            if (matched.length > 0) {
-                categories.push(rule.category);
-                for (const keyword of matched.slice(0, 12)) keywords.add(keyword);
-            }
-        }
-        if (categories.length === 0) {
-            categories.push('general');
-            keywords.add('tool');
-        }
-        const selectedCategories = Array.from(new Set(categories));
-        const brief = this._compactBrief(record, selectedCategories, record.brief || record.description || `${record.pluginName} provides a VCP tool.`);
-        return {
-            brief,
-            categories: selectedCategories,
-            keywords: Array.from(keywords),
-            classifiedBy: 'keyword_fallback',
-            confidence: categories.includes('general') ? 0.45 : 0.7
-        };
+        // Only capability descriptions, never incidental example parameters or response prose.
+        const text = `${String(record.pluginName || '').replace(/([a-z])([A-Z])/g, '$1 $2')} ${record.displayName || ''} ${record.description || ''}`;
+        const scored = this.config.classification.categoryRules.map((rule) => ({
+            category: rule.category, matched: rule.keywords.filter((keyword) => keywordMatches(text, keyword))
+        })).filter((item) => item.matched.length).sort((a, b) => b.matched.length - a.matched.length);
+        const selected = scored.slice(0, this.config.classification.maxCategories);
+        const categories = selected.length ? selected.map((item) => item.category) : ['general'];
+        return this._applyDescriptionOverrideToClassification(record, {
+            brief: this._compactBrief(record, categories, record.brief || record.description || `${record.pluginName} provides a VCP tool.`),
+            categories,
+            keywords: selected.length ? [...new Set(selected.flatMap((item) => item.matched))] : ['tool'],
+            classifiedBy: 'keyword_fallback', confidence: selected.length ? 0.7 : 0.45
+        });
     }
 
     _formatLightListName(record) {
@@ -1245,17 +1234,15 @@ class DynamicToolRegistry {
     }
 
     _briefTokenBudget(record, categories = []) {
-        const categoryText = asArray(categories).join(' ');
-        const used = estimateTokenCount(`${this._formatLightListName(record)} ${categoryText}`);
-        return Math.max(
-            MIN_BRIEF_TOKEN_BUDGET,
-            Math.min(DEFAULT_BRIEF_TOKEN_BUDGET, LIGHT_LIST_TOKEN_BUDGET - used)
-        );
+        const summary = this.config.summary;
+        const used = estimateTokenCount(`${this._formatLightListName(record)} ${asArray(categories).join(' ')}`);
+        return Math.max(summary.minBriefTokenBudget, Math.min(summary.briefTokenBudget, summary.lightListTokenBudget - used));
     }
 
     _compactBrief(record, categories, brief) {
         const fallback = record?.description || `${record?.pluginName || 'This tool'} provides a VCP tool.`;
-        const source = brief || record?.brief || fallback;
+        let source = brief || record?.brief || fallback;
+        if (hasFragmentedChinese(source)) source = record?.description || record?.brief || fallback;
         return truncateToTokenBudget(source, this._briefTokenBudget(record, categories));
     }
 
@@ -1289,13 +1276,18 @@ class DynamicToolRegistry {
         if (!strongVerb.test(raw)) return directives;
 
         const available = this._getAvailableRecords();
-        const lower = raw.toLowerCase();
-        const knownCategories = new Set();
+        const lower = raw.replace(categoryRegex, ' ').replace(toolRegex, ' ').toLowerCase();
+        const knownCategories = new Set(Object.keys(this.config.manualOverrides.categoryAliases));
         for (const record of available) {
-            for (const category of this._recordCategories(record)) knownCategories.add(category);
+            for (const category of this._recordCategories(record)) {
+                knownCategories.add(category);
+                const parent = this.config.classification.categoryRules.find((rule) => rule.category === category)?.parent || category.split('/')[0];
+                if (parent) knownCategories.add(parent);
+            }
         }
         for (const category of knownCategories) {
-            if (lower.includes(category.toLowerCase())) directives.categories.add(category);
+            const escaped = category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (new RegExp(`(?:^|[^a-z0-9_./-])${escaped}(?=$|[^a-z0-9_./-])`, 'i').test(lower)) directives.categories.add(category);
         }
         for (const record of available) {
             const names = [record.pluginName, record.displayName, ...(record.commandIdentifiers || [])].filter(Boolean);
@@ -1352,7 +1344,8 @@ class DynamicToolRegistry {
         const aliases = this.config.manualOverrides?.categoryAliases || {};
         const normalizedRequested = normalizeName(aliases[requested] || requested);
         const normalizedActual = normalizeName(actual);
-        return normalizedActual === normalizedRequested || normalizedActual.includes(normalizedRequested) || normalizedRequested.includes(normalizedActual);
+        const parent = normalizeName(this.config.classification.categoryRules.find((rule) => normalizeName(rule.category) === normalizedActual)?.parent);
+        return normalizedActual === normalizedRequested || parent === normalizedRequested || normalizedActual.startsWith(`${normalizedRequested}/`) || normalizedRequested.startsWith(`${normalizedActual}/`);
     }
 
     _matchesToolName(record, requested) {
@@ -1409,10 +1402,7 @@ class DynamicToolRegistry {
 
     _watchConfigFiles() {
         this._closeConfigWatchers();
-        const watchTargets = [
-            { dir: this.toolConfigsDir, names: new Set([path.basename(this.configPath)]) },
-            { dir: path.dirname(this.privateConfigPath), names: new Set([path.basename(this.privateConfigPath)]) }
-        ];
+        const watchTargets = [{ dir: this.toolConfigsDir, names: new Set([path.basename(this.configPath)]) }];
 
         for (const target of watchTargets) {
             try {
@@ -1497,7 +1487,7 @@ class DynamicToolRegistry {
     }
 
     async _writeConfigIfMissingOrSanitized(fileConfig, configToWrite = this.persistedConfig) {
-        const shouldWrite = !fileConfig || JSON.stringify(this._redactConfig(fileConfig)) !== JSON.stringify(this._redactConfig(configToWrite));
+        const shouldWrite = !fileConfig || stableStringify(fileConfig) !== stableStringify(configToWrite);
         if (shouldWrite) {
             await this._queueWrite(this.configPath, this._redactConfig(configToWrite));
         }
@@ -1540,13 +1530,7 @@ class DynamicToolRegistry {
             if (Object.prototype.hasOwnProperty.call(env, 'SmallModel_Enabled')) {
                 smallModel.enabled = parseEnvBoolean(env.SmallModel_Enabled, false);
             }
-            if (Object.prototype.hasOwnProperty.call(env, 'SmallModel_Use_Main_Config')) {
-                smallModel.useMainConfig = parseEnvBoolean(env.SmallModel_Use_Main_Config, true);
-            }
-            if (env.SmallModel_Endpoint) smallModel.endpoint = env.SmallModel_Endpoint;
             if (env.SmallModel_Model) smallModel.model = env.SmallModel_Model;
-            if (env.SmallModel_API_Key) smallModel.apiKey = env.SmallModel_API_Key;
-            if (env.SmallModel_API_Key_Env) smallModel.apiKeyEnv = env.SmallModel_API_Key_Env;
             return Object.keys(smallModel).length > 0 ? { smallModel } : {};
         } catch (error) {
             if (error.code !== 'ENOENT') {
@@ -1554,17 +1538,6 @@ class DynamicToolRegistry {
                 if (this.debugMode) console.warn(`[DynamicToolRegistry] ${this.lastError}`);
             }
             return {};
-        }
-    }
-
-    _applyPrivateConfig() {
-        if (!this.privateConfig?.smallModel) return;
-        this.config.smallModel = {
-            ...(this.config.smallModel || {}),
-            ...this.privateConfig.smallModel
-        };
-        if (this.config.smallModel.endpoint) {
-            this.config.smallModel.endpoint = normalizeOpenAIChatEndpoint(this.config.smallModel.endpoint);
         }
     }
 
@@ -1605,3 +1578,4 @@ const singleton = new DynamicToolRegistry();
 module.exports = singleton;
 module.exports.DynamicToolRegistry = DynamicToolRegistry;
 module.exports.DEFAULT_CONFIG = DEFAULT_CONFIG;
+module.exports.validateConfigPatch = validateConfigPatch;
