@@ -15,6 +15,7 @@ const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
 const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
 const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js'); // 📝 纯文本日记占位符处理器（{{...日记本...}}）
+const TimelinePlaceholderProcessor = require('./TimelinePlaceholderProcessor.js');
 const MessageContentUtils = require('./MessageContentUtils.js');
 const TextSanitizer = require('./TextSanitizer.js');
 const VectorMathUtils = require('./VectorMathUtils.js');
@@ -99,6 +100,8 @@ class RAGDiaryPlugin {
 
         // 🔎 BM25 查询优化器：实体词提升、AI 主题漂移门控、查询 token 限频
         this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: console });
+        this.timelineProcessor = new TimelinePlaceholderProcessor(this);
+        this.getTimelineService = null;
     }
 
     async loadConfig() {
@@ -589,6 +592,8 @@ class RAGDiaryPlugin {
     }
 
     async initialize(config, dependencies) {
+        // 惰性解析运行时实例，避免初始化顺序和热重载造成实例快照失效。
+        this.getTimelineService = dependencies?.getTimelineService || null;
         this.jevClient = dependencies?.jevClient || null;
         if (this.jevClient) {
             console.log('[RAGDiaryPlugin] JevClient 通用决策服务已注入。');
@@ -1385,7 +1390,10 @@ class RAGDiaryPlugin {
 
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
-        const run = () => this._processMessagesWithMemoScope(messages, pluginConfig);
+        const run = () => this.timelineProcessor.processMessages(
+            messages,
+            workingMessages => this._processMessagesWithMemoScope(workingMessages, pluginConfig)
+        );
         return typeof this.vectorDBManager?.withMemoObservationScope === 'function'
             ? this.vectorDBManager.withMemoObservationScope(run)
             : run();

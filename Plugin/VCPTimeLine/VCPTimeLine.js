@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
+const TimelinePlaceholderProcessor = require('../RAGDiaryPlugin/TimelinePlaceholderProcessor');
 const PLACEHOLDER_REGEX = /\[\[VCPTimeLine(Summary|Recall)?::([^:\]\r\n]+?)(?::([^:\]\r\n]+?))?(?::([^:\]\r\n]+?))?\]\]/g;
 const HEADER_REGEX = /^\[?\s*(\d{4})[.-](\d{1,2})[.-](\d{1,2})(?:\.\d+)?\s*\]?\s*-\s*(.+?)\s*$/;
 const MONTH_FILE_REGEX = /^(\d{4})-(\d{2})\.md$/i;
@@ -39,6 +40,7 @@ class VCPTimeLine {
         this.projectBasePath = config.PROJECT_BASE_PATH || this.projectBasePath;
         this.dailyNoteRoot = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(this.projectBasePath, 'dailynote');
         this.contextBridge = dependencies.contextBridge || null;
+        this.isTimelineManagedByRag = dependencies.isTimelineManagedByRag || (() => false);
         this.config = await this.readConfig();
         console.log(`[VCPTimeLine] Initialized. root=${this.dailyNoteRoot}, contextBridge=${!!this.contextBridge}`);
     }
@@ -223,25 +225,7 @@ class VCPTimeLine {
     }
 
     parsePlaceholder(match) {
-        let k = this.config.defaultExpandK;
-        let threshold = this.config.defaultThreshold;
-        const values = [match[3], match[4]].filter(value => value !== undefined).map(value => String(value).trim());
-
-        if (values.length === 1) {
-            const raw = values[0];
-            const numeric = Number(raw);
-            if (/^\d+$/.test(raw) && numeric >= 1) k = Math.floor(numeric);
-            else if (Number.isFinite(numeric) && numeric >= 0.01 && numeric <= 0.99) threshold = numeric;
-        } else if (values.length >= 2) {
-            const parsedK = Number(values[0]);
-            const parsedThreshold = Number(values[1]);
-            if (/^\d+$/.test(values[0]) && parsedK >= 1) k = Math.floor(parsedK);
-            if (Number.isFinite(parsedThreshold) && parsedThreshold >= 0.01 && parsedThreshold <= 0.99) {
-                threshold = parsedThreshold;
-            }
-        }
-
-        return { placeholder: match[0], kind: match[1] || 'combined', agentName: match[2].trim(), k, threshold };
+        return TimelinePlaceholderProcessor.parsePlaceholder(match, this.config);
     }
 
     findLatestRealMessage(messages, role) {
@@ -393,6 +377,8 @@ class VCPTimeLine {
     }
 
     async processMessages(messages) {
+        // RAG 已基于原始声明统一调度并回填，绝不扫描其召回正文。
+        if (this.isTimelineManagedByRag?.()) return messages;
         if (!this.config.enabled || !Array.isArray(messages)) return messages;
 
         // 三种入口共用可信规则，每种仅接受第一个可信声明。
