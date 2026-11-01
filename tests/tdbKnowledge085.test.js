@@ -99,16 +99,29 @@ async function runTests() {
         db.flush();
         console.log('[Test] ✅ 10. flush() 磁盘同步成功');
 
-        // 验证主 .tdb 文件已生成并存在
+        // 验证主 .tdb 文件已生成并存在（0.9.0 TVDB v10 74字节头 + VTYP）
         assert(fs.existsSync(dbPath), '.tdb 数据库主文件应在 flush 后立即落盘');
         const stats = fs.statSync(dbPath);
-        assert(stats.size > 0, '.tdb 数据库文件大小应大于 0');
-        console.log(`[Test] ✅ 11. 磁盘验证通过: ${dbPath} 大小为 ${stats.size} 字节`);
+        assert(stats.size >= 74, '.tdb v10 数据库文件大小应至少为 74 字节');
+        const header = fs.readFileSync(dbPath).subarray(0, 74);
+        assert.strictEqual(header.subarray(0, 4).toString('ascii'), 'TVDB', '文件魔数应为 TVDB');
+        assert.strictEqual(header.readUInt16LE(4), 10, '0.9.0 主文件版本应为 v10');
+        assert.strictEqual(header.subarray(58, 62).toString('ascii'), 'VTYP', 'v10 头部应包含 VTYP 类型标识');
+        console.log(`[Test] ✅ 11. 磁盘验证通过: ${dbPath} 大小为 ${stats.size} 字节 (TVDB v10)`);
+
+        // 9. 验证 0.9.0 原生诊断接口 (instanceStats / storageInfo / estimatedMemory)
+        const instStats = db.instanceStats();
+        const storeInfo = db.storageInfo();
+        const memBytes = db.estimatedMemory();
+        assert.strictEqual(storeInfo.database_format_current, 10, 'storageInfo 应报告当前格式为 10');
+        assert.strictEqual(storeInfo.node_count, 3, 'storageInfo.node_count 应为 3');
+        assert(instStats && instStats.shutdown?.phase === 'open', 'instanceStats 应报告 open 状态');
+        assert(Number.isFinite(memBytes) && memBytes > 0, '非空库 estimatedMemory() 应大于 0');
 
         db.close();
-        console.log('[Test] ✅ 12. close() 资源释放成功');
+        console.log('[Test] ✅ 12. close() 资源释放与 0.9.0 原生诊断校验成功');
 
-        console.log('\n🎉 所有 TriviumDB 0.8.5 功能与加固测试全部通过！');
+        console.log('\n🎉 所有 TriviumDB 0.8.5 / 0.9.0 功能与加固测试全部通过！');
     } finally {
         // 清理测试临时文件
         try {
@@ -120,7 +133,6 @@ async function runTests() {
         } catch (_) {}
     }
 }
-
 runTests().catch(err => {
     console.error('[Test] ❌ 测试失败:', err);
     process.exit(1);

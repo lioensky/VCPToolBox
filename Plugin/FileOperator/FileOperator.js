@@ -2,7 +2,6 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const glob = require('glob');
-const { minimatch } = require('minimatch');
 const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
@@ -1182,8 +1181,12 @@ async function searchFiles(searchPath, pattern, options = {}) {
       fileType = 'all', // 'file', 'directory', 'all'
     } = options;
 
-    const globPattern = path.join(searchPath, '**', pattern);
+    // Keep the literal search root out of the glob pattern (Windows separators
+    // and directory names containing [] must not be interpreted as syntax).
+    const globPattern = path.posix.join('**', pattern.replace(/\\/g, '/'));
     const globOptions = {
+      cwd: searchPath,
+      absolute: true,
       dot: includeHidden,
       nocase: !caseSensitive,
       maxDepth: ENABLE_RECURSIVE_OPERATIONS ? undefined : 1,
