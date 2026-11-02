@@ -1,0 +1,17 @@
+{
+  "schema": "rrf-score-contract-fixture-v1",
+  "provenance": "Synthetic numerical input, not production text or a relevance benchmark.",
+  "omega": 0.8,
+  "threshold": 0.5,
+  "candidates": [
+    {"id": 30, "baseline": 0.9, "eligible": false},
+    {"id": 20, "baseline": 0.7, "eligible": true},
+    {"id": 10, "baseline": 0.4, "eligible": true}
+  ],
+  "scenarios": [
+    {"name": "ordinary-reference-multi-route", "ordinaryFlow": 0.2, "flows": [0.4, 0.8], "reference": 0.2, "expectedOrder": [20, 10, 30]},
+    {"name": "no-ordinary-fallback", "ordinaryFlow": 0.0, "flows": [0.4, 0.8], "reference": 0.8, "expectedOrder": [20, 10, 30]},
+    {"name": "no-route", "ordinaryFlow": 0.2, "flows": [], "reference": 0.2, "expectedOrder": [30, 20, 10]},
+    {"name": "early-return-zero-reference", "ordinaryFlow": 0.0, "flows": [], "reference": 0.0, "expectedOrder": [30, 20, 10]}
+  ]
+}
