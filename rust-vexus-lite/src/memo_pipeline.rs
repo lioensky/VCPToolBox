@@ -504,48 +504,127 @@ fn orthogonal_projection(
     tags: &[PyramidTagWork],
     dimension: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
+    // Directions below this relative scale remain unexplained residual,
+    // rather than being amplified into unit axes.
+    const RELATIVE_RANK_TOLERANCE: f64 = 1e-5;
     let mut basis: Vec<Vec<f64>> = Vec::with_capacity(tags.len());
     let mut coefficients = vec![0.0; tags.len()];
     for (index, tag) in tags.iter().enumerate() {
         let mut vector: Vec<f64> = tag.vector.iter().map(|value| *value as f64).collect();
-        for unit in &basis {
-            let projection = vector
-                .iter()
-                .zip(unit.iter())
-                .map(|(left, right)| left * right)
-                .sum::<f64>();
-            for offset in 0..dimension {
-                vector[offset] -= projection * unit[offset];
+        let original_norm = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+        if !original_norm.is_finite() || original_norm <= 1e-12 {
+            continue;
+        }
+        // Reorthogonalize before normalizing: near-collinear cancellation
+        // must not magnify first-pass leakage into an admitted basis axis.
+        for _ in 0..2 {
+            for unit in &basis {
+                let projection = vector.iter().zip(unit)
+                    .map(|(left, right)| left * right).sum::<f64>();
+                for offset in 0..dimension {
+                    vector[offset] -= projection * unit[offset];
+                }
             }
         }
-        if normalize(&mut vector) {
-            coefficients[index] = query
-                .iter()
-                .zip(vector.iter())
-                .map(|(left, right)| (*left as f64) * right)
-                .sum::<f64>()
-                .abs();
-            basis.push(vector);
+        let residual_norm = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+        if !residual_norm.is_finite()
+            || residual_norm <= RELATIVE_RANK_TOLERANCE * original_norm
+        {
+            continue;
+        }
+        for value in &mut vector {
+            *value /= residual_norm;
+        }
+        coefficients[index] = query.iter().zip(&vector)
+            .map(|(left, right)| (*left as f64) * right).sum::<f64>().abs();
+        basis.push(vector);
+    }
+
+    let mut projection = vec![0.0f64; dimension];
+    for unit in &basis {
+        let coefficient = query.iter().zip(unit)
+            .map(|(left, right)| (*left as f64) * right).sum::<f64>();
+        for offset in 0..dimension {
+            projection[offset] += coefficient * unit[offset];
+        }
+    }
+    // Round each output once; do not accumulate per-axis FP32 roundoff.
+    let residual = query.iter().zip(&projection)
+        .map(|(source, explained)| ((*source as f64) - explained) as f32)
+        .collect();
+    (projection.into_iter().map(|value| value as f32).collect(), residual, coefficients)
+}
+#[cfg(test)]
+mod orthogonal_projection_stability_tests {
+    use super::*;
+
+    fn tag(vector: Vec<f32>) -> PyramidTagWork {
+        PyramidTagWork {
+            id: 0, name: String::new(), vector: vector.into(),
+            similarity: 0.0, contribution: 0.0, handshake_magnitude: 0.0,
         }
     }
 
-    let mut projection = vec![0.0f32; dimension];
-    for unit in &basis {
-        let coefficient = query
-            .iter()
-            .zip(unit.iter())
-            .map(|(left, right)| (*left as f64) * right)
-            .sum::<f64>();
-        for offset in 0..dimension {
-            projection[offset] += (coefficient * unit[offset]) as f32;
+    fn check_closure(query: &[f32], projection: &[f32], residual: &[f32]) {
+        let energy = dot(query, query);
+        let scale = energy.max(1e-30);
+        assert!((energy - dot(projection, projection) - dot(residual, residual)).abs()
+            <= 1e-5 * scale, "energy closure");
+        assert!(dot(projection, residual).abs() <= 1e-5 * scale, "orthogonality");
+        for ((q, p), r) in query.iter().zip(projection).zip(residual) {
+            assert!(((*q as f64) - (*p as f64) - (*r as f64)).abs()
+                <= 2e-7 * energy.sqrt().max(1e-30), "reconstruction");
         }
     }
-    let residual = query
-        .iter()
-        .zip(projection.iter())
-        .map(|(source, explained)| source - explained)
-        .collect();
-    (projection, residual, coefficients)
+
+    #[test]
+    fn near_collinear_rank_cutoff_is_relative_and_preserves_tail() {
+        for scale in [1e-6_f32, 1.0, 1e6] {
+            for epsilon in [1e-7_f32, 1e-4] {
+                let tags = vec![
+                    tag(vec![0.6 * scale, 0.8 * scale, 0.0]),
+                    tag(vec![0.6 * scale, 0.8 * scale, epsilon * scale]),
+                ];
+                let query = [0.0, 0.0, 1.0];
+                let (projection, residual, coefficients) = orthogonal_projection(&query, &tags, 3);
+                assert_eq!(coefficients[0], 0.0);
+                if epsilon < 1e-5 {
+                    assert_eq!(coefficients[1], 0.0);
+                    assert_eq!(projection, vec![0.0; 3]);
+                    assert_eq!(residual, query);
+                } else {
+                    assert!((coefficients[1] - 1.0).abs() < 1e-12);
+                    // Direction recovery under cancellation scales as FP64 epsilon / epsilon;
+                    // it is distinct from mutual basis orthogonality.
+                    assert!(magnitude(&residual) < 1e-10,
+                        "scale={scale}, epsilon={epsilon}, residual={residual:?}, coefficients={coefficients:?}");
+                }
+                check_closure(&query, &projection, &residual);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_axes_close_energy_and_keep_absolute_coefficient_slots() {
+        let tags = vec![
+            tag(vec![0.6, 0.8, 0.0, 0.0]),
+            tag(vec![0.6, 0.8, 0.0, 0.0]),
+            tag(vec![0.6, 0.8, 1e-4, 0.0]),
+            tag(vec![0.0; 4]),
+        ];
+        for query in [[0.3, -0.7, 0.2, 0.6], [-0.6, -0.8, 0.0, 0.0], [0.0; 4]] {
+            let (projection, residual, coefficients) = orthogonal_projection(&query, &tags, 4);
+            assert_eq!(coefficients.len(), tags.len());
+            assert_eq!(coefficients[1], 0.0);
+            assert_eq!(coefficients[3], 0.0);
+            assert!(coefficients.iter().all(|c| c.is_finite() && *c >= 0.0));
+            check_closure(&query, &projection, &residual);
+        }
+        let query = [0.3, -0.7, 0.2, 0.6];
+        let (projection, residual, _) = orthogonal_projection(&query, &[], 4);
+        assert_eq!(projection, vec![0.0; 4]);
+        assert_eq!(residual, query);
+    }
 }
 
 fn analyze_handshakes(

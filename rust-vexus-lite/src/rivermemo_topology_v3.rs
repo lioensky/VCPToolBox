@@ -2221,6 +2221,7 @@ struct ScoredWork {
     path_bonus: f64,
     anchor_bonus: f64,
     final_score: f64,
+    ranking_score: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -2615,6 +2616,7 @@ fn assign_v3_scores(
         item.gated_bonus = (item.v2_bonus * graph_gate)
             .min(positive(config.topology_bonus_cap - item.path_bonus));
         item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus + item.anchor_bonus);
+        item.ranking_score = item.final_score;
     }
 }
 
@@ -2997,6 +2999,7 @@ pub(crate) fn run_native_with_connection(
                 path_bonus,
                 anchor_bonus: 0.0,
                 final_score: 0.0,
+                ranking_score: 0.0,
             }
         })
         .collect();
@@ -3020,7 +3023,7 @@ pub(crate) fn run_native_with_connection(
     });
     let wormhole_traces = wormhole::fuse_rrf(&mut work, &wormhole_model, &input, &omega);
     // Stable sort retains the complete baseline comparator for equal fusion scores.
-    work.sort_by(|a, b| b.final_score.total_cmp(&a.final_score));
+    work.sort_by(|a, b| b.ranking_score.total_cmp(&a.ranking_score));
     let ranked_count = work.len();
 
     let results: Vec<NativeResultItem> = work
@@ -3519,7 +3522,7 @@ mod stoploss_tests {
             anchor: AnchorOutput { exact_contacts: exact, explicit_exact_contacts: exact,
                 strength, ..AnchorOutput::default() },
             v2_bonus: 0.0, gated_bonus: 0.0, path_bonus: 0.03,
-            anchor_bonus: 0.0, final_score: 0.0,
+            anchor_bonus: 0.0, final_score: 0.0, ranking_score: 0.0,
         }
     }
     fn omega() -> OmegaOutput {
@@ -3557,7 +3560,13 @@ mod stoploss_tests {
         event.final_score = 0.53;
         let mut candidates = vec![phone.clone(),event.clone()];
         let traces = wormhole::fuse_rrf(&mut candidates, &model, &input, &omega());
-        assert!(candidates[1].final_score > candidates[0].final_score);
+        assert!(candidates[1].ranking_score > candidates[0].ranking_score);
+        assert_eq!(candidates[0].final_score.to_bits(), phone.final_score.to_bits());
+        assert_eq!(candidates[1].final_score.to_bits(), event.final_score.to_bits());
+        let mut ranked = candidates.clone();
+        ranked.sort_by(|a,b| b.ranking_score.total_cmp(&a.ranking_score));
+        assert_eq!(ranked[0].curve.id, 20);
+        assert_eq!(ranked.iter().filter(|c| c.final_score >= 0.5).count(), 2);
         assert_eq!(candidates[0].anchor_bonus, phone.anchor_bonus);
         assert_eq!(candidates[1].gated_bonus, event.gated_bonus);
         assert_eq!(traces[&10]["wormholeContribution"], 0.0);
@@ -3710,7 +3719,7 @@ mod conservative_topology_tests {
             pure_score: 0.64, field_score: 0.64, field_resonance_bonus: 0.0,
             graph_score: 0.6, direct_evidence: 0.8, role: String::new(),
             anchor: AnchorOutput::default(), v2_bonus: 0.0, gated_bonus: 0.0,
-            path_bonus: 0.02, anchor_bonus: 0.0, final_score: 0.0,
+            path_bonus: 0.02, anchor_bonus: 0.0, final_score: 0.0, ranking_score: 0.0,
         }
     }
     fn omega() -> OmegaOutput {
