@@ -14,6 +14,7 @@
  */
 
 const express = require('express');
+const { safeFilePath } = require('../../modules/safeFilePath');
 const {
     PROFILES_DIR,
     isValidProfileName,
@@ -28,6 +29,15 @@ const {
 
 module.exports = function (options) {
     const router = express.Router();
+
+    router.use('/bridge-profiles/:name', async (req, res, next) => {
+        try {
+            await safeFilePath(PROFILES_DIR, `${req.params.name}.json`, { singleSegment: true });
+            next();
+        } catch (error) {
+            res.status(error.status || 500).json({ success: false, error: error.message });
+        }
+    });
 
     // ─── List all profiles ───────────────────────────────────────────────
     router.get('/bridge-profiles', (req, res) => {

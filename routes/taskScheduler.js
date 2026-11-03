@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const schedule = require('node-schedule');
+const { safeFilePath } = require('../modules/safeFilePath');
 
 let pluginManager;
 let webSocketServer;
@@ -27,7 +28,7 @@ async function persistTimedTaskResult(task, status, payload = {}) {
         await fs.mkdir(TIMED_RESULTS_DIR, { recursive: true });
         const taskId = task?.taskId || `unknown-${Date.now()}`;
         const toolName = task?.tool_call?.tool_name || 'UnknownPlugin';
-        const resultFilePath = path.join(TIMED_RESULTS_DIR, `${taskId}.json`);
+        const resultFilePath = await safeFilePath(TIMED_RESULTS_DIR, String(taskId) + '.json', { singleSegment: true });
         const resultData = {
             taskId,
             toolName,

@@ -1,27 +1,25 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { fileURLToPath } = require('url');
+const { safeFilePath, assertSafePath, invalidPath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
-    const { pluginManager, vectorDBManager } = options;
+    const { pluginManager, vectorDBManager, dailyNoteRootPath } = options;
     const PROJECT_BASE_PATH = path.join(__dirname, '..', '..');
     const DREAM_LOGS_DIR = path.join(PROJECT_BASE_PATH, 'Plugin', 'AgentDream', 'dream_logs');
 
-    // 辅助: file:/// URL 转本地路径
-    function _urlToFilePath(fileUrl) {
-        if (fileUrl.startsWith('file:///')) {
-            // Windows 下可能是 file:///C:/... 或者是 file:///H:/...
-            // 处理路径分隔符
-            let p = fileUrl.replace('file:///', '');
-            if (process.platform === 'win32') {
-                p = p.replace(/\//g, path.sep);
-            } else {
-                p = '/' + p;
-            }
-            return p;
+    async function _safeDiaryPath(fileUrl) {
+        if (!dailyNoteRootPath || typeof fileUrl !== 'string' || !fileUrl) throw invalidPath('Invalid diary path');
+        let target;
+        try {
+            target = fileUrl.startsWith('file:') ? fileURLToPath(fileUrl) : fileUrl;
+        } catch {
+            throw invalidPath('Invalid diary URL');
         }
-        return fileUrl;
+        if (!path.isAbsolute(target) || !/\.(txt|md)$/i.test(target)) throw invalidPath('Invalid diary path');
+        return assertSafePath(dailyNoteRootPath, target);
     }
 
     function _createHttpError(status, message, details) {
@@ -47,7 +45,7 @@ module.exports = function(options) {
     }
 
     async function _processDreamOperation(filename, opId, action) {
-        if (!filename || !filename.endsWith('.json')) {
+        if (typeof filename !== 'string' || !filename.endsWith('.json')) {
             throw _createHttpError(400, 'Invalid filename.');
         }
 
@@ -55,7 +53,7 @@ module.exports = function(options) {
             throw _createHttpError(400, 'Invalid action.');
         }
 
-        const filePath = path.join(DREAM_LOGS_DIR, filename);
+        const filePath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
         const content = await fs.readFile(filePath, 'utf-8');
         const dreamLog = JSON.parse(content);
         const operations = dreamLog.operations || [];
@@ -75,6 +73,11 @@ module.exports = function(options) {
             return { status: 'success', message: `操作 ${opId} 已拒绝。`, operation };
         }
 
+        // Validate every delete target before creating a replacement diary.
+        const sourcePaths = operation.type === 'merge'
+            ? await Promise.all((operation.sourceDiaries || []).map(_safeDiaryPath))
+            : [];
+        const deletePath = operation.type === 'delete' ? await _safeDiaryPath(operation.targetDiary) : null;
         let result = {};
 
         switch (operation.type) {
@@ -98,9 +101,10 @@ module.exports = function(options) {
                 }
 
                 const deleteResults = [];
-                for (const diaryUrl of (operation.sourceDiaries || [])) {
-                    const diaryPath = _urlToFilePath(diaryUrl);
+                for (const [index, diaryUrl] of (operation.sourceDiaries || []).entries()) {
+                    const diaryPath = sourcePaths[index];
                     try {
+                        await assertSafePath(dailyNoteRootPath, diaryPath);
                         await fs.unlink(diaryPath);
                         deleteResults.push({ path: diaryUrl, deleted: true });
                         if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
@@ -115,8 +119,9 @@ module.exports = function(options) {
             }
 
             case 'delete': {
-                const targetPath = _urlToFilePath(operation.targetDiary || '');
+                const targetPath = deletePath;
                 try {
+                    await assertSafePath(dailyNoteRootPath, targetPath);
                     await fs.unlink(targetPath);
                     result.deleted = true;
                     if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
@@ -173,7 +178,7 @@ module.exports = function(options) {
             const logs = [];
             for (const filename of jsonFiles) {
                 try {
-                    const filePath = path.join(DREAM_LOGS_DIR, filename);
+                    const filePath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
                     const content = await fs.readFile(filePath, 'utf-8');
                     const data = JSON.parse(content);
                     const ops = data.operations || [];
@@ -213,12 +218,12 @@ module.exports = function(options) {
         try {
             const filename = req.params.filename;
             if (!filename.endsWith('.json')) return res.status(400).json({ error: 'Invalid filename' });
-            const logPath = path.join(DREAM_LOGS_DIR, filename);
+            const logPath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
             const content = await fs.readFile(logPath, 'utf-8');
             res.json(JSON.parse(content));
         } catch (error) {
             console.error('[AdminAPI] Error reading dream log:', error);
-            res.status(500).json({ error: 'Failed to read dream log', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to read dream log', details: error.message });
         }
     });
 

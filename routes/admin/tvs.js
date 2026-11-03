@@ -1,6 +1,6 @@
 const express = require('express');
 const fs = require('fs').promises;
-const path = require('path');
+const { safeFilePath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
@@ -26,12 +26,13 @@ module.exports = function(options) {
         if (!fileName.toLowerCase().endsWith('.txt')) {
             return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
         }
-        const filePath = path.join(TVS_FILES_DIR, fileName);
         try {
+            const filePath = await safeFilePath(TVS_FILES_DIR, fileName, { singleSegment: true });
             await fs.access(filePath);
             const content = await fs.readFile(filePath, 'utf-8');
             res.json({ content });
         } catch (error) {
+            if (error.code === 'UNSAFE_PATH') return res.status(400).json({ error: error.message });
             if (error.code === 'ENOENT') res.status(404).json({ error: 'TVS file not found.' });
             else res.status(500).json({ error: 'Failed to read TVS file', details: error.message });
         }
@@ -45,13 +46,13 @@ module.exports = function(options) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
         if (typeof content !== 'string') return res.status(400).json({ error: 'Invalid request body.' });
-        const filePath = path.join(TVS_FILES_DIR, fileName);
         try {
+            const filePath = await safeFilePath(TVS_FILES_DIR, fileName, { singleSegment: true });
             await fs.mkdir(TVS_FILES_DIR, { recursive: true });
             await fs.writeFile(filePath, content, 'utf-8');
             res.json({ message: `TVS file '${fileName}' saved successfully.` });
         } catch (error) {
-            res.status(500).json({ error: 'Failed to save TVS file', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to save TVS file', details: error.message });
         }
     });
 
@@ -62,11 +63,12 @@ module.exports = function(options) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
 
-        const filePath = path.join(TVS_FILES_DIR, fileName);
         try {
+            const filePath = await safeFilePath(TVS_FILES_DIR, fileName, { singleSegment: true });
             await fs.unlink(filePath);
             res.json({ message: `TVS file '${fileName}' deleted successfully.` });
         } catch (error) {
+            if (error.code === 'UNSAFE_PATH') return res.status(400).json({ error: error.message });
             if (error.code === 'ENOENT') {
                 return res.status(404).json({ error: 'TVS file not found.' });
             }

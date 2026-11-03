@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { assertSafePath } = require('../modules/safeFilePath');
 
 const FORUM_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH ? path.join(process.env.KNOWLEDGEBASE_ROOT_PATH, 'VCP论坛') : path.join(__dirname, '..', 'dailynote', 'VCP论坛');
 
@@ -224,6 +225,7 @@ async function findPostFile(uid) {
 async function withFileLock(filePath, operation) {
     try {
         await fileLockManager.acquireLock(filePath);
+        await assertSafePath(FORUM_DIR, filePath);
         return await operation();
     } finally {
         fileLockManager.releaseLock(filePath);
@@ -415,7 +417,7 @@ ${content}
         await fs.mkdir(FORUM_DIR, { recursive: true });
         // 新文件路径无竞争，但走统一的锁/写流程保持一致性
         await withFileLock(fullPath, async () => {
-            await fs.writeFile(fullPath, fileContent, 'utf-8');
+            await fs.writeFile(fullPath, fileContent, { encoding: 'utf-8', flag: 'wx' });
         });
 
         res.json({ success: true, message: 'Post created successfully.', uid, filename });

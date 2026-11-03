@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const { Worker } = require('worker_threads');
+const { assertSafePath, resolveSafePath } = require('../modules/safeFilePath');
 
 /**
  * 日记/知识库文件管理模块 (安全加固版)
@@ -74,9 +75,12 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
     /** 符号链接检查 */
     async function isSymlink(filePath) {
         try {
+            await assertSafePath(dailyNoteRootPath, filePath);
             return (await fs.lstat(filePath)).isSymbolicLink();
-        } catch {
-            return false;
+        } catch (error) {
+            if (error.code === 'UNSAFE_PATH') return true;
+            if (error.code === 'ENOENT') return false;
+            throw error;
         }
     }
 
@@ -824,6 +828,8 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
             const result = await executeFileMutation(
                 mutationKey,
                 async () => {
+                    await assertSafePath(dailyNoteRootPath, oldFilePath);
+                    await assertSafePath(dailyNoteRootPath, newFilePath);
                     await fs.mkdir(targetFolderPath, { recursive: true });
 
                     if (isRename) {
@@ -838,7 +844,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
                         }
 
                         // 1. 写入新文件（内容是最新编辑的 content）
-                        await fs.writeFile(newFilePath, content, 'utf-8');
+                        await fs.writeFile(newFilePath, content, { encoding: 'utf-8', flag: 'wx' });
 
                         // 2. 物理删除旧文件
                         try {
@@ -879,7 +885,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
             );
             res.json(result.response);
         } catch (error) {
-            const status = error.code === 'EEXIST' || error.message.includes('已存在') ? 409 : 500;
+            const status = error.status || (error.code === 'EEXIST' || error.message.includes('已存在') ? 409 : 500);
             res.status(status).json({ error: 'Failed to save file', details: error.message });
         }
     });
@@ -909,6 +915,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
                 async () => {
                     const upserts = [];
                     const deletes = [];
+                    await assertSafePath(dailyNoteRootPath, targetFolderPath);
                     await fs.mkdir(targetFolderPath, { recursive: true });
                     dirCache.invalidate(targetFolderPath);
                     for (const note of sourceNotes) {
@@ -935,6 +942,10 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
                         }
 
                         try {
+                            resolveSafePath(dailyNoteRootPath, note.folder, { singleSegment: true });
+                            resolveSafePath(dailyNoteRootPath, note.file, { singleSegment: true });
+                            await assertSafePath(dailyNoteRootPath, sourceFilePath);
+                            await assertSafePath(dailyNoteRootPath, destinationFilePath);
                             await fs.access(sourceFilePath);
                             try {
                                 await fs.access(destinationFilePath);
@@ -974,7 +985,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
             );
             res.json(result.response);
         } catch (error) {
-            res.status(500).json({ error: 'Move operation failed', details: error.message });
+            res.status(error.status || 500).json({ error: 'Move operation failed', details: error.message });
         }
     });
 
@@ -1011,6 +1022,9 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
                         }
 
                         try {
+                            resolveSafePath(dailyNoteRootPath, note.folder, { singleSegment: true });
+                            resolveSafePath(dailyNoteRootPath, note.file, { singleSegment: true });
+                            await assertSafePath(dailyNoteRootPath, filePath);
                             await fs.unlink(filePath);
                             dirCache.invalidate(path.dirname(filePath));
                             deletes.push(filePath);
@@ -1035,7 +1049,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
     // POST /folder/delete - 删除空文件夹
     router.post('/folder/delete', async (req, res) => {
         const { folderName } = req.body;
-        if (!folderName) return res.status(400).json({ error: 'Folder name required' });
+        if (typeof folderName !== 'string' || !folderName) return res.status(400).json({ error: 'Folder name required' });
 
         const targetFolderPath = path.join(dailyNoteRootPath, folderName);
         if (!isPathSafe(targetFolderPath, dailyNoteRootPath) || targetFolderPath === path.resolve(dailyNoteRootPath)) {
@@ -1046,6 +1060,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
             const result = await executeFileMutation(
                 `delete-folder:${folderName}`,
                 async () => {
+                    await assertSafePath(dailyNoteRootPath, targetFolderPath);
                     await fs.access(targetFolderPath);
 
                     const files = await fs.readdir(targetFolderPath);
@@ -1078,7 +1093,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
             if (error.code === 'ENOENT') {
                 res.status(404).json({ error: `Folder '${folderName}' not found.` });
             } else {
-                res.status(500).json({ error: `Failed to delete folder ${folderName}`, details: error.message });
+                res.status(error.status || 500).json({ error: `Failed to delete folder ${folderName}`, details: error.message });
             }
         }
     });

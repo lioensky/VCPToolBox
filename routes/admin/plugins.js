@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const { readPluginDashboardCards } = require('./lib/dashboardCards');
+const { assertSafePath } = require('../../modules/safeFilePath');
 
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
@@ -225,6 +226,8 @@ module.exports = function(options) {
             const manifestPathToUse = path.join(targetPluginPath, manifestFileName);
             const blockedManifestPathToUse = manifestPathToUse + blockedManifestExtension;
 
+            await assertSafePath(PLUGIN_DIR, manifestPathToUse);
+            await assertSafePath(PLUGIN_DIR, blockedManifestPathToUse);
             if (enable) {
                 try {
                     await fs.rename(blockedManifestPathToUse, manifestPathToUse);
@@ -319,6 +322,7 @@ module.exports = function(options) {
             }
 
             manifest.description = description;
+            await assertSafePath(PLUGIN_DIR, targetManifestPath);
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
             const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
             res.json({
@@ -375,6 +379,7 @@ module.exports = function(options) {
             }
 
             const configPath = path.join(targetPluginPath, 'config.env');
+            await assertSafePath(PLUGIN_DIR, configPath);
             await fs.writeFile(configPath, content, 'utf-8');
             await pluginManager.loadPlugins();
             res.json({ message: `插件 ${pluginName} 的配置已保存并已重新加载。` });
@@ -466,6 +471,7 @@ module.exports = function(options) {
                 return res.status(404).json({ error: `Command '${commandIdentifier}' not found in plugin '${pluginName}'.` });
             }
 
+            await assertSafePath(PLUGIN_DIR, targetManifestPath);
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
             const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
             res.json({

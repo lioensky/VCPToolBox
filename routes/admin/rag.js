@@ -2,6 +2,7 @@ const express = require('express');
 const { cleanRagParams } = require('../../modules/knowledgeBase/memoConfig');
 const fs = require('fs').promises;
 const path = require('path');
+const { assertSafePath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
@@ -11,6 +12,7 @@ module.exports = function(options) {
 
     const readJsonFile = async (filePath, fallback = {}) => {
         try {
+            await assertSafePath(path.join(__dirname, '..', '..'), filePath);
             const content = await fs.readFile(filePath, 'utf-8');
             return JSON.parse(content);
         } catch (error) {
@@ -74,8 +76,13 @@ module.exports = function(options) {
         const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
         const content = JSON.stringify(body, null, 2);
 
-        await fs.writeFile(tempPath, content, 'utf-8');
-        await fs.rename(tempPath, filePath);
+        await assertSafePath(path.join(__dirname, '..', '..'), filePath);
+        await fs.writeFile(tempPath, content, { encoding: 'utf-8', flag: 'wx' });
+        try {
+            await fs.rename(tempPath, filePath);
+        } finally {
+            await fs.unlink(tempPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        }
     };
 
     const saveMergedJsonFile = async (filePath, body) => {
@@ -111,6 +118,7 @@ module.exports = function(options) {
     const getThemeFilePath = (themeName) => path.join(ragParamThemesDir, getThemeFileName(themeName));
 
     const ensureThemeDir = async () => {
+        await assertSafePath(path.join(__dirname, '..', '..'), ragParamThemesDir);
         await fs.mkdir(ragParamThemesDir, { recursive: true });
     };
 
