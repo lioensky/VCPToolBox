@@ -397,10 +397,12 @@ class PluginManager extends EventEmitter {
             let output = '';
             let errorOutput = '';
             let processExited = false;
+            let timedOut = false;
             const timeoutDuration = plugin.communication?.timeout || 60000; // 增加默认超时时间到 1 分钟
 
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
+                    timedOut = true;
                     console.log(`[PluginManager] Static plugin "${plugin.name}" has completed its work cycle (${timeoutDuration}ms), terminating background process.`);
                     this._killProcessTree(pluginProcess.pid, plugin.name);
                     // 超时不作为错误 - static 插件完成工作周期后返回已收集的输出
@@ -421,6 +423,10 @@ class PluginManager extends EventEmitter {
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId);
+                if (timedOut) {
+                    // 超时已返回收集的输出；Windows taskkill 的退出码/信号及 stderr 不代表插件崩溃。
+                    return;
+                }
                 if (signal === 'SIGKILL' || signal === 'SIGTERM') {
                     // 被强制终止（超时），已经在 timeout 回调中 resolve 了，这里直接返回
                     return;
