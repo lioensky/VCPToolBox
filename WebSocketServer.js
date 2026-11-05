@@ -3,6 +3,7 @@ const WebSocket = require('ws');
 const url = require('url');
 const fs = require('fs').promises;
 const path = require('path');
+const { resultPath, writeJson } = require('./modules/asyncResultStore');
 const { syncDistributedMusicDiary } = require('./modules/distributedMusicDiarySync');
 const vcpLogReplayManager = require('./modules/vcpLogReplayManager');
 
@@ -111,20 +112,16 @@ async function handleDistributedPluginCallback(serverId, message) {
         console.log(`[WebSocketServer] Received distributed callback for plugin: ${pluginName}, taskId: ${taskId}, serverId: ${serverId}`);
     }
 
-    await ensureAsyncResultsDir();
-    const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${taskId}.json`);
+    const pluginManifest = pluginManager.getPlugin(pluginName);
+    if (!pluginManifest) return;
     try {
-        await fs.writeFile(resultFilePath, JSON.stringify(callbackData, null, 2), 'utf-8');
+        const resultFilePath = resultPath(VCP_ASYNC_RESULTS_DIR, pluginName, taskId);
+        await writeJson(VCP_ASYNC_RESULTS_DIR, resultFilePath, callbackData);
         if (serverConfig.debugMode) {
             console.log(`[WebSocketServer] Saved distributed async result for ${pluginName}-${taskId} to ${resultFilePath}`);
         }
     } catch (fileError) {
-        console.error(`[WebSocketServer] Error saving distributed async result file for ${pluginName}-${taskId}:`, fileError);
-    }
-
-    const pluginManifest = pluginManager.getPlugin(pluginName);
-    if (!pluginManifest) {
-        console.error(`[WebSocketServer] Plugin manifest not found for distributed callback: ${pluginName}`);
+        console.error('[WebSocketServer] Distributed callback rejected:', fileError.code || fileError.name);
         return;
     }
 

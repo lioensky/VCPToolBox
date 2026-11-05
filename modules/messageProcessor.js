@@ -2,6 +2,8 @@
 const fsSync = require('fs');
 const fs = fsSync.promises;
 const path = require('path');
+const { resultPath } = require('./asyncResultStore');
+const { assertSafePath } = require('./safeFilePath');
 
 const warnedMissingVarTarKeys = new Set();
 let cachedExampleVarTarKeys = null;
@@ -1119,8 +1121,9 @@ async function replaceOtherVariables(text, model, role, context) {
 
         promises.push(
             (async () => {
-                const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${requestId}.json`);
                 try {
+                    const resultFilePath = resultPath(VCP_ASYNC_RESULTS_DIR, pluginName, requestId);
+                    await assertSafePath(VCP_ASYNC_RESULTS_DIR, resultFilePath);
                     const fileContent = await fs.readFile(resultFilePath, 'utf-8');
                     const callbackData = JSON.parse(fileContent);
                     let replacementText = `[任务 ${pluginName} (ID: ${requestId}) 已完成]`;

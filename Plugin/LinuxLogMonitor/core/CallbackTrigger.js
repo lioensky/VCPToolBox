@@ -219,10 +219,12 @@ class CallbackTrigger {
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Plugin-Name': this.pluginName,
-                    'X-Callback-Type': 'anomaly'
+                    'X-Callback-Type': 'anomaly',
+                    'Authorization': `Bearer ${process.env.Key || ''}`
                 },
                 body: JSON.stringify(data),
-                signal: controller.signal
+                signal: controller.signal,
+                redirect: 'error'
             });
             
             return response;

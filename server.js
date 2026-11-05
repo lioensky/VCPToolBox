@@ -14,6 +14,7 @@ dayjs.extend(timezone);
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
+const { taskPath, writeJson, createCallbackHandler } = require('./modules/asyncResultStore');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 
@@ -651,7 +652,7 @@ app.use((req, res, next) => {
 
 // 引入并使用特殊模型路由
 const specialModelRouter = require('./routes/specialModelRouter');
-app.use(specialModelRouter); // 这个将处理所有白名单模型的请求
+// Mounted after general API authentication below.
 
 const port = process.env.PORT;
 const apiKey = process.env.API_Key;
@@ -872,17 +873,17 @@ app.use((req, res, next) => {
         return next();
     }
 
-    // Skip bearer token check for plugin callbacks
-    if (req.path.startsWith('/plugin-callback')) {
-        return next();
-    }
+    // Plugin callbacks require the same Bearer credential as other API calls.
 
     const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
+    if (!serverKey || !authHeader || authHeader !== `Bearer ${serverKey}`) {
         return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
     }
     next();
 });
+
+// Model allowlists are routing policy, not authentication.
+app.use(specialModelRouter);
 
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
@@ -1020,7 +1021,7 @@ app.post('/v1/schedule_task', async (req, res) => {
         // 确保目录存在
         await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
 
-        const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
+        const taskFilePath = taskPath(VCP_TIMED_CONTACTS_DIR, task_id);
 
         const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
 
@@ -1031,7 +1032,7 @@ app.post('/v1/schedule_task', async (req, res) => {
             requestor: `Plugin: ${tool_call.tool_name}`,
         };
 
-        await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
+        await writeJson(VCP_TIMED_CONTACTS_DIR, taskFilePath, taskData);
         if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
 
         // 返回成功的响应，插件可以基于此生成最终的用户回执
@@ -1046,7 +1047,7 @@ app.post('/v1/schedule_task', async (req, res) => {
 
     } catch (error) {
         console.error(`[Server] 通过API创建定时任务文件时出错:`, error);
-        res.status(500).json({ status: "error", error: "在服务器上保存定时任务时发生内部错误。" });
+        res.status(error.code === 'UNSAFE_PATH' ? 400 : 500).json({ status: "error", error: error.code === 'UNSAFE_PATH' ? "无效的 task_id 或任务文件路径。" : "在服务器上保存定时任务时发生内部错误。" });
     }
 });
 
@@ -1348,59 +1349,12 @@ const forumApiRoutes = require('./routes/forumApi');
 // 新增：异步插件回调路由
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
 
-async function ensureAsyncResultsDir() {
-    try {
-        await fs.mkdir(VCP_ASYNC_RESULTS_DIR, { recursive: true });
-    } catch (error) {
-        console.error(`[ServerSetup] 创建 VCPAsyncResults 目录失败: ${VCP_ASYNC_RESULTS_DIR}`, error);
-    }
-}
-
-app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
-    const { pluginName, taskId } = req.params;
-    const callbackData = req.body; // 这是插件回调时发送的 JSON 数据
-
-    if (DEBUG_MODE) {
-        console.log(`[Server] Received callback for plugin: ${pluginName}, taskId: ${taskId}`);
-        console.log(`[Server] Callback data:`, JSON.stringify(callbackData, null, 2));
-    }
-
-    // 1. Save callback data to a file
-    await ensureAsyncResultsDir();
-    const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${taskId}.json`);
-    try {
-        await fs.writeFile(resultFilePath, JSON.stringify(callbackData, null, 2), 'utf-8');
-        if (DEBUG_MODE) console.log(`[Server Callback] Saved async result for ${pluginName}-${taskId} to ${resultFilePath}`);
-    } catch (fileError) {
-        console.error(`[Server Callback] Error saving async result file for ${pluginName}-${taskId}:`, fileError);
-        // Continue with WebSocket push even if file saving fails for now
-    }
-
-    const pluginManifest = pluginManager.getPlugin(pluginName);
-
-    if (!pluginManifest) {
-        console.error(`[Server Callback] Plugin manifest not found for: ${pluginName}`);
-        // Still attempt to acknowledge the callback if possible, but log error
-        return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
-    }
-
-    // 2. WebSocket push (existing logic)
-    if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
-        const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
-        const wsMessage = {
-            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification',
-            data: callbackData
-        };
-        webSocketServer.broadcast(wsMessage, targetClientType);
-        if (DEBUG_MODE) {
-            console.log(`[Server Callback] WebSocket push for ${pluginName} (taskId: ${taskId}) processed. Message:`, JSON.stringify(wsMessage, null, 2));
-        }
-    } else if (DEBUG_MODE) {
-        console.log(`[Server Callback] WebSocket push not configured or disabled for plugin: ${pluginName}`);
-    }
-
-    res.status(200).json({ status: "success", message: "Callback received and processed" });
-});
+app.post('/plugin-callback/:pluginName/:taskId', createCallbackHandler({
+    root: VCP_ASYNC_RESULTS_DIR,
+    pluginManager,
+    broadcast: (message, target) => webSocketServer.broadcast(message, target),
+    debug: DEBUG_MODE
+}));
 
 
 async function initialize() {
