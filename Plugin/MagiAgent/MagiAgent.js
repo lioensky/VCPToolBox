@@ -247,7 +247,11 @@ async function sendCompletionCallback(meeting) {
         }
         return;
     }
-    const callbackUrl = `${serverConfig.CALLBACK_BASE_URL}/MagiAgent/${meeting.id}`;
+    if (!serverConfig.Key) {
+        console.error('[MagiAgent] Server Key not configured; completion callback was not sent.');
+        return;
+    }
+    const callbackUrl = `${serverConfig.CALLBACK_BASE_URL.replace(/\/+$/, '')}/MagiAgent/${encodeURIComponent(meeting.id)}`;
     try {
         const resultPayload = await formatMeetingResult(meeting);
         const callbackPayload = {
@@ -259,7 +263,12 @@ async function sendCompletionCallback(meeting) {
         };
         console.log(`[MagiAgent] Sending completion callback for meeting ${meeting.id} to ${callbackUrl}`);
         await axios.post(callbackUrl, callbackPayload, {
-            headers: { 'Content-Type': 'application/json' }
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${serverConfig.Key}`
+            },
+            timeout: 15000,
+            maxRedirects: 0
         });
         console.log(`[MagiAgent] Callback for meeting ${meeting.id} sent successfully.`);
     } catch (error) {
