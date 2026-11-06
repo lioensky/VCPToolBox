@@ -1086,6 +1086,25 @@ class LightMemoPlugin {
         return Array.from(expandedTokens);
     }
 
+    /**
+     * _tokenize looks group words up by jieba tokens, so a group word missing from jieba's
+     * dictionary (coined names, slang such as "塔罗会" or "源堡") is split and never matches.
+     * Register such words with jieba so they stay whole tokens.
+     */
+    _registerGroupWords(words) {
+        if (!this.jiebaInstance) return;
+        const lines = [];
+        for (const word of words) {
+            if (typeof word !== 'string') continue;
+            for (const form of new Set([word.trim(), word.trim().toLowerCase()])) {
+                if (form && !/\s/.test(form) && this.jiebaInstance.cut(form, false).length > 1) {
+                    lines.push(`${form} 1000 n`);
+                }
+            }
+        }
+        if (lines.length > 0) this.jiebaInstance.loadDict(Buffer.from(lines.join('\n'), 'utf-8'));
+    }
+
     async loadSemanticGroups() {
         const semanticGroupsPath = path.join(this.projectBasePath, 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
         try {
@@ -1100,6 +1119,7 @@ class LightMemoPlugin {
                         for (const word of lowercasedWords) {
                             this.wordToGroupMap.set(word, lowercasedWords);
                         }
+                        this._registerGroupWords(group.words);
                     }
                 }
             }
