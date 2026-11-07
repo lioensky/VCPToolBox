@@ -463,6 +463,13 @@ function getConnection(clientIdOrEntry) {
 function initialize(config) {
     pluginConfig = config || {};
     debugMode = pluginConfig.DebugMode || false;
+    const monitoringSetting = process.env.VCP_CHROME_MONITORING_ENABLED ??
+        pluginConfig.VCP_CHROME_MONITORING_ENABLED;
+    if (monitoringSetting !== undefined) {
+        browserRuntimeManager.configureRuntime({
+            monitoringEnabled: parseBoolean(monitoringSetting, true)
+        });
+    }
 
     if (debugMode) {
         console.log('[ChromeBridge] Initializing hybrid plugin...');

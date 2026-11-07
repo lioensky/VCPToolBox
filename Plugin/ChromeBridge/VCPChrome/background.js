@@ -37,6 +37,7 @@ let runtimeIdentity = {
     manualManagedSelection: false,
     managedToken: null,
     managedTokenCreatedAt: 0,
+    monitoringEnabled: true,
     stageGeneration: null,
     sourceManifestHash: null,
     stagedManifestHash: null,
@@ -123,6 +124,7 @@ function applyRuntimeConfig(config, source = 'unknown') {
         manualManagedSelection: false,
         managedToken: String(config.managedToken),
         managedTokenCreatedAt: Number(config.tokenCreatedAt) || 0,
+        monitoringEnabled: config.monitoringEnabled !== false,
         stageGeneration: config.stageGeneration || null,
         sourceManifestHash: config.sourceManifestHash || null,
         stagedManifestHash: config.stagedManifestHash || null,
@@ -144,6 +146,7 @@ function applyRuntimeConfig(config, source = 'unknown') {
         manualManagedSelection: false,
         managedToken: runtimeIdentity.managedToken,
         managedTokenCreatedAt: runtimeIdentity.managedTokenCreatedAt,
+        monitoringEnabled: runtimeIdentity.monitoringEnabled,
         stageGeneration: runtimeIdentity.stageGeneration,
         sourceManifestHash: runtimeIdentity.sourceManifestHash,
         stagedManifestHash: runtimeIdentity.stagedManifestHash,
@@ -153,8 +156,8 @@ function applyRuntimeConfig(config, source = 'unknown') {
     });
 
     if (runtimeIdentity.managedRuntime) {
-        isMonitoringEnabled = true;
-        chrome.storage.local.set({ isMonitoringEnabled: true });
+        isMonitoringEnabled = runtimeIdentity.monitoringEnabled !== false;
+        chrome.storage.local.set({ isMonitoringEnabled });
     }
 
     console.log(`[VCP Background] ✅ 已加载 managed runtime 配置，source=${source}`);
@@ -166,7 +169,7 @@ function getStorageRuntimeConfig() {
         chrome.storage.local.get([
             'serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken',
             'managedTokenCreatedAt', 'stageGeneration', 'sourceManifestHash',
-            'stagedManifestHash', 'runtimeConfigGeneratedAt', 'maxTabs'
+            'stagedManifestHash', 'runtimeConfigGeneratedAt', 'maxTabs', 'monitoringEnabled'
         ], (result) => {
             if (result && result.managedRuntime === true && result.managedToken) {
                 resolve({
@@ -180,7 +183,8 @@ function getStorageRuntimeConfig() {
                     sourceManifestHash: result.sourceManifestHash,
                     stagedManifestHash: result.stagedManifestHash,
                     generatedAt: result.runtimeConfigGeneratedAt,
-                    maxTabs: result.maxTabs
+                    maxTabs: result.maxTabs,
+                    monitoringEnabled: result.monitoringEnabled
                 });
                 return;
             }
@@ -234,6 +238,7 @@ function sendClientHello() {
             stagedManifestHash: runtimeIdentity.stagedManifestHash,
             runtimeConfigGeneratedAt: runtimeIdentity.runtimeConfigGeneratedAt,
             maxTabs: runtimeIdentity.maxTabs,
+            monitoringEnabled: runtimeIdentity.monitoringEnabled,
             userAgent: navigator.userAgent,
             platform: navigator.platform,
             timestamp: Date.now()
@@ -2150,8 +2155,10 @@ chrome.storage.local.get(['connectionEnabled', 'clientKind', 'managedRuntime', '
     loadManagedRuntimeConfig().finally(() => {
         if (runtimeIdentity.managedRuntime || runtimeIdentity.clientKind === 'agent') {
             connectionEnabled = true;
-            isMonitoringEnabled = true;
-            chrome.storage.local.set({ isMonitoringEnabled: true, connectionEnabled: true });
+            isMonitoringEnabled = runtimeIdentity.clientKind === 'agent'
+                ? true
+                : runtimeIdentity.monitoringEnabled !== false;
+            chrome.storage.local.set({ isMonitoringEnabled, connectionEnabled: true });
             broadcastMonitoringStatusToTabs();
         }
         if (connectionEnabled || shouldAutoReconnect()) {

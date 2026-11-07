@@ -35,6 +35,7 @@ let previousPid = null;
 let lastCloseReason = null;
 let lastClosedAt = null;
 let shutdownHooksRegistered = false;
+let runtimeConfigOverrides = {};
 
 function readBooleanEnv(name, defaultValue = false) {
     const raw = process.env[name];
@@ -92,9 +93,20 @@ function getRuntimeConfig() {
         chromeVerboseLogging: readBooleanEnv('VCP_BROWSER_CHROME_VERBOSE_LOGGING', false),
         restrictExtensions: readBooleanEnv('VCP_BROWSER_RESTRICT_EXTENSIONS', false),
         maxTabs: readIntegerEnv('VCP_BROWSER_MAX_TABS', 8, 1, 200),
+        monitoringEnabled: runtimeConfigOverrides.monitoringEnabled !== undefined
+            ? runtimeConfigOverrides.monitoringEnabled
+            : readBooleanEnv('VCP_CHROME_MONITORING_ENABLED', true),
         serverUrl: String(process.env.VCP_BROWSER_SERVER_URL || `ws://localhost:${process.env.PORT || 6005}`).trim(),
         vcpKey: String(process.env.VCP_Key || process.env.VCP_KEY || '').trim()
     };
+}
+
+function configureRuntime(options = {}) {
+    if (!options || typeof options !== 'object') return getRuntimeConfig();
+    if (Object.prototype.hasOwnProperty.call(options, 'monitoringEnabled')) {
+        runtimeConfigOverrides.monitoringEnabled = options.monitoringEnabled === true;
+    }
+    return getRuntimeConfig();
 }
 
 function normalizeCandidate(candidate) {
@@ -219,6 +231,7 @@ function makeManagedRuntimePayload(config) {
         serverUrl: config.serverUrl,
         vcpKey: config.vcpKey,
         maxTabs: config.maxTabs,
+        monitoringEnabled: config.monitoringEnabled !== false,
         stageGeneration: config.stageGeneration || null,
         sourceManifestHash: config.sourceManifestHash || null,
         stagedManifestHash: config.stagedManifestHash || null,
@@ -869,6 +882,7 @@ function getManagedBrowserStatus(extra = {}) {
         extensionStage: currentExtensionStage,
         idleTimeoutMs: config.idleTimeoutMs,
         maxTabs: config.maxTabs,
+        monitoringEnabled: config.monitoringEnabled,
         tokenCreatedAt: tokenCreatedAt ? new Date(tokenCreatedAt).toISOString() : null,
         tokenValid: !!managedToken && !isTokenExpired(config),
         lastLaunchArgs,
@@ -914,5 +928,6 @@ module.exports = {
     getManagedBrowserDebugTargets,
     getManagedToken,
     validateManagedToken,
-    findChromeExecutable
+    findChromeExecutable,
+    configureRuntime
 };
