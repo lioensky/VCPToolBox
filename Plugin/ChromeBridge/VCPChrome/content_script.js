@@ -198,8 +198,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.type === 'REQUEST_PAGE_INFO_UPDATE') {
-        isMonitoringEnabled = true;
-        isActiveTab = true;
+        if (request.isMonitoringEnabled !== undefined) {
+            isMonitoringEnabled = request.isMonitoringEnabled === true;
+        }
+        isActiveTab = isMonitoringEnabled;
         sendPageInfoUpdate({ force: request.force === true });
         sendResponse({ success: true });
         return false;

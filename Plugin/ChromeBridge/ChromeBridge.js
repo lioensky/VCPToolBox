@@ -519,6 +519,15 @@ function updateClientFromHello(entry, helloData = {}) {
     }
 
     console.log(`[ChromeBridge] 🤝 clientHello: ${entry.clientId}, protocol=v${entry.protocolVersion}, kind=${entry.clientKind}, permission=${entry.permissionLevel}, tokenValid=${entry.managedTokenValid}, manualManaged=${entry.manualManagedSelection}`);
+    if (isOpen(entry.ws)) {
+        const runtime = browserRuntimeManager.getManagedBrowserStatus();
+        entry.ws.send(JSON.stringify({
+            type: 'runtime_monitoring_config',
+            data: {
+                monitoringEnabled: runtime.monitoringEnabled !== false
+            }
+        }));
+    }
 }
 
 // WebSocketServer调用：新Chrome客户端连接

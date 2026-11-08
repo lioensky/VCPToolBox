@@ -37,6 +37,7 @@ let runtimeIdentity = {
     manualManagedSelection: false,
     managedToken: null,
     managedTokenCreatedAt: 0,
+    monitoringEnabled: true,
     stageGeneration: null,
     sourceManifestHash: null,
     stagedManifestHash: null,
@@ -123,6 +124,7 @@ function applyRuntimeConfig(config, source = 'unknown') {
         manualManagedSelection: false,
         managedToken: String(config.managedToken),
         managedTokenCreatedAt: Number(config.tokenCreatedAt) || 0,
+        monitoringEnabled: config.monitoringEnabled !== false,
         stageGeneration: config.stageGeneration || null,
         sourceManifestHash: config.sourceManifestHash || null,
         stagedManifestHash: config.stagedManifestHash || null,
@@ -144,6 +146,7 @@ function applyRuntimeConfig(config, source = 'unknown') {
         manualManagedSelection: false,
         managedToken: runtimeIdentity.managedToken,
         managedTokenCreatedAt: runtimeIdentity.managedTokenCreatedAt,
+        monitoringEnabled: runtimeIdentity.monitoringEnabled,
         stageGeneration: runtimeIdentity.stageGeneration,
         sourceManifestHash: runtimeIdentity.sourceManifestHash,
         stagedManifestHash: runtimeIdentity.stagedManifestHash,
@@ -153,8 +156,8 @@ function applyRuntimeConfig(config, source = 'unknown') {
     });
 
     if (runtimeIdentity.managedRuntime) {
-        isMonitoringEnabled = true;
-        chrome.storage.local.set({ isMonitoringEnabled: true });
+        isMonitoringEnabled = runtimeIdentity.monitoringEnabled !== false;
+        chrome.storage.local.set({ isMonitoringEnabled });
     }
 
     console.log(`[VCP Background] ✅ 已加载 managed runtime 配置，source=${source}`);
@@ -166,7 +169,7 @@ function getStorageRuntimeConfig() {
         chrome.storage.local.get([
             'serverUrl', 'vcpKey', 'clientKind', 'managedRuntime', 'managedToken',
             'managedTokenCreatedAt', 'stageGeneration', 'sourceManifestHash',
-            'stagedManifestHash', 'runtimeConfigGeneratedAt', 'maxTabs'
+            'stagedManifestHash', 'runtimeConfigGeneratedAt', 'maxTabs', 'monitoringEnabled'
         ], (result) => {
             if (result && result.managedRuntime === true && result.managedToken) {
                 resolve({
@@ -180,7 +183,8 @@ function getStorageRuntimeConfig() {
                     sourceManifestHash: result.sourceManifestHash,
                     stagedManifestHash: result.stagedManifestHash,
                     generatedAt: result.runtimeConfigGeneratedAt,
-                    maxTabs: result.maxTabs
+                    maxTabs: result.maxTabs,
+                    monitoringEnabled: result.monitoringEnabled
                 });
                 return;
             }
@@ -234,6 +238,7 @@ function sendClientHello() {
             stagedManifestHash: runtimeIdentity.stagedManifestHash,
             runtimeConfigGeneratedAt: runtimeIdentity.runtimeConfigGeneratedAt,
             maxTabs: runtimeIdentity.maxTabs,
+            monitoringEnabled: runtimeIdentity.monitoringEnabled,
             userAgent: navigator.userAgent,
             platform: navigator.platform,
             timestamp: Date.now()
@@ -369,6 +374,15 @@ function connect(options = {}) {
                     status: 'error',
                     error: '服务端返回了无效的 Cookie 同步响应'
                 });
+            } else if (message.type === 'runtime_monitoring_config') {
+                const monitoringEnabled = message.data?.monitoringEnabled !== false;
+                runtimeIdentity.monitoringEnabled = monitoringEnabled;
+                if (runtimeIdentity.managedRuntime || runtimeIdentity.clientKind === 'agent') {
+                    isMonitoringEnabled = monitoringEnabled;
+                    chrome.storage.local.set({ monitoringEnabled, isMonitoringEnabled });
+                    broadcastMonitoringStatusToTabs();
+                    broadcastStatusUpdate();
+                }
             } else if (message.type === 'command') {
                 const commandData = message.data;
                 console.log('Received commandData:', commandData);
@@ -2132,9 +2146,16 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
 }
 
 // 恢复用户明确选择的模式。人工 Managed 优先于自动 staging 探测。
-chrome.storage.local.get(['connectionEnabled', 'clientKind', 'managedRuntime', 'manualManagedSelection'], (result) => {
+chrome.storage.local.get(['connectionEnabled', 'clientKind', 'managedRuntime', 'manualManagedSelection', 'monitoringEnabled', 'isMonitoringEnabled'], (result) => {
     if (result.connectionEnabled !== undefined) connectionEnabled = result.connectionEnabled === true;
     if (result.clientKind === 'agent') runtimeIdentity.clientKind = 'agent';
+    if (result.clientKind === 'agent') {
+        if (result.monitoringEnabled !== undefined) {
+            runtimeIdentity.monitoringEnabled = result.monitoringEnabled !== false;
+        } else if (result.isMonitoringEnabled !== undefined) {
+            runtimeIdentity.monitoringEnabled = result.isMonitoringEnabled === true;
+        }
+    }
     if (
         result.clientKind === 'managed' &&
         result.managedRuntime === true &&
@@ -2150,8 +2171,17 @@ chrome.storage.local.get(['connectionEnabled', 'clientKind', 'managedRuntime', '
     loadManagedRuntimeConfig().finally(() => {
         if (runtimeIdentity.managedRuntime || runtimeIdentity.clientKind === 'agent') {
             connectionEnabled = true;
-            isMonitoringEnabled = true;
-            chrome.storage.local.set({ isMonitoringEnabled: true, connectionEnabled: true });
+            // Agent monitoring is decided by the server handshake. Keep it
+            // off until that response arrives so a persisted true value cannot
+            // briefly re-enable monitoring when the root config is false.
+            isMonitoringEnabled = runtimeIdentity.managedRuntime
+                ? runtimeIdentity.monitoringEnabled !== false
+                : false;
+            chrome.storage.local.set({
+                monitoringEnabled: runtimeIdentity.monitoringEnabled,
+                isMonitoringEnabled,
+                connectionEnabled: true
+            });
             broadcastMonitoringStatusToTabs();
         }
         if (connectionEnabled || shouldAutoReconnect()) {

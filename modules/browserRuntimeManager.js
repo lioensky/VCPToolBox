@@ -92,6 +92,10 @@ function getRuntimeConfig() {
         chromeVerboseLogging: readBooleanEnv('VCP_BROWSER_CHROME_VERBOSE_LOGGING', false),
         restrictExtensions: readBooleanEnv('VCP_BROWSER_RESTRICT_EXTENSIONS', false),
         maxTabs: readIntegerEnv('VCP_BROWSER_MAX_TABS', 8, 1, 200),
+        // This is a root-level setting because the runtime manager is shared by
+        // ChromeBridge and other browser consumers. Do not shadow it in a
+        // plugin-local config or at plugin initialisation time.
+        monitoringEnabled: readBooleanEnv('VCP_CHROME_MONITORING_ENABLED', true),
         serverUrl: String(process.env.VCP_BROWSER_SERVER_URL || `ws://localhost:${process.env.PORT || 6005}`).trim(),
         vcpKey: String(process.env.VCP_Key || process.env.VCP_KEY || '').trim()
     };
@@ -219,6 +223,7 @@ function makeManagedRuntimePayload(config) {
         serverUrl: config.serverUrl,
         vcpKey: config.vcpKey,
         maxTabs: config.maxTabs,
+        monitoringEnabled: config.monitoringEnabled !== false,
         stageGeneration: config.stageGeneration || null,
         sourceManifestHash: config.sourceManifestHash || null,
         stagedManifestHash: config.stagedManifestHash || null,
@@ -869,6 +874,7 @@ function getManagedBrowserStatus(extra = {}) {
         extensionStage: currentExtensionStage,
         idleTimeoutMs: config.idleTimeoutMs,
         maxTabs: config.maxTabs,
+        monitoringEnabled: config.monitoringEnabled,
         tokenCreatedAt: tokenCreatedAt ? new Date(tokenCreatedAt).toISOString() : null,
         tokenValid: !!managedToken && !isTokenExpired(config),
         lastLaunchArgs,
