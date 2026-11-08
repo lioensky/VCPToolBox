@@ -98,34 +98,60 @@ function logDiagInfo(...args) {
     logDebug(...args);
 }
 
-// 加载白名单配置
-let whitelist;
-let whitelistLoadError = null;
-try {
-    whitelist = require('./whitelist.json');
-    // 诊断日志：记录 whitelist 加载状态
-    logDiagInfo(`[LinuxShellExecutor][DIAG] whitelist.json 加载成功`);
-    logDiagInfo(`[LinuxShellExecutor][DIAG] forbiddenCharacters: ${JSON.stringify(whitelist.globalRestrictions?.forbiddenCharacters || [])}`);
-    logDiagInfo(`[LinuxShellExecutor][DIAG] commands 数量: ${Object.keys(whitelist.commands || {}).length}`);
-} catch (e) {
-    whitelistLoadError = e.message;
-    whitelist = { commands: {}, globalRestrictions: {} };
-    // 诊断日志：记录加载失败
-    console.error(`[LinuxShellExecutor][DIAG][ERROR] whitelist.json 加载失败: ${e.message}`);
-    console.error(`[LinuxShellExecutor][DIAG][ERROR] 使用空白名单，所有验证将被跳过！`);
+const WHITELIST_CONFIG_PATH = path.join(__dirname, 'whitelist.json');
+const GRAYLIST_CONFIG_PATH = path.join(__dirname, 'graylist.json');
+const PRESETS_CONFIG_PATH = path.join(__dirname, 'presets.json');
+const HOSTS_CONFIG_PATH = path.join(__dirname, 'hosts.json');
+const DEFAULT_HOSTS_TEMPLATE_MD5 = '30e87419ff3817a98da972ffe69c4752';
+
+// 仅用于测试套件在进程内临时注入夹具主机（生产环境为空对象，不驻留配置）
+const runtimeHostsOverlay = {};
+
+function loadWhitelistConfig() {
+    try {
+        const raw = fsSync.readFileSync(WHITELIST_CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        logDiagInfo(`[LinuxShellExecutor][DIAG] whitelist.json 热加载成功，commands 数量: ${Object.keys(parsed.commands || {}).length}`);
+        return {
+            commands: parsed.commands || {},
+            globalRestrictions: parsed.globalRestrictions || {}
+        };
+    } catch (e) {
+        console.error(`[LinuxShellExecutor][DIAG][ERROR] whitelist.json 读取失败: ${e.message}`);
+        return { commands: {}, globalRestrictions: {} };
+    }
 }
 
-// 加载灰名单配置（需要验证的运维命令）
-let graylist;
-let graylistLoadError = null;
-try {
-    graylist = require('./graylist.json');
-    logDiagInfo(`[LinuxShellExecutor][DIAG] graylist.json 加载成功`);
-    logDiagInfo(`[LinuxShellExecutor][DIAG] graylist commands 数量: ${Object.keys(graylist.commands || {}).length}`);
-} catch (e) {
-    graylistLoadError = e.message;
-    graylist = { commands: {}, globalRestrictions: {} };
-    console.error(`[LinuxShellExecutor][DIAG][ERROR] graylist.json 加载失败: ${e.message}`);
+function loadGraylistConfig() {
+    try {
+        const raw = fsSync.readFileSync(GRAYLIST_CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        logDiagInfo(`[LinuxShellExecutor][DIAG] graylist.json 热加载成功，commands 数量: ${Object.keys(parsed.commands || {}).length}`);
+        return {
+            commands: parsed.commands || {},
+            globalRestrictions: parsed.globalRestrictions || {},
+            riskLevels: parsed.riskLevels || {}
+        };
+    } catch (e) {
+        console.error(`[LinuxShellExecutor][DIAG][ERROR] graylist.json 读取失败: ${e.message}`);
+        return { commands: {}, globalRestrictions: {}, riskLevels: {} };
+    }
+}
+
+function loadPresetsConfig() {
+    try {
+        const raw = fsSync.readFileSync(PRESETS_CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        logDiagInfo(`[LinuxShellExecutor][DIAG] presets.json 热加载成功，预设命令数量: ${Object.keys(parsed.presets || {}).length}`);
+        return {
+            presets: parsed.presets || {},
+            categories: parsed.categories || {},
+            globalSettings: parsed.globalSettings || {}
+        };
+    } catch (e) {
+        console.error(`[LinuxShellExecutor][DIAG][ERROR] presets.json 读取失败: ${e.message}`);
+        return { presets: {}, categories: {}, globalSettings: {} };
+    }
 }
 
 // 加载安全分级配置（v0.4.0 新增）
@@ -141,22 +167,6 @@ try {
     console.error(`[LinuxShellExecutor][DIAG][ERROR] securityLevels.json 加载失败: ${e.message}`);
 }
 
-// 加载预设命令配置（v0.4.0 新增）
-let presetsConfig;
-let presetsLoadError = null;
-try {
-    presetsConfig = require('./presets.json');
-    logDiagInfo(`[LinuxShellExecutor][DIAG] presets.json 加载成功`);
-    logDiagInfo(`[LinuxShellExecutor][DIAG] 预设命令数量: ${Object.keys(presetsConfig.presets || {}).length}`);
-} catch (e) {
-    presetsLoadError = e.message;
-    presetsConfig = { presets: {}, categories: {} };
-    console.error(`[LinuxShellExecutor][DIAG][ERROR] presets.json 加载失败: ${e.message}`);
-}
-
-const HOSTS_CONFIG_PATH = path.join(__dirname, 'hosts.json');
-const DEFAULT_HOSTS_TEMPLATE_MD5 = '30e87419ff3817a98da972ffe69c4752';
-
 function createLocalOnlyHostsConfig() {
     return {
         hosts: {
@@ -171,52 +181,112 @@ function createLocalOnlyHostsConfig() {
     };
 }
 
-function calculateHostsConfigMd5() {
-    try {
-        return crypto
-            .createHash('md5')
-            .update(fsSync.readFileSync(HOSTS_CONFIG_PATH))
-            .digest('hex');
-    } catch (e) {
-        return null;
+function ensureHostsGlobalSettings(config) {
+    if (!config || typeof config !== 'object') return createLocalOnlyHostsConfig();
+    if (!config.hosts || typeof config.hosts !== 'object') {
+        config.hosts = {};
     }
-}
-
-function getDefaultHostsTemplateStatus() {
-    if (!hostsConfigIsDefaultTemplate) return null;
-    return {
-        disabled: true,
-        md5: hostsConfigMd5,
-        reason: 'hosts.json 仍为仓库默认模板，SSH 远程执行功能未启动；请先写入真实主机配置。'
-    };
-}
-
-// 加载主机配置
-let hostsConfig;
-let hostsConfigMd5 = calculateHostsConfigMd5();
-let hostsConfigIsDefaultTemplate = hostsConfigMd5 === DEFAULT_HOSTS_TEMPLATE_MD5;
-try {
-    hostsConfig = hostsConfigIsDefaultTemplate
-        ? createLocalOnlyHostsConfig()
-        : require('./hosts.json');
-    if (hostsConfigIsDefaultTemplate) {
-        logWarn(`[LinuxShellExecutor] hosts.json MD5=${hostsConfigMd5}，仍为默认模板，SSH 远程执行功能已禁用。`);
+    if (!config.globalSettings || typeof config.globalSettings !== 'object') {
+        config.globalSettings = {};
     }
-} catch (e) {
-    hostsConfig = createLocalOnlyHostsConfig();
-}
-
-// 确保连接池配置包含默认值
-if (hostsConfig) {
-    if (!hostsConfig.globalSettings) {
-        hostsConfig.globalSettings = {};
-    }
-    const gs = hostsConfig.globalSettings;
+    const gs = config.globalSettings;
     if (gs.idleTimeout === undefined) gs.idleTimeout = 300000;
     if (gs.idleCheckInterval === undefined) gs.idleCheckInterval = 60000;
     if (gs.healthCheckInterval === undefined) gs.healthCheckInterval = 30000;
     if (gs.warmupHosts === undefined) gs.warmupHosts = [];
+    return config;
 }
+
+function loadHostsConfigWithState() {
+    let rawBuffer;
+    try {
+        rawBuffer = fsSync.readFileSync(HOSTS_CONFIG_PATH);
+    } catch (e) {
+        const fallback = ensureHostsGlobalSettings(createLocalOnlyHostsConfig());
+        fallback.hosts = { ...fallback.hosts, ...runtimeHostsOverlay };
+        return { config: fallback, md5: null, isDefaultTemplate: false };
+    }
+
+    const md5 = crypto.createHash('md5').update(rawBuffer).digest('hex');
+    const isDefaultTemplate = md5 === DEFAULT_HOSTS_TEMPLATE_MD5;
+    if (isDefaultTemplate) {
+        const localOnly = ensureHostsGlobalSettings(createLocalOnlyHostsConfig());
+        localOnly.hosts = { ...localOnly.hosts, ...runtimeHostsOverlay };
+        return { config: localOnly, md5, isDefaultTemplate: true };
+    }
+
+    try {
+        const parsed = ensureHostsGlobalSettings(JSON.parse(rawBuffer.toString('utf8')));
+        parsed.hosts = { ...parsed.hosts, ...runtimeHostsOverlay };
+        return { config: parsed, md5, isDefaultTemplate: false };
+    } catch (e) {
+        console.error(`[LinuxShellExecutor][ERROR] hosts.json 解析失败: ${e.message}`);
+        const fallback = ensureHostsGlobalSettings(createLocalOnlyHostsConfig());
+        fallback.hosts = { ...fallback.hosts, ...runtimeHostsOverlay };
+        return { config: fallback, md5, isDefaultTemplate: false };
+    }
+}
+
+function loadHostsConfig() {
+    return loadHostsConfigWithState().config;
+}
+
+function getDefaultHostsTemplateStatus() {
+    const state = loadHostsConfigWithState();
+    if (!state.isDefaultTemplate) return null;
+    return {
+        disabled: true,
+        md5: state.md5,
+        reason: 'hosts.json 仍为仓库默认模板，SSH 远程执行功能未启动；请先写入真实主机配置。'
+    };
+}
+
+// 供 __testing 兼容测试套件对 hostsConfig.hosts 的动态读写，不常驻真实 hosts.json 数据
+const hostsConfigTestingProxy = {
+    get hosts() {
+        return new Proxy(runtimeHostsOverlay, {
+            get(target, prop) {
+                if (Object.prototype.hasOwnProperty.call(target, prop)) {
+                    return target[prop];
+                }
+                const currentHosts = loadHostsConfig().hosts || {};
+                return currentHosts[prop];
+            },
+            set(target, prop, value) {
+                target[prop] = value;
+                return true;
+            },
+            deleteProperty(target, prop) {
+                delete target[prop];
+                return true;
+            },
+            has(target, prop) {
+                return Object.prototype.hasOwnProperty.call(target, prop)
+                    || Object.prototype.hasOwnProperty.call(loadHostsConfig().hosts || {}, prop);
+            },
+            ownKeys(target) {
+                const keys = new Set([
+                    ...Object.keys(loadHostsConfig().hosts || {}),
+                    ...Object.keys(target)
+                ]);
+                return Array.from(keys);
+            },
+            getOwnPropertyDescriptor(target, prop) {
+                const val = Object.prototype.hasOwnProperty.call(target, prop)
+                    ? target[prop]
+                    : (loadHostsConfig().hosts || {})[prop];
+                if (val === undefined) return undefined;
+                return { configurable: true, enumerable: true, value: val, writable: true };
+            }
+        });
+    },
+    get defaultHost() {
+        return loadHostsConfig().defaultHost || 'local';
+    },
+    get globalSettings() {
+        return loadHostsConfig().globalSettings || {};
+    }
+};
 
 // SSH 管理器（延迟加载，优先使用共享模块）
 let sshManager = null;
@@ -244,7 +314,7 @@ function getSSHManager() {
             const sharedModule = require('../../modules/SSHManager');
             const { getSSHManager: getSharedManager } = sharedModule;
             // 传递当前插件目录作为 basePath，以便正确解析相对路径的私钥
-            sshManager = getSharedManager(hostsConfig, { basePath: __dirname });
+            sshManager = getSharedManager(loadHostsConfig(), { basePath: __dirname });
             if (!sshManager) {
                 const status = typeof sharedModule.getStatus === 'function' ? sharedModule.getStatus() : null;
                 sshLoadError = (status && status.lastError) ? String(status.lastError) : '共享 SSHManager 返回 null（初始化失败）';
@@ -346,11 +416,21 @@ class BlacklistFilter {
 // 第二层：白名单验证器
 // ============================================
 class WhitelistValidator {
-    constructor(whitelist) {
-        this.commands = whitelist.commands || {};
-        this.globalRestrictions = whitelist.globalRestrictions || {};
+    constructor(whitelist = null) {
+        this._staticConfig = whitelist || null;
     }
 
+    _getConfig() {
+        return this._staticConfig || loadWhitelistConfig();
+    }
+
+    get commands() {
+        return this._getConfig().commands || {};
+    }
+
+    get globalRestrictions() {
+        return this._getConfig().globalRestrictions || {};
+    }
     /**
      * 检查命令是否在白名单中
      * @returns {object} { inWhitelist: boolean, cmdConfig?: object, parsedCommand?: object }
@@ -659,10 +739,24 @@ class WhitelistValidator {
 // 第 2.5 层：灰名单验证器（需要管理员验证的运维命令）
 // ============================================
 class GraylistValidator {
-    constructor(graylist) {
-        this.commands = graylist.commands || {};
-        this.globalRestrictions = graylist.globalRestrictions || {};
-        this.riskLevels = graylist.riskLevels || {};
+    constructor(graylist = null) {
+        this._staticConfig = graylist || null;
+    }
+
+    _getConfig() {
+        return this._staticConfig || loadGraylistConfig();
+    }
+
+    get commands() {
+        return this._getConfig().commands || {};
+    }
+
+    get globalRestrictions() {
+        return this._getConfig().globalRestrictions || {};
+    }
+
+    get riskLevels() {
+        return this._getConfig().riskLevels || {};
     }
     
     /**
@@ -960,10 +1054,24 @@ class SecurityLevelValidator {
 // 预设命令执行器（v0.4.0 新增）
 // ============================================
 class PresetExecutor {
-    constructor(config) {
-        this.presets = config.presets || {};
-        this.categories = config.categories || {};
-        this.globalSettings = config.globalSettings || {};
+    constructor(config = null) {
+        this._staticConfig = config || null;
+    }
+
+    _getConfig() {
+        return this._staticConfig || loadPresetsConfig();
+    }
+
+    get presets() {
+        return this._getConfig().presets || {};
+    }
+
+    get categories() {
+        return this._getConfig().categories || {};
+    }
+
+    get globalSettings() {
+        return this._getConfig().globalSettings || {};
     }
     
     isPresetCommand(command) { return command.startsWith('preset:'); }
@@ -1262,15 +1370,14 @@ class AuditLogger {
 class LinuxShellExecutor {
     constructor() {
         this.blacklistFilter = new BlacklistFilter();
-        this.whitelistValidator = new WhitelistValidator(whitelist);
-        this.graylistValidator = new GraylistValidator(graylist);
+        this.whitelistValidator = new WhitelistValidator();
+        this.graylistValidator = new GraylistValidator();
         this.astAnalyzer = new ASTAnalyzer();
         this.auditLogger = new AuditLogger();
 
-        // 安全分级验证器、预设执行器
+        // 安全分级验证器、预设执行器（预设、白名单、灰名单均按需从磁盘读取，不常驻内存）
         this.securityLevelValidator = new SecurityLevelValidator(securityLevelsConfig);
-        this.presetExecutor = new PresetExecutor(presetsConfig);
-
+        this.presetExecutor = new PresetExecutor();
         // 后台任务静默探针定时器
         this.taskProbeTimers = new Map();
         
@@ -1357,10 +1464,10 @@ class LinuxShellExecutor {
      * 列出所有可用主机
      */
     listHosts() {
-        const hosts = hostsConfig && hostsConfig.hosts && typeof hostsConfig.hosts === 'object'
-            ? hostsConfig.hosts
+        const currentHostsConfig = loadHostsConfig();
+        const hosts = currentHostsConfig && currentHostsConfig.hosts && typeof currentHostsConfig.hosts === 'object'
+            ? currentHostsConfig.hosts
             : { local: { name: '本地执行', type: 'local', enabled: true, securityLevel: 'standard' } };
-
         // 仅返回主机基础信息（不做连通性探测/过滤），适配 VCP 多进程模型。
         return Object.entries(hosts).map(([id, cfg]) => ({
             id,
@@ -1408,7 +1515,8 @@ class LinuxShellExecutor {
     }
     
     _validateHost(hostId) {
-        const config = hostsConfig && hostsConfig.hosts ? hostsConfig.hosts[hostId] : null;
+        const currentHostsConfig = loadHostsConfig();
+        const config = currentHostsConfig && currentHostsConfig.hosts ? currentHostsConfig.hosts[hostId] : null;
         if (!config) {
             return {
                 hostId,
@@ -1704,9 +1812,9 @@ class LinuxShellExecutor {
      * 注意：本地超时只终止等待脚本，不会杀死已 nohup 脱钩的后台任务。
      */
     async _runRaw(hostId, command, options = {}) {
-        const hostConfig = (hostsConfig && hostsConfig.hosts ? hostsConfig.hosts[hostId] : null) || {};
+        const currentHostsConfig = loadHostsConfig();
+        const hostConfig = (currentHostsConfig && currentHostsConfig.hosts ? currentHostsConfig.hosts[hostId] : null) || {};
         const timeout = Math.max(5000, Number(options.timeout) || getDefaultSyncTimeout());
-
         if (hostConfig.type === 'ssh') {
             const manager = getSSHManager();
             if (!manager) {
@@ -1817,7 +1925,8 @@ class LinuxShellExecutor {
      */
     async _executeDetachedCommand(hostId, command, options = {}) {
         const startedAt = Date.now();
-        const hostConfig = (hostsConfig.hosts && hostsConfig.hosts[hostId]) || {};
+        const currentHostsConfig = loadHostsConfig();
+        const hostConfig = (currentHostsConfig.hosts && currentHostsConfig.hosts[hostId]) || {};
         const validation = this._validateHost(hostId);
         if (validation) return validation;
 
@@ -1954,9 +2063,9 @@ class LinuxShellExecutor {
     async _executeInteractiveCommand(hostId, command, options = {}) {
         const startedAt = Date.now();
         const terminalId = options.terminalId || 'default';
-        const hostConfig = (hostsConfig.hosts && hostsConfig.hosts[hostId]) || {};
+        const currentHostsConfig = loadHostsConfig();
+        const hostConfig = (currentHostsConfig.hosts && currentHostsConfig.hosts[hostId]) || {};
         const manager = getSSHManager();
-
         if (!manager || typeof manager.openTerminal !== 'function') {
             return {
                 hostId,
@@ -2132,7 +2241,8 @@ class LinuxShellExecutor {
         const validation = this._validateHost(hostId);
         if (validation) return validation;
 
-        const hostConfig = (hostsConfig.hosts && hostsConfig.hosts[hostId]) || {};
+        const currentHostsConfig = loadHostsConfig();
+        const hostConfig = (currentHostsConfig.hosts && currentHostsConfig.hosts[hostId]) || {};
         const explicitTerminal = args.terminalId !== undefined
             && args.terminalId !== null
             && String(args.terminalId).trim() !== '';
@@ -2378,7 +2488,8 @@ function parseHostTokens(input) {
  */
 function normalizeTargetHosts(input) {
     const tokens = parseHostTokens(input);
-    const configuredHosts = (hostsConfig && hostsConfig.hosts) || {};
+    const currentHostsConfig = loadHostsConfig();
+    const configuredHosts = (currentHostsConfig && currentHostsConfig.hosts) || {};
     const targets = [];
     const invalid = [];
     const seen = new Set();
@@ -2665,7 +2776,8 @@ async function handleExecuteCommand(executor, args = {}, options = {}) {
         throw new Error('缺少必需参数: command');
     }
 
-    const defaultHost = (hostsConfig && hostsConfig.defaultHost) || 'local';
+    const currentHostsConfig = loadHostsConfig();
+    const defaultHost = (currentHostsConfig && currentHostsConfig.defaultHost) || 'local';
     const normalized = normalizeTargetHosts(
         args.hostId === undefined || args.hostId === null || args.hostId === ''
             ? defaultHost
@@ -2689,7 +2801,7 @@ async function handleExecuteCommand(executor, args = {}, options = {}) {
             throw new Error(`预设命令展开失败: ${expanded.error}`);
         }
         commandsToExecute = expanded.commands;
-        const presetDefinition = (presetsConfig.presets || {})[expanded.presetName] || {};
+        const presetDefinition = parsed.preset || {};
         presetInfo = {
             name: expanded.presetName,
             description: expanded.description,
@@ -3260,7 +3372,7 @@ module.exports = {
     runToolCall,
     __testing: {
         taskStore,
-        hostsConfig,
+        hostsConfig: hostsConfigTestingProxy,
         normalizeTargetHosts,
         normalizeActionName,
         parseWrapperStdout,

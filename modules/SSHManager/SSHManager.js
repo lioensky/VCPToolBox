@@ -206,30 +206,33 @@ class SSHManager {
      * 获取主机配置
      */
     /**
-     * 获取主机配置（带回退机制）
-     * 逻辑：
-     * 1. 优先从内存配置（全局 hosts.json）查找
-     * 2. 如果未找到，尝试从插件本地目录查找 hosts.json
+     * 动态同步磁盘 hosts.json（支持热修改生效，保留进程内动态注册的测试夹具主机）
+     */
+    _syncHostsFromDisk() {
+        try {
+            const localHostsPath = path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', 'hosts.json');
+            const fsSync = require('fs');
+            if (fsSync.existsSync(localHostsPath)) {
+                const localData = JSON.parse(fsSync.readFileSync(localHostsPath, 'utf8'));
+                if (localData && localData.hosts && typeof localData.hosts === 'object') {
+                    this.hosts = { ...localData.hosts };
+                }
+                if (localData && localData.defaultHost) {
+                    this.defaultHost = localData.defaultHost;
+                }
+            }
+        } catch (e) {
+            this._log(`[HotReload] 读取本地 hosts.json 失败: ${e.message}`);
+        }
+        return this.hosts;
+    }
+
+    /**
+     * 获取主机配置（实时热读取 hosts.json）
      */
     async getHostConfig(hostId) {
-        let config = this.hosts[hostId];
-
-        // 回退机制：如果全局配置没找到，尝试读取插件本地 hosts.json
-        if (!config) {
-            try {
-                const localHostsPath = path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', 'hosts.json');
-                const fsSync = require('fs');
-                if (fsSync.existsSync(localHostsPath)) {
-                    const localData = JSON.parse(fsSync.readFileSync(localHostsPath, 'utf8'));
-                    if (localData.hosts && localData.hosts[hostId]) {
-                        config = localData.hosts[hostId];
-                        this._log(`[Fallback] 从插件本地配置中找到主机: ${hostId}`);
-                    }
-                }
-            } catch (e) {
-                this._log(`[Fallback] 尝试读取本地 hosts.json 失败: ${e.message}`);
-            }
-        }
+        this._syncHostsFromDisk();
+        const config = this.hosts[hostId];
 
         if (!config) {
             throw new Error(`主机 "${hostId}" 不存在`);
@@ -574,6 +577,7 @@ class SSHManager {
      * 列出所有可用主机（集成缓存状态）
      */
     listHosts() {
+        this._syncHostsFromDisk();
         const result = [];
         for (const [id, config] of Object.entries(this.hosts)) {
             result.push({
@@ -2611,6 +2615,7 @@ class SSHManager {
     }
 
     async refreshAllStatuses() {
+        this._syncHostsFromDisk();
         this._log('开始批量刷新主机状态...');
         const tasks = Object.keys(this.hosts)
             .filter(id => this.hosts[id].enabled)
@@ -2708,6 +2713,7 @@ class SSHManager {
      * 获取连接状态
      */
     getStatus() {
+        this._syncHostsFromDisk();
         const status = {};
         for (const [hostId, config] of Object.entries(this.hosts)) {
             status[hostId] = {
