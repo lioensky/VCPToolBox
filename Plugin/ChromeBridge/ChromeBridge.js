@@ -59,6 +59,44 @@ const connectedChromes = new Map();
 // key: requestId, value: { resolve, reject, timeout, waitForPageInfo }
 const pendingCommands = new Map();
 let urlfetchConfigWriteQueue = Promise.resolve();
+const pendingPageSnapshots = new Map();
+const { preprocessPageInfo } = require('./pageInfoPreprocessor');
+
+function requestPageSnapshot(entry) {
+    return new Promise((resolve, reject) => {
+        const requestId = `page-${require('crypto').randomUUID()}`;
+        const cleanup = () => {
+            clearTimeout(timer);
+            pendingPageSnapshots.delete(requestId);
+        };
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error('页面采样超时 (8000ms)'));
+        }, 8000);
+        pendingPageSnapshots.set(requestId, {
+            clientId: entry.clientId,
+            resolve: data => { cleanup(); resolve(data.markdown); },
+            reject: error => { cleanup(); reject(error); }
+        });
+        try {
+            entry.ws.send(JSON.stringify({ type: 'pageSnapshotRequest', data: { requestId } }));
+        } catch (error) {
+            cleanup();
+            reject(error);
+        }
+    });
+}
+
+async function processMessages(messages) {
+    return preprocessPageInfo(messages, async () => {
+        // Observation must not launch Chrome or renew the managed idle lease.
+        const entry = getOpenClients().find(client => client.featureSettings?.isMonitoringEnabled === true)
+            || getOpenClients().find(client => client.clientKind === 'user')
+            || getOpenClients()[0];
+        if (!entry) throw new Error('浏览器未连接');
+        return requestPageSnapshot(entry);
+    });
+}
 
 const URLFETCH_COOKIE_SYNC_LIMITS = {
     maxRequestBytes: 2 * 1024 * 1024,
@@ -468,7 +506,8 @@ function initialize(config) {
         console.log('[ChromeBridge] Initializing hybrid plugin...');
     }
 
-    pluginManager.staticPlaceholderValues.set("{{VCPChromePageInfo}}", "Chrome桥接已加载，等待浏览器连接...");
+    pluginManager.staticPlaceholderValues.delete("{{VCPChromePageInfo}}");
+    pluginManager.staticPlaceholderValues.delete("VCPChromePageInfo");
 }
 
 function registerRoutes(app, config, projectBasePath) {
@@ -557,15 +596,16 @@ function handleNewClient(ws) {
     connectedChromes.set(clientId, entry);
 
     console.log(`[ChromeBridge] ✅ Chrome客户端已连接: ${clientId}, 总数: ${connectedChromes.size}`);
-    pluginManager.staticPlaceholderValues.set("{{VCPChromePageInfo}}", "浏览器已连接，等待页面信息...");
+    // Page content is request-local, never a global static placeholder.
 
     ws.on('close', () => {
         connectedChromes.delete(clientId);
+        for (const pending of pendingPageSnapshots.values()) {
+            if (pending.clientId === clientId) pending.reject(new Error('浏览器连接已断开'));
+        }
         console.log(`[ChromeBridge] ❌ Chrome客户端断开: ${clientId}, 剩余: ${connectedChromes.size}`);
 
-        if (connectedChromes.size === 0) {
-            pluginManager.staticPlaceholderValues.set("{{VCPChromePageInfo}}", "浏览器连接已断开。");
-        }
+
     });
 
     ws.on('error', (error) => {
@@ -578,6 +618,14 @@ function handleClientMessage(clientId, message) {
     const entry = connectedChromes.get(clientId);
     if (entry) {
         entry.lastSeenAt = nowIso();
+    }
+
+    if (message?.type === 'pageSnapshotResult') {
+        const pending = pendingPageSnapshots.get(message.data?.requestId);
+        if (!entry || pending?.clientId !== clientId) return;
+        if (message.data?.error) pending.reject(new Error(message.data.error));
+        else pending.resolve(message.data || {});
+        return;
     }
 
     if (message?.type === 'jev_entity_request') {
@@ -658,8 +706,7 @@ function handleClientMessage(clientId, message) {
             };
         }
 
-        // 更新占位符
-        pluginManager.staticPlaceholderValues.set("{{VCPChromePageInfo}}", markdown);
+        // Explicit tool observations remain separate from request-local prompt injection.
 
         if (debugMode) {
             console.log(`[ChromeBridge] 📄 收到页面更新，长度: ${markdown?.length || 0}`);
@@ -1136,7 +1183,7 @@ async function executeSingleCommand(chromeEntryOrWs, cmdParams, waitForPageInfo 
                                 success: true,
                                 message: stillPending.executionMessage,
                                 result: stillPending.commandResult,
-                                page_info: pluginManager.staticPlaceholderValues.get("{{VCPChromePageInfo}}") || null,
+                                page_info: entry.lastPageInfo?.markdown || null,
                                 page_info_meta: entry.lastPageInfo ? {
                                     snapshotId: entry.lastPageInfo.snapshotId,
                                     generatedAt: entry.lastPageInfo.generatedAt,
@@ -1713,6 +1760,8 @@ function shutdown() {
         pending.reject(new Error('插件正在关闭'));
     });
     pendingCommands.clear();
+    for (const pending of pendingPageSnapshots.values()) pending.reject(new Error('插件正在关闭'));
+    pendingPageSnapshots.clear();
 
     connectedChromes.clear();
 }
@@ -1723,6 +1772,7 @@ module.exports = {
     handleNewClient,
     handleClientMessage,
     processToolCall,
+    processMessages,
     executeManagedCommand,
     selectChromeClient,
     authorizeChromeCommand,

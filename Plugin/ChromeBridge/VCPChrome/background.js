@@ -223,7 +223,8 @@ function sendClientHello() {
             snapshotBackends: runtimeIdentity.snapshotBackends,
             actionBackends: runtimeIdentity.actionBackends,
             featureSettings: {
-                redactSensitiveDom
+                redactSensitiveDom,
+                isMonitoringEnabled
             },
             managedRuntime: runtimeIdentity.managedRuntime,
             manualManagedSelection: runtimeIdentity.manualManagedSelection,
@@ -368,6 +369,36 @@ function connect(options = {}) {
                     requestId,
                     status: 'error',
                     error: '服务端返回了无效的 Cookie 同步响应'
+                });
+            } else if (message.type === 'pageSnapshotRequest') {
+                const requestId = message.data?.requestId;
+                (async () => {
+                    if (!isMonitoringEnabled) throw new Error('页面观察开关未开启');
+                    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+                    const tab = tabs[0];
+                    if (!tab?.id || !/^https?:/i.test(tab.url || '')) {
+                        throw new Error('当前活动标签页不是可解析的 HTTP/HTTPS 页面');
+                    }
+                    const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_GROUNDED_PAGE_INFO' });
+                    if (!response?.success) throw new Error(response?.error || '页面解析器未返回快照');
+                    const pageInfo = response.pageInfo || {};
+                    chromeWebAgentAdapter.updateDocumentState(tab.id, {
+                        documentGeneration: pageInfo.documentGeneration,
+                        snapshotId: pageInfo.snapshotId,
+                        pageRuntimeInstanceId: pageInfo.runtimeInstanceId || null
+                    });
+                    return { requestId, markdown: response.markdown, tabId: tab.id };
+                })().then(data => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({ type: 'pageSnapshotResult', data }));
+                    }
+                }).catch(error => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            type: 'pageSnapshotResult',
+                            data: { requestId, error: error.message || String(error) }
+                        }));
+                    }
                 });
             } else if (message.type === 'command') {
                 const commandData = message.data;
@@ -638,19 +669,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         broadcastStatusUpdate();
         broadcastMonitoringStatusToTabs();
         
-        // 如果开启监控，立即请求当前活动标签页的信息
-        if (isMonitoringEnabled && currentActiveTabId) {
-            chrome.tabs.sendMessage(currentActiveTabId, {
-                type: 'REQUEST_PAGE_INFO_UPDATE',
-                isMonitoringEnabled: true,
-                force: true
-            }).catch(e => {
-                if (!e.message.includes("Could not establish connection")) {
-                    console.log("Error requesting page info:", e.message);
-                }
-            });
-        }
-        
+        // The switch authorizes request-time observation; it does not start polling.
+        if (ws && ws.readyState === WebSocket.OPEN) sendClientHello();
         sendResponse({ isMonitoringEnabled: isMonitoringEnabled });
         return true;
     } else if (request.type === 'SET_CLIENT_MODE') {
@@ -2021,27 +2041,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
         }
     });
     
-    // 只有在监控开启时才请求更新
-    if (isMonitoringEnabled) {
-        // 使用重试机制发送更新请求，因为content script可能还未完全准备好
-        const sendUpdateRequest = (retryCount = 0) => {
-            chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
-                if (chrome.runtime.lastError) {
-                    if (retryCount < 2) { // 最多重试2次
-                        console.log(`[VCP Background] ⚠️ 发送更新请求失败，${200 * (retryCount + 1)}ms后重试 (${retryCount + 1}/2)`);
-                        setTimeout(() => sendUpdateRequest(retryCount + 1), 200 * (retryCount + 1));
-                    } else if (!chrome.runtime.lastError.message.includes("Could not establish connection")) {
-                        console.log("[VCP Background] ❌ 发送更新请求最终失败:", chrome.runtime.lastError.message);
-                    }
-                } else {
-                    console.log(`[VCP Background] ✅ 成功发送更新请求到标签页 ${activeInfo.tabId}`);
-                }
-            });
-        };
-        
-        // 立即发送第一次，如果失败会自动重试
-        sendUpdateRequest();
-    }
+    // Tab activation updates identity only; snapshots are request-driven.
 });
 
 // 监听标签页URL变化或加载状态变化
@@ -2069,26 +2069,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         chromeWebAgentAdapter.setActiveTargetId(tabId);
         console.log(`[VCP Background] ✅ 活动标签页加载完成 [ID:${tab.id}] 标题:《${tab.title}》`);
         
-        if (isMonitoringEnabled) {
-                        // 页面加载完成后，搜索结果/SPA 内容仍可能异步渲染；延迟请求，避免只抓到顶部导航。
-                        setTimeout(() => {
-                            const sendUpdateRequest = (retryCount = 0) => {
-                                chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true, force: true }, (response) => {
-                        if (chrome.runtime.lastError) {
-                            if (retryCount < 3) { // 页面加载后可以多重试几次
-                                console.log(`[VCP Background] ⚠️ 页面加载完成后请求失败，${300 * (retryCount + 1)}ms后重试 (${retryCount + 1}/3)`);
-                                setTimeout(() => sendUpdateRequest(retryCount + 1), 300 * (retryCount + 1));
-                            } else if (!chrome.runtime.lastError.message.includes("Could not establish connection")) {
-                                console.log("[VCP Background] ❌ 页面加载后更新请求最终失败:", chrome.runtime.lastError.message);
-                            }
-                        } else {
-                            console.log(`[VCP Background] ✅ 成功请求页面加载后的更新 [ID:${tabId}]`);
-                        }
-                    });
-                };
-                sendUpdateRequest();
-            }, 2500); // 等待搜索结果/动态内容稳定
-        }
+        // Explicit navigation commands keep their own completion snapshot.
     }
 });
 
