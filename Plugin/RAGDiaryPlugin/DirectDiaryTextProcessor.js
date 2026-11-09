@@ -970,9 +970,9 @@ class DirectDiaryTextProcessor {
             .replace(/《《[^》]*日记本[^》]*》》/g, '[循环占位符已移除]')
             .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[循环占位符已移除]')
             .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[循环占位符已移除]')
-            .replace(/《《[^》]*知识库[^》]*》》/g, '[循环占位符已移除]');
+            .replace(/《《[^》]*知识库[^》]*》》/g, '[循环占位符已移除]')
+            .replace(/\[\[(?:VCP元思考|VCPTimeLine|OneRingMemo)[^\]]*\]\]/g, '[循环占位符已移除]');
     }
-
     async processContent(content, options = {}) {
         let processedContent = String(content || '');
         const declarations = [...processedContent.matchAll(/\{\{([^}]*?)日记本([^}]*?)\}\}/g)];
@@ -1069,7 +1069,8 @@ class DirectDiaryTextProcessor {
         }));
 
         for (const result of results) {
-            processedContent = processedContent.replace(result.placeholder, result.content ?? '');
+            const replText = result.content ?? '';
+            processedContent = processedContent.replace(result.placeholder, () => replText);
         }
 
         return processedContent;
