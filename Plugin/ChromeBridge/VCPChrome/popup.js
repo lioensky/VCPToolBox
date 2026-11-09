@@ -99,11 +99,10 @@ document.addEventListener('DOMContentLoaded', () => {
             pageTitleDiv.style.color = '#333';
             pageUrlDiv.textContent = data.url;
             
-            // 存储到本地
-            chrome.storage.local.set({ lastPageInfo: data });
+            // Current tab identity is not a sampled-page cache.
         } else {
             console.log('[VCP Popup] ⚠️ 数据无效，显示占位文本');
-            pageTitleDiv.textContent = '等待监控...';
+            pageTitleDiv.textContent = '当前没有可用标签页';
             pageTitleDiv.style.color = '#999';
             pageUrlDiv.textContent = '';
         }
@@ -204,27 +203,35 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 从background获取最新页面信息
-    function loadLastPageInfo() {
-        console.log('[VCP Popup] 正在请求最新页面信息...');
-        chrome.runtime.sendMessage({ type: 'GET_LATEST_PAGE_INFO' }, (response) => {
-            console.log('[VCP Popup] 收到background响应:', response);
-            if (response) {
-                console.log('[VCP Popup] 使用background的数据更新UI');
-                updatePageInfo(response);
-            } else {
-                console.log('[VCP Popup] background没有数据，尝试从storage读取');
-                chrome.storage.local.get(['lastPageInfo'], (result) => {
-                    console.log('[VCP Popup] storage数据:', result.lastPageInfo);
-                    if (result.lastPageInfo) {
-                        updatePageInfo(result.lastPageInfo);
-                    } else {
-                        console.log('[VCP Popup] ❌ 没有找到任何页面信息');
-                    }
-                });
-            }
-        });
+    // Metadata only: never compile a DOM snapshot or fall back to lastPageInfo.
+    let pageIdentityRequest = 0;
+    async function loadLastPageInfo() {
+        const request = ++pageIdentityRequest;
+        try {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (request !== pageIdentityRequest) return;
+            const tab = tabs[0];
+            updatePageInfo(tab ? {
+                tabId: tab.id,
+                title: tab.title || tab.pendingUrl || tab.url || '未命名标签页',
+                url: tab.pendingUrl || tab.url || ''
+            } : null);
+        } catch (error) {
+            if (request !== pageIdentityRequest) return;
+            updatePageInfo(null);
+            console.warn('[VCP Popup] 当前标签页元数据读取失败:', error);
+        }
     }
+
+    // Popup lifetime only; these events do not request page content.
+    chrome.tabs.onActivated.addListener(() => { void loadLastPageInfo(); });
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+        if (tab.active && (changeInfo.url !== undefined ||
+            changeInfo.title !== undefined || changeInfo.status !== undefined)) {
+            void loadLastPageInfo();
+        }
+    });
+    chrome.windows.onFocusChanged.addListener(() => { void loadLastPageInfo(); });
 
     // 初始化：加载设置和状态
     loadSettings();
@@ -472,7 +479,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } else if (request.type === 'PAGE_INFO_BROADCAST') {
             console.log('[VCP Popup] 收到页面信息广播:', request.data);
-            updatePageInfo(request.data);
+            // A late snapshot must never overwrite the current tab identity.
+            void loadLastPageInfo();
         }
     });
 });
