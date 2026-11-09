@@ -2541,7 +2541,7 @@ class RAGDiaryPlugin {
                 : String(result.content);
 
             const beforeLength = processedContent.length;
-            processedContent = processedContent.replace(placeholder, replacementContent);
+            processedContent = processedContent.replace(placeholder, () => replacementContent);
             const afterLength = processedContent.length;
 
             if (beforeLength === afterLength && placeholder.length > 0) {
