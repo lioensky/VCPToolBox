@@ -379,7 +379,7 @@ function connect(options = {}) {
                     if (!tab?.id || !/^https?:/i.test(tab.url || '')) {
                         throw new Error('当前活动标签页不是可解析的 HTTP/HTTPS 页面');
                     }
-                    const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_GROUNDED_PAGE_INFO' });
+                    const response = await requestGroundedSnapshot(tab.id);
                     if (!response?.success) throw new Error(response?.error || '页面解析器未返回快照');
                     const pageInfo = response.pageInfo || {};
                     chromeWebAgentAdapter.updateDocumentState(tab.id, {
@@ -960,6 +960,53 @@ function requestPageInfoWithRetry(tabId, retryCount = 0) {
             console.log(`[VCP Background] ✅ 导航后页面信息请求已发送 [ID:${tabId}]`);
         }
     });
+}
+
+const pageReceiverRepairs = new Map();
+
+async function requestGroundedSnapshot(tabId) {
+    const read = () => chrome.tabs.sendMessage(
+        tabId, { type: 'GET_GROUNDED_PAGE_INFO' }, { frameId: 0 }
+    );
+    try {
+        return await read();
+    } catch (error) {
+        // Only a missing receiver is repairable here. Never replay an action,
+        // bypass host permissions, reload a page, or retry a hanging snapshot.
+        if (!/Receiving end does not exist|Could not establish connection/i.test(error?.message || '')) {
+            throw error;
+        }
+        let repair = pageReceiverRepairs.get(tabId);
+        if (!repair) {
+            repair = (async () => {
+                // A concurrent document_idle injection may already have completed.
+                try {
+                    const result = await read();
+                    if (result?.success) return result;
+                } catch (probeError) {
+                    if (!/Receiving end does not exist|Could not establish connection/i.test(probeError?.message || '')) {
+                        throw probeError;
+                    }
+                }
+                for (const script of chrome.runtime.getManifest().content_scripts || []) {
+                    await chrome.scripting.executeScript({
+                        target: { tabId, frameIds: [0] },
+                        world: script.world || 'ISOLATED',
+                        files: script.js
+                    });
+                }
+                return read();
+            })();
+            pageReceiverRepairs.set(tabId, repair);
+        }
+        try {
+            return await repair;
+        } catch (repairError) {
+            throw new Error(`标签页 ${tabId} 页面接收端恢复失败：${repairError.message || repairError}`);
+        } finally {
+            if (pageReceiverRepairs.get(tabId) === repair) pageReceiverRepairs.delete(tabId);
+        }
+    }
 }
 
 function isExpectedNavigationChannelClose(error) {

@@ -1,3 +1,4 @@
+(() => {
 'use strict';
 
 if (
@@ -289,3 +290,4 @@ chrome.storage.local.get(
         }
     }
 );
+})();
