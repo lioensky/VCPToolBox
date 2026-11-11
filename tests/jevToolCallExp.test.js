@@ -815,3 +815,95 @@ JEV:「始」{联网搜索} 【2026年最新数学进展】「末」
     assert.equal(call3.args.maid, '星阑');
     assert.equal(call3.args.expression, '{联网搜索} 【2026年最新数学进展】');
 });
+
+test('意图剥离与意图保护：主要内容与约束槽位中的动作词、目录、URL与嵌套括号绝不反向劫持主意图', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+
+    // 1. 真实故障复现：主动回忆负载中包含“预计算”，绝不可误触发 SciCalculator
+    const [xiaokeCall] = await planner.plan(
+        '主动回忆【RiverMoonShadow 寻址推理 预计算树形图权重 池月】，搜索[所有知识库]并返回[5条]。',
+        { maid: '小克', markHistory: true, args: { maid: '小克' } }
+    );
+    assert.equal(xiaokeCall.name, 'LightMemo');
+    assert.deepEqual(xiaokeCall.args, {
+        k: '5',
+        search_all_knowledge_bases: 'true',
+        query: 'RiverMoonShadow 寻址推理 预计算树形图权重 池月',
+        maid: '小克'
+    });
+    assert.equal(xiaokeCall.markHistory, true);
+
+    // 2. 负载内嵌 {目录}、[约束]、[URL]、引号工具名与嵌套【】字面量完全冻结为纯数据
+    const [nestedMemo] = await planner.plan(
+        '主动回忆【POM 先天命石【天界箭袋】及 {联网搜索} `SciCalculator` [https://evil.example/image] 计算联络闹钟睡眠】，从[科学计算与睡眠研究]中返回[3条]。'
+    );
+    assert.equal(nestedMemo.name, 'LightMemo');
+    assert.equal(
+        nestedMemo.args.query,
+        'POM 先天命石【天界箭袋】及 {联网搜索} `SciCalculator` [https://evil.example/image] 计算联络闹钟睡眠'
+    );
+    assert.equal(nestedMemo.args.folder, '科学计算与睡眠研究');
+    assert.equal(nestedMemo.args.k, '3');
+
+    // 3. 闹钟提醒内容含“联络”，不应被排在前面的 AgentAssistant 抢走并误绑目标名
+    const [alarmCall] = await planner.plan(
+        '请在[5分钟后]设置闹钟，提醒我【联络小克并计算本月算力预算】。'
+    );
+    assert.equal(alarmCall.name, 'VCPAlarm');
+    assert.deepEqual(alarmCall.args, {
+        time_description: '5分钟后',
+        reminder_text: '联络小克并计算本月算力预算'
+    });
+
+    // 4. 睡眠主动作后接“醒来后提醒我”，受先导主意图保护，不应被误判为闹钟
+    const [sleepCall] = await planner.plan(
+        '请睡眠[10分钟]，醒来后提醒我【重新检查异步任务并联络小娜】。'
+    );
+    assert.equal(sleepCall.name, 'VCPSleep');
+    assert.deepEqual(sleepCall.args, {
+        sleeptime: '10分钟',
+        tips: '重新检查异步任务并联络小娜'
+    });
+
+    // 5. 女仆通讯目标名与正文均含其他动作关键词
+    const [contactCall] = await planner.plan(
+        '联络[计算姬]，告诉她【5分钟后提醒我播放歌词并主动回忆昨天日志】。'
+    );
+    assert.equal(contactCall.name, 'AgentAssistant');
+    assert.deepEqual(contactCall.args, {
+        agent_name: '计算姬',
+        prompt: '5分钟后提醒我播放歌词并主动回忆昨天日志'
+    });
+
+    // 6. UrlFetch 的 URL 路径自身含 image / snapshot / google 子串时，不污染 mode 与工具选择
+    const [urlCall] = await planner.plan(
+        '请使用 {联网搜索}，打开网页[https://www.google.com/images/snapshot-2026.html]。'
+    );
+    assert.equal(urlCall.name, 'UrlFetch');
+    assert.deepEqual(urlCall.args, {
+        mode: 'text',
+        url: 'https://www.google.com/images/snapshot-2026.html'
+    });
+
+    // 7. B站视频负载含嵌套【】与“不要字幕”字面量时，不影响默认完整拉取契约
+    const [biliCall] = await planner.plan(
+        '请使用 {联网搜索} 中的 `B站获取`，获取视频【BV1mEnb6LEnC】与说明【【官方MV】不要字幕、评论和弹幕】的内容。'
+    );
+    assert.equal(biliCall.name, 'BilibiliFetch');
+    assert.equal(biliCall.args.need_subs, 'true');
+    assert.equal(biliCall.args.comment_num, '20');
+    assert.equal(biliCall.args.danmaku_num, '20');
+
+    // 8. 目录别名自带具体工具意图（如 {音乐播放} 省略动词“播放”）
+    const [musicAliasCall] = await planner.plan(
+        '{音乐播放} 【计算器与闹钟协奏曲】[星诞]'
+    );
+    assert.equal(musicAliasCall.name, 'MusicController');
+    assert.deepEqual(musicAliasCall.args, {
+        command: 'playSong',
+        songname: '计算器与闹钟协奏曲',
+        stageMode: 'starborn'
+    });
+
+    assert.equal(decisions.length, 0);
+});

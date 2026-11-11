@@ -8,9 +8,51 @@ const defaultThirdPartyRegistry = require('./jevThirdPartyRegistry');
 const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'ToolConfigs', 'jev_tool_call_exp.json');
 const DEFAULT_DECISION_PROMPT_PATH = path.join(__dirname, '..', 'TVStxt', 'JevToolCallDecision.txt');
 const IMAGE_URL_RE = /^(?:https?:\/\/|file:\/\/|data:image\/)/i;
+const FETCHABLE_URL_RE = /^(?:https?:\/\/|file:\/\/)/i;
+const URL_FETCH_ACTION_RE = /打开|读取|查看|访问|看图|截图|快照/i;
 const BILIBILI_RESOURCE_RE = /(?:bilibili\.com\/video\/|b23\.tv\/|^BV[0-9A-Za-z]+(?:\?p=\d+)?$|^av\d+$)/i;
 const EXPLICIT_SIZE_RE = /\b(\d{3,4})\s*[x×:]\s*(\d{3,4})\b/i;
 const CURRENT_MUSIC_REQUEST_RE = /(?:获取|查看|读取|查询)\s*(?:(?:当前播放|正在播放|播放中|当前)(?:的)?\s*)?(?:(?:音乐|歌曲)(?:的)?(?:内容|详细信息|信息|歌词)|歌词)|\bgetCurrentLyrics\b/i;
+const SPECIAL_ACTION_CONSTRAINTS_RE = /^(?:音乐检索|getCurrentLyrics)$/i;
+
+// 强句法意图签名（基于已剥离负载与参数槽位的 actionSkeleton）：
+// 同时用于隐式能力目录推断与显式目录下的先导主意图锁定（Intent Protection）。
+const STRONG_DAILY_INTENT_RULES = [
+    {
+        toolKey: 'light_memo',
+        re: /(?:主动回忆|快速回忆|检索记忆|搜索记忆|检索日记|搜索日记)|\[音乐检索\]|音乐检索\s*【】|(?:请|帮我|麻烦)?\s*回忆\s*(?:一下)?(?:关于)?\s*【】/i
+    },
+    {
+        toolKey: 'calculator',
+        re: /(?<!预|云|边缘|超|并行|分布式)(?:科学计算|计算表达式|计算一下|算一下|计算|求解)\s*(?:一下)?(?:表达式|公式|这道题|结果)?\s*【】/i
+    },
+    {
+        toolKey: 'agent_assistant',
+        re: /(?:联络女仆|联络agent|联系女仆|联系agent|女仆通讯)|(?:请|帮我|麻烦)?\s*(?:联络|联系|通讯|委托)\s*\[\]/i
+    },
+    {
+        toolKey: 'music_controller',
+        re: /(?:播放歌曲|播放音乐|点歌|放一首|听歌|(?:请|帮我|麻烦)?\s*播放)\s*(?:一首|歌曲|音乐)?\s*【】/i
+    },
+    {
+        toolKey: 'alarm',
+        re: /(?:设置|创建|定个|安排)(?:一个|\s*\[\]\s*的?)?闹钟|在\s*\[\]\s*(?:设置|创建|定个|安排)?闹钟/i
+    },
+    {
+        toolKey: 'sleep',
+        re: /(?:请|帮我|进入)?\s*(?:睡眠|睡一觉|打个盹|打盹|进入睡眠|等待回调|等候回调|休眠)\s*\[\]/i
+    }
+];
+
+// 显式 {日用工具} 目录下的次级动作词规则（仅在纯净 actionSkeleton 上按先导位置匹配）。
+const FALLBACK_DAILY_INTENT_RULES = [
+    { toolKey: 'agent_assistant', re: /联络|联系|通讯|委托|问问.*(?:女仆|agent)/i },
+    { toolKey: 'sleep', re: /睡一觉|睡眠|打个盹|打盹|等待回调|等候回调|休眠/i },
+    { toolKey: 'alarm', re: /闹钟|(?<!醒来后|睡醒后|睡眠后)(?:提醒我|叫醒我|定时提醒)/i },
+    { toolKey: 'calculator', re: /(?<!预|云|边缘|超|并行|分布式)(?:科学计算|计算表达式|计算一下|算一下|计算|求解)/i },
+    { toolKey: 'light_memo', re: /\[音乐检索\]|音乐检索|回忆|记忆|知识库|(?:检索|搜索).*(?:日记|记忆)/i },
+    { toolKey: 'music_controller', re: /播放|点歌|放一首|听歌/i }
+];
 
 // 第三方插件裁决的官方短协议。可在 JevToolCallDecision.txt 中用
 // "## THIRD_PARTY_PROTOCOL" 段落覆盖，未提供时使用此默认值。
@@ -40,26 +82,164 @@ function uniqueStrings(values) {
     });
 }
 
-function extractMarkedValues(text, open, close) {
-    const values = [];
-    let cursor = 0;
-    while (cursor < text.length) {
-        const start = text.indexOf(open, cursor);
-        if (start < 0) break;
-        const end = text.indexOf(close, start + open.length);
-        if (end < 0) break;
-        const value = text.slice(start + open.length, end).trim();
-        if (value) values.push(value);
-        cursor = end + close.length;
+/**
+ * 在纯净意图骨架上按自然语言先导位置（最小 match.index）匹配主动作；
+ * 同起点时优先跨度更长的具体短语，防止后置状语/从句覆盖主谓动作。
+ */
+function matchLeadingIntent(text, rules) {
+    let best = null;
+    for (const rule of rules) {
+        const match = rule.re.exec(text);
+        if (!match) continue;
+        if (
+            !best
+            || match.index < best.index
+            || (match.index === best.index && match[0].length > best.length)
+        ) {
+            best = {
+                toolKey: rule.toolKey,
+                index: match.index,
+                length: match[0].length
+            };
+        }
     }
-    return values;
+    return best ? best.toolKey : null;
 }
 
-function parseBooleanHint(text, positiveWords, negativeWords) {
-    const normalized = normalizeText(text).toLowerCase();
-    if (negativeWords.some(word => normalized.includes(word))) return false;
-    if (positiveWords.some(word => normalized.includes(word))) return true;
-    return undefined;
+/**
+ * 词法平面分离器（Control / Data Plane Isolation）：
+ * 1. 优先用平衡深度扫描剥离【主要内容】并替换为【】，内部任何 {}、[]、引号、URL 与动词均冻结为纯数据负载；
+ * 2. 在负载外剥离 [] 约束槽位，普通槽位脱敏为 []，外层 URL 记为 [URL]，仅保留显式协议动作标签；
+ * 3. 在负载与槽位外提取 {} 能力目录与引号工具名，产出纯净意图骨架 actionSkeleton 与动作文本 actionText。
+ */
+function scanJevStructure(raw) {
+    const primary = [];
+    const rawConstraints = [];
+    const categories = [];
+    const backtickTools = [];
+    const quotedTools = [];
+
+    let outerRaw = '';
+    let i = 0;
+    while (i < raw.length) {
+        if (raw[i] === '【') {
+            let depth = 1;
+            let j = i + 1;
+            let firstClose = -1;
+            while (j < raw.length && depth > 0) {
+                if (raw[j] === '【') depth++;
+                else if (raw[j] === '】') {
+                    if (firstClose < 0) firstClose = j;
+                    depth--;
+                }
+                j++;
+            }
+            if (depth === 0) {
+                const content = raw.slice(i + 1, j - 1).trim();
+                if (content) primary.push(content);
+                outerRaw += '【】';
+                i = j;
+                continue;
+            }
+            if (firstClose > i) {
+                const content = raw.slice(i + 1, firstClose).trim();
+                if (content) primary.push(content);
+                outerRaw += '【】';
+                i = firstClose + 1;
+                continue;
+            }
+        }
+        outerRaw += raw[i];
+        i++;
+    }
+
+    let withoutSlots = '';
+    i = 0;
+    while (i < outerRaw.length) {
+        if (outerRaw[i] === '[') {
+            const closeIdx = outerRaw.indexOf(']', i + 1);
+            if (closeIdx > i) {
+                const content = outerRaw.slice(i + 1, closeIdx).trim();
+                if (content) {
+                    rawConstraints.push(content);
+                    if (IMAGE_URL_RE.test(content)) {
+                        withoutSlots += '[URL]';
+                    } else if (SPECIAL_ACTION_CONSTRAINTS_RE.test(content)) {
+                        withoutSlots += `[${content}]`;
+                    } else {
+                        withoutSlots += '[]';
+                    }
+                } else {
+                    withoutSlots += '[]';
+                }
+                i = closeIdx + 1;
+                continue;
+            }
+        }
+        withoutSlots += outerRaw[i];
+        i++;
+    }
+
+    let withoutCategories = '';
+    i = 0;
+    while (i < withoutSlots.length) {
+        if (withoutSlots[i] === '{') {
+            const closeIdx = withoutSlots.indexOf('}', i + 1);
+            if (closeIdx > i) {
+                const content = withoutSlots.slice(i + 1, closeIdx).trim();
+                if (content) categories.push(content);
+                withoutCategories += ' ';
+                i = closeIdx + 1;
+                continue;
+            }
+        }
+        withoutCategories += withoutSlots[i];
+        i++;
+    }
+
+    const quotePairs = [
+        ['`', '`', true],
+        ['\'', '\'', false],
+        ['“', '”', false],
+        ['"', '"', false]
+    ];
+    let actionSkeleton = '';
+    i = 0;
+    while (i < withoutCategories.length) {
+        const pair = quotePairs.find(([open]) => withoutCategories[i] === open);
+        if (pair) {
+            const [open, close, isBacktick] = pair;
+            const closeIdx = withoutCategories.indexOf(close, i + open.length);
+            if (closeIdx > i) {
+                const toolName = withoutCategories.slice(i + open.length, closeIdx).trim();
+                if (toolName) {
+                    if (isBacktick) backtickTools.push(toolName);
+                    quotedTools.push(toolName);
+                }
+                actionSkeleton += ' ';
+                i = closeIdx + close.length;
+                continue;
+            }
+        }
+        actionSkeleton += withoutCategories[i];
+        i++;
+    }
+
+    const actionText = actionSkeleton
+        .replace(/【】|\[\]|\[URL\]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return {
+        primary,
+        rawConstraints,
+        categories,
+        backtickTools: uniqueStrings(backtickTools),
+        quotedTools: uniqueStrings(quotedTools),
+        outerRaw,
+        actionSkeleton,
+        actionText
+    };
 }
 
 class JevToolCallExp {
@@ -103,28 +283,38 @@ class JevToolCallExp {
         const raw = normalizeText(expression);
         if (!raw) throw new Error('JEV 表达式不能为空。');
 
-        const categories = extractMarkedValues(raw, '{', '}');
-        const primary = extractMarkedValues(raw, '【', '】');
-        const constraints = extractMarkedValues(raw, '[', ']');
-        // 工具引号只在语义锚点外识别。数学表达式、通讯正文等主要负载中
-        // 可能合法包含单/双引号，不能把 integral('sin(x)') 中的 sin(x)
-        // 误判成显式工具名称。
-        const toolSelectionText = raw
-            .replace(/【[\s\S]*?】/g, ' ')
-            .replace(/\[[\s\S]*?\]/g, ' ');
-        // 反引号单独保留：第三方插件只认反引号内逐字精确的 manifest.name。
-        const backtickTools = extractMarkedValues(toolSelectionText, '`', '`');
-        const quotedTools = [
-            ...backtickTools,
-            ...extractMarkedValues(toolSelectionText, '\'', '\''),
-            ...extractMarkedValues(toolSelectionText, '“', '”'),
-            ...extractMarkedValues(toolSelectionText, '"', '"')
-        ];
+        // 第一阶段：词法平面剥离。先把【主要内容】与 [] 约束槽位从控制平面隔离，
+        // 再在纯净的意图骨架上做目录解析与主意图保护，杜绝负载词（如“预计算”）反向劫持工具路由。
+        const scanned = scanJevStructure(raw);
+        const {
+            primary,
+            rawConstraints,
+            categories,
+            backtickTools,
+            quotedTools,
+            outerRaw,
+            actionSkeleton,
+            actionText
+        } = scanned;
 
+        const imageUrls = [];
+        const semanticConstraints = [];
+        for (const value of rawConstraints) {
+            if (IMAGE_URL_RE.test(value)) imageUrls.push(value);
+            else semanticConstraints.push(value);
+        }
+        const uniqueUrls = uniqueStrings(imageUrls);
+
+        let lockedToolKey = null;
         if (categories.length === 0) {
-            const inferredCategory = this._inferImplicitCategory(raw);
-            if (inferredCategory) {
-                categories.push(inferredCategory);
+            const inferred = this._inferImplicitIntent({
+                actionSkeleton,
+                actionText,
+                imageUrls: uniqueUrls
+            });
+            if (inferred) {
+                categories.push(inferred.category);
+                lockedToolKey = inferred.lockedToolKey || null;
             } else {
                 throw new Error('JEV 表达式缺少能力目录，且无法从高置信度日用动作推断。请使用 {联网搜索}、{图片生成} 或 {日用工具}。');
             }
@@ -145,37 +335,53 @@ class JevToolCallExp {
             categoryKey = thirdPartyKey;
             thirdParty = true;
         }
-        const imageUrls = [];
-        const semanticConstraints = [];
-        for (const value of constraints) {
-            if (IMAGE_URL_RE.test(value)) imageUrls.push(value);
-            else semanticConstraints.push(value);
+
+        // 第二阶段：前置意图保护。对于官方目录且未显式声明引号工具名的请求，
+        // 在剥离负载后的纯净意图骨架上一次性锁定主意图。
+        if (!thirdParty && quotedTools.length === 0 && !lockedToolKey) {
+            if (categoryKey === 'daily_tools') {
+                lockedToolKey = this._detectDailyToolIntent({
+                    actionSkeleton,
+                    categoryLabel: categories[0]
+                });
+            } else if (
+                categoryKey === 'web_search'
+                && uniqueUrls.some(url => FETCHABLE_URL_RE.test(url))
+                && URL_FETCH_ACTION_RE.test(actionText)
+            ) {
+                lockedToolKey = 'url_fetch';
+            }
         }
 
-        const uniqueUrls = uniqueStrings(imageUrls);
-        const allowsUrlAsPrimary = (categoryKey === 'web_search' || thirdParty) && uniqueUrls.length > 0;
-        const allowsThirdPartyEmptyPrimary = thirdParty && (backtickTools.length > 0 || semanticConstraints.length > 0);
-        const allowsCurrentMusicEmptyPrimary = categoryKey === 'daily_tools'
-            && this._isCurrentMusicRequest(raw)
-            && this._normalizeDailyToolSelection(
-                this._resolveRequestedTools({ raw, quotedTools }, this.config.categories[categoryKey]),
-                { raw, quotedTools }
-            ).every(key => key === 'music_controller');
-        if (primary.length === 0 && !allowsUrlAsPrimary && !allowsThirdPartyEmptyPrimary && !allowsCurrentMusicEmptyPrimary) {
-            throw new Error('JEV 表达式缺少主要内容，请使用【主要内容】。打开网页时也可直接把 URL 放入 [URL]。');
-        }
-
-        return {
+        const draftParsed = {
             raw,
+            outerRaw,
+            actionSkeleton,
+            actionText,
             categoryKey,
             categoryLabel: categories[0],
             primary,
             constraints: semanticConstraints,
             imageUrls: uniqueUrls,
-            quotedTools: uniqueStrings(quotedTools),
-            backtickTools: uniqueStrings(backtickTools),
-            thirdParty
+            quotedTools,
+            backtickTools,
+            thirdParty,
+            lockedToolKey
         };
+
+        const allowsUrlAsPrimary = (categoryKey === 'web_search' || thirdParty) && uniqueUrls.length > 0;
+        const allowsThirdPartyEmptyPrimary = thirdParty && (backtickTools.length > 0 || semanticConstraints.length > 0);
+        const allowsCurrentMusicEmptyPrimary = categoryKey === 'daily_tools'
+            && this._isCurrentMusicRequest(draftParsed)
+            && this._normalizeDailyToolSelection(
+                this._resolveRequestedTools(draftParsed, this.config.categories[categoryKey]),
+                draftParsed
+            ).every(key => key === 'music_controller');
+        if (primary.length === 0 && !allowsUrlAsPrimary && !allowsThirdPartyEmptyPrimary && !allowsCurrentMusicEmptyPrimary) {
+            throw new Error('JEV 表达式缺少主要内容，请使用【主要内容】。打开网页时也可直接把 URL 放入 [URL]。');
+        }
+
+        return draftParsed;
     }
 
     _resolveThirdPartyCategory(label) {
@@ -191,36 +397,58 @@ class JevToolCallExp {
         }
     }
 
-    _isCurrentMusicRequest(raw) {
-        // 只识别动作与约束，不让歌曲名、通讯正文或回忆内容中的词触发查询。
-        const actionText = raw
-            .replace(/【[\s\S]*?】/g, ' ')
-            .replace(/\{[^{}]*\}/g, ' ')
-            .replace(/`[^`]*`|'[^']*'|"[^"]*"|“[^”]*”/g, ' ');
-        return CURRENT_MUSIC_REQUEST_RE.test(actionText);
+    _isCurrentMusicRequest(input) {
+        // 只在剥离了【主要内容】与普通 [] 参数槽位后的 actionSkeleton 上识别，
+        // 绝不让歌曲名、通讯正文、回忆负载或文件夹名中的词汇触发歌词查询。
+        const skeleton = typeof input === 'string'
+            ? scanJevStructure(normalizeText(input)).actionSkeleton
+            : (input?.actionSkeleton || '');
+        return CURRENT_MUSIC_REQUEST_RE.test(skeleton);
     }
 
-    _inferImplicitCategory(raw) {
-        // 只允许高置信度日用动作省略目录。联网搜索、网页访问和图片生成
-        // 仍要求显式目录，避免一句普通聊天被误执行成外部工具调用。
-        const hasMarkedUrl = /\[(?:https?:\/\/|file:\/\/)[^\]]+\]/i.test(raw);
-        const hasUrlFetchAction = /打开|读取|查看|访问|看图|截图|快照/i.test(raw);
-        if (hasMarkedUrl && hasUrlFetchAction) return '联网搜索';
+    _inferImplicitIntent({ actionSkeleton, actionText, imageUrls }) {
+        // 只允许高置信度动作省略目录，且仅在剥离负载后的外层骨架上判断；
+        // 一旦推断成立，同步返回 lockedToolKey 对入口意图予以保护。
+        const hasFetchableUrl = (imageUrls || []).some(url => FETCHABLE_URL_RE.test(url));
+        if (hasFetchableUrl && URL_FETCH_ACTION_RE.test(actionText)) {
+            return { category: '联网搜索', lockedToolKey: 'url_fetch' };
+        }
 
-        if (this._isCurrentMusicRequest(raw)) return '日用工具';
+        const strongTool = matchLeadingIntent(actionSkeleton, STRONG_DAILY_INTENT_RULES);
+        if (strongTool) {
+            return { category: '日用工具', lockedToolKey: strongTool };
+        }
 
-        const dailyActionPatterns = [
-            /(?:请|帮我|麻烦)?\s*(?:计算|求解|算一下|科学计算)\s*【/i,
-            /(?:请|帮我|麻烦)?\s*(?:联络|联系|通讯|委托)\s*\[/i,
-            /(?:请|帮我|麻烦)?\s*(?:播放|点歌|放一首|听歌)\s*【/i,
-            /(?:设置|创建|定个|安排)(?:一个)?闹钟|在\[[^\]]+\](?:设置|创建|定个)闹钟/i,
-            /(?:请|帮我|进入)?\s*(?:睡眠|睡一觉|打个盹|打盹|等待回调|休眠)\s*\[/i,
-            /(?:请|帮我|主动)?\s*(?:主动回忆|快速回忆|检索记忆|搜索记忆|回忆)\s*【/i,
-            /(?:请|帮我)?\s*(?:进行|使用)?\s*(?:\[音乐检索\]|音乐检索)\s*【/i
-        ];
-        return dailyActionPatterns.some(pattern => pattern.test(raw))
-            ? '日用工具'
-            : null;
+        if (CURRENT_MUSIC_REQUEST_RE.test(actionSkeleton)) {
+            return { category: '日用工具', lockedToolKey: 'music_controller' };
+        }
+
+        return null;
+    }
+
+    _detectDailyToolIntent({ actionSkeleton, categoryLabel }) {
+        const strongTool = matchLeadingIntent(actionSkeleton, STRONG_DAILY_INTENT_RULES);
+        if (strongTool) return strongTool;
+
+        if (CURRENT_MUSIC_REQUEST_RE.test(actionSkeleton)) {
+            return 'music_controller';
+        }
+
+        const fallbackTool = matchLeadingIntent(actionSkeleton, FALLBACK_DAILY_INTENT_RULES);
+        if (fallbackTool) return fallbackTool;
+
+        // 若一级目录使用了具体子能力别名（如 {音乐播放} / {点歌}），继承该目录的意图。
+        const dailyCategory = this.config.categories?.daily_tools;
+        if (categoryLabel && dailyCategory?.tools) {
+            const normalizedLabel = normalizeAlias(categoryLabel);
+            for (const [toolKey, tool] of Object.entries(dailyCategory.tools)) {
+                if (this._toolAliases(toolKey, tool).some(alias => normalizeAlias(alias) === normalizedLabel)) {
+                    return toolKey;
+                }
+            }
+        }
+
+        return dailyCategory?.defaultTool || 'light_memo';
     }
 
     _resolveCategory(label) {
@@ -252,11 +480,12 @@ class JevToolCallExp {
             addTool(match[0]);
         }
 
+        if (selected.length === 0 && parsed.lockedToolKey && category.tools?.[parsed.lockedToolKey]) {
+            addTool(parsed.lockedToolKey);
+        }
+
         if (selected.length === 0) {
-            const searchableText = parsed.raw
-                .replace(/\{[^{}]*\}/g, ' ')
-                .replace(/【[^【】]*】/g, ' ')
-                .replace(/\[[^\[\]]*\]/g, ' ');
+            const searchableText = parsed.actionText ?? scanJevStructure(parsed.raw).actionText;
             const normalizedText = normalizeAlias(searchableText);
             for (const [toolKey, tool] of Object.entries(category.tools || {})) {
                 if (this._toolAliases(toolKey, tool).some(alias => {
@@ -359,33 +588,20 @@ class JevToolCallExp {
     }
 
     _normalizeDailyToolSelection(toolKeys, parsed) {
-        // 引号显式选择具有最高优先级；否则按完整自然语言中的动作词路由。
+        // 引号显式选择具有最高优先级；其次使用前置剥离并锁定的主意图（Intent Protection）。
         if (parsed.quotedTools.length > 0) return toolKeys;
-
-        const raw = parsed.raw;
-        if (this._isCurrentMusicRequest(raw)) return ['music_controller'];
-        const routes = [
-            { re: /联络|联系|通讯|委托|问问.*(?:女仆|agent)/i, toolKey: 'agent_assistant' },
-            { re: /闹钟|提醒我|叫醒我|定时提醒/i, toolKey: 'alarm' },
-            { re: /计算|求解|算一下|科学计算/i, toolKey: 'calculator' },
-            { re: /睡一觉|睡眠|打盹|等待回调|等候回调|休眠/i, toolKey: 'sleep' },
-            // “音乐检索”是 LightMemo 的语义音乐库检索，不是立即播放。
-            { re: /\[音乐检索\]|音乐检索/i, toolKey: 'light_memo' },
-            { re: /播放|点歌|放一首|听歌/i, toolKey: 'music_controller' },
-            { re: /回忆|记忆|知识库|检索.*(?:日记|记忆)|搜索.*(?:日记|记忆)/i, toolKey: 'light_memo' }
-        ];
-        const route = routes.find(item => item.re.test(raw));
-        return [route ? route.toolKey : 'light_memo'];
+        if (parsed.lockedToolKey) return [parsed.lockedToolKey];
+        return [this._detectDailyToolIntent(parsed)];
     }
 
     _normalizeUrlFetchSelection(toolKeys, parsed) {
-        const hasUrl = parsed.imageUrls.length > 0;
-        const hasAction = /打开|读取|查看|访问|看图|截图|快照/i.test(parsed.raw);
-        if (!hasUrl || !hasAction) return toolKeys;
-
-        // URL + 明确访问动作是强信号。除非用户显式用引号选择了其他搜索器，
-        // 否则直接收敛为 UrlFetch，避免隐式目录推断后回落到默认 VSearch。
         if (parsed.quotedTools.length > 0) return toolKeys;
+        if (parsed.lockedToolKey === 'url_fetch') return ['url_fetch'];
+
+        const hasUrl = (parsed.imageUrls || []).some(url => FETCHABLE_URL_RE.test(url));
+        const actionSource = parsed.actionText ?? scanJevStructure(parsed.raw).actionText;
+        if (!hasUrl || !URL_FETCH_ACTION_RE.test(actionSource)) return toolKeys;
+
         return ['url_fetch'];
     }
 
@@ -464,14 +680,14 @@ class JevToolCallExp {
 
         if (toolKey === 'bilibili_fetch') {
             args.url = main;
-            this._applyBilibiliConstraints(args, constraints, parsed.raw);
+            this._applyBilibiliConstraints(args, constraints, parsed.outerRaw || parsed.raw);
             return args;
         }
 
         if (toolKey === 'url_fetch') {
             args.url = parsed.imageUrls[0] || main;
             if (!args.url) throw new Error('打开网页需要在 [URL] 或【URL】中提供地址。');
-            args.mode = this._resolveUrlFetchMode(constraints, tool, parsed.raw);
+            args.mode = this._resolveUrlFetchMode(constraints, tool, parsed.actionText ?? '');
             return args;
         }
 
@@ -720,7 +936,7 @@ class JevToolCallExp {
         }
 
         if (toolKey === 'music_controller') {
-            if (this._isCurrentMusicRequest(parsed.raw)) {
+            if (this._isCurrentMusicRequest(parsed)) {
                 args.command = 'getCurrentLyrics';
                 return args;
             }
@@ -928,11 +1144,9 @@ class JevToolCallExp {
                 if (afterColon) constraintTags.add(afterColon);
             }
         }
-        const wrapperText = normalizeAlias(parsed.raw
-            .replace(/【[\s\S]*?】/g, ' ')
-            .replace(/\[[\s\S]*?\]/g, ' ')
-            .replace(/`[^`]*`/g, ' ')
-            .replace(/\{[^{}]*\}/g, ' '));
+        const wrapperText = normalizeAlias(
+            parsed.actionText ?? scanJevStructure(parsed.raw).actionText
+        );
         return [
             alias => this._textHasAlias(primaryText, alias),
             alias => constraintTags.has(normalizeAlias(alias)),
