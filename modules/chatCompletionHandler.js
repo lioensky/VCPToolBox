@@ -4,6 +4,7 @@ const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const roleDivider = require('./roleDivider.js');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
+const { createHandoffGate } = require('./vcpLoop/handoffGate.js');
 const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
@@ -773,6 +774,7 @@ class ChatCompletionHandler {
     }
 
     const abortController = new AbortController();
+    const handoffGate = createHandoffGate(abortController.signal);
 
     let clientDisconnectedAbortReason = null;
     let cleanupClientDisconnectListeners = () => {};
@@ -792,13 +794,17 @@ class ChatCompletionHandler {
     }
 
     if (id) {
+      if (isOriginalRequestStreaming && !res.headersSent) {
+        res.setHeader('x-vcp-tool-loop-handoff', '1');
+      }
       activeRequests.set(id, {
         req,
         res,
         abortController,
         timestamp: Date.now(),
         aborted: false, // 修复 Bug #4: 添加中止标志
-        abortReason: null
+        abortReason: null,
+        handoffGate
       });
 
       // 通用前端兼容：如果客户端没有显式调用 /v1/interrupt，
@@ -1335,7 +1341,7 @@ class ChatCompletionHandler {
         res.status(upstreamStatus);
         firstAiAPIResponse.headers.forEach((value, name) => {
           if (
-            !['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(
+            !['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive', 'x-vcp-tool-loop-handoff'].includes(
               name.toLowerCase(),
             )
           ) {
@@ -1349,8 +1355,13 @@ class ChatCompletionHandler {
         }
       }
 
+      if (isUpstreamStreaming && id && !res.headersSent) {
+        res.setHeader('x-vcp-tool-loop-handoff', '1');
+        res.flushHeaders?.();
+      }
       const context = {
         ...this.config,
+        handoffGate,
         toolExecutor: this.toolExecutor,
         ToolCallParser,
         abortController,
@@ -1478,6 +1489,7 @@ class ChatCompletionHandler {
     } finally {
       if (!interactionOutcomeAccepted) interactionCompletion?.fail();
       cleanupClientDisconnectListeners();
+      handoffGate.dispose();
 
       if (!res.writableEnded && !res.destroyed) {
         // 仍未结束的异常路径不应写入缓存；正常 finish 会自动 finalize。
@@ -1504,7 +1516,7 @@ class ChatCompletionHandler {
           // 无论如何都要删除 Map 条目以释放内存
           // 但使用 setImmediate 延迟删除，确保 interrupt 路由完成操作
           setImmediate(() => {
-            activeRequests.delete(id);
+            if (activeRequests.get(id)?.abortController === abortController) activeRequests.delete(id);
             if (DEBUG_MODE) console.log(`[ChatHandler Cleanup] Removed request ${id} from activeRequests.`);
           });
         }

@@ -1068,6 +1068,23 @@ app.post('/v1/interrupt', (req, res) => {
     }
 
     const context = activeRequests.get(id);
+    if (Object.prototype.hasOwnProperty.call(req.body, 'action')) {
+        const { action } = req.body;
+        if (!['prepare_handoff', 'cancel_handoff'].includes(action)) {
+            return res.status(400).json({ success: false, code: 'INVALID_ACTION' });
+        }
+        if (!context || context.res?.writableEnded || context.res?.destroyed) {
+            return res.status(404).json({ success: false, code: 'REQUEST_NOT_FOUND' });
+        }
+        if (context.aborted || context.abortController?.signal.aborted || !context.handoffGate) {
+            return res.status(409).json({ success: false, code: 'REQUEST_STOPPED' });
+        }
+        const receipt = context.handoffGate.control(req.body);
+        if (receipt.success && !receipt.duplicate && action === 'prepare_handoff') {
+            console.log(`[Handoff] READY received: requestId=${id}, handoffId=${req.body.handoffId}, revision=${req.body.revision}. 已登记预约，当前工具继续执行。`);
+        }
+        return res.status(receipt.success ? 200 : 409).json(receipt);
+    }
     if (context) {
         console.log(`[Interrupt] Received stop signal for ID: ${id}`);
 
@@ -1158,7 +1175,7 @@ app.post('/v1/interrupt', (req, res) => {
 
         // 最后从 activeRequests 中移除，防止内存泄漏
         setTimeout(() => {
-            if (activeRequests.has(id)) {
+            if (activeRequests.get(id) === context) {
                 activeRequests.delete(id);
                 console.log(`[Interrupt] Cleaned up request ${id} from activeRequests`);
             }

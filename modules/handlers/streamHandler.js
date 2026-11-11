@@ -105,6 +105,21 @@ class StreamHandler {
     const reasoningTag = normalizeReasoningTag(reasoningToContentTag);
     const id = originalBody.requestId || originalBody.messageId;
 
+    const waitForHandoff = async () => {
+      console.log(`[Handoff] WAITING: requestId=${id}. 工具回执已发送；因 ready 暂缓下一轮上游 AI 请求，等待 Interrupt 或 cancel（最多2秒），尚未向 AI 派发。`);
+      try {
+        await this.context.handoffGate.wait();
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          console.log(`[Handoff] STOPPED before dispatch: requestId=${id}. ready 等待期间收到中止信号，本轮工具结果未触发下一次上游 AI 请求。`);
+        }
+        throw error;
+      }
+      if (!abortController.signal.aborted && !res.writableEnded && !res.destroyed) {
+        console.log(`[Handoff] RESUMING: requestId=${id}. 预约已取消或等待超时，恢复下一轮上游 AI 请求派发。`);
+      }
+    };
+
     let currentMessagesForLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
     let recursionDepth = 0;
     const maxRecursion = maxVCPLoopStream || 5;
@@ -581,6 +596,8 @@ class StreamHandler {
           } catch (e) { }
         }
 
+        if (this.context.handoffGate?.isReady()) await waitForHandoff();
+        if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
         const nextAiAPIResponse = await fetchWithRetry(
           `${apiUrl}/v1/chat/completions`,
           {
@@ -725,6 +742,8 @@ class StreamHandler {
         } catch (e) { }
       }
 
+      if (this.context.handoffGate?.isReady()) await waitForHandoff();
+      if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
       const nextAiAPIResponse = await fetchWithRetry(
         `${apiUrl}/v1/chat/completions`,
         {
