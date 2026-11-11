@@ -1249,7 +1249,9 @@ async function sendDelegationCallback(delegationId, status, report, agentName) {
     try {
         if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Sending callback for ${delegationId} to ${callbackUrl}`);
         await axios.post(callbackUrl, payload, {
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}` },
+            timeout: 15000,
+            maxRedirects: 0
         });
         if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Callback sent successfully.`);
 

@@ -1,0 +1,48 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "YouSearch",
+  "version": "1.0.0",
+  "displayName": "YouSearch 联网研究",
+  "description": "调用 You.com Research API，同步执行搜索、阅读与综合，返回带引用和参考来源的 Markdown 报告，仅支持 lite、standard、deep 三个档位。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node YouSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 300000
+  },
+  "configSchema": {
+    "YouSearchKey": {
+      "type": "string",
+      "description": "You.com API Key，支持用逗号或竖线分隔多个 Key；每次请求随机选择一个，通过 X-API-Key 请求头发送。"
+    },
+    "YouSearchUrl": {
+      "type": "string",
+      "description": "可选完整 API 端点（支持兼容中转接口），默认 https://api.you.com/v1/research。"
+    },
+    "YouSearchEffort": {
+      "type": "string",
+      "description": "默认研究档位：lite、standard 或 deep；未配置时为 standard。"
+    },
+    "YouSearchTimeout": {
+      "type": "integer",
+      "description": "请求超时毫秒数，默认 240000，上限为清单硬超时减去 15000ms；deep 建议至少 180000。"
+    },
+    "YouSearchProxy": {
+      "type": "string",
+      "description": "可选 HTTP(S) 网络代理，如 http://127.0.0.1:7890，支持用户名密码；留空直连。与 API 中转端点 YouSearchUrl 相互独立。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "YouSearch",
+        "description": "执行同步联网研究，返回 Markdown 正文及按原始引用编号排列的参考来源，无需二次模型总结。\n参数:\n- SearchTopic (字符串, 必需): 完整研究问题，最长 40000 字符；兼容 input。\n- research_effort (字符串, 可选): lite（快速事实查询）、standard（标准日常研究，默认）、deep（深度、多来源验证）。兼容 ResearchEffort。仅支持这三个档位。\n- source_control (JSON 对象或 JSON 字符串, 可选): include_domains/exclude_domains 为域名数组，freshness 为 day/week/month/year，country 为两位国家代码。例如 {\"include_domains\":[\"nih.gov\"],\"freshness\":\"year\",\"country\":\"US\"}。\n不支持后台异步、流式进度或 output_schema。引用 [[1, 2]] 与末尾来源列表顺序对应。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」YouSearch「末」,\nSearchTopic:「始」比较 RISC-V 与 ARM 架构的主要区别和优劣势「末」,\nresearch_effort:「始」deep「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

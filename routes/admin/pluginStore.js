@@ -20,6 +20,7 @@ const net = require('net');
 const multer = require('multer');
 const tar = require('tar');
 const { extractZipSafely } = require('../../modules/safeZipExtractor');
+const { resolveSafePath, assertSafePath, invalidPath } = require('../../modules/safeFilePath');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PLUGIN_DIR = path.join(ROOT, 'Plugin');
@@ -105,12 +106,7 @@ async function moveDir(src, dst) {
 
 // Safe path join against a base dir; rejects traversal
 function safeJoin(base, rel) {
-    const normalized = path.normalize(rel).replace(/^(\.\.[\\/])+/, '');
-    const target = path.resolve(base, normalized);
-    if (!target.startsWith(path.resolve(base))) {
-        throw new Error(`Unsafe path: ${rel}`);
-    }
-    return target;
+    return resolveSafePath(base, rel);
 }
 
 // Validate plugin name: only safe chars, no dot prefix, no Windows reserved names.
@@ -128,6 +124,7 @@ function assertSafePluginName(name) {
     if (trimmed.startsWith('.')) {
         throw new Error('plugin-manifest.json 的 name 不能以 . 开头');
     }
+    resolveSafePath(PLUGIN_DIR, trimmed, { singleSegment: true });
     if (WINDOWS_RESERVED_NAMES.test(trimmed)) {
         throw new Error(`plugin-manifest.json 的 name 为系统保留名：${trimmed}`);
     }
@@ -822,6 +819,8 @@ async function installFromDir(sourceDir, task, { force = false, pluginManager } 
 
     const safeName = assertSafePluginName(manifest.name);
     const target = resolvePluginTarget(safeName);
+    await assertSafePath(PLUGIN_DIR, target);
+    await assertSafePath(PLUGIN_DIR, BACKUP_DIR);
 
     if (await pathExists(target)) {
         if (!force) {
@@ -831,6 +830,7 @@ async function installFromDir(sourceDir, task, { force = false, pluginManager } 
         }
         await ensureDir(BACKUP_DIR);
         const backupPath = path.join(BACKUP_DIR, `${safeName}-${Date.now()}`);
+        await assertSafePath(PLUGIN_DIR, backupPath);
         pushLog(task, `[backup] ${target} -> ${backupPath}`);
         await moveDir(target, backupPath);
     }
@@ -900,9 +900,12 @@ async function installFromArchive(archivePath, task, options, archiveNameHint = 
 }
 
 async function installFromGithub(parsed, task, options) {
+    if (!parsed || typeof parsed.owner !== 'string' || typeof parsed.repo !== 'string'
+        || !/^[A-Za-z0-9_-]+$/.test(parsed.owner) || !/^[A-Za-z0-9_.-]+$/.test(parsed.repo)
+        || parsed.repo === '.' || parsed.repo === '..') throw invalidPath('Invalid GitHub repository');
     const branch = parsed.branch || await resolveGithubDefaultBranch(parsed.owner, parsed.repo);
-    const zipUrl = `https://codeload.github.com/${parsed.owner}/${parsed.repo}/zip/refs/heads/${branch}`;
-    const zipPath = path.join(TMP_DIR, `gh-${parsed.owner}-${parsed.repo}-${Date.now()}.zip`);
+    const zipUrl = `https://codeload.github.com/${parsed.owner}/${parsed.repo}/zip/refs/heads/${encodeURIComponent(branch)}`;
+    const zipPath = path.join(TMP_DIR, `gh-${crypto.randomUUID()}.zip`);
     await ensureDir(TMP_DIR);
     pushLog(task, `[download] ${zipUrl}`);
     await downloadToFile(zipUrl, zipPath);
@@ -1145,6 +1148,8 @@ module.exports = function (options) {
 
             const safeName = assertSafePluginName(pluginName);
             const target = resolvePluginTarget(safeName);
+            await assertSafePath(PLUGIN_DIR, target);
+            await assertSafePath(PLUGIN_DIR, BACKUP_DIR);
 
             if (!(await pathExists(target))) {
                 return res.status(404).json({ error: `插件 ${safeName} 不存在` });
@@ -1152,6 +1157,7 @@ module.exports = function (options) {
 
             await ensureDir(BACKUP_DIR);
             const backupPath = path.join(BACKUP_DIR, `${safeName}-removed-${Date.now()}`);
+            await assertSafePath(PLUGIN_DIR, backupPath);
             await moveDir(target, backupPath);
 
             if (pluginManager?.loadPlugins) {
@@ -1215,6 +1221,7 @@ module.exports = function (options) {
                             const f = files[i];
                             const rel = relPaths[i] || f.originalname;
                             const dest = safeJoin(workDir, rel);
+                            await assertSafePath(workDir, dest);
                             await ensureDir(path.dirname(dest));
                             await fsp.rename(f.path, dest).catch(async () => {
                                 await fsp.copyFile(f.path, dest);

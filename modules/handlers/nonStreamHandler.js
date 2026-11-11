@@ -1,6 +1,7 @@
 // modules/handlers/nonStreamHandler.js
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { formatToolResultBatch, projectToolBatchForUpstream } = require('../toolResultBatch.js');
 const {
   buildClientVisibleContent,
   removeReasoningFields,
@@ -235,7 +236,7 @@ class NonStreamHandler {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify(projectToolBatchForUpstream(body)),
         signal: abortController.signal,
       },
       { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
@@ -312,6 +313,7 @@ class NonStreamHandler {
         const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
         const archeryErrorContents = [];
         const archeryStatusSummaryItems = [];
+        const visibleToolResults = [];
 
         // 执行 Archery 调用
         const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
@@ -328,7 +330,7 @@ class NonStreamHandler {
               const forceThisOne = !shouldShowVCP && toolCall.markHistory;
               if ((shouldShowVCP || forceThisOne) && (isError || forceThisOne)) {
                 const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
-                if (vcpText) conversationHistoryForClient.push(vcpText);
+                if (vcpText) visibleToolResults.push(vcpText);
               }
             } else if (result.approvalFeedbackContent?.length) {
               // 用户明确输入的审核留言优先于 archery 静默；业务成功状态保持不变。
@@ -359,14 +361,9 @@ class NonStreamHandler {
           currentMessagesForNonStreamLoop.push({ role: 'user', content: errorPayload });
 
           if (archeryStatusSummaryItems.length > 0) {
-            if (enableRoleDivider) {
-              conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
-            }
-            conversationHistoryForClient.push(`\n[本轮工具调用摘要:]\n${archeryStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
-            if (enableRoleDivider) {
-              conversationHistoryForClient.push('\n<<<[END_ROLE_DIVIDE_USER]>>>\n');
-            }
+            visibleToolResults.push(`\n[本轮工具调用摘要:]\n${archeryStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
           }
+          conversationHistoryForClient.push(formatToolResultBatch(visibleToolResults, enableRoleDivider));
 
           const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
           const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
@@ -407,6 +404,7 @@ class NonStreamHandler {
         }
 
         if (normalCalls.length === 0) {
+          conversationHistoryForClient.push(formatToolResultBatch(visibleToolResults, enableRoleDivider));
           completed = validUpstreamTurns && archeryErrorContents.length === 0;
           break;
         }
@@ -438,7 +436,6 @@ class NonStreamHandler {
         if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
         // VCP 信息展示 - 批量包裹为单个 USER 角色
-        let hasStartedUserBlock = false;
         const toolStatusSummaryItems = [...archeryStatusSummaryItems];
         for (let i = 0; i < normalCalls.length; i++) {
           const toolCall = normalCalls[i];
@@ -464,27 +461,14 @@ class NonStreamHandler {
 
           if (shouldShowVCP || forceThisOne) {
             const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
-            if (vcpText) {
-              if (!hasStartedUserBlock && enableRoleDivider) {
-                conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
-                hasStartedUserBlock = true;
-              }
-              conversationHistoryForClient.push(vcpText);
-            }
+            if (vcpText) visibleToolResults.push(vcpText);
           }
         }
 
         if (toolStatusSummaryItems.length > 0) {
-          if (!hasStartedUserBlock && enableRoleDivider) {
-            conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
-            hasStartedUserBlock = true;
-          }
-          conversationHistoryForClient.push(`\n[本轮工具调用摘要:]\n${toolStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
+          visibleToolResults.push(`\n[本轮工具调用摘要:]\n${toolStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
         }
-        
-        if (hasStartedUserBlock && enableRoleDivider) {
-           conversationHistoryForClient.push('\n<<<[END_ROLE_DIVIDE_USER]>>>\n');
-        }
+        conversationHistoryForClient.push(formatToolResultBatch(visibleToolResults, enableRoleDivider));
 
         const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (k, v) =>
           (k === 'url' || k === 'image_url') && typeof v === 'string' && v.startsWith('data:') ? "[Omitted]" : v

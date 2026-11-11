@@ -247,7 +247,7 @@ Trace(projectId, target, scope?, glob?)
 - `path=文件:M-N` 按行读取；`path=文件#限定名` 按符号读取，也可 `path + symbol`。
 - `paths` 换行或逗号分隔；`glob` 批量选文件。
 - `lines=head:N|tail:N|M-N|N`；默认显示行号。
-- `find` 返回匹配行、函数及上下文。
+- `find` 按字面量查找（同 EditCode target 规则，忽略行首尾空白），返回匹配行、所在函数及上下文；多个关键词写 `a|b` 取并集，`\|` 匹配字面竖线，`||` 始终按字面量，多行查询不拆分。
 - 符号默认包含紧邻注释/装饰器；`range=body` 从签名开始；`context` 扩展上下文。
 - 同名符号用 `pick` 或近似 `line` 消歧。支持 JS/TS/TSX/Python/Rust；资产支持多模态及文档提取。
 
@@ -326,6 +326,22 @@ MoveCode / CopyCode
 - 同文件移动无需计算偏移；跨文件改动归同一批次。
 - CopyCode 复制代码块，不是整文件复制。
 
+### 函数试跑
+
+EvalSymbol(projectId, path, args?, kwargs?, setup?, timeoutMs?,
+           symbol?, pick?, line?, package?, features?, target?, testPick?)
+
+- path=文件#符号；复用 AST 定位，pick/line 消歧。
+- JS/CJS/ESM：调用真实导出函数/对象方法，保留 this。
+- Python：按包导入；kwargs 为关键字参数对象。
+- Rust：仅运行已有标准 #[test]；package/features 限定构建，target/testPick 消歧执行目标。零命中、ignored 不算通过。
+- args 为 JSON 数组，默认 []；setup 为对应语言的异步准备函数体，返回参数数组，与 args 互斥；不支持 Rust setup。
+- timeoutMs：JS/Py 默认 5000，Rust 默认 100000，上限 110000。
+- returned=函数成功返回，不等于测试通过；passed=实际测试通过。失败按阶段返回，details 含 typed-v1 值、运行时、目标源码 hash 与有界日志。
+- 工程根 .projectforge-eval.json 可指定 node/python/cargo；Python 按配置→.venv→PATH 选择，失败不换环境。
+- 仅限可信、可写工程；不是安全沙箱，加载与执行可能产生副作用。TS、局部闭包、自动构造实例及 Rust 临时 harness 不支持。
+
+
 ### 历史、回退与记录清理
 
 ```text
@@ -345,6 +361,17 @@ PurgeProjects(projectIds, confirm=true)
 - `dryRun=true` 预演；冲突默认拒绝，`force=true` 覆盖前仍存快照。
 - Delete/Restore 只改变工程数据库记录，不改磁盘。
 - Purge 只处理已软删工程，永久清除记录及快照，不删磁盘文件。
+
+## VChat 浏览器
+工具：`LoomController`。
+```text
+OpenVCPChatBrowser(url)
+```
+调用使用 `ink=mark_history`。打开后按工具返回的应用协议继续操作；后续支持串行指令。
+
+## 其它-施工过程中有任何决策性问题向用户询问意见
+调用插件`WaitingForUrReply` — 弹出浮窗等待用户回复。
+参数：prompt；title?；option01～option09?；placeholder?（预填文本）。
 
 ## 6. 收尾
 检查 Diff，运行与改动相关的测试；交付只写**修改结果、实际验证、未测边界、工程/报告状态**。不把工具审查、命令完成或报告提交当作业务成功、用户验收或部署生效。

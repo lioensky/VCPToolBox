@@ -734,18 +734,21 @@ class AIMemoHandler {
     _buildPrompt(knowledgeBase, userContent, aiContent, promptTemplate) {
         const now = dayjs().tz(DEFAULT_TIMEZONE);
 
-        let prompt = promptTemplate || this.promptTemplate;
+        const prompt = String(promptTemplate || this.promptTemplate || '');
+        const slotMap = {
+            knowledge_base: knowledgeBase || '',
+            current_user_prompt: userContent || '',
+            last_assistant_response: aiContent || '[无AI回复]',
+            Date: now.format('YYYY-MM-DD'),
+            Time: now.format('HH:mm:ss')
+        };
 
-        // 替换占位符
-        prompt = prompt.replace(/\{\{knowledge_base\}\}/g, knowledgeBase);
-        prompt = prompt.replace(/\{\{current_user_prompt\}\}/g, userContent || '');
-        prompt = prompt.replace(/\{\{last_assistant_response\}\}/g, aiContent || '[无AI回复]');
-        prompt = prompt.replace(/\{\{Date\}\}/g, now.format('YYYY-MM-DD'));
-        prompt = prompt.replace(/\{\{Time\}\}/g, now.format('HH:mm:ss'));
-
-        return prompt;
+        // 单遍扫描映射替换：防止前序替换内容（如 knowledge_base）中包含后序占位符字面量引发跨槽位二次污染，同时免疫 $ 特殊替换模式
+        return prompt.replace(
+            /\{\{(knowledge_base|current_user_prompt|last_assistant_response|Date|Time)\}\}/g,
+            (_, key) => String(slotMap[key] ?? '')
+        );
     }
-
     /**
      * 调用AI模型
      */

@@ -15,6 +15,13 @@
             "ShowURL": "false"
           }
         },
+        "yousearch": {
+          "plugin": "YouSearch",
+          "aliases": ["yousearch", "you.com", "you搜索", "优搜索"],
+          "fixedArgs": {
+            "research_effort": "standard"
+          }
+        },
         "google": {
           "plugin": "SerpSearch",
           "aliases": ["google", "谷歌", "谷歌搜索"],
@@ -187,7 +194,7 @@
         },
         "music_controller": {
           "plugin": "MusicController",
-          "aliases": ["播放歌曲", "播放音乐", "点歌台", "点歌", "播放器", "musiccontroller", "VCP点歌台"],
+          "aliases": ["音乐播放", "播放歌曲", "播放音乐", "点歌台", "点歌", "播放器", "musiccontroller", "VCP点歌台"],
           "fixedArgs": {
             "command": "playSong"
           },

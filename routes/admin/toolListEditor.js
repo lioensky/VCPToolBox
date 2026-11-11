@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { safeFilePath } = require('../../modules/safeFilePath');
 
 // 首字符允许中英文数字、下划线、短横线；后续可含点和空格。禁止路径分隔符与连续点号。
 const SAFE_NAME_RE = /^[A-Za-z0-9_\-\u4e00-\u9fa5][A-Za-z0-9_\-. \u4e00-\u9fa5]{0,63}$/;
@@ -20,11 +21,8 @@ function validateName(name) {
     );
 }
 
-function resolveInside(baseDir, name, ext) {
-    const target = path.resolve(baseDir, `${name}${ext}`);
-    const base = path.resolve(baseDir) + path.sep;
-    if (!target.startsWith(base)) return null;
-    return target;
+async function resolveInside(baseDir, name, ext) {
+    return safeFilePath(baseDir, `${name}${ext}`, { singleSegment: true });
 }
 
 function toolKey(pluginName, toolName) {
@@ -111,7 +109,7 @@ module.exports = function(options) {
             res.json({ tools: collectAllTools() });
         } catch (error) {
             console.error('[AdminAPI] Error getting tool list:', error);
-            res.status(500).json({ error: 'Failed to get tool list' });
+            res.status(error.status || 500).json({ error: 'Failed to get tool list' });
         }
     });
 
@@ -126,7 +124,7 @@ module.exports = function(options) {
             res.json({ configs });
         } catch (error) {
             console.error('[AdminAPI] Error getting config list:', error);
-            res.status(500).json({ error: 'Failed to get config list' });
+            res.status(error.status || 500).json({ error: 'Failed to get config list' });
         }
     });
 
@@ -138,7 +136,7 @@ module.exports = function(options) {
                 return res.status(400).json({ error: 'Invalid config name' });
             }
             await ensureToolConfigsDir();
-            const configPath = resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
+            const configPath = await resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
             if (!configPath) return res.status(400).json({ error: 'Invalid config name' });
 
             const content = await fs.readFile(configPath, 'utf-8');
@@ -166,7 +164,7 @@ module.exports = function(options) {
                 return res.status(400).json({ error: 'Invalid config name' });
             }
             await ensureToolConfigsDir();
-            const configPath = resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
+            const configPath = await resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
             if (!configPath) return res.status(400).json({ error: 'Invalid config name' });
 
             const body = req.body || {};
@@ -183,7 +181,7 @@ module.exports = function(options) {
             res.json({ status: 'success' });
         } catch (error) {
             console.error('[AdminAPI] Error saving config:', error);
-            res.status(500).json({ error: 'Failed to save config' });
+            res.status(error.status || 500).json({ error: 'Failed to save config' });
         }
     });
 
@@ -194,7 +192,7 @@ module.exports = function(options) {
             if (!validateName(configName)) {
                 return res.status(400).json({ error: 'Invalid config name' });
             }
-            const configPath = resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
+            const configPath = await resolveInside(TOOL_CONFIGS_DIR, configName, '.json');
             if (!configPath) return res.status(400).json({ error: 'Invalid config name' });
 
             await fs.unlink(configPath);
@@ -213,7 +211,7 @@ module.exports = function(options) {
             if (!validateName(fileName)) {
                 return res.status(400).json({ error: 'Invalid file name' });
             }
-            const outputPath = resolveInside(tvsDirPath, fileName, '.txt');
+            const outputPath = await resolveInside(tvsDirPath, fileName, '.txt');
             if (!outputPath) return res.status(400).json({ error: 'Invalid file name' });
             try {
                 await fs.access(outputPath);
@@ -223,7 +221,7 @@ module.exports = function(options) {
             }
         } catch (error) {
             console.error('[AdminAPI] Error checking file:', error);
-            res.status(500).json({ error: 'Failed to check file' });
+            res.status(error.status || 500).json({ error: 'Failed to check file' });
         }
     });
 
@@ -234,7 +232,7 @@ module.exports = function(options) {
             if (!validateName(fileName)) {
                 return res.status(400).json({ error: 'Invalid file name' });
             }
-            const outputPath = resolveInside(tvsDirPath, fileName, '.txt');
+            const outputPath = await resolveInside(tvsDirPath, fileName, '.txt');
             if (!outputPath) return res.status(400).json({ error: 'Invalid file name' });
 
             const body = req.body || {};
@@ -322,7 +320,7 @@ module.exports = function(options) {
             res.json({ status: 'success', filePath: `${path.basename(tvsDirPath)}/${fileName}.txt` });
         } catch (error) {
             console.error('[AdminAPI] Error exporting to txt:', error);
-            res.status(500).json({ error: 'Failed to export to txt' });
+            res.status(error.status || 500).json({ error: 'Failed to export to txt' });
         }
     });
 

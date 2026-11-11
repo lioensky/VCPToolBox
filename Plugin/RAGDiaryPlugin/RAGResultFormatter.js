@@ -19,7 +19,11 @@ function formatMemoryEntry(result, { prefix = '* ', text = null } = {}) {
 
 function buildRagBlock(innerContent, metadata) {
     const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-    return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+    const safeInnerContent = String(innerContent ?? '').replace(
+        /<!--\s*(VCP_RAG_BLOCK_(?:START|END))\b([\s\S]*?)-->/gi,
+        '<!-- $1$2--\\>'
+    );
+    return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${safeInnerContent}<!-- VCP_RAG_BLOCK_END -->`;
 }
 
 function formatStandardResults(searchResults, displayName, metadata) {

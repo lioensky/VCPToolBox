@@ -39,3 +39,20 @@ vcpAPI.post() 参数说明：
 - options.temperature: 温度参数（0-2）
 - options.max_tokens: 最大输出 token 数
 - 返回: {success, content, usage, raw, error}
+
+## 补充（依据 VCPChat 仓库 Desktopmodules/挂件运行时与远控参考.md 与源码核验）
+
+### 沙箱里的其他变量
+- widgetId：本挂件 ID。
+- widgetFS：挂件私有文件。saveFile(name, content, 'base64'?) / loadFile(name) / listFiles()。文件放在 AppData/DesktopWidgets/{savedId}/，挂件必须有 savedId；widget.html、meta.json、thumbnail.png 受保护不可写；同一 savedId 的多个实例共用目录，没有锁。
+- PIXI：包装后的 Pixi v8，new PIXI.Application() 的实例随挂件销毁。
+- _realDoc / _realWindow：真实的桌面 document 与 window。挂件之间没有权限隔离，只运行可信挂件。
+
+### 定时器与监听的回收
+- setInterval、setTimeout（裸写或 window. 前缀均可）、window.addEventListener、document.addEventListener、requestAnimationFrame 都登记在本挂件名下，挂件关闭、右键刷新、Canvas 保存回推时自动回收。
+- 直接调用 _realWindow.setInterval 的不在回收范围，常驻任务宜自带单例令牌。
+
+### vcpAPI.post 补充
+- 未传 model 时使用 AppData/settings.json 的 desktopWidgetModel（可选字段，手动添加，设置面板保存时会保留）。两者都没有时服务器报“未指定模型名称”。
+- 只支持非流式，messages 以第一个参数为准。
+- 请求经 VCP 服务器转发并注入系统内容，每次约 2300 输入 token 起步。模型类挂件以点击触发为主，定时器里的调用照常计费。

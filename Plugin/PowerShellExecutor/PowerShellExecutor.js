@@ -174,7 +174,8 @@ function sendCallback(requestId, status, result) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload)
+            'Content-Length': Buffer.byteLength(payload),
+            'Authorization': `Bearer ${process.env.Key || ''}`
         }
     };
 

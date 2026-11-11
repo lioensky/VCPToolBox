@@ -1,3 +1,4 @@
+(() => {
 'use strict';
 
 if (
@@ -217,7 +218,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         pageRuntime.setRedactionEnabled(redactSensitiveDom);
         lastStableContentHash = '';
         lastStructureHash = '';
-        sendPageInfoUpdate({ force: true });
         sendResponse({ success: true, redactSensitiveDom });
         return false;
     }
@@ -277,106 +277,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
 });
 
-const debouncedSendPageInfoUpdate = debounce(() => sendPageInfoUpdate(), 500);
-
-const observer = new MutationObserver(mutations => {
-    const structural = mutations.some(mutation => {
-        if (mutation.type === 'childList' || mutation.type === 'characterData') {
-            return true;
-        }
-        if (mutation.type !== 'attributes') return false;
-
-        const attributeName = String(mutation.attributeName || '');
-        if (attributeName === 'vcp-id' || attributeName.startsWith('data-vcp-')) {
-            return false;
-        }
-
-        return [
-            'role',
-            'aria-label',
-            'aria-expanded',
-            'aria-selected',
-            'aria-checked',
-            'placeholder',
-            'name',
-            'id',
-            'type',
-            'contenteditable',
-            'href',
-            'style',
-            'class',
-            'disabled',
-            'checked',
-            'selected',
-            'value',
-            'hidden'
-        ].includes(attributeName);
-    });
-
-    // 监控开关只决定是否允许上报，不得把 Core 自己写入的句柄属性
-    // 当成页面变化，否则会形成“快照 -> 标记 -> 快照”的自激循环。
-    if (structural) debouncedSendPageInfoUpdate();
-});
-
-if (document.body) {
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        characterData: true
-    });
-}
-
-document.addEventListener('click', debouncedSendPageInfoUpdate);
-document.addEventListener('focusin', debouncedSendPageInfoUpdate);
-document.addEventListener('scroll', debouncedSendPageInfoUpdate, true);
-
-window.addEventListener('load', () => {
-    isActiveTab = !document.hidden;
-    sendPageInfoUpdate();
-});
-
-document.addEventListener('visibilitychange', () => {
-    if (!isMonitoringEnabled) {
-        isActiveTab = false;
-        return;
-    }
-
-    if (document.visibilityState !== 'visible') {
-        isActiveTab = false;
-        return;
-    }
-
-    sendRuntimeMessage({ type: 'VERIFY_ACTIVE_TAB' })
-        .then(response => {
-            isActiveTab = response?.isActive === true;
-            if (isActiveTab) {
-                lastStableContentHash = '';
-                sendPageInfoUpdate();
-            }
-        })
-        .catch(() => {
-            isActiveTab = false;
-        });
-});
-
-window.addEventListener('focus', () => {
-    if (!isMonitoringEnabled) return;
-    sendRuntimeMessage({ type: 'VERIFY_ACTIVE_TAB' })
-        .then(response => {
-            if (response?.isActive) {
-                isActiveTab = true;
-                sendPageInfoUpdate();
-            }
-        })
-        .catch(() => {});
-});
-
-setInterval(() => {
-    if (isMonitoringEnabled && isActiveTab && !document.hidden) {
-        sendPageInfoUpdate();
-    }
-}, 5000);
+// Request-driven observation: no DOM observer, UI event sampling, or polling.
 
 chrome.storage.local.get(
     ['isMonitoringEnabled', 'redactSensitiveDom'],
@@ -389,11 +290,4 @@ chrome.storage.local.get(
         }
     }
 );
-
-function debounce(func, wait) {
-    let timeout;
-    return function debounced(...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func(...args), wait);
-    };
-}
+})();

@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { safeFilePath, resolveSafePath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
@@ -15,16 +16,8 @@ module.exports = function(options) {
         return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path.sep);
     }
 
-    function safeResolveUnderTVSTxt(relativePath = '') {
-        const normalizedRelativePath = String(relativePath || '').replace(/\\/g, '/');
-        const resolved = path.resolve(TVSTXT_DIR_PATH, normalizedRelativePath);
-        if (!isPathInsideRoot(resolved, TVSTXT_DIR_PATH)) {
-            throw new Error('Invalid path: outside TVStxt root');
-        }
-        if (resolved === path.resolve(TVSTXT_DIR_PATH)) {
-            throw new Error('Invalid path: target resolves to root directory');
-        }
-        return resolved;
+    async function safeResolveUnderTVSTxt(relativePath = '') {
+        return safeFilePath(TVSTXT_DIR_PATH, relativePath);
     }
 
     function normalizeToolboxMap(rawMap) {
@@ -110,7 +103,7 @@ module.exports = function(options) {
             res.json(normalizeToolboxMap(JSON.parse(content)));
         } catch (error) {
             if (error.code === 'ENOENT') res.json({});
-            else res.status(500).json({ error: 'Failed to read toolbox map file', details: error.message });
+            else res.status(error.status || 500).json({ error: 'Failed to read toolbox map file', details: error.message });
         }
     });
 
@@ -131,7 +124,7 @@ module.exports = function(options) {
                 if (typeof file !== 'string' || !file.trim()) {
                     return res.status(400).json({ error: `Invalid file for alias '${alias}'.` });
                 }
-                const absolute = safeResolveUnderTVSTxt(file);
+                const absolute = await safeResolveUnderTVSTxt(file);
                 if (!isPathInsideRoot(absolute, TVSTXT_DIR_PATH)) {
                     return res.status(400).json({ error: `Invalid file path for alias '${alias}'.` });
                 }
@@ -144,7 +137,7 @@ module.exports = function(options) {
             } catch (e) {}
             res.json({ message: 'Toolbox map saved successfully.' });
         } catch (error) {
-            res.status(500).json({ error: 'Failed to write toolbox map file', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to write toolbox map file', details: error.message });
         }
     });
 
@@ -154,24 +147,24 @@ module.exports = function(options) {
             const result = await scanTVSTxtFiles();
             res.json(result);
         } catch (error) {
-            res.status(500).json({ error: 'Failed to list toolbox files', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to list toolbox files', details: error.message });
         }
     });
 
     // GET toolbox file content
     router.get('/toolbox/file/:encodedPath', async (req, res) => {
         try {
-            const decodedPath = decodeURIComponent(req.params.encodedPath || '');
+            const decodedPath = req.params.encodedPath || '';
             const lower = decodedPath.toLowerCase();
             if (!lower.endsWith('.txt') && !lower.endsWith('.md')) {
                 return res.status(400).json({ error: 'Invalid file name.' });
             }
-            const filePath = safeResolveUnderTVSTxt(decodedPath);
+            const filePath = await safeResolveUnderTVSTxt(decodedPath);
             const content = await fs.readFile(filePath, 'utf-8');
             res.json({ content });
         } catch (error) {
             if (error.code === 'ENOENT') res.status(404).json({ error: 'Toolbox file not found.' });
-            else res.status(500).json({ error: 'Failed to read toolbox file', details: error.message });
+            else res.status(error.status || 500).json({ error: 'Failed to read toolbox file', details: error.message });
         }
     });
 
@@ -180,12 +173,12 @@ module.exports = function(options) {
         const { content } = req.body;
         if (typeof content !== 'string') return res.status(400).json({ error: 'Invalid request body.' });
         try {
-            const decodedPath = decodeURIComponent(req.params.encodedPath || '');
+            const decodedPath = req.params.encodedPath || '';
             const lower = decodedPath.toLowerCase();
             if (!lower.endsWith('.txt') && !lower.endsWith('.md')) {
                 return res.status(400).json({ error: 'Invalid file name.' });
             }
-            const filePath = safeResolveUnderTVSTxt(decodedPath);
+            const filePath = await safeResolveUnderTVSTxt(decodedPath);
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             await fs.writeFile(filePath, content, 'utf-8');
             try {
@@ -197,7 +190,7 @@ module.exports = function(options) {
             } catch (e) {}
             res.json({ message: 'Toolbox file saved successfully.' });
         } catch (error) {
-            res.status(500).json({ error: 'Failed to save toolbox file', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to save toolbox file', details: error.message });
         }
     });
 
@@ -210,29 +203,28 @@ module.exports = function(options) {
         let finalFileName = fileName.trim();
         if (!/\.(txt|md)$/i.test(finalFileName)) finalFileName = `${finalFileName}.txt`;
         try {
-            const normalizedFolderPath = typeof folderPath === 'string' ? folderPath.trim() : '';
-            const sanitizedFolderPath = normalizedFolderPath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-            const targetDir = sanitizedFolderPath ? safeResolveUnderTVSTxt(sanitizedFolderPath) : path.resolve(TVSTXT_DIR_PATH);
-            const targetRelativePath = sanitizedFolderPath ? path.posix.join(sanitizedFolderPath, finalFileName) : finalFileName;
-            const targetFilePath = safeResolveUnderTVSTxt(targetRelativePath);
+            resolveSafePath(TVSTXT_DIR_PATH, finalFileName, { singleSegment: true });
+            const targetDir = resolveSafePath(TVSTXT_DIR_PATH, folderPath ?? '', { allowRoot: true });
+            const targetRelativePath = path.relative(TVSTXT_DIR_PATH, path.join(targetDir, finalFileName));
+            const targetFilePath = await safeResolveUnderTVSTxt(targetRelativePath);
             await fs.mkdir(targetDir, { recursive: true });
             await fs.writeFile(targetFilePath, '', { encoding: 'utf-8', flag: 'wx' });
             res.json({ message: `Toolbox file '${finalFileName}' created successfully.` });
         } catch (error) {
             if (error.code === 'EEXIST') res.status(409).json({ error: `File '${finalFileName}' already exists.` });
-            else res.status(500).json({ error: 'Failed to create toolbox file', details: error.message });
+            else res.status(error.status || 500).json({ error: 'Failed to create toolbox file', details: error.message });
         }
     });
 
     // DELETE toolbox file
     router.delete('/toolbox/file/:encodedPath', async (req, res) => {
-        const decodedPath = decodeURIComponent(req.params.encodedPath || '');
+        const decodedPath = req.params.encodedPath || '';
         const lower = decodedPath.toLowerCase();
         if (!lower.endsWith('.txt') && !lower.endsWith('.md')) {
             return res.status(400).json({ error: 'Invalid file name.' });
         }
         try {
-            const filePath = safeResolveUnderTVSTxt(decodedPath);
+            const filePath = await safeResolveUnderTVSTxt(decodedPath);
             await fs.unlink(filePath);
             try {
                 const toolboxManager = require('../../modules/toolboxManager');
@@ -243,7 +235,7 @@ module.exports = function(options) {
             res.json({ message: 'Toolbox file deleted successfully.' });
         } catch (error) {
             if (error.code === 'ENOENT') res.status(404).json({ error: 'File not found.' });
-            else res.status(500).json({ error: 'Failed to delete toolbox file', details: error.message });
+            else res.status(error.status || 500).json({ error: 'Failed to delete toolbox file', details: error.message });
         }
     });
 

@@ -128,6 +128,22 @@ function createDefaultDependencyBridgeRegistry() {
     });
 
     registry.register({
+        name: 'timeline-placeholder-owner',
+        priority: 75,
+        canHandle: manifest => ['RAGDiaryPlugin', 'VCPTimeLine'].includes(manifest.name),
+        inject: (manifest, dependencies, context) => {
+            if (manifest.name === 'RAGDiaryPlugin') {
+                dependencies.getTimelineService = () => context.getMessagePreprocessor('VCPTimeLine') || null;
+            } else {
+                dependencies.isTimelineManagedByRag = () => {
+                    const rag = context.getMessagePreprocessor('RAGDiaryPlugin');
+                    return !!(rag?.timelineProcessor && typeof rag.getTimelineService === 'function');
+                };
+            }
+        }
+    });
+
+    registry.register({
         name: 'context-bridge',
         priority: 70,
         canHandle: manifest => manifest.requiresContextBridge === true,

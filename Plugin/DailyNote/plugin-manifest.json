@@ -61,23 +61,29 @@
       },
       {
         "commandIdentifier": "update",
-        "description": "“更新日记”: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)。可选用folder直接指定优先搜索目录，也可用maid指定编辑范围；folder优先级高于maid中的[文件夹]格式。\n安全性检查: target字段长度不能少于15字符。\n调用格式:\n",
+        "description": "“更新日记”: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)，并提供maid或folder限定范围。folder优先级高于maid中的[文件夹]格式。指定作者前缀目录时先搜索该目录，再仅在作者前缀目录中回退；指定公共前缀目录时仅在公共前缀目录中回退；指定其他分类目录时仅搜索该目录。未指定目录时仅搜索maid作者前缀目录。禁止回退到全库；目标未找到则报错。\n安全性检查: target字段长度不能少于15字符。\n调用格式:\n",
         "parameters": [
           {
             "name": "maid",
-            "description": "指定要编辑哪个角色的日记本。支持[文件夹]格式。如果未提供，则会在所有日记本中搜索。",
+            "description": "作者名，支持[文件夹]作者格式。未指定文件夹时仅搜索该作者前缀目录；未提供作者时必须提供folder，禁止全库搜索。",
             "required": false,
             "type": "string"
           },
           {
             "name": "folder",
-            "description": "可选优先搜索目录。提供后会优先在该文件夹中查找要更新的内容；例如 folder=小克的知识, maid=小克。未提供时仍兼容maid的[文件夹]格式或maid前缀匹配。",
+            "description": "可选搜索目录，精确目录名优先，兼容唯一的规范化别名。作者前缀目录仅向同作者前缀回退，公共前缀目录仅向公共前缀回退，其他目录禁止回退。未提供时兼容maid的[文件夹]作者格式，否则仅搜索作者前缀目录。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "fileName",
+            "description": "可选文件名片段，实际文件名包含该片段即可（不区分大小写），可省略时间戳和扩展名。不允许路径或通配符；仅缩小既定命名空间。筛选后target仍命中多处则报歧义，不修改任何文件。",
             "required": false,
             "type": "string"
           },
           {
             "name": "target",
-            "description": "日记中需要被查找和替换的旧内容。必须至少包含15个字符。",
+            "description": "日记中需要被查找和替换的旧内容。必须至少包含15个字符；在允许范围和fileName筛选内必须唯一命中，多处命中时请扩展target或提供更具体的fileName片段。",
             "required": true,
             "type": "string"
           },

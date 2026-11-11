@@ -6,6 +6,7 @@ const multer = require('multer');
 const tar = require('tar');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const { extractZipSafely } = require('../../modules/safeZipExtractor');
+const { resolveSafePath, assertSafePath } = require('../../modules/safeFilePath');
 
 const IMAGE_ROOT_DIR = path.join(__dirname, '..', '..', 'image');
 const EMOJI_LISTS_DIR = path.join(
@@ -142,7 +143,12 @@ function sanitizeCategoryName(rawValue) {
         return null;
     }
 
-    return trimmed;
+    try {
+        resolveSafePath(IMAGE_ROOT_DIR, trimmed, { singleSegment: true });
+        return trimmed;
+    } catch {
+        return null;
+    }
 }
 
 function deriveArchiveRootDirectoryName(rawFileName) {
@@ -565,6 +571,7 @@ async function rebuildEmojiGeneratedLists() {
             .sort(compareText);
 
         const targetFilePath = path.join(EMOJI_LISTS_DIR, `${packName}.txt`);
+        await assertSafePath(EMOJI_LISTS_DIR, targetFilePath);
         const didWrite = await writeTextFileIfChanged(
             targetFilePath,
             imageFiles.join('|')
@@ -602,15 +609,12 @@ function sanitizeRelativePath(rawPath) {
         return null;
     }
 
-    const normalized = path.posix
-        .normalize(trimmed.replace(/\\/g, '/'))
-        .replace(/^\/+/, '');
-
-    if (!normalized || normalized === '.' || normalized.startsWith('../')) {
+    try {
+        resolveSafePath(IMAGE_ROOT_DIR, trimmed);
+        return trimmed.replace(/\\/g, '/');
+    } catch {
         return null;
     }
-
-    return normalized;
 }
 
 function inferCategoryFromRelativePath(rawRelativePath) {
@@ -818,6 +822,7 @@ module.exports = function(options) {
 
         try {
             const targetDir = path.join(IMAGE_ROOT_DIR, categoryName);
+            await assertSafePath(IMAGE_ROOT_DIR, targetDir);
             const existed = await pathExists(targetDir);
             await fs.mkdir(targetDir, { recursive: true });
             resetGalleryCache();
@@ -1192,6 +1197,7 @@ module.exports = function(options) {
                 }
 
                 if (!shouldPreserveSourceTree) {
+                    await assertSafePath(IMAGE_ROOT_DIR, targetDir);
                     await fs.mkdir(targetDir, { recursive: true });
                 }
                 const seenRelativePaths = new Set();
@@ -1239,6 +1245,7 @@ module.exports = function(options) {
                             ? safeJoin(IMAGE_ROOT_DIR, toPosixPath(parsed.dir))
                             : IMAGE_ROOT_DIR;
                         // eslint-disable-next-line no-await-in-loop
+                        await assertSafePath(IMAGE_ROOT_DIR, destinationDir, { allowRoot: true });
                         await fs.mkdir(destinationDir, { recursive: true });
 
                         storedPath = path.join(destinationDir, safeName);
@@ -1263,6 +1270,7 @@ module.exports = function(options) {
                             ? safeJoin(targetDir, relativeDir)
                             : targetDir;
                         // eslint-disable-next-line no-await-in-loop
+                        await assertSafePath(IMAGE_ROOT_DIR, destinationDir, { allowRoot: true });
                         await fs.mkdir(destinationDir, { recursive: true });
 
                         // eslint-disable-next-line no-await-in-loop
@@ -1270,6 +1278,7 @@ module.exports = function(options) {
                         storedPath = path.join(destinationDir, storedName);
                     }
 
+                    await assertSafePath(IMAGE_ROOT_DIR, storedPath);
                     if (candidate.isTempUploadFile && candidate.sourcePath) {
                         // eslint-disable-next-line no-await-in-loop
                         await fs.rename(candidate.sourcePath, storedPath).catch(async (moveError) => {
@@ -1419,6 +1428,7 @@ module.exports = function(options) {
         }
 
         try {
+            await assertSafePath(IMAGE_ROOT_DIR, resolved.resolvedPath);
             const stat = await fs.stat(resolved.resolvedPath);
             if (!stat.isFile()) {
                 return res.status(404).json({
@@ -1509,6 +1519,7 @@ module.exports = function(options) {
         }
 
         try {
+            await assertSafePath(IMAGE_ROOT_DIR, resolved.resolvedPath);
             const stat = await fs.stat(resolved.resolvedPath);
             if (!stat.isFile()) {
                 return res.status(400).json({
@@ -1606,6 +1617,7 @@ module.exports = function(options) {
         }
 
         try {
+            await assertSafePath(IMAGE_ROOT_DIR, targetDir);
             const stat = await fs.stat(targetDir);
             if (!stat.isDirectory()) {
                 return res.status(400).json({

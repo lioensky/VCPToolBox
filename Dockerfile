@@ -1,7 +1,7 @@
 # =================================================================
 # Stage 1: Build Stage - 用于编译和安装所有依赖
 # =================================================================
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 # 设置工作目录
 WORKDIR /usr/src/app
@@ -106,7 +106,7 @@ RUN find Plugin -name package.json -exec sh -c ' \
 # =================================================================
 # Stage 2: Production Stage - 最终的轻量运行环境
 # =================================================================
-FROM node:20-alpine
+FROM node:22-alpine
 
 # 设置工作目录
 WORKDIR /usr/src/app
@@ -132,7 +132,7 @@ ENV PYTHONPATH=/usr/src/app/pydeps
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # 设置时区：依赖于运行时传入的 TZ 环境变量（例如 docker-compose.yml 中的配置）。
-# 基础镜像 node:20-alpine 已安装 tzdata，运行时设置 TZ 即可生效。
+# 基础镜像 node:22-alpine 已安装 tzdata，运行时设置 TZ 即可生效。
 
 # 从构建阶段复制应用代码和 node_modules
 COPY --from=build /usr/src/app/node_modules ./node_modules

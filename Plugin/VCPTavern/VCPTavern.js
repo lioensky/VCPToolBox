@@ -1,6 +1,7 @@
 // VCPTavern.js
 const fs = require('fs').promises;
 const path = require('path');
+const { safeFilePath } = require('../../modules/safeFilePath');
 const express = require('express');
 
 const PRESETS_DIR = path.join(__dirname, 'presets');
@@ -693,7 +694,7 @@ class VCPTavern {
             }
             const presetData = req.body;
             try {
-                const filePath = path.join(PRESETS_DIR, `${presetName}.json`);
+                const filePath = await safeFilePath(PRESETS_DIR, `${presetName}.json`, { singleSegment: true });
                 await fs.writeFile(filePath, JSON.stringify(presetData, null, 2));
                 this.presets.set(presetName, presetData);
                 if (this.debugMode) console.log(`[VCPTavern] 预设已保存: ${presetName}`);
@@ -708,7 +709,7 @@ class VCPTavern {
         router.delete('/presets/:name', async (req, res) => {
             const presetName = req.params.name;
             try {
-                const filePath = path.join(PRESETS_DIR, `${presetName}.json`);
+                const filePath = await safeFilePath(PRESETS_DIR, `${presetName}.json`, { singleSegment: true });
                 await fs.unlink(filePath);
                 this.presets.delete(presetName);
                 if (this.debugMode) console.log(`[VCPTavern] 预设已删除: ${presetName}`);
@@ -718,7 +719,7 @@ class VCPTavern {
                     return res.status(404).json({ error: 'Preset not found' });
                 }
                 console.error(`[VCPTavern] 删除预设失败 ${presetName}:`, error);
-                res.status(500).json({ error: 'Failed to delete preset' });
+                res.status(error.code === 'UNSAFE_PATH' ? 400 : 500).json({ error: 'Failed to delete preset' });
             }
         });
 

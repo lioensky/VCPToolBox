@@ -210,6 +210,22 @@ def download_video(video_url, request_id):
         log_event("error", f"[{request_id}] Failed to download or save video.", {"error": str(e)})
         return None
 
+def send_completion_callback(callback_url, payload, timeout):
+    # Key authenticates the VCP server; SILICONFLOW_API_KEY authenticates the upstream.
+    key = os.getenv("Key")
+    if not key:
+        raise ValueError("Server Key not configured; callback was not sent")
+    response = requests.post(
+        callback_url, json=payload,
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=timeout, allow_redirects=False
+    )
+    response.raise_for_status()
+    if 300 <= response.status_code < 400:
+        raise ValueError("Callback redirect rejected")
+    return response
+
+
 # --- 后台轮询与回调 ---
 def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug_mode):
     log_event("info", f"[{request_id}] Entering poll_and_callback function.", {
@@ -263,7 +279,7 @@ def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug
                 try:
                     callback_payload = ws_notification_data 
 
-                    callback_response = requests.post(callback_url, json=callback_payload, timeout=30)
+                    callback_response = send_completion_callback(callback_url, callback_payload, timeout=30)
                     callback_response.raise_for_status()
                     log_event("success", f"[{request_id}] Callback to {callback_url} successful with simplified data.", {"status_code": callback_response.status_code})
                 except requests.exceptions.RequestException as cb_e:
@@ -298,7 +314,7 @@ def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug
                     "message": f"视频 (ID: {request_id}) 轮询超时。"
                 }
                 callback_url = f"{callback_base_url}/{plugin_name}/{request_id}"
-                requests.post(callback_url, json=timeout_notification_data, timeout=10)
+                send_completion_callback(callback_url, timeout_notification_data, timeout=10)
                 log_event("info", f"[{request_id}] Sent PollingTimeout callback to {callback_url} with simplified data.")
             except Exception as cb_timeout_e:
                 log_event("error", f"[{request_id}] Failed to send PollingTimeout callback.", {"error": str(cb_timeout_e)})

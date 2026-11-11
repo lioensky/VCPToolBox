@@ -988,12 +988,14 @@ class OneRingPreprocessor {
         messages = workingView ? workingView.workingMessages : messages;
 
         // ── 1. 检测触发语法：只检查开头连续 system 前缀 ────────────────────────
+        // 未触发 OneRing 时原样放行：工作视图会删掉 [系统提示…] 开头的 user 消息、剥掉开头的 [系统通知]…[系统通知结束]，
+        // 不能把它当成未触发请求的输出（否则记忆思维托盘的伪系统消息、酒馆注入的系统通知都发不到模型）。
         const systemMsg = getTopLevelOneRingSystemMessage(messages);
-        if (!systemMsg) return messages;
+        if (!systemMsg) return originalMessages || messages;
 
         const systemText = fuzzy.extractText(systemMsg.content);
         const triggerMatch = getLastTriggerMatch(systemText);
-        if (!triggerMatch) return messages;
+        if (!triggerMatch) return originalMessages || messages;
 
         const onlyTriggerMatch = getLastOnlyTriggerMatch(systemText);
         const agentName = triggerMatch[1].trim();

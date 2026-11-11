@@ -56,7 +56,7 @@ async function callback(base, id, payload) {
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             const response = await fetch(`${base}/MimoDubbing/${id}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.Key || ''}` },
                 body: JSON.stringify(payload), signal: AbortSignal.timeout(15000), redirect: 'error'
             });
             await response.body?.cancel();

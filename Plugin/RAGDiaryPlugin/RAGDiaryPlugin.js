@@ -15,6 +15,7 @@ const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
 const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
 const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js'); // 📝 纯文本日记占位符处理器（{{...日记本...}}）
+const TimelinePlaceholderProcessor = require('./TimelinePlaceholderProcessor.js');
 const MessageContentUtils = require('./MessageContentUtils.js');
 const TextSanitizer = require('./TextSanitizer.js');
 const VectorMathUtils = require('./VectorMathUtils.js');
@@ -99,6 +100,8 @@ class RAGDiaryPlugin {
 
         // 🔎 BM25 查询优化器：实体词提升、AI 主题漂移门控、查询 token 限频
         this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: console });
+        this.timelineProcessor = new TimelinePlaceholderProcessor(this);
+        this.getTimelineService = null;
     }
 
     async loadConfig() {
@@ -589,6 +592,8 @@ class RAGDiaryPlugin {
     }
 
     async initialize(config, dependencies) {
+        // 惰性解析运行时实例，避免初始化顺序和热重载造成实例快照失效。
+        this.getTimelineService = dependencies?.getTimelineService || null;
         this.jevClient = dependencies?.jevClient || null;
         if (this.jevClient) {
             console.log('[RAGDiaryPlugin] JevClient 通用决策服务已注入。');
@@ -1385,7 +1390,10 @@ class RAGDiaryPlugin {
 
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
-        const run = () => this._processMessagesWithMemoScope(messages, pluginConfig);
+        const run = () => this.timelineProcessor.processMessages(
+            messages,
+            workingMessages => this._processMessagesWithMemoScope(workingMessages, pluginConfig)
+        );
         return typeof this.vectorDBManager?.withMemoObservationScope === 'function'
             ? this.vectorDBManager.withMemoObservationScope(run)
             : run();
@@ -1513,7 +1521,7 @@ class RAGDiaryPlugin {
             // V3.1: userContent 已由 findLastRealUserMessage 通过统一 sanitizer 净化；
             // 这里仅保留 assistant 净化，避免重复处理并确保独立 [系统通知] 空块不会被误当作查询。
             // 🌟 V6: 解析并剥离 AI 锚点 (Ghost Nodes)
-            const anchorRegex = /\[@(!)?([^\]]+)\]/g;
+            const anchorRegex = /(?:\[@(!)?([^\]】]+)\]|【@(!)?([^\]】]+)】)/g;
             const hardTagNames = [];
             const softTagNames = [];
             let anchorMatch;
@@ -1522,13 +1530,13 @@ class RAGDiaryPlugin {
                 // 在净化之前提取锚点信息
                 let tempAiContent = aiContent;
                 while ((anchorMatch = anchorRegex.exec(tempAiContent)) !== null) {
-                    const tagName = anchorMatch[2].trim();
+                    const tagName = (anchorMatch[2] ?? anchorMatch[4]).trim();
                     if (Array.from(tagName).length > 25) continue; // 防幻觉截断
 
                     // 🌟 屏蔽示例标签
                     if (tagName === 'tag' || tagName === 'tag名称') continue;
 
-                    if (anchorMatch[1]) hardTagNames.push(tagName);
+                    if (anchorMatch[1] || anchorMatch[3]) hardTagNames.push(tagName);
                     else softTagNames.push(tagName);
                 }
 
@@ -2533,7 +2541,7 @@ class RAGDiaryPlugin {
                 : String(result.content);
 
             const beforeLength = processedContent.length;
-            processedContent = processedContent.replace(placeholder, replacementContent);
+            processedContent = processedContent.replace(placeholder, () => replacementContent);
             const afterLength = processedContent.length;
 
             if (beforeLength === afterLength && placeholder.length > 0) {
