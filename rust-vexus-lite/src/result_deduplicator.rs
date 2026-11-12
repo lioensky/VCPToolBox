@@ -352,7 +352,9 @@ pub(crate) fn deduplicate_with_connection(
     let mut selected_descriptors: Vec<VectorDescriptor> = Vec::new();
     let mut comparison_count = 0usize;
     let mut suppressed = 0usize;
-    let mut bound_slow_budget = 8usize;
+    // Caps wasted bound checks when every pair sits just below the threshold.
+    // 8 was exhausted mid-request on dense same-thread diaries; 64 keeps that cap.
+    let mut bound_slow_budget = 64usize;
 
     for mut entry in ranked {
         if selected.len() >= max_results {
