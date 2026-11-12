@@ -52,6 +52,7 @@ pub struct LightMemoTask {
     pub(crate) plan_json: String,
     pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
     pub(crate) runtime: Arc<MemoRuntime>,
+    pub(crate) observation: Option<Arc<crate::rivermemo_topology_v3::MemoQueryObservation>>,
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
@@ -109,13 +110,33 @@ impl Task for LightMemoTask {
         let started = std::time::Instant::now();
         let plan: Plan = serde_json::from_str(&self.plan_json)
             .map_err(|e| Error::from_reason(format!("Invalid LightMemo plan: {e}")))?;
-        if plan.k == 0 || plan.k > 1000 || plan.candidate_k == 0 || plan.candidate_k > 2000
-            || plan.model_sig.trim().is_empty()
-            || !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo")
-            || plan.query_tokens.len() > 256
-            || plan.query_tokens.iter().any(|t| t.len() > 1024)
-            || self.query.len() != self.dimension || self.query.iter().any(|v| !v.is_finite()) {
-            return Err(Error::from_reason("LIGHTMEMO_INVALID_PLAN"));
+        if plan.query_tokens.len() > 256 {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: field=queryTokens.length actual={} max=256",
+                plan.query_tokens.len()
+            )));
+        }
+        if let Some((index, token)) = plan.query_tokens.iter().enumerate().find(|(_, t)| t.len() > 1024) {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: field=queryTokens[{index}].bytes actual={} max=1024",
+                token.len()
+            )));
+        }
+        let invalid = if plan.k == 0 || plan.k > 1000 {
+            Some(format!("field=k actual={} min=1 max=1000", plan.k))
+        } else if plan.candidate_k == 0 || plan.candidate_k > 2000 {
+            Some(format!("field=candidateK actual={} min=1 max=2000", plan.candidate_k))
+        } else if plan.model_sig.trim().is_empty() {
+            Some("field=modelSig reason=empty".into())
+        } else if !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo") {
+            Some("field=engineMode reason=unsupported".into())
+        } else if self.query.len() != self.dimension {
+            Some(format!("field=query.length actual={} expected={}", self.query.len(), self.dimension))
+        } else if self.query.iter().any(|v| !v.is_finite()) {
+            Some("field=query reason=nonfinite".into())
+        } else { None };
+        if let Some(detail) = invalid {
+            return Err(Error::from_reason(format!("LIGHTMEMO_INVALID_PLAN: {detail}")));
         }
         let _gate = crate::publication_gate::acquire_read(&self.db_path, &["*".into()])
             .map_err(Error::from_reason)?;
@@ -188,14 +209,18 @@ impl Task for LightMemoTask {
                     input["candidates"] = json!(candidates);
                     input["allowedFileIds"] = json!(candidates.iter()
                         .filter_map(|c| c["fileId"].as_i64()).collect::<HashSet<_>>());
-                    river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_connection(
+                    river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_observation(
                         &self.runtime, connection, &plan.artifact_sig, &input.to_string(),
+                        self.observation.as_ref(),
                     )?).map_err(|e| e.to_string())?;
                     if plan.ab_mode {
                         // Export a bounded read-only view of this exact observation, never
                         // truncate the graph used by propagation or topology scoring.
-                        let cached = self.runtime.get_query_observation(
-                            input["observationHandle"].as_str().unwrap(), &plan.artifact_sig)?;
+                        let cached = match self.observation.as_ref() {
+                            Some(value) => value.clone(),
+                            None => self.runtime.get_query_observation(
+                                input["observationHandle"].as_str().unwrap(), &plan.artifact_sig)?,
+                        };
                         let observation = &cached.observation;
                         let nodes = observation.nodes.iter().take(128).collect::<Vec<_>>();
                         let node_ids = nodes.iter().map(|node| node.id).collect::<HashSet<_>>();
@@ -342,6 +367,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keyword_plan_boundaries_report_actual_field_before_database_access() {
+        let mut task = LightMemoTask {
+            db_path: "unregistered-lightmemo-test.sqlite".into(),
+            dimension: 2, query: vec![1., 0.], plan_json: String::new(),
+            table: Arc::new(Mutex::new(None)),
+            runtime: Arc::new(MemoRuntime::new()),
+            observation: None,
+        };
+        for count in [256, 257] {
+            task.plan_json = json!({
+                "scope": {"searchAll": true}, "modelSig": "test",
+                "engineMode": "knn", "k": 1, "candidateK": 256,
+                "queryTokens": (0..count).map(|i| format!("word_{i}")).collect::<Vec<_>>()
+            }).to_string();
+            let error = task.compute().unwrap_err().reason;
+            if count == 257 {
+                assert!(error.contains("field=queryTokens.length actual=257 max=256"), "{error}");
+            } else {
+                assert!(!error.contains("LIGHTMEMO_INVALID_PLAN"), "{error}");
+            }
+        }
+        task.plan_json = json!({
+            "scope": {"searchAll": true}, "modelSig": "test",
+            "engineMode": "knn", "k": 1, "candidateK": 256,
+            "queryTokens": ["汉".repeat(342)]
+        }).to_string();
+        let error = task.compute().unwrap_err().reason;
+        assert!(error.contains("field=queryTokens[0].bytes actual=1026 max=1024"), "{error}");
+    }
+
+    #[test]
     fn native_filters_preserve_signature_dates_music_and_negative_cosine() {
         let root = std::env::temp_dir().join(format!("lightmemo-query-{}-{}",
             std::process::id(), std::time::SystemTime::now()
@@ -376,6 +432,7 @@ mod tests {
             db_path:db.clone(),dimension:2,query:vec![1.,0.],
             plan_json:String::new(),table:Arc::new(Mutex::new(None)),
             runtime:Arc::new(MemoRuntime::new()),
+            observation:None,
         };
         let run = |task:&mut LightMemoTask,scope:Value| {
             task.plan_json=json!({"scope":scope,"modelSig":"test","engineMode":"knn",

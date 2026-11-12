@@ -107,7 +107,10 @@ class LightMemoPlugin {
 
             return this._normalizeToolResult(result);
         } catch (error) {
-            console.error('[LightMemo] Error processing tool call:', error);
+            console.error('[LightMemo] Error processing tool call:', {
+                message: error?.message || String(error),
+                code: error?.code || null
+            });
             // Return an error structure that Plugin.js can understand
             return { plugin_error: error.message || 'An unknown error occurred in LightMemo.' };
         }

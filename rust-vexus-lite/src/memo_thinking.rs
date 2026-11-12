@@ -403,6 +403,7 @@ mod tests {
                 vec![],
                 Arc::new(HashMap::new()),
                 0,
+                graph.clone(),
             )
             .unwrap();
         let path = std::env::temp_dir().join(format!(

@@ -32,6 +32,7 @@ const DatabaseCoordinator = require('./modules/knowledgeBase/databaseCoordinator
 const KnowledgeBaseFileWatcher = require('./modules/knowledgeBase/fileWatcher');
 const IngestionPipeline = require('./modules/knowledgeBase/ingestionPipeline');
 const SearchService = require('./modules/knowledgeBase/searchService');
+const { gateFor: lightMemoGateFor } = require('./modules/knowledgeBase/lightMemoAdmission');
 const TagConsistencyService = require('./modules/knowledgeBase/tagConsistencyService');
 
 // 尝试加载 Rust Vexus 引擎
@@ -1755,6 +1756,18 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
     // =========================================================================
 
     async executeLightMemoQuery(query, options = {}) {
+        const release = await lightMemoGateFor(this).acquire(options.signal);
+        try {
+            if (options.signal?.aborted) {
+                throw options.signal.reason || new Error('LIGHTMEMO_ABORTED');
+            }
+            return await this._executeLightMemoQueryAdmitted(query, options);
+        } finally {
+            release();
+        }
+    }
+
+    async _executeLightMemoQueryAdmitted(query, options = {}) {
         const runtime = this.nativeKnowledgeRuntime;
         if (typeof runtime?.executeLightMemoQuery !== 'function') {
             const error = new Error('LIGHTMEMO_NATIVE_QUERY_UNAVAILABLE: rebuild rust-vexus-lite');

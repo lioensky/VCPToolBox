@@ -2202,6 +2202,7 @@ fn run_pipeline_with_connection(
         dual_fields.transfer_domain_ids.clone(),
         Arc::new(tag_vectors),
         crate::storage::read_generation(connection)?,
+        artifact.clone(),
     )?;
     let observation_cached = true;
 

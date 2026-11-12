@@ -2941,12 +2941,29 @@ impl NativeKnowledgeRuntime {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
         }
-        if plan_json.len() > 1024 * 1024 || query.len() != self.dimension as usize {
-            return Err(Error::from_reason("LIGHTMEMO_INVALID_PLAN"));
+        if plan_json.len() > 1024 * 1024 {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: field=plan.bytes actual={} max=1048576", plan_json.len()
+            )));
+        }
+        if query.len() != self.dimension as usize {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: field=query.length actual={} expected={}",
+                query.len(), self.dimension
+            )));
         }
         let storage = self.storage_snapshot()?
             .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        let plan: serde_json::Value = serde_json::from_str(&plan_json)
+            .map_err(|error| Error::from_reason(format!("LIGHTMEMO_INVALID_PLAN: {error}")))?;
+        let observation = match plan["riverInput"]["observationHandle"].as_str() {
+            Some(handle) => Some(self.memo_runtime.get_query_observation(
+                handle, plan["artifactSig"].as_str().unwrap_or("")
+            ).map_err(Error::from_reason)?),
+            None => None,
+        };
         Ok(self.tracked_task(crate::light_memo::LightMemoTask {
+            observation,
             db_path: storage.db_path().to_string_lossy().into_owned(),
             dimension: self.dimension as usize,
             query: query.to_vec(),

@@ -1,5 +1,7 @@
 'use strict';
 
+const { buildQueryTokens } = require('./queryTokens');
+
 function parseRequest(plugin, args) {
     const parsed = plugin._parseMaidScopedFolder(args.maid);
     const folder = plugin._mergeFolderScopes(args.folder, parsed.folder);
@@ -57,7 +59,13 @@ async function execute(plugin, request, args, { ab = false, topK = request.k } =
     const raw = await plugin.getSingleEmbedding(request.text);
     if (!raw) throw new Error('查询内容向量化失败。');
     const vector = raw instanceof Float32Array ? raw : new Float32Array(raw);
-    const tokens = request.useBM25 ? plugin._tokenize(request.text) : [];
+    const useBm25 = request.useBM25 && (ab || request.mode !== 'knn');
+    const { queryTokens, diagnostics: tokenDiagnostics } = buildQueryTokens(
+        plugin, request.text, useBm25
+    );
+    if (tokenDiagnostics.truncated || tokenDiagnostics.invalid) {
+        console.warn('[LightMemo] Query keyword budget:', tokenDiagnostics);
+    }
     const candidateK = ab
         ? Math.min(100, Math.max(topK, Math.floor(plugin._parseNumber(args.candidate_k ?? args.candidateK, 30))))
         : Math.min(2000, Math.max(topK, 256));
@@ -65,8 +73,7 @@ async function execute(plugin, request, args, { ab = false, topK = request.k } =
         { text: request.text, vector },
         {
             scope: request.scope, engineMode: request.mode, k: topK, candidateK,
-            abMode: ab, useBm25: request.useBM25 && (ab || request.mode !== 'knn'),
-            queryTokens: [...new Set([...tokens, ...plugin._expandQueryTokens(tokens)])],
+            abMode: ab, useBm25, queryTokens, tokenDiagnostics,
             coreTags: request.coreTags, sourceObservationConfig: {
                 baseTagBoost: request.tagBoost, coreBoostFactor: request.coreBoostFactor
             }
