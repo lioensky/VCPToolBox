@@ -107,7 +107,8 @@ class LightMemoPlugin {
 
             return this._normalizeToolResult(result);
         } catch (error) {
-            console.error('[LightMemo] Error processing tool call:', error);
+            // 原生侧的错误对象序列化后只剩 { code: 'GenericFailure' }，说明文字要单独写出来。
+            console.error('[LightMemo] Error processing tool call:', error?.stack || error?.message || error);
             // Return an error structure that Plugin.js can understand
             return { plugin_error: error.message || 'An unknown error occurred in LightMemo.' };
         }
@@ -1061,29 +1062,31 @@ class LightMemoPlugin {
      * 适配 KnowledgeBaseManager (SQLite)
      */
     _expandQueryTokens(queryTokens) {
+        return [...new Set(this._expandQueryTokenGroups(queryTokens).flat())];
+    }
+
+    /**
+     * 查询命中的语义组，每组一份扩展词（不含查询里已有的词）。原生检索把每组当成一个关键词打分，
+     * 组再大也只占一个词的分量，也不占 queryTokens 的 256 个名额。
+     */
+    _expandQueryTokenGroups(queryTokens) {
         if (this.wordToGroupMap.size === 0) {
             return [];
         }
 
-        const expandedTokens = new Set();
+        const groups = [];
         const activatedGroups = new Set();
 
         for (const token of queryTokens) {
             const groupWords = this.wordToGroupMap.get(token.toLowerCase());
-            if (groupWords) {
-                const groupKey = groupWords.join(',');
-                if (!activatedGroups.has(groupKey)) {
-                    activatedGroups.add(groupKey);
-                    groupWords.forEach(word => {
-                        if (!queryTokens.includes(word)) {
-                            expandedTokens.add(word);
-                        }
-                    });
-                }
+            if (groupWords && !activatedGroups.has(groupWords)) {
+                activatedGroups.add(groupWords);
+                const expansions = groupWords.filter(word => !queryTokens.includes(word));
+                if (expansions.length > 0) groups.push(expansions);
             }
         }
 
-        return Array.from(expandedTokens);
+        return groups;
     }
 
     /**

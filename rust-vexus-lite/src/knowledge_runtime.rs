@@ -2941,8 +2941,13 @@ impl NativeKnowledgeRuntime {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
         }
-        if plan_json.len() > 1024 * 1024 || query.len() != self.dimension as usize {
-            return Err(Error::from_reason("LIGHTMEMO_INVALID_PLAN"));
+        if plan_json.len() > 1024 * 1024 {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: plan is {} bytes (max 1048576)", plan_json.len())));
+        }
+        if query.len() != self.dimension as usize {
+            return Err(Error::from_reason(format!(
+                "LIGHTMEMO_INVALID_PLAN: query dimension={} (expected {})", query.len(), self.dimension)));
         }
         let storage = self.storage_snapshot()?
             .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;

@@ -35,6 +35,10 @@ pub(crate) struct Plan {
     candidate_k: usize,
     #[serde(default)]
     query_tokens: Vec<String>,
+    /// Semantic-group expansions, one inner list per activated group. Each group is scored as a
+    /// single keyword (any member counts as a hit), so a large group cannot outweigh the query.
+    #[serde(default)]
+    query_token_groups: Vec<Vec<String>>,
     #[serde(default)]
     use_bm25: bool,
     #[serde(default)]
@@ -44,6 +48,40 @@ pub(crate) struct Plan {
 }
 
 fn default_pool() -> usize { 256 }
+
+const MAX_QUERY_TOKENS: usize = 256;
+const MAX_TOKEN_GROUPS: usize = 64;
+const MAX_GROUP_WORDS: usize = 4096;
+const MAX_TOKEN_BYTES: usize = 1024;
+
+/// The first reason a plan is rejected, named by field so the caller can see what to fix.
+fn plan_problem(plan: &Plan, query: &[f32], dimension: usize) -> Option<String> {
+    if plan.k == 0 || plan.k > 1000 { return Some(format!("k={} (1..=1000)", plan.k)); }
+    if plan.candidate_k == 0 || plan.candidate_k > 2000 {
+        return Some(format!("candidateK={} (1..=2000)", plan.candidate_k));
+    }
+    if plan.model_sig.trim().is_empty() { return Some("modelSig is empty".into()); }
+    if !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo") {
+        return Some(format!("engineMode={} (knn|rivermemo)", plan.engine_mode));
+    }
+    if plan.query_tokens.len() > MAX_QUERY_TOKENS {
+        return Some(format!("queryTokens={} (max {MAX_QUERY_TOKENS})", plan.query_tokens.len()));
+    }
+    if plan.query_token_groups.len() > MAX_TOKEN_GROUPS {
+        return Some(format!("queryTokenGroups={} (max {MAX_TOKEN_GROUPS})", plan.query_token_groups.len()));
+    }
+    let group_words = plan.query_token_groups.iter().map(Vec::len).sum::<usize>();
+    if group_words > MAX_GROUP_WORDS {
+        return Some(format!("queryTokenGroups words={group_words} (max {MAX_GROUP_WORDS})"));
+    }
+    if plan.query_tokens.iter().chain(plan.query_token_groups.iter().flatten())
+        .any(|token| token.len() > MAX_TOKEN_BYTES) {
+        return Some(format!("a query token is longer than {MAX_TOKEN_BYTES} bytes"));
+    }
+    if query.len() != dimension { return Some(format!("query dimension={} (expected {dimension})", query.len())); }
+    if query.iter().any(|v| !v.is_finite()) { return Some("query vector has a non-finite value".into()); }
+    None
+}
 
 pub struct LightMemoTask {
     pub(crate) db_path: String,
@@ -109,13 +147,8 @@ impl Task for LightMemoTask {
         let started = std::time::Instant::now();
         let plan: Plan = serde_json::from_str(&self.plan_json)
             .map_err(|e| Error::from_reason(format!("Invalid LightMemo plan: {e}")))?;
-        if plan.k == 0 || plan.k > 1000 || plan.candidate_k == 0 || plan.candidate_k > 2000
-            || plan.model_sig.trim().is_empty()
-            || !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo")
-            || plan.query_tokens.len() > 256
-            || plan.query_tokens.iter().any(|t| t.len() > 1024)
-            || self.query.len() != self.dimension || self.query.iter().any(|v| !v.is_finite()) {
-            return Err(Error::from_reason("LIGHTMEMO_INVALID_PLAN"));
+        if let Some(problem) = plan_problem(&plan, &self.query, self.dimension) {
+            return Err(Error::from_reason(format!("LIGHTMEMO_INVALID_PLAN: {problem}")));
         }
         let _gate = crate::publication_gate::acquire_read(&self.db_path, &["*".into()])
             .map_err(Error::from_reason)?;
@@ -170,8 +203,8 @@ impl Task for LightMemoTask {
                     candidate["hybridScore"] = candidate["vectorScore"].clone();
                     candidate["retrievalEngine"] = json!("tdb");
                 }
-                if plan.use_bm25 && !plan.query_tokens.is_empty() {
-                    score_keywords(&mut candidates, &plan.query_tokens);
+                if plan.use_bm25 && (!plan.query_tokens.is_empty() || !plan.query_token_groups.is_empty()) {
+                    score_keywords(&mut candidates, &plan.query_tokens, &plan.query_token_groups);
                 }
                 // A/B uses exactly this bounded pool; baseline remains pure cosine.
                 let tdb = candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
@@ -257,7 +290,8 @@ impl Task for LightMemoTask {
                     "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
                     "diagnostics":{"scopeChunks":allowed.len(),"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
-                        "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1}
+                        "bm25Mode":"candidate-substring-tf-v1","bm25Groups":plan.query_token_groups.len(),
+                        "ffiTrips":1}
                 }))
             },
         ).map_err(Error::from_reason)?;
@@ -318,19 +352,34 @@ impl Task for GlobalChunkCheckpointTask {
 }
 
 /// Transitional bounded lexical evidence, not an independent global BM25 recall route.
-fn score_keywords(candidates: &mut [Value], tokens: &[String]) {
+/// Candidate-local BM25 over substring term frequency. Each plain token is one term. Each group is
+/// also one term whose frequency is the sum over its members, with one idf from the documents that
+/// contain any member (like Lucene's SynonymQuery): a 285-word group adds as much as one keyword,
+/// not 285 keywords. Members that are already plain tokens are left to the plain term.
+fn score_keywords(candidates: &mut [Value], tokens: &[String], groups: &[Vec<String>]) {
     let texts = candidates.iter().map(|c| c["text"].as_str().unwrap_or("").to_lowercase())
         .collect::<Vec<_>>();
     let lengths = texts.iter().map(|t| t.chars().count().max(1) as f64).collect::<Vec<_>>();
     let avg = lengths.iter().sum::<f64>() / lengths.len().max(1) as f64;
     let mut scores = vec![0.; texts.len()];
-    for token in tokens.iter().filter(|t| !t.is_empty()).collect::<HashSet<_>>() {
-        let df = texts.iter().filter(|text| text.contains(token.as_str())).count() as f64;
+    let mut add_term = |frequencies: Vec<f64>| {
+        let df = frequencies.iter().filter(|&&tf| tf > 0.).count() as f64;
         let idf = ((texts.len() as f64-df+0.5)/(df+0.5)+1.).ln();
-        for (i,text) in texts.iter().enumerate() {
-            let tf = text.matches(token.as_str()).count() as f64;
+        for (i, tf) in frequencies.into_iter().enumerate() {
             if tf > 0. { scores[i] += idf*tf*2.5/(tf+1.5*(0.25+0.75*lengths[i]/avg)); }
         }
+    };
+    let plain = tokens.iter().filter(|t| !t.is_empty()).collect::<HashSet<_>>();
+    for token in &plain {
+        add_term(texts.iter().map(|text| text.matches(token.as_str()).count() as f64).collect());
+    }
+    for group in groups {
+        let members = group.iter().map(|word| word.to_lowercase())
+            .filter(|word| !word.is_empty() && !plain.contains(word))
+            .collect::<HashSet<_>>();
+        if members.is_empty() { continue; }
+        add_term(texts.iter().map(|text| members.iter()
+            .map(|word| text.matches(word.as_str()).count() as f64).sum()).collect());
     }
     for (candidate, score) in candidates.iter_mut().zip(scores) {
         candidate["bm25Score"] = json!(score);
@@ -340,6 +389,122 @@ fn score_keywords(candidates: &mut [Value], tokens: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn texts(list: &[&str]) -> Vec<Value> {
+        list.iter().map(|text| json!({ "text": text })).collect()
+    }
+
+    fn scores(candidates: &[Value]) -> Vec<f64> {
+        candidates.iter().map(|c| c["bm25Score"].as_f64().unwrap()).collect()
+    }
+
+    #[test]
+    fn a_large_semantic_group_counts_as_one_keyword() {
+        let mut slang = vec!["wireguard", "vps", "cn2", "gia", "bgp", "回程", "落地", "中转", "节点", "探针"]
+            .into_iter().map(String::from).collect::<Vec<_>>();
+        slang.extend((0..275).map(|i| format!("黑话{i}")));
+        let mut candidates = texts(&[
+            "把 WireGuard 隧道改到 10.8.2 网段，组网后三台机器互通。",
+            "这台机器 cn2 gia 回程不错，落地机房 bgp，中转节点换了，探针装好。",
+            "周末整理书架，顺手把 vps 账单续了。",
+            "读书笔记，天气晴。",
+        ]);
+        let query = ["wireguard", "10.8.2", "组网"].map(String::from);
+        score_keywords(&mut candidates, &query, &[slang.clone()]);
+        let grouped = scores(&candidates);
+        assert!(grouped[0] > grouped[1], "the note with the query words stays first: {grouped:?}");
+        assert!(grouped[1] > 0. && grouped[2] > 0., "group members still count: {grouped:?}");
+        assert_eq!(grouped[3], 0.);
+
+        // The old way, every member as its own keyword: the slang-heavy note wins.
+        let mut flat = texts(&[
+            "把 WireGuard 隧道改到 10.8.2 网段，组网后三台机器互通。",
+            "这台机器 cn2 gia 回程不错，落地机房 bgp，中转节点换了，探针装好。",
+            "周末整理书架，顺手把 vps 账单续了。",
+            "读书笔记，天气晴。",
+        ]);
+        let all = query.iter().cloned().chain(slang).collect::<Vec<_>>();
+        score_keywords(&mut flat, &all, &[]);
+        let flat = scores(&flat);
+        assert!(flat[1] > flat[0], "baseline check: flat expansion lets the group dominate: {flat:?}");
+    }
+
+    #[test]
+    fn plain_tokens_score_as_before_and_groups_do_not_double_count_them() {
+        let mut before = texts(&["alpha beta beta", "gamma"]);
+        let mut after = before.clone();
+        let tokens = ["beta", "gamma"].map(String::from);
+        score_keywords(&mut before, &tokens, &[]);
+        // a group whose only other member is absent adds nothing; its copy of "beta" is the plain term
+        score_keywords(&mut after, &tokens, &[vec!["beta".into(), "delta".into()]]);
+        assert_eq!(scores(&before), scores(&after));
+    }
+
+    #[test]
+    fn a_plan_with_a_285_word_group_runs_end_to_end() {
+        let root = std::env::temp_dir().join(format!("lightmemo-groups-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default()).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch("INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES
+                (1,'a.txt','运维日记','a',0,0);").map_err(|e|e.to_string())?;
+            for (id, text) in [
+                (1, "把 WireGuard 隧道改到 10.8.2 网段，组网后三台机器互通。"),
+                (2, "这台机器 cn2 gia 回程不错，落地机房 bgp，中转节点换了，探针装好。"),
+                (3, "周末整理书架，顺手把 vps 账单续了。"),
+                (4, "读书笔记，天气晴。"),
+            ] {
+                let bytes = [1_f32, 0.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+                tx.execute("INSERT INTO chunks(id,file_id,chunk_index,content,vector)
+                    VALUES (?1,1,0,?2,?3)", rusqlite::params![id, text, bytes]).map_err(|e|e.to_string())?;
+            }
+            Ok(crate::storage::WriteReceipt{
+                operation:"fixture".into(),database_generation:0,facts_changed:true,
+            })
+        }).unwrap();
+        let mut slang = vec!["vps", "cn2", "gia", "bgp", "回程", "落地", "中转", "节点", "探针"]
+            .into_iter().map(String::from).collect::<Vec<_>>();
+        slang.extend((0..276).map(|i| format!("黑话{i}")));
+        let mut task = LightMemoTask {
+            db_path: db.clone(), dimension: 2, query: vec![1., 0.], plan_json: json!({
+                "scope": {"searchAll": true}, "modelSig": "test", "engineMode": "knn", "k": 4, "candidateK": 4,
+                "useBm25": true, "queryTokens": ["wireguard", "10.8.2", "组网"], "queryTokenGroups": [slang],
+            }).to_string(), table: Arc::new(Mutex::new(None)), runtime: Arc::new(MemoRuntime::new()),
+        };
+        let output = serde_json::from_str::<Value>(&task.compute().unwrap()).unwrap();
+        let bm25 = |id: i64| output["tdbTopK"].as_array().unwrap().iter()
+            .find(|c| c["id"] == id).unwrap()["bm25Score"].as_f64().unwrap();
+        assert!(bm25(1) > bm25(2), "query words first: {} vs {}", bm25(1), bm25(2));
+        assert!(bm25(2) > 0. && bm25(3) > 0., "group members still count");
+        assert_eq!(bm25(4), 0.);
+        assert_eq!(output["diagnostics"]["bm25Groups"], 1);
+        drop(task);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_plans_name_the_field() {
+        let plan = |extra: Value| {
+            let mut value = json!({ "scope": {}, "modelSig": "m", "engineMode": "rivermemo", "k": 5 });
+            for (key, item) in extra.as_object().unwrap() { value[key] = item.clone(); }
+            serde_json::from_value::<Plan>(value).unwrap()
+        };
+        let query = [0.1_f32; 4];
+        assert_eq!(plan_problem(&plan(json!({})), &query, 4), None);
+        let many = (0..257).map(|i| format!("t{i}")).collect::<Vec<_>>();
+        assert_eq!(plan_problem(&plan(json!({ "queryTokens": many })), &query, 4).unwrap(),
+            "queryTokens=257 (max 256)");
+        let group = (0..285).map(|i| format!("w{i}")).collect::<Vec<_>>();
+        assert_eq!(plan_problem(&plan(json!({ "queryTokens": ["vps"], "queryTokenGroups": [group] })), &query, 4), None,
+            "a 285-word group is fine as a group");
+        assert!(plan_problem(&plan(json!({ "k": 0 })), &query, 4).unwrap().starts_with("k=0"));
+        assert!(plan_problem(&plan(json!({})), &[0.1_f32; 3], 4).unwrap().starts_with("query dimension=3"));
+    }
 
     #[test]
     fn native_filters_preserve_signature_dates_music_and_negative_cosine() {

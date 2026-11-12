@@ -47,6 +47,25 @@ function parseRequest(plugin, args) {
     };
 }
 
+// rust-vexus-lite/src/light_memo.rs 的计划上限：查询词最多 256 个，语义组最多 64 组。
+// 语义组的扩展词按组下发（queryTokenGroups），每组在原生侧当一个关键词打分，不再挤进 queryTokens：
+// 原来整组并入，一个 285 词的组就让 queryTokens 超过 256、整条回忆报 LIGHTMEMO_INVALID_PLAN，
+// 没超的时候也会让大组的同义词压过查询原词。很长的查询本身也可能分出 256 个以上的词，按出现顺序保留前 256 个。
+const MAX_QUERY_TOKENS = 256;
+const MAX_TOKEN_GROUPS = 64;
+const MAX_GROUP_WORDS = 4096;
+
+function boundedGroups(groups) {
+    const kept = [];
+    let words = 0;
+    for (const group of groups.slice(0, MAX_TOKEN_GROUPS)) {
+        if (words + group.length > MAX_GROUP_WORDS) break;
+        kept.push(group);
+        words += group.length;
+    }
+    return kept;
+}
+
 async function execute(plugin, request, args, { ab = false, topK = request.k } = {}) {
     const manager = plugin.vectorDBManager;
     if (typeof manager?.executeLightMemoQuery !== 'function') {
@@ -66,7 +85,8 @@ async function execute(plugin, request, args, { ab = false, topK = request.k } =
         {
             scope: request.scope, engineMode: request.mode, k: topK, candidateK,
             abMode: ab, useBm25: request.useBM25 && (ab || request.mode !== 'knn'),
-            queryTokens: [...new Set([...tokens, ...plugin._expandQueryTokens(tokens)])],
+            queryTokens: [...new Set(tokens)].slice(0, MAX_QUERY_TOKENS),
+            queryTokenGroups: boundedGroups(plugin._expandQueryTokenGroups(tokens)),
             coreTags: request.coreTags, sourceObservationConfig: {
                 baseTagBoost: request.tagBoost, coreBoostFactor: request.coreBoostFactor
             }

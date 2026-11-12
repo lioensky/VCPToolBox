@@ -71,7 +71,7 @@ test('laboratory appends diagnostics but normal search keeps its original output
         _parseNumber: (value, fallback) => value ?? fallback,
         _parseEngineMode: () => 'rivermemo',
         _parseStringArray: value => value || [],
-        _tokenize: () => [], _expandQueryTokens: () => [],
+        _tokenize: () => [], _expandQueryTokens: () => [], _expandQueryTokenGroups: () => [],
         getSingleEmbedding: async () => [1, 0],
         vectorDBManager: { executeLightMemoQuery: async () => data },
         _escapeMarkdownCell: cell,
