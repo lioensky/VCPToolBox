@@ -349,11 +349,18 @@ fn score_keywords(candidates: &mut [Value], tokens: &[String]) {
     let lengths = texts.iter().map(|t| t.chars().count().max(1) as f64).collect::<Vec<_>>();
     let avg = lengths.iter().sum::<f64>() / lengths.len().max(1) as f64;
     let mut scores = vec![0.; texts.len()];
-    for token in tokens.iter().filter(|t| !t.is_empty()).collect::<HashSet<_>>() {
-        let df = texts.iter().filter(|text| text.contains(token.as_str())).count() as f64;
+    // Input order, first occurrence: a fixed summation order makes scores reproducible.
+    let mut seen = HashSet::new();
+    let mut counts = vec![0usize; texts.len()];
+    for token in tokens.iter().filter(|t| !t.is_empty()) {
+        if !seen.insert(token.as_str()) { continue; }
+        for (count, text) in counts.iter_mut().zip(&texts) {
+            *count = text.matches(token.as_str()).count();
+        }
+        let df = counts.iter().filter(|count| **count > 0).count() as f64;
         let idf = ((texts.len() as f64-df+0.5)/(df+0.5)+1.).ln();
-        for (i,text) in texts.iter().enumerate() {
-            let tf = text.matches(token.as_str()).count() as f64;
+        for (i,&count) in counts.iter().enumerate() {
+            let tf = count as f64;
             if tf > 0. { scores[i] += idf*tf*2.5/(tf+1.5*(0.25+0.75*lengths[i]/avg)); }
         }
     }
@@ -395,6 +402,36 @@ mod tests {
         }).to_string();
         let error = task.compute().unwrap_err().reason;
         assert!(error.contains("field=queryTokens[0].bytes actual=1026 max=1024"), "{error}");
+    }
+
+    #[test]
+    fn keyword_scores_sum_in_token_order_and_repeat_bit_for_bit() {
+        let texts: Vec<String> = (0..48).map(|i| (0..80)
+            .map(|j| format!("W{} ", (i * 7 + j * 13) % 97)).collect()).collect();
+        // Includes a duplicate and an empty token; both must be ignored.
+        let tokens: Vec<String> = (0..96).map(|t| format!("w{t}"))
+            .chain(["w5".to_string(), String::new()]).collect();
+        let lowered = texts.iter().map(|t| t.to_lowercase()).collect::<Vec<_>>();
+        let lengths = lowered.iter().map(|t| t.chars().count().max(1) as f64).collect::<Vec<_>>();
+        let avg = lengths.iter().sum::<f64>() / lengths.len() as f64;
+        let mut expected = vec![0.0_f64; lowered.len()];
+        let mut seen = HashSet::new();
+        for token in tokens.iter().filter(|t| !t.is_empty()) {
+            if !seen.insert(token) { continue; }
+            let df = lowered.iter().filter(|text| text.contains(token.as_str())).count() as f64;
+            let idf = ((lowered.len() as f64-df+0.5)/(df+0.5)+1.).ln();
+            for (i, text) in lowered.iter().enumerate() {
+                let tf = text.matches(token.as_str()).count() as f64;
+                if tf > 0. { expected[i] += idf*tf*2.5/(tf+1.5*(0.25+0.75*lengths[i]/avg)); }
+            }
+        }
+        for _ in 0..8 {
+            let mut candidates = texts.iter().map(|t| json!({"text": t})).collect::<Vec<_>>();
+            score_keywords(&mut candidates, &tokens);
+            for (candidate, expected) in candidates.iter().zip(&expected) {
+                assert_eq!(candidate["bm25Score"].as_f64().unwrap().to_bits(), expected.to_bits());
+            }
+        }
     }
 
     #[test]
