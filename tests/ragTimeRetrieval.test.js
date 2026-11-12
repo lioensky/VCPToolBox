@@ -162,3 +162,16 @@ test('time-route chunks without a date get it from the diary date index', async 
     assert.deepEqual(fallbackResults.map(doc => [doc.fullPath, doc.date]).sort(),
         [['A/2026-05-02.txt', '2026-05-02'], ['A/2026-05-03.txt', '2026-05-03']]);
 });
+
+test('Time quota follows the non-GreenLane rule and survives a GreenLane failure', () => {
+    const river = [
+        { id: 1, source: 'rag' }, { id: 2, source: 'rag' },
+        { id: 3, source: 'time' }, { id: 4, source: 'time' }
+    ];
+    // External rerank failed: River order, Time entries kept instead of cut by slice(0, finalK).
+    assert.deepEqual(rag._applyTimeQuota(river, river, 2, 1).map(doc => doc.id), [1, 3]);
+    // finalK = 1: at least one semantic slot plus the Time slot, as the non-GreenLane split gives.
+    assert.deepEqual(rag._applyTimeQuota(river, river, 1, 1).map(doc => doc.id), [1, 3]);
+    // No ::Time: plain truncation.
+    assert.deepEqual(rag._applyTimeQuota(river, river, 2, 0).map(doc => doc.id), [1, 2]);
+});

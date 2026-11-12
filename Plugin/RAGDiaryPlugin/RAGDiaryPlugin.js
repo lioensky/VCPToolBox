@@ -3683,13 +3683,15 @@ class RAGDiaryPlugin {
 
         if (greenTask) {
             const external = await greenTask;
+            const timeQuota = useTime ? Math.max(1, Math.round(finalK * timeRatio)) : 0;
             if (external.error) {
                 console.warn(`[RAGDiaryPlugin] Green lane failed; keeping River order: ${external.error.message}`);
-                finalResultsForBroadcast = finalResultsForBroadcast.slice(0, finalK);
+                finalResultsForBroadcast = this._applyTimeQuota(
+                    finalResultsForBroadcast, finalResultsForBroadcast, finalK, timeQuota
+                );
             } else {
                 finalResultsForBroadcast = this._fuseIndependentRankings(
-                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK,
-                    useTime ? Math.max(1, Math.round(finalK * timeRatio)) : 0
+                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK, timeQuota
                 );
             }
             const diagnostics = {
@@ -3952,10 +3954,17 @@ class RAGDiaryPlugin {
         const ranked = [...merged.values()].filter(doc => doc.rrf_score > 0)
             .sort((a, b) => b.rrf_score - a.rrf_score
                 || identity(a).localeCompare(identity(b)));
-        const time = [...merged.values()].filter(doc => doc.source === 'time')
-            .slice(0, Math.min(timeQuota, limit));
-        if (time.length === 0) return ranked.slice(0, limit);
-        return [...ranked.filter(doc => doc.source !== 'time').slice(0, limit - time.length), ...time];
+        return this._applyTimeQuota(ranked, [...merged.values()], limit, timeQuota);
+    }
+
+    // ::Time 路名额：语义路按 ordered 的顺序，时间路取 river 顺序里最靠前的 timeQuota 条；
+    // 名额规则与非 GreenLane 路径相同（语义路至少 1 条）。没有时间条目时等同于截断到 limit。
+    _applyTimeQuota(ordered, river, limit, timeQuota) {
+        const time = timeQuota > 0 ? river.filter(doc => doc.source === 'time').slice(0, timeQuota) : [];
+        if (time.length === 0) return ordered.slice(0, limit);
+        const semantic = ordered.filter(doc => doc.source !== 'time')
+            .slice(0, Math.max(1, limit - time.length));
+        return [...semantic, ...time];
     }
 
     async _rerankRAGCandidatesWithRiverMemo({
