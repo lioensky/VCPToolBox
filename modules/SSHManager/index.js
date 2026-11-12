@@ -93,8 +93,6 @@ function calculateFileMd5(filePath) {
  * @returns {Object} 主机配置对象
  */
 function loadHostsConfig() {
-    if (hostsConfig) return hostsConfig;
-
     lastConfigPath = null;
     lastConfigError = null;
     
@@ -106,7 +104,8 @@ function loadHostsConfig() {
     for (const configPath of configPaths) {
         try {
             if (fs.existsSync(configPath)) {
-                const configMd5 = calculateFileMd5(configPath);
+                const rawBuffer = fs.readFileSync(configPath);
+                const configMd5 = crypto.createHash('md5').update(rawBuffer).digest('hex');
                 if (configMd5 === DEFAULT_HOSTS_TEMPLATE_MD5) {
                     hostsConfig = createLocalOnlyHostsConfig();
                     lastConfigPath = configPath;
@@ -114,11 +113,8 @@ function loadHostsConfig() {
                     logWarn(`[SSHManager Module] ${configPath} 仍为默认模板 (MD5=${configMd5})，仅启用本地执行`);
                     return hostsConfig;
                 }
-                // 清除 require 缓存以支持热重载
-                delete require.cache[require.resolve(configPath)];
-                hostsConfig = require(configPath);
+                hostsConfig = JSON.parse(rawBuffer.toString('utf8'));
                 lastConfigPath = configPath;
-                logInfo(`[SSHManager Module] 加载主机配置: ${configPath}`);
                 return hostsConfig;
             }
         } catch (e) {
