@@ -2570,9 +2570,15 @@ class RAGDiaryPlugin {
         return Math.max(0, Math.min(1, parsedWeight));
     }
 
+    // ::TimeDecay 是独立修饰符，不能被识别为 ::Time
+    _hasTimeModifier(modifiers) {
+        return typeof modifiers === 'string'
+            && /::Time(?!Decay)(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers);
+    }
+
     _extractTimeRatio(modifiers) {
         if (!modifiers || typeof modifiers !== 'string') return 0.2;
-        const timeRatioMatch = modifiers.match(/::Time(\d*\.?\d+)?(?=$|::|[^\d.])/i);
+        const timeRatioMatch = modifiers.match(/::Time(?!Decay)(\d*\.?\d+)?(?=$|::|[^\d.])/i);
         if (!timeRatioMatch || timeRatioMatch[1] === undefined) return 0.2;
 
         const parsedRatio = parseFloat(timeRatioMatch[1]);
@@ -3001,7 +3007,7 @@ class RAGDiaryPlugin {
         // 3️⃣ 缓存未命中，执行原有逻辑
 
         const kMultiplier = this._extractKMultiplier(modifiers);
-        const useTime = allowTimeAndGroup && /::Time(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers);
+        const useTime = allowTimeAndGroup && this._hasTimeModifier(modifiers);
         const timeRatio = useTime ? this._extractTimeRatio(modifiers) : null;
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
         if (/::TagMemo/i.test(modifiers)) {
