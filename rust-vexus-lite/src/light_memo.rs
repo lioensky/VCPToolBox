@@ -158,9 +158,13 @@ impl Task for LightMemoTask {
                 let synchronized = table.synchronize(connection)?;
                 table.compact_if_needed(connection)?;
                 let diaries = plan.scope.diaries(connection)?;
-                let allowed = table.rows.values().filter(|row| plan.scope.admits(row, &diaries))
-                    .map(|row| row.id).collect::<HashSet<_>>();
-                let ids = table.search(&self.query, plan.candidate_k.max(plan.k), &allowed)?;
+                // Count admitted rows during the scan instead of materializing a scope set.
+                let mut scope_chunks = 0usize;
+                let ids = table.search(&self.query, plan.candidate_k.max(plan.k), |row| {
+                    let admitted = plan.scope.admits(row, &diaries);
+                    scope_chunks += usize::from(admitted);
+                    admitted
+                })?;
                 let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &ids, self.dimension)?;
                 let mut candidates = ids.into_iter().filter_map(|id| {
                     vectors.get(&id).map(|vector| json!({
@@ -280,7 +284,7 @@ impl Task for LightMemoTask {
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
                     "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
-                    "diagnostics":{"scopeChunks":allowed.len(),"candidateCount":vectors.len(),
+                    "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
                         "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1}
                 }))
@@ -487,6 +491,10 @@ mod tests {
         assert_eq!(music["results"][0]["id"],3);
         let excluded=run(&mut task,json!({"searchAll":true,"excludedFolders":["MusicDiary"]}));
         assert_eq!(excluded["results"].as_array().unwrap().len(),2);
+        // Scope size counts admitted rows, independent of the candidate limit.
+        assert_eq!(signature["diagnostics"]["scopeChunks"],1);
+        assert_eq!(folder["diagnostics"]["scopeChunks"],1);
+        assert_eq!(excluded["diagnostics"]["scopeChunks"],2);
         assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
             entry.unwrap().file_name().to_string_lossy().contains(".vec")));
         crate::storage::with_registered_read_transaction(&db, |connection| {
