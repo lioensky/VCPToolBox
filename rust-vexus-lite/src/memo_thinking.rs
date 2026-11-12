@@ -177,32 +177,55 @@ pub(crate) fn plan(
                     relevance: cosine(&vector, &cached.original_query_vector),
                 });
             }
+            // Tag match, position, closure and route strength depend only on
+            // (module, edge), not on the round: filter and score them once per
+            // stage, keeping transition order so earlier edges still win ties.
+            let routes: Vec<Vec<(&ObservationTransition, f64)>> = modules
+                .iter()
+                .map(|module| {
+                    observation
+                        .transitions
+                        .iter()
+                        .filter_map(|edge| {
+                            if edge.immediate_return {
+                                return None;
+                            }
+                            let (Some((a_pos, a_closure)), Some((b_pos, b_closure))) = (
+                                module.tags.get(&edge.source_id),
+                                module.tags.get(&edge.target_id),
+                            ) else {
+                                return None;
+                            };
+                            if *a_pos >= *b_pos
+                                || *a_closure < input.min_closure
+                                || *b_closure < input.min_closure
+                            {
+                                return None;
+                            }
+                            let independent = artifact.independent_fraction(
+                                edge.source_id,
+                                edge.target_id,
+                                module.file_id,
+                            );
+                            let strength = (edge.flow / maximum_flow.max(1e-12))
+                                * (a_closure * b_closure).sqrt()
+                                * independent;
+                            Some((edge, strength))
+                        })
+                        .collect()
+                })
+                .collect();
             let mut results = Vec::new();
             for _ in 0..stage.k {
                 let mut offers = Vec::new();
-                for module in &modules {
+                for (module, routes) in modules.iter().zip(&routes) {
                     if used_files.contains(&module.file_id) {
                         continue;
                     }
                     let mut best_route = None;
                     let mut best_parents = Vec::new();
                     let mut best_route_score = 0.0;
-                    for edge in &observation.transitions {
-                        if edge.immediate_return {
-                            continue;
-                        }
-                        let (Some((a_pos, a_closure)), Some((b_pos, b_closure))) = (
-                            module.tags.get(&edge.source_id),
-                            module.tags.get(&edge.target_id),
-                        ) else {
-                            continue;
-                        };
-                        if *a_pos >= *b_pos
-                            || *a_closure < input.min_closure
-                            || *b_closure < input.min_closure
-                        {
-                            continue;
-                        }
+                    for &(edge, strength) in routes {
                         let parents: Vec<i64> = selected
                             .iter()
                             .filter(|s| {
@@ -221,15 +244,8 @@ pub(crate) fn plan(
                         } else {
                             1.0
                         };
-                        let independent = artifact.independent_fraction(
-                            edge.source_id,
-                            edge.target_id,
-                            module.file_id,
-                        );
-                        let score = (edge.flow / maximum_flow.max(1e-12))
-                            * (a_closure * b_closure).sqrt()
-                            * independent
-                            * novelty;
+                        // Same left-to-right product as before: strength * novelty.
+                        let score = strength * novelty;
                         let score = score * if parents.is_empty() { 0.8 } else { 1.0 };
                         if score > best_route_score {
                             best_route_score = score;
