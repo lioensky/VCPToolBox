@@ -1,14 +1,18 @@
 {
   "manifestVersion": "1.0.0",
   "name": "MimoDubbing",
-  "version": "1.1.0",
-  "displayName": "MiMo 字幕时间轴配音",
-  "description": "异步将 SRT、WebVTT 或 JSON 字幕时间轴合成为 24kHz 单声道 WAV，支持预置音色、音色设计、参考音频克隆、导演提示词和风格标签。",
+  "version": "1.2.0",
+  "displayName": "V配音 · MiMo / SoVITS",
+  "description": "将多段对白或字幕异步合成为24kHz单声道WAV。默认MiMo网络推理；engine=sovits使用本地推理器预设、独立输出语种及语速。支持音色列表查询。",
   "author": "VCPToolBox",
   "pluginType": "asynchronous",
   "entryPoint": { "type": "nodejs", "command": "node MimoDubbing.js" },
   "communication": { "protocol": "stdio", "timeout": 30000 },
   "configSchema": {
+    "SOVITS_API_URL": { "type": "string", "description": "SoVITS引擎HTTP/HTTPS基础URL，例如http://192.168.2.10:9880。" },
+    "SOVITS_API_KEY": { "type": "string", "description": "可选Key，留空不发送Authorization。" },
+    "SOVITS_REFERENCE_DIR": { "type": "string", "description": "推理器电脑上的ASCII绝对参考目录，不在后端读取，不是URL。" },
+    "SOVITS_PRESETS_PATH": { "type": "string", "description": "后端预设JSON路径，默认插件目录presets.json；只复制JSON即可。" },
     "MIMO_API_KEY": { "type": "string", "description": "DMXAPI 或小米官方 API Key，必须与端点匹配。" },
     "MIMO_API_URL": { "type": "string", "description": "API 完整 URL 或 /v1 基础 URL；默认 DMXAPI。" },
     "MIMO_MODEL": { "type": "string", "description": "基础模型，默认 mimo-v2.5-tts，自动派生模式后缀。" },
@@ -20,6 +24,18 @@
   },
   "capabilities": {
     "invocationCommands": [
+      {
+        "commandIdentifier": "list_voices",
+        "command": "list_voices",
+        "description": "查询音色列表：command=list_voices，engine=mimo（默认）或sovits。SoVITS返回预设ID、名称、情绪、promptLang参考语种、textLang默认输出语种和可接受的语言代码。无需推理器在线，不返回参考路径或音频。SoVITS提交必须从列表选voice，可带gsv:前缀。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MimoDubbing「末」,\ncommand:「始」list_voices「末」,\nengine:「始」sovits「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "submitSovits",
+        "command": "submit",
+        "description": "SoVITS本地配音：command=submit, engine=sovits。先list_voices查列表，voice填写返回的预设ID。使用text1/text2连续编号或timeline（SRT/WebVTT/JSON），复用原拼接、停顿、时间轴和overflow规则。voice/text_lang/speed支持全局、编号voiceN/text_langN/speedN和JSON逐句覆盖。text_lang省略继承预设，参考语言不随输出语言改变。语言代码auto/auto_yue/zh/all_zh/en/ja/all_ja/ko/all_ko/yue/all_yue，实际跨语种表现由模型决定。speed乘预设语速后须0.1–3。mode只能省略或preset；不支持instruction/style/reference_audio/optimize_text_preview；情绪靠选择不同参考预设，不要套用MiMo控制标签。管理员配置远端参考目录，Agent不传路径或文件。仅调用/tts，不上传参考音频。需要FFmpeg统一输出格式。提交成功后必须原文返回{{VCP_ASYNC_RESULT::MimoDubbing::任务ID}}，不可编造URL。省略engine仍用MiMo。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MimoDubbing「末」,\ncommand:「始」submit「末」,\nengine:「始」sovits「末」,\nvoice:「始」gsv:列表返回的预设ID「末」,\ntext1:「始」欢迎回来。「末」,\ntext_lang1:「始」all_zh「末」,\npause_after1:「始」0.3「末」,\ntext2:「始」お帰りなさい。「末」,\ntext_lang2:「始」all_ja「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
       {
         "commandIdentifier": "submitSequence",
         "command": "submit",

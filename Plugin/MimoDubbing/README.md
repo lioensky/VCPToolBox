@@ -183,3 +183,60 @@ set "MIMO_TEST_FFMPEG=true" && node --test tests/mimoDubbing.test.js
 ```
 
 本次开发验证结果：11 项测试全部通过，包括真实 FFmpeg 对离线测试波形的保音高加速。加速采用最多四次本地倍率微调，解决算法输出时长的近似误差；不重新请求收费 API，仍不允许超过配置倍率或静默截断。真实 MiMo API 尚未调用。
+
+## SoVITS 本地引擎（1.2）
+
+只改后端。将 VChat 的 `AppData/sovits5cpp/presets.json` 复制到本插件目录，
+不复制参考音频或模型，不上传参考音频。新增、删除或修改预设后重新复制 JSON。
+
+插件 config.env：
+```dotenv
+SOVITS_API_URL=http://192.168.2.10:9880
+SOVITS_API_KEY=
+SOVITS_REFERENCE_DIR=H:/MCP/VCPChat/AppData/sovits5cpp/refs
+# 可选，本后端的预设 JSON 位置；默认插件目录 presets.json
+# SOVITS_PRESETS_PATH=
+MIMO_FFMPEG_PATH=ffmpeg
+```
+
+`SOVITS_REFERENCE_DIR` 是推理器电脑上的 ASCII 绝对目录，不是后端目录，也不是 HTTP/file URL。
+后端只拼接目录和预设哈希文件名，发送 `/tts` 的 `ref_audio_path`，不读取这个目录。
+推理器须能读取该目录；GAG 管理器 allow_dirs 留空表示允许全部目录。
+局域网服务须监听可达网卡并配置防火墙；公网 HTTPS 必须做好鉴权并建议收窄参考目录权限。
+Key 留空时不发送 Authorization。SoVITS 模式不要求 MiMo Key。
+
+先查询音色（推理器离线也可查询）：
+```text
+command=list_voices
+engine=sovits
+```
+返回稳定的 `gsv:<id>`、名称、情绪、参考语言、默认输出语言及语言代码列表。
+列表中的语言代码是可接受参数，不是每个音色跨语种效果的质量保证。
+
+生成双语对白示例：
+```text
+command=submit
+engine=sovits
+voice=gsv:<列表中的ID>
+text1=欢迎回来。
+text_lang1=all_zh
+pause_after1=0.3
+text2=お帰りなさい。
+text_lang2=all_ja
+speed2=1
+```
+
+也支持 SRT/WebVTT/JSON 时间轴。`voice/text_lang/speed` 支持全局、编号分段和 JSON 每句覆盖。
+参考语种与输出语种独立。实际语速为预设 speed × 请求 speed，结果须在 0.1–3。
+mode 仅可省略或 preset；MiMo instruction/style/reference_audio/optimize_text_preview 明确拒绝，
+不要把 MiMo 表演标签用于 SoVITS；情绪来自不同参考音色预设。
+
+SoVITS 的 WAV 经 FFmpeg 统一到 24kHz 单声道 PCM16，复用现有拼接、时间轴和异步回调。
+因此本模式需要 FFmpeg，即使没有使用 overflow=fit。失败时不发布残缺音轨。
+工具名、query、异步占位符、输出目录不变；不填 engine 仍为 MiMo。
+
+验证：
+```powershell
+node --test tests/mimoDubbing.test.js tests/sovitsDubbing.test.js
+```
+SoVITS 测试中包含真实 FFmpeg 转换和模拟推理请求；不代表已经调用真实引擎。

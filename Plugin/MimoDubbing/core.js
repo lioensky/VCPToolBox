@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const sovits = require('./sovits');
 const SAMPLE_RATE = 24000;
 const VOICES = ['mimo_default', '冰糖', '茉莉', '苏打', '白桦', 'Mia', 'Chloe', 'Milo', 'Dean'];
 const MAX_SECONDS = 1800;
@@ -58,7 +59,7 @@ function parseTimeline(input) {
 
 function parseSegments(args) {
     const fields = new Set(['command', 'text', 'voice', 'mode', 'instruction', 'style',
-        'reference_audio', 'optimize_text_preview', 'start', 'end', 'pause_after']);
+        'reference_audio', 'optimize_text_preview', 'start', 'end', 'pause_after', 'text_lang', 'speed']);
     const groups = new Map();
     for (const [key, value] of Object.entries(args)) {
         const match = key.match(/^([a-z_]+)(\d+)$/i);
@@ -295,12 +296,20 @@ async function synthesize(cues, args, config, signal, fetchImpl = fetch) {
     for (let index = 0; index < cues.length; index++) {
         signal.throwIfAborted();
         const cue = cues[index];
-        const request = buildRequest({ ...args, ...cue }, config.model);
-        const response = await fetchImpl(config.url, {
-            method: 'POST', headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(request), signal, redirect: 'error'
-        });
-        let pcm = await readAudio(response, sequential ? MAX_AUDIO_BYTES - totalBytes : MAX_AUDIO_BYTES);
+        const local = config.engine === 'sovits';
+        const request = local ? sovits.buildRequest({ ...args, ...cue }, config) :
+            buildRequest({ ...args, ...cue }, config.model);
+        let pcm;
+        if (local) {
+            pcm = await sovits.synthesize(request, config, signal, fetchImpl);
+        } else {
+            const response = await fetchImpl(config.url, {
+                method: 'POST', headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(request), signal, redirect: 'error'
+            });
+            pcm = await readAudio(response, sequential ? MAX_AUDIO_BYTES - totalBytes : MAX_AUDIO_BYTES);
+        }
+        const model = local ? 'sovits' : request.model;
         const originalSeconds = pcm.length / (SAMPLE_RATE * 2);
         if (sequential) {
             const pauseBytes = Math.round(cue.pause_after * SAMPLE_RATE) * 2;
@@ -311,7 +320,7 @@ async function synthesize(cues, args, config, signal, fetchImpl = fetch) {
             const end = totalBytes / (SAMPLE_RATE * 2);
             if (pauseBytes) parts.push(Buffer.alloc(pauseBytes));
             totalBytes += pauseBytes;
-            report.push({ index: index + 1, start, end, model: request.model,
+            report.push({ index: index + 1, start, end, model,
                 originalSeconds, placedSeconds: originalSeconds, pauseAfter: pauseBytes / (SAMPLE_RATE * 2), action: 'concat' });
             continue;
         }
@@ -339,7 +348,7 @@ async function synthesize(cues, args, config, signal, fetchImpl = fetch) {
             } else { pcm = pcm.subarray(0, slotBytes); action = 'truncate'; }
         }
         pcm.copy(timeline, startFrame * 2);
-        report.push({ index: index + 1, start: cue.start, end: cue.end, model: request.model,
+        report.push({ index: index + 1, start: cue.start, end: cue.end, model,
             originalSeconds, placedSeconds: pcm.length / (SAMPLE_RATE * 2), action });
     }
     const pcm = sequential ? Buffer.concat(parts, totalBytes) : timeline;

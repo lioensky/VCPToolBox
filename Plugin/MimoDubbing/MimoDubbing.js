@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const core = require('./core');
+const sovits = require('./sovits');
 
 const STATE_DIR = path.join(__dirname, 'state');
 const PROJECT = process.env.PROJECT_BASE_PATH || path.resolve(__dirname, '../..');
@@ -15,17 +16,36 @@ function numberConfig(name, fallback, min, max) {
     return value;
 }
 
-function config() {
-    const key = process.env.MIMO_API_KEY;
-    if (!key) throw new Error('请在插件 config.env 配置 MIMO_API_KEY。');
-    return {
-        key,
-        model: process.env.MIMO_MODEL || 'mimo-v2.5-tts',
-        url: core.endpoint(process.env.MIMO_API_URL || 'https://www.dmxapi.cn/v1/chat/completions'),
+function selectedEngine(args) {
+    const engine = args.engine ?? 'mimo';
+    if (!['mimo', 'sovits'].includes(engine)) throw new Error('engine 仅支持 mimo 或 sovits。');
+    return engine;
+}
+
+function presetFile() {
+    return process.env.SOVITS_PRESETS_PATH || path.join(__dirname, 'presets.json');
+}
+
+async function config(args) {
+    const engine = selectedEngine(args);
+    const shared = {
+        engine,
         timeout: numberConfig('MIMO_TASK_TIMEOUT_MS', 1800000, 1000, 7200000),
         maxSpeed: numberConfig('MIMO_MAX_SPEED', 2, 1, 4),
         ffmpeg: process.env.MIMO_FFMPEG_PATH || 'ffmpeg'
     };
+    if (engine === 'sovits') {
+        if (!process.env.SOVITS_API_URL) throw new Error('请配置 SOVITS_API_URL 为推理器电脑的服务地址。');
+        const referenceDir = process.env.SOVITS_REFERENCE_DIR;
+        sovits.referencePath(referenceDir, `${'0'.repeat(64)}.wav`);
+        return { ...shared, key: process.env.SOVITS_API_KEY || '',
+            url: sovits.endpoint(process.env.SOVITS_API_URL), referenceDir,
+            presets: await sovits.loadPresets(presetFile()) };
+    }
+    const key = process.env.MIMO_API_KEY;
+    if (!key) throw new Error('请在插件 config.env 配置 MIMO_API_KEY。');
+    return { ...shared, key, model: process.env.MIMO_MODEL || 'mimo-v2.5-tts',
+        url: core.endpoint(process.env.MIMO_API_URL || 'https://www.dmxapi.cn/v1/chat/completions') };
 }
 
 function callbackBase() {
@@ -69,7 +89,7 @@ async function callback(base, id, payload) {
 
 function safeError(error) {
     let text = String(error.message || '任务失败');
-    for (const secret of [process.env.MIMO_API_KEY, process.env.IMAGESERVER_FILE_KEY]) {
+    for (const secret of [process.env.MIMO_API_KEY, process.env.SOVITS_API_KEY, process.env.IMAGESERVER_FILE_KEY]) {
         if (secret) text = text.split(secret).join('[REDACTED]');
     }
     // JSON parsing diagnostics can include upstream/reference data.
@@ -94,7 +114,7 @@ async function background(id, cues, args, settings, callbackUrl, publicBase) {
         payload = {
             requestId: id, status: 'Succeed', audioUrl,
             result: {
-                content: [{ type: 'text', text: `MiMo 配音完成，共 ${cues.length} 句，时长 ${output.duration.toFixed(3)} 秒。\n[播放/下载 WAV](${audioUrl})` }],
+                content: [{ type: 'text', text: `${settings.engine === 'sovits' ? 'SoVITS' : 'MiMo'} 配音完成，共 ${cues.length} 句，时长 ${output.duration.toFixed(3)} 秒。\n[播放/下载 WAV](${audioUrl})` }],
                 details: { audioUrl, fileUrl: audioUrl, fileName, serverPath: `file/mimo-dubbing/${fileName}`,
                     sampleRate: core.SAMPLE_RATE, channels: 1, duration: output.duration,
                     arrangement: output.arrangement, segments: output.report }
@@ -136,20 +156,35 @@ async function main() {
         process.stdout.write(JSON.stringify({ status: 'success', result: JSON.stringify(state) }) + '\n');
         return;
     }
-    if (command !== 'submit') throw new Error('command 仅支持 submit 或 query。');
-    const settings = config();
+    if (command === 'list_voices') {
+        const engine = selectedEngine(args);
+        const result = engine === 'sovits' ? sovits.listVoices(await sovits.loadPresets(presetFile())) :
+            { engine: 'mimo', voices: core.VOICES.map(id => ({ id, name: id })) };
+        process.stdout.write(JSON.stringify({ status: 'success', result: JSON.stringify(result) }) + '\n');
+        return;
+    }
+    if (command !== 'submit') throw new Error('command 仅支持 submit、query 或 list_voices。');
+    const settings = await config(args);
     const callbackUrl = callbackBase();
     const publicBase = fileBase();
     const cues = core.parseSegments(args);
     if (!['error', 'fit', 'truncate'].includes(args.overflow || 'error')) throw new Error('overflow 参数无效。');
     // Validate every cue before acknowledging or making billable calls.
-    for (const cue of cues) core.buildRequest({ ...args, ...cue }, settings.model);
+    for (const cue of cues) {
+        if (settings.engine === 'sovits') sovits.buildRequest({ ...args, ...cue }, settings);
+        else {
+            if (cue.text_lang !== undefined || args.text_lang !== undefined || cue.speed !== undefined || args.speed !== undefined) {
+                throw new Error('text_lang 和 speed 是 SoVITS 参数，MiMo 请使用导演指令。');
+            }
+            core.buildRequest({ ...args, ...cue }, settings.model);
+        }
+    }
     const id = crypto.randomUUID();
     await saveState(id, { requestId: id, status: 'Running', cueCount: cues.length,
         createdAt: new Date().toISOString(), timeoutMs: settings.timeout });
     process.stdout.write(JSON.stringify({
         status: 'success',
-        result: `MiMo 配音任务已提交，任务 ID: ${id}。请原文返回动态结果占位符：{{VCP_ASYNC_RESULT::MimoDubbing::${id}}}`
+        result: `${settings.engine === 'sovits' ? 'SoVITS' : 'MiMo'} 配音任务已提交，任务 ID: ${id}。请原文返回动态结果占位符：{{VCP_ASYNC_RESULT::MimoDubbing::${id}}}`
     }) + '\n');
     await background(id, cues, args, settings, callbackUrl, publicBase);
 }
