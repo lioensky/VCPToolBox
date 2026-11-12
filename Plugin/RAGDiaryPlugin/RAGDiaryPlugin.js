@@ -38,6 +38,17 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+// 日记日期在配置时区的零点只取决于日期字符串，按字符串复用，
+// 避免 ::Time 每次请求对日记本里的每篇日记重做一次时区换算。
+const diaryDayStartMs = new Map();
+function diaryDayStart(dateStr) {
+    let ms = diaryDayStartMs.get(dateStr);
+    if (ms === undefined) {
+        ms = dayjs.tz(dateStr, DEFAULT_TIMEZONE).startOf('day').valueOf();
+        diaryDayStartMs.set(dateStr, ms);
+    }
+    return new Date(ms);
+}
 // 从 DailyNoteGet 插件借鉴的常量和路径逻辑
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
@@ -4479,7 +4490,7 @@ class RAGDiaryPlugin {
             .map(meta => ({
                 relativePath: meta.relativePath,
                 date: meta.date,
-                diaryDate: meta.diaryDate || dayjs.tz(meta.date, DEFAULT_TIMEZONE).startOf('day').toDate()
+                diaryDate: meta.diaryDate || diaryDayStart(meta.date)
             }))
             .sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -4515,7 +4526,7 @@ class RAGDiaryPlugin {
                             fileMetas.push({
                                 relativePath: path.join(dbName, file),
                                 date: normalizedDateStr,
-                                diaryDate: dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate()
+                                diaryDate: diaryDayStart(normalizedDateStr)
                             });
                         }
                     } finally {
