@@ -142,11 +142,12 @@ test('Group and BM25 share a sparse plan while Time only feeds the River pool', 
     };
     const results = await instance._processRAGPlaceholder({
         dbName: 'A', modifiers: '::Group::BM25::Time::Jev+1',
-        queryVector: [1, 0], userContent: 'last week', dynamicK: 1,
+        queryVector: [1, 0], userContent: 'last week', dynamicK: 2,
         timeRanges: [{ start: new Date(0), end: new Date() }], returnRawResults: true
     });
     assert.equal(sparseCalls, 1);
-    assert.deepEqual(results.map(doc => doc.chunkId), [9]);
+    // The external exclusive fills the semantic slot; the Time quota keeps the Time chunk.
+    assert.deepEqual(results.map(doc => doc.chunkId), [9, 2]);
 });
 
 test('Omega mapping uses conservative endpoints and neutral invalid fallback', () => {

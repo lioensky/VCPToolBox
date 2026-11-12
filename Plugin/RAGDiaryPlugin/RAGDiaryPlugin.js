@@ -3688,7 +3688,8 @@ class RAGDiaryPlugin {
                 finalResultsForBroadcast = finalResultsForBroadcast.slice(0, finalK);
             } else {
                 finalResultsForBroadcast = this._fuseIndependentRankings(
-                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK
+                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK,
+                    useTime ? Math.max(1, Math.round(finalK * timeRatio)) : 0
                 );
             }
             const diagnostics = {
@@ -3913,7 +3914,9 @@ class RAGDiaryPlugin {
         return 1 - Math.max(0.3, Math.min(0.7, 0.5 + 0.8 * (omega - 0.65)));
     }
 
-    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10) {
+    // timeQuota > 0 keeps the best River-order Time entries (the ::Time route quota);
+    // the remaining slots come from the fused ranking of non-Time entries.
+    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10, timeQuota = 0) {
         const weight = Math.max(0, Math.min(1, Number(alpha ?? 0.5)));
         const merged = new Map();
         const identity = doc => {
@@ -3940,10 +3943,13 @@ class RAGDiaryPlugin {
                 merged.set(key, result);
             }
         }
-        return [...merged.values()].filter(doc => doc.rrf_score > 0)
+        const ranked = [...merged.values()].filter(doc => doc.rrf_score > 0)
             .sort((a, b) => b.rrf_score - a.rrf_score
-                || identity(a).localeCompare(identity(b)))
-            .slice(0, limit);
+                || identity(a).localeCompare(identity(b)));
+        const time = [...merged.values()].filter(doc => doc.source === 'time')
+            .slice(0, Math.min(timeQuota, limit));
+        if (time.length === 0) return ranked.slice(0, limit);
+        return [...ranked.filter(doc => doc.source !== 'time').slice(0, limit - time.length), ...time];
     }
 
     async _rerankRAGCandidatesWithRiverMemo({
