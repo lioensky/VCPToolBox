@@ -117,3 +117,48 @@ test('recent continuity across several diaries takes the newest files of all of 
     assert.deepEqual(single.map(doc => doc.fullPath),
         ['A/2024-01-05.txt', 'A/2024-01-04.txt', 'A/2024-01-03.txt']);
 });
+
+test('time-route chunks without a date get it from the diary date index', async () => {
+    const index = [
+        { relativePath: 'A/2026-05-03.txt', date: '2026-05-03' },
+        { relativePath: 'A/2026-05-02.txt', date: '2026-05-02' }
+    ];
+    const timeRanges = [{ start: new Date('2026-05-01T00:00:00Z'), end: new Date('2026-05-04T00:00:00Z') }];
+    const nativeChunks = [
+        { chunkId: 1, text: 'semantic', score: 0.9, fullPath: 'B/x.txt' },
+        { chunkId: 2, text: 'second chunk, no date header', score: 0.5, source: 'time', fullPath: 'A/2026-05-02.txt' },
+        { chunkId: 3, text: 'kept', score: 0.4, source: 'time', fullPath: 'A/2026-05-03.txt', date: '1999-01-01' }
+    ];
+    const native = host(nativeChunks);
+    native.vectorDBManager.getDiaryDateIndex = async () => index.map(row => ({ ...row }));
+    const nativeResults = await native._processRAGPlaceholder({
+        dbName: 'A', modifiers: '::Time0.5', queryVector: [1, 0], userContent: 'q',
+        dynamicK: 4, timeRanges, returnRawResults: true, requestCache: native._createRequestCache()
+    });
+    const byId = new Map(nativeResults.map(doc => [doc.chunkId, doc]));
+    assert.equal(byId.get(2).date, '2026-05-02');
+    assert.equal(byId.get(3).date, '1999-01-01');
+    assert.equal(byId.get(1).date, undefined);
+
+    const fallback = Object.create(rag);
+    fallback.queryCacheEnabled = false;
+    fallback.ragParams = {};
+    fallback.rerankConfig = { multiplier: 2 };
+    fallback.pushVcpInfo = null;
+    fallback._rerankRAGCandidatesWithRiverMemo = async ({ candidates }) => ({ results: candidates, meta: null });
+    fallback.vectorDBManager = {
+        config: {},
+        async getDiaryDateIndex() { return index.map(row => ({ ...row })); },
+        async searchKnn() { return []; },
+        async getChunksByFilePaths(paths) {
+            return paths.map((fullPath, i) => ({ chunkId: 10 + i, text: `chunk ${i}`, fullPath }));
+        },
+        async deduplicateResults(items) { return items; }
+    };
+    const fallbackResults = await fallback._processRAGPlaceholder({
+        dbName: 'A', modifiers: '::Time1', queryVector: [1, 0], userContent: 'q',
+        dynamicK: 2, timeRanges, returnRawResults: true, requestCache: fallback._createRequestCache()
+    });
+    assert.deepEqual(fallbackResults.map(doc => [doc.fullPath, doc.date]).sort(),
+        [['A/2026-05-02.txt', '2026-05-02'], ['A/2026-05-03.txt', '2026-05-03']]);
+});

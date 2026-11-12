@@ -3706,8 +3706,14 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] Green lane RRF: diaries=${dbScopeKey}, backend=${useJev ? 'jev' : 'rerank'}, httpReadyMs=${diagnostics.httpReadyMs ?? 'n/a'}, totalMs=${diagnostics.totalMs}, returned=${finalResultsForBroadcast.length}, degraded=${!!external.error}.`);
         }
 
-        // 统一添加 source 标识并格式化
-        finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
+        // 统一添加 source 标识并格式化；时间路 chunk 缺 date 时从本请求已加载的日期索引补上。
+        const diaryDates = new Map(diaryNames
+            .flatMap(name => requestCache?.diaryDateIndex?.get(name) || [])
+            .map(meta => [meta.relativePath, meta.date]));
+        finalResultsForBroadcast = finalResultsForBroadcast.map(r => {
+            const date = r.source === 'time' && !r.date && diaryDates.get(r.fullPath || r.sourceFile);
+            return date ? { ...r, date } : { ...r, source: r.source || 'rag' };
+        });
 
         // 🌟 Time 连续性补充：主召回完成后，额外追加最近 3 条，不占用 K，并与主结果去重
         if (extraContinuityResults.length > 0) {
