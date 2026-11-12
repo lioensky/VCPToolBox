@@ -161,7 +161,7 @@ fn build_with_source(
     let identity = AssetIdentity {
         dimension,
         scope: u8::from(diary.is_none()),
-        model_hash: Sha256::digest(model_sig.as_bytes()).into(),
+        model_hash: crate::retrieval_index::RetrievalIndex::model_hash(model_sig),
         content_digest: digest.finalize().into(),
     };
     let lookup = if diary.is_some() {
