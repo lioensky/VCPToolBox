@@ -90,3 +90,30 @@ test('time-aware block prints the range in the configured timezone', () => {
     );
     assert.match(block, /\[合并查询的时间范围: "2026-05-02 ~ 2026-05-02"\]/);
 });
+
+function dateIndexHost(indexes) {
+    const instance = Object.create(rag);
+    instance.vectorDBManager = {
+        async getDiaryDateIndex(name) { return (indexes[name] || []).map(row => ({ ...row })); },
+        async getChunksByFilePaths(paths) {
+            return paths.map(fullPath => ({ text: `body of ${fullPath}`, fullPath }));
+        }
+    };
+    return instance;
+}
+
+test('recent continuity across several diaries takes the newest files of all of them', async () => {
+    const indexes = {
+        A: ['2024-01-05', '2024-01-04', '2024-01-03', '2024-01-02', '2024-01-01']
+            .map(date => ({ relativePath: `A/${date}.txt`, date })),
+        B: [{ relativePath: 'B/2026-11-12.txt', date: '2026-11-12' }]
+    };
+    const recent = await dateIndexHost(indexes)._getRecentDiaryChunks(['A', 'B'], 3);
+    assert.deepEqual(recent.map(doc => doc.fullPath),
+        ['B/2026-11-12.txt', 'A/2024-01-05.txt', 'A/2024-01-04.txt']);
+    assert.deepEqual(recent.map(doc => doc.date), ['2026-11-12', '2024-01-05', '2024-01-04']);
+
+    const single = await dateIndexHost(indexes)._getRecentDiaryChunks('A', 3);
+    assert.deepEqual(single.map(doc => doc.fullPath),
+        ['A/2024-01-05.txt', 'A/2024-01-04.txt', 'A/2024-01-03.txt']);
+});

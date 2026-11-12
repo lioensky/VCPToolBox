@@ -4435,11 +4435,14 @@ class RAGDiaryPlugin {
         const metaGroups = await Promise.all(
             diaryNames.map(name => this._getDiaryDateIndexCached(name, requestCache))
         );
-        const fileMetas = metaGroups.flat();
+        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
+        // 每本的日期索引已按新到旧排序；联合日记本先各取最近 limit 个再按日期合并。
+        const fileMetas = metaGroups.length === 1 ? metaGroups[0] : metaGroups
+            .flatMap(metas => metas.slice(0, Math.max(1, limit)))
+            .sort((a, b) => b.diaryDate.getTime() - a.diaryDate.getTime()
+                || a.relativePath.localeCompare(b.relativePath));
 
         if (fileMetas.length === 0) return [];
-        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
-        // 日期索引已按新到旧排序；只展开最近 limit 个文件即可。
         const recentFileMetas = fileMetas.slice(0, Math.max(1, limit));
         const recentFilePaths = recentFileMetas.map(meta => meta.relativePath);
         const fileDateMap = new Map(
@@ -4469,8 +4472,8 @@ class RAGDiaryPlugin {
 
             recentResults = this._filterContextDuplicates(recentResults, contextDiaryPrefixes);
             recentResults.sort((a, b) => {
-                const dateA = a.date ? new Date(a.date).getTime() : 0;
-                const dateB = b.date ? new Date(b.date).getTime() : 0;
+                const dateA = a.date ? diaryDayStart(a.date).getTime() : 0;
+                const dateB = b.date ? diaryDayStart(b.date).getTime() : 0;
                 if (dateB !== dateA) return dateB - dateA;
                 return (b.score || 0) - (a.score || 0);
             });
