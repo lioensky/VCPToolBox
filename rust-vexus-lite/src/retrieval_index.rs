@@ -201,17 +201,17 @@ impl RetrievalIndex {
             &|id| options.exclude_ids.contains(&id), |id, output| {
             use rusqlite::OptionalExtension;
             output.clear();
-            let bytes = statement.query_row(
+            // Borrow the BLOB instead of copying each 12 KiB row into a new Vec.
+            let read = statement.query_row(
                 rusqlite::params![id as i64, diary],
-                |row| row.get::<_, Option<Vec<u8>>>(0),
+                |row| match row.get_ref(0)? {
+                    rusqlite::types::ValueRef::Null => Ok(false),
+                    _ => crate::index_source::decode_column_into(row, 0, dimension, output),
+                },
             ).optional();
-            match bytes {
-                Ok(Some(Some(bytes))) if bytes.len() == dimension * 4 => {
-                    output.extend(bytes.chunks_exact(4)
-                        .map(|part| f32::from_le_bytes(part.try_into().unwrap())));
-                    output.iter().all(|value| value.is_finite())
-                }
-                Ok(_) => false,
+            match read {
+                Ok(Some(valid)) => valid,
+                Ok(None) => false,
                 Err(error) => {
                     source_error = Some(error);
                     false
