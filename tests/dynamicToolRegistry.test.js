@@ -1,16 +1,64 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execSync } = require('node:child_process');
 const EventEmitter = require('node:events');
 
 const dynamicToolRegistryModule = require('../modules/dynamicToolRegistry.js');
 const { DynamicToolRegistry } = dynamicToolRegistryModule;
 const messageProcessor = require('../modules/messageProcessor.js');
 
-async function makeProjectRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-dynamic-tools-'));
+const activeRegistries = new Set();
+const tempProjectRoots = new Set();
+const originalInitialize = DynamicToolRegistry.prototype.initialize;
+DynamicToolRegistry.prototype.initialize = async function wrappedInitialize(...args) {
+  activeRegistries.add(this);
+  return originalInitialize.apply(this, args);
+};
+
+const originalDestroy = DynamicToolRegistry.prototype.destroy;
+DynamicToolRegistry.prototype.destroy = function wrappedDestroy(...args) {
+  activeRegistries.delete(this);
+  if (typeof originalDestroy === 'function') {
+    return originalDestroy.apply(this, args);
+  }
+};
+
+test.afterEach(async () => {
+  const registries = Array.from(activeRegistries);
+  for (const registry of registries) {
+    try {
+      registry.destroy();
+    } catch {
+      // Ignore destroy failures in test teardown.
+    }
+  }
+  await Promise.allSettled(
+    registries.flatMap((registry) => [
+      registry.syncPromise,
+      registry.classificationPromise,
+      registry._configReloadPromise,
+      registry.writePromise
+    ].filter(Boolean))
+  );
+  activeRegistries.clear();
+
+  for (const root of Array.from(tempProjectRoots)) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+    } catch {
+      // Ignore transient cleanup failures on Windows.
+    }
+  }
+  tempProjectRoots.clear();
+});
+
+async function makeProjectRoot(prefix = 'vcp-dynamic-tools-') {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempProjectRoots.add(root);
   await fs.mkdir(path.join(root, 'ToolConfigs'), { recursive: true });
   return root;
 }
@@ -1205,4 +1253,76 @@ test('dynamic fold expansion matches toolbox legacy blocks without descriptions'
 
   assert.match(injection, /LEGACY BASIC USAGE/);
   assert.match(injection, /LEGACY ADVANCED USAGE WITH TERMS THAT DO NOT MATCH QUERY/);
+});
+
+test('config file watcher canonicalizes Windows 8.3 short paths and survives hot reload writes', async () => {
+  const longRoot = await makeProjectRoot('vcp-dynamic-tools-long-8dot3-watch-path-');
+  const privateConfigDir = path.join(longRoot, 'Plugin', 'DynamicToolBridge');
+  await fs.mkdir(privateConfigDir, { recursive: true });
+
+  let watchProjectRoot = longRoot;
+  if (process.platform === 'win32') {
+    try {
+      const candidate = execSync(
+        `for %I in ("${longRoot}") do @echo %~sI`,
+        { shell: 'cmd.exe', encoding: 'utf8' }
+      ).trim();
+      if (candidate && fsSync.existsSync(candidate)) {
+        watchProjectRoot = candidate;
+      }
+    } catch {
+      watchProjectRoot = longRoot;
+    }
+  }
+
+  const watchedDirs = [];
+  const originalWatch = fsSync.watch;
+  fsSync.watch = function patchedWatch(targetDir, ...rest) {
+    watchedDirs.push(String(targetDir));
+    return originalWatch.call(this, targetDir, ...rest);
+  };
+
+  const registry = new DynamicToolRegistry();
+  try {
+    const pluginManager = makePluginManager([
+      makeManifest('ShortPathWatchTool', 'Verify canonicalized directory watching.')
+    ]);
+    await registry.initialize({
+      pluginManager,
+      projectBasePath: watchProjectRoot,
+      watchConfigFiles: true,
+      config: testConfig({ maxBriefListItems: 5 })
+    });
+
+    const canonicalToolConfigsDir = fsSync.realpathSync.native(path.join(longRoot, 'ToolConfigs'));
+    const canonicalPrivateDir = fsSync.realpathSync.native(privateConfigDir);
+    assert.equal(watchedDirs.includes(canonicalToolConfigsDir), true);
+    assert.equal(watchedDirs.includes(canonicalPrivateDir), true);
+    for (const dir of watchedDirs) {
+      assert.equal(dir.includes('~'), false, `watched directory should not retain 8.3 short segment: ${dir}`);
+    }
+
+    const configPath = path.join(watchProjectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      ...registry.getAdminState().config,
+      maxBriefListItems: 19
+    }, null, 2), 'utf8');
+
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline && registry.getAdminState().config.maxBriefListItems !== 19) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    assert.equal(registry.getAdminState().config.maxBriefListItems, 19);
+
+    await registry.initialize({
+      pluginManager,
+      projectBasePath: watchProjectRoot,
+      watchConfigFiles: false,
+      config: testConfig({ maxBriefListItems: 19 })
+    });
+    assert.equal(registry._configWatchers.length, 0);
+  } finally {
+    fsSync.watch = originalWatch;
+    registry.destroy();
+  }
 });

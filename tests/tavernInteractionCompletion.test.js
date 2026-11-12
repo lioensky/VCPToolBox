@@ -140,7 +140,7 @@ test('插件：预处理只读、请求隔离、一次提交、取消防抖及�
   const sandbox = {
     module: { exports: {} }, __dirname: path.dirname(filename), console,
     process: { env: {} },
-    require: name => name === 'fs' ? { promises: fakeFs } : name === 'express' ? {} : require(name)
+    require: name => name === 'fs' ? { promises: fakeFs } : name === 'express' ? {} : name === '../../modules/safeFilePath' ? require(path.resolve(__dirname, '../modules/safeFilePath.js')) : require(name)
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), sandbox, { filename });
   const plugin = sandbox.module.exports;
