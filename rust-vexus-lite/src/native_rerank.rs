@@ -246,9 +246,14 @@ fn jev_long_context(body: &Value) -> Result<bool, String> {
     let questions = body["questions"].as_object().ok_or("JEV_INVALID_QUESTIONS")?;
     let total = count(json!({"state":state,"questions":questions}));
     let mut largest = 0;
-    for (key, question) in questions {
-        let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
-        largest = largest.max(count(json!({"state":state,"questions":single})));
+    if questions.len() == 1 {
+        // The single-question body is the whole body; do not tokenize it twice.
+        largest = total;
+    } else {
+        for (key, question) in questions {
+            let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
+            largest = largest.max(count(json!({"state":state,"questions":single})));
+        }
     }
     if total > 240000 || largest > 240000 {
         return Err("JEV_CONTEXT_TOO_LARGE".into());
