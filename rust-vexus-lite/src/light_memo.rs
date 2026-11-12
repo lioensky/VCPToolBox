@@ -175,6 +175,12 @@ impl Task for LightMemoTask {
                 candidates.sort_by(|a,b| b["vectorScore"].as_f64().unwrap()
                     .total_cmp(&a["vectorScore"].as_f64().unwrap())
                     .then(a["id"].as_i64().cmp(&b["id"].as_i64())));
+                // Plain knn returns only the first k and nothing reads the rest of
+                // the pool (keyword scores would, through idf and average length).
+                if plan.engine_mode == "knn" && !plan.ab_mode
+                    && !(plan.use_bm25 && !plan.query_tokens.is_empty()) {
+                    candidates.truncate(plan.k);
+                }
                 let mut hydrate = connection.prepare(
                     "SELECT c.content,f.path,f.diary_name,c.file_id FROM chunks c
                      JOIN files f ON f.id=c.file_id WHERE c.id=?1"
@@ -495,6 +501,14 @@ mod tests {
         assert_eq!(signature["diagnostics"]["scopeChunks"],1);
         assert_eq!(folder["diagnostics"]["scopeChunks"],1);
         assert_eq!(excluded["diagnostics"]["scopeChunks"],2);
+        // knn with k below the pool returns the same leading rows, fully hydrated.
+        task.plan_json=json!({"scope":{"searchAll":true,"excludedFolders":["MusicDiary"]},
+            "modelSig":"test","engineMode":"knn","k":1,"candidateK":20}).to_string();
+        let top=serde_json::from_str::<Value>(&task.compute().unwrap()).unwrap();
+        assert_eq!(top["results"],json!([excluded["results"][0].clone()]));
+        assert_eq!(top["tdbTopK"],top["results"]);
+        assert_eq!(top["diagnostics"]["candidateCount"],2);
+        assert_eq!(top["diagnostics"]["scopeChunks"],2);
         assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
             entry.unwrap().file_name().to_string_lossy().contains(".vec")));
         crate::storage::with_registered_read_transaction(&db, |connection| {
