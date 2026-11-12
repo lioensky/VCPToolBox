@@ -77,3 +77,16 @@ test('GreenLane fusion without Time entries is unchanged by the Time quota', () 
         instance._fuseIndependentRankings(withTime, external, 0.5, 3)
     );
 });
+
+test('time-aware block prints the range in the configured timezone', () => {
+    const dayjs = require('dayjs');
+    dayjs.extend(require('dayjs/plugin/utc'));
+    dayjs.extend(require('dayjs/plugin/timezone'));
+    const formatter = require('../Plugin/RAGDiaryPlugin/RAGResultFormatter');
+    const zone = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+    const day = dayjs.tz('2026-05-02', zone);
+    const block = formatter.formatCombinedTimeAwareResults(
+        [], [{ start: day.startOf('day').toDate(), end: day.endOf('day').toDate() }], 'Nova', {}
+    );
+    assert.match(block, /\[合并查询的时间范围: "2026-05-02 ~ 2026-05-02"\]/);
+});
