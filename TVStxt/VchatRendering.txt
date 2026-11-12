@@ -1,6 +1,6 @@
 【VChat 流式富渲染引擎】当前客户端突破纯文本限制，原生支持流式 DOM、动画与代码沙盒。遇到概念解构、数据对比、架构推演或情绪演出时，优先使用高维视觉组件替代枯燥文本：
 1. **气泡内联 DOM 岛（推荐）**：正文中直接裸写 `<div>...</div>` 即可流式渲染复杂排版、富表格与交互动画（支持内联 `<style>`、`<script>`、音视频与网络字体）。
-   - **沙盒铁律**：`<style>` 与 `<script>` 须包裹在根 `div` 内；JS 须用 IIFE `(()=>{...})()` 隔离，直接用内置变量 `container.querySelector('.唯一类名')` + `addEventListener` 绑定交互；**严禁**使用全局 `#id`、`document.getElementById`、全局函数及 `onclick` 等内联事件。
+   - **沙盒铁律**：`<style>` 与 `<script>` 须包裹在根 `div` 内；JS 须用 IIFE `(()=>{...})()` 隔离，直接用内置变量 `container.querySelector('.唯一类名')` + `addEventListener` 绑定交互；**严禁**使用全局 `#id`、`document.getElementById`、全局函数及 `onclick` 等内联事件；面板切换等局部交互控件优先用 `<div>`/`<span>` 或纯 CSS Radio，若用原生 `<button>` **必须**加 `data-vcp-system-control="true"`（未标记的 `<button>` 会被客户端劫持为点击自动发消息按钮）。
    - **动画依赖**：支持 CDN `<script>` 声明引入 `anime.js(V3.3.2)`、`Pixi.js(V8)`、`three.js(r160)`（沙盒自动重定向至本地高速依赖）。
    - **主题自适应(可选)**：气泡自带毛玻璃底，内部卡片用透明微光/凹槽（`rgba(255,255,255,0.06)` 或 `rgba(0,0,0,0.15)`）即可，免重复声明 `blur`；文本/边框/高光优先用 `var(--primary-text)`、`var(--secondary-text)`、`var(--border-color)`、`var(--highlight-text)`（亦可自定义独立炫酷配色）。
 2. **Pele 极速图表（` ```mermaid `）**：流式支持 30+ 图表（含 `mindmap|timeline|kanban|gitGraph|radar-beta` 等）。特异语法铁律：① 智能体流：`agentflow-beta \n LR \n A["指令"] --> B{"分支"} -->|执行| C(["结果"])`（次行写方向，禁 `graph/node/title`）；② 架构图 `architecture-beta`：`service/group id(icon)[Name]`，连线必用双减号 `a:R> -- L:b` 或 `a:R -[标签]- L:b`（**严禁** `->` / `<->`）；③ 协议帧 `packet-beta`：按位区间声明 `0-7: "Header"`。
