@@ -286,11 +286,15 @@ impl TdbIndex {
             // reranking is the row a second read would return. Record this
             // engine's cosine on it (scores only, no vectors) and skip re-reading
             // the returned top-k. Reads of an unexpected length are not recorded.
+            // Scoring every reread costs one cosine per rerank read to save one
+            // read plus one cosine per returned row, so it only pays when k is
+            // close to the rerank budget (always for k >= 64, RAGDiary's case).
+            let record = k.saturating_mul(2) >= config.rerank_limit.unwrap_or(64);
             let mut scored: HashMap<u64, f32> = HashMap::new();
             let candidates = graph.search_with_options(query, |slot, output| {
                 let Some(&id) = self.ids.get(slot) else { return false; };
                 if id == 0 || !fill(id, output) { return false; }
-                if output.len() == self.dimension {
+                if record && output.len() == self.dimension {
                     scored.insert(id, cosine(query, output));
                 }
                 true
