@@ -148,7 +148,8 @@ impl GlobalChunks {
         Ok(changed)
     }
 
-    /// `admits` is called exactly once per live row, at that row's current slot.
+    /// `admits` is called exactly once per live row, at that row's current slot,
+    /// when `limit > 0` and the scan completes (an empty search returns early).
     pub fn search<P>(&self, query: &[f32], limit: usize, mut admits: P)
         -> Result<Vec<i64>, String>
     where P: FnMut(&ChunkHeader) -> bool {
