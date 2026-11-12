@@ -282,12 +282,23 @@ impl TdbIndex {
                 top_k: k, ef_search: options.ef_search.unwrap_or(128).max(k),
                 rerank_limit: Some(64_usize.max(k)),
             };
+            // VCP-PATCH: the source is frozen for this query, so a row read for
+            // reranking is the row a second read would return. Record this
+            // engine's cosine on it (scores only, no vectors) and skip re-reading
+            // the returned top-k. Reads of an unexpected length are not recorded.
+            let mut scored: HashMap<u64, f32> = HashMap::new();
             let candidates = graph.search_with_options(query, |slot, output| {
-                self.ids.get(slot).is_some_and(|id| *id != 0 && fill(*id, output))
+                let Some(&id) = self.ids.get(slot) else { return false; };
+                if id == 0 || !fill(id, output) { return false; }
+                if output.len() == self.dimension {
+                    scored.insert(id, cosine(query, output));
+                }
+                true
             }, &config, exclude);
             let mut row = Vec::with_capacity(self.dimension);
             candidates.into_iter().filter_map(|(id, _)| {
                 if !self.contains(id) || exclude(id) { return None; }
+                if let Some(&score) = scored.get(&id) { return Some((id, score)); }
                 row.clear();
                 fill(id, &mut row).then(|| (id, cosine(query, &row)))
             }).collect()
