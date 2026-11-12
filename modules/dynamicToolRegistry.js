@@ -276,6 +276,7 @@ class DynamicToolRegistry {
         await this._loadCatalog();
         await this._loadCategories();
         this._bindPluginManagerEvents(this.pluginManager);
+        this._closeConfigWatchers();
         if (watchConfigFiles) this._watchConfigFiles();
         this.initialized = true;
         return this;
@@ -1407,6 +1408,20 @@ class DynamicToolRegistry {
         if (delay === 0 && this.classificationTimer.unref) this.classificationTimer.unref();
     }
 
+    _resolveWatchDir(dirPath) {
+        try {
+            if (typeof fsSync.realpathSync?.native === 'function') {
+                return fsSync.realpathSync.native(dirPath);
+            }
+            if (typeof fsSync.realpathSync === 'function') {
+                return fsSync.realpathSync(dirPath);
+            }
+        } catch {
+            // Fall back to the original path if canonical resolution fails.
+        }
+        return dirPath;
+    }
+
     _watchConfigFiles() {
         this._closeConfigWatchers();
         const watchTargets = [
@@ -1417,8 +1432,16 @@ class DynamicToolRegistry {
         for (const target of watchTargets) {
             try {
                 if (!fsSync.existsSync(target.dir)) continue;
-                const watcher = fsSync.watch(target.dir, (eventType, filename) => {
-                    if (!filename || !target.names.has(String(filename))) return;
+                const watchDir = this._resolveWatchDir(target.dir);
+                const matchNames = process.platform === 'win32'
+                    ? new Set(Array.from(target.names, (item) => item.toLowerCase()))
+                    : target.names;
+                const watcher = fsSync.watch(watchDir, (eventType, filename) => {
+                    if (!filename) return;
+                    const normalized = process.platform === 'win32'
+                        ? String(filename).toLowerCase()
+                        : String(filename);
+                    if (!matchNames.has(normalized)) return;
                     if (eventType !== 'change' && eventType !== 'rename') return;
                     this._scheduleConfigReload(`config_${eventType}`);
                 });
@@ -1450,6 +1473,13 @@ class DynamicToolRegistry {
     _closeConfigWatchers() {
         for (const watcher of this._configWatchers) {
             try {
+                if (typeof watcher.removeAllListeners === 'function') {
+                    watcher.removeAllListeners('change');
+                    watcher.removeAllListeners('error');
+                }
+                if (typeof watcher.on === 'function') {
+                    watcher.on('error', () => {});
+                }
                 watcher.close();
             } catch {
                 // Ignore watcher close failures during reinitialization.
@@ -1460,6 +1490,24 @@ class DynamicToolRegistry {
             clearTimeout(this._configReloadTimer);
             this._configReloadTimer = null;
         }
+    }
+
+    destroy() {
+        this._closeConfigWatchers();
+        if (this.classificationTimer) {
+            clearTimeout(this.classificationTimer);
+            this.classificationTimer = null;
+        }
+        if (this._boundPluginManager && typeof this._boundPluginManager.removeListener === 'function') {
+            if (this._toolsChangedHandler) this._boundPluginManager.removeListener('tools_changed', this._toolsChangedHandler);
+            if (this._distributedOfflineHandler) this._boundPluginManager.removeListener('distributed_tools_offline', this._distributedOfflineHandler);
+            this._boundPluginManager = null;
+        }
+        this.initialized = false;
+    }
+
+    close() {
+        this.destroy();
     }
 
     async _loadCatalog() {

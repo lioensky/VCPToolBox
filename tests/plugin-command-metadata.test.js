@@ -46,6 +46,7 @@ function createHarness(blocked = false) {
             if (name === 'fs') return { promises: mockFs };
             if (name === 'path') return path;
             if (name === './lib/dashboardCards') return { readPluginDashboardCards: () => [] };
+            if (name === '../../modules/safeFilePath') return require('../modules/safeFilePath');
             throw new Error(`Unexpected dependency: ${name}`);
         }
     });
