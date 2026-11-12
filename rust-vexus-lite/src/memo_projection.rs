@@ -256,7 +256,8 @@ pub(crate) fn grow(
             coverage.entry(a.id).or_default().insert(lane.diagnostics.basin_id);
             lane.diagnostics.radius = a.distance;
             for edge in graph.row_offsets[a.index]..graph.row_offsets[a.index + 1] {
-                if scanned >= EDGE_LIMIT { break; }
+                // Reached only with this node's out-edges left unscanned.
+                if scanned >= EDGE_LIMIT { lane.diagnostics.truncated = true; break; }
                 scanned += 1;
                 lane.diagnostics.scanned_edges += 1;
                 let weight = graph.weights[edge];
@@ -431,6 +432,24 @@ mod tests {
         assert!(result.diagnostics.scanned_edges <= EDGE_LIMIT);
         assert!(result.diagnostics.settled_states <= STATE_LIMIT);
         assert_eq!(result.diagnostics.stop_reason, "work_limit");
+    }
+
+    #[test]
+    fn edge_limit_inside_one_node_marks_lane_truncated_with_empty_frontier() {
+        // Zero-mass targets never enter the frontier, so the lane's frontier is
+        // empty when the edge limit cuts this node's row short.
+        let edges = vec![(0, 1, 0.5); EDGE_LIMIT + 4464];
+        let g = graph(3, &edges);
+        let field = [0.0, 0.0, 1.0]; // Unreachable mass keeps the target open.
+        let domain = g.node_ids.clone();
+        let result = grow(&g, [&field,&field], [&domain,&domain], &[1],
+            &[basin(1,1.0)], 0).unwrap();
+        assert_eq!(result.diagnostics.stop_reason, "work_limit");
+        assert_eq!(result.diagnostics.scanned_edges, EDGE_LIMIT);
+        let scanning = result.diagnostics.lanes.iter()
+            .find(|l| l.scanned_edges == EDGE_LIMIT).unwrap();
+        assert!(scanning.truncated, "unscanned out-edges must be reported");
+        assert_eq!(result.ids, [vec![1], vec![1]]);
     }
 
     #[test]
