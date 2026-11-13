@@ -312,21 +312,30 @@ impl<'a> DynamicWormholeContext<'a> {
         config: &SenseConfig,
     ) -> std::result::Result<(), String> {
         if self.residuals.len() < 2 { return Ok(()); }
-        let mut targets = Vec::new();
+        let mut priorities: HashMap<usize, f64> = HashMap::new();
         for spike in active.values().filter(|s| s.energy >= config.firing_threshold
             && s.momentum >= 0.0 && s.residual_level + 1 < self.residuals.len()) {
             for cursor in artifact.row_offsets[spike.node_index]..artifact.row_offsets[spike.node_index + 1] {
-                if positive(artifact.weights[cursor]) <= 0.0 { break; }
+                let conductance = positive(artifact.weights[cursor]);
+                if conductance <= 0.0 { break; }
                 let target = artifact.targets[cursor];
-                if !self.scores.contains_key(&target) { targets.push(target); }
+                if !self.scores.contains_key(&target) {
+                    // Max, not sum: deterministic under active HashMap iteration.
+                    // This is a pre-evaluation priority, not a resonance estimate.
+                    let flux = positive(spike.energy * conductance);
+                    priorities.entry(target)
+                        .and_modify(|priority| *priority = priority.max(flux))
+                        .or_insert(flux);
+                }
             }
         }
-        // Deterministic request budget, independent of HashMap iteration order.
-        targets.sort_unstable();
-        targets.dedup();
+        let mut ranked: Vec<(usize, f64)> = priorities.into_iter().collect();
+        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1)
+            .then_with(|| artifact.node_ids[a.0].cmp(&artifact.node_ids[b.0])));
         let remaining = config.dynamic_wormhole_max_targets.saturating_sub(self.scores.len());
-        if targets.len() > remaining { self.diagnostics.budget_exhausted = true; }
-        targets.truncate(remaining);
+        if ranked.len() > remaining { self.diagnostics.budget_exhausted = true; }
+        ranked.truncate(remaining);
+        let targets: Vec<usize> = ranked.into_iter().map(|(target, _)| target).collect();
         if targets.is_empty() { return Ok(()); }
         let dimension = self.residuals[0].len();
         let ids: Vec<i64> = targets.iter().map(|&i| artifact.node_ids[i]).collect();
@@ -1100,5 +1109,61 @@ mod seed_admission_tests {
         assert_eq!(output.nodes[0].source_type, "lexical_seed");
         assert_eq!(output.nodes[0].hop, 0);
         assert!(output.edges.is_empty());
+    }
+}
+#[cfg(test)]
+mod flux_budget_invariant_tests {
+    use super::*;
+
+    #[test]
+    fn flux_budget_uses_max_parent_flux_then_real_id_and_never_reloads() {
+        // Deliberately non-ID-ordered storage: indices must not break ties.
+        let ids = vec![1, 9, 100, 2, 50];
+        let graph = NativeArtifact {
+            node_index: ids.iter().enumerate().map(|(i,id)| (*id,i)).collect(),
+            node_ids: ids,
+            row_offsets: vec![0,3,5,5,5,5],
+            targets: vec![3,2,4,2,4],
+            weights: vec![0.1,0.8,0.8,0.2,0.2],
+            ..NativeArtifact::default()
+        }.prepared();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);").unwrap();
+        for id in [2_i64,50,100] {
+            let bytes: Vec<u8> = [0.0_f32,1.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+            db.execute("INSERT INTO tags VALUES (?1,?2)", rusqlite::params![id,bytes]).unwrap();
+        }
+        for reverse in [false,true] {
+            let mut active = HashMap::new();
+            let order = if reverse { vec![(1,2.0),(0,1.0)] } else { vec![(0,1.0),(1,2.0)] };
+            for (node_index,energy) in order {
+                active.insert((None,node_index), SpikeState {
+                    node_index, previous_index: None, energy, momentum: 1.0,
+                    source_type: "seed".into(), hop: 0,
+                    seed_id: graph.node_ids[node_index], residual_level: 0,
+                });
+            }
+            let mut pool = TagVectorPool::new();
+            let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+                vec![vec![1.0,0.0],vec![0.0,1.0]], HashMap::new());
+            let mut config = SenseConfig { dynamic_wormhole_max_targets: 1,
+                ..SenseConfig::default() };
+            ctx.prepare(&graph, &active, &config).unwrap();
+            assert!(ctx.scores.contains_key(&4), "Tag 50 wins the 0.8 flux tie by real ID");
+            assert!(!ctx.scores.contains_key(&3), "low-ID weak Tag must not monopolize budget");
+            assert_eq!(ctx.scores.len(), 1);
+            assert!(ctx.diagnostics.budget_exhausted);
+            let batches = ctx.diagnostics.sql_batches;
+            let dots = ctx.diagnostics.dot_products;
+            ctx.prepare(&graph, &active, &config).unwrap();
+            assert_eq!(ctx.diagnostics.sql_batches, batches);
+            assert_eq!(ctx.diagnostics.dot_products, dots);
+            assert_eq!(ctx.scores.len(), 1);
+            config.dynamic_wormhole_max_targets = 2;
+            ctx.prepare(&graph, &active, &config).unwrap();
+            assert!(ctx.scores.contains_key(&2), "Tag 100 gets the next slot");
+            assert_eq!(ctx.scores.len(), 2);
+            assert!(!ctx.scores.contains_key(&3));
+        }
     }
 }

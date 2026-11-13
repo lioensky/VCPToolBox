@@ -635,10 +635,10 @@ fn analyze_handshakes(
     if tags.is_empty() {
         return HandshakeFeatures::default();
     }
-    let mut directions = Vec::with_capacity(tags.len());
+    let mut directions = Vec::with_capacity(tags.len().min(5));
     let mut average = vec![0.0f64; dimension];
-    for tag in tags.iter_mut() {
-        let mut direction = vec![0.0f64; dimension];
+    let mut direction = vec![0.0f64; dimension];
+    for (index, tag) in tags.iter_mut().enumerate() {
         let mut magnitude_squared = 0.0;
         for offset in 0..dimension {
             let delta = (query[offset] - tag.vector[offset]) as f64;
@@ -653,7 +653,11 @@ fn analyze_handshakes(
                 average[offset] += direction[offset];
             }
         }
-        directions.push(direction);
+        // All Tags contribute to the average; only the first five are
+        // consumed by the pairwise diagnostic. Reuse scratch for the rest.
+        if index < 5 {
+            directions.push(direction.clone());
+        }
     }
     for value in &mut average {
         *value /= tags.len() as f64;
@@ -907,11 +911,15 @@ fn lexical_tokens(text: &str) -> HashSet<String> {
     tokens
 }
 
+#[cfg(test)]
 fn lexical_grounding(query: &str, name: &str) -> f64 {
-    let query = lexical_tokens(query);
+    lexical_grounding_with_tokens(&lexical_tokens(query), name)
+}
+
+fn lexical_grounding_with_tokens(query: &HashSet<String>, name: &str) -> f64 {
     let tag = lexical_tokens(name);
     if tag.is_empty() { return 0.0; }
-    tag.intersection(&query).count() as f64 / tag.len() as f64
+    tag.intersection(query).count() as f64 / tag.len() as f64
 }
 
 fn range_value(values: &[f64], index: usize, fallback: f64) -> f64 {
@@ -1035,6 +1043,7 @@ fn gate_tags_for_graph(
         .any(|token| world_lower.contains(token));
     let technical_world = world != "Unknown" && technical_name(world, false);
 
+    let query_tokens = lexical_tokens(query_text);
     let mut seen = HashSet::new();
     let mut gated = Vec::new();
     for (level, tags) in levels.iter().enumerate() {
@@ -1052,7 +1061,7 @@ fn gate_tags_for_graph(
             if tag.id <= 0 || seen.contains(&tag.id) {
                 continue;
             }
-            let grounding = lexical_grounding(query_text, &tag.name);
+            let grounding = lexical_grounding_with_tokens(&query_tokens, &tag.name);
             let lexical = grounding >= 0.5;
             // Only already independently supported peers can lend amplitude.
             // A low-contribution alias cannot recursively sponsor other aliases.
@@ -3176,5 +3185,109 @@ mod explicit_core_seed_tests {
             &PipelineConfig::default(), "", Some(&graph.node_index), &resolved);
         assert_eq!(promoted.len(), 2);
         assert!(promoted.iter().all(|t| t.is_core && t.weight >= boost));
+    }
+}
+#[cfg(test)]
+mod optimization_invariant_tests {
+    use super::*;
+
+    fn work(vector: Vec<f32>) -> PyramidTagWork {
+        PyramidTagWork {
+            id: 1, name: String::new(), vector: vector.into(),
+            similarity: 0.0, contribution: 0.0, handshake_magnitude: 0.0,
+        }
+    }
+
+    #[test]
+    fn handshake_scratch_matches_materialized_reference_bit_for_bit() {
+        for count in [0, 1, 2, 5, 6, 128] {
+            for scale in [1e-6_f32, 0.1, 1.0, 1e6] {
+                let query = [0.6 * scale, 0.8 * scale, 0.0];
+                let mut tags: Vec<_> = (0..count).map(|i| work(match i % 4 {
+                    0 => query.to_vec(),
+                    1 => vec![0.6, -0.8, 0.0],
+                    2 => vec![0.0; 3],
+                    _ => vec![0.0, 0.0, 1.0],
+                })).collect();
+                let mut directions = Vec::new();
+                let mut average = vec![0.0_f64; 3];
+                let mut distances = Vec::new();
+                for tag in &tags {
+                    let mut d: Vec<f64> = query.iter().zip(tag.vector.iter())
+                        .map(|(a,b)| (*a - *b) as f64).collect();
+                    let norm = d.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    distances.push(norm);
+                    if norm > 1e-9 {
+                        for j in 0..3 { d[j] /= norm; average[j] += d[j]; }
+                    }
+                    directions.push(d);
+                }
+                let expected = if count == 0 {
+                    HandshakeFeatures::default()
+                } else {
+                    for v in &mut average { *v /= count as f64; }
+                    let coherence = clamp01(average.iter().map(|v| v*v).sum::<f64>().sqrt());
+                    let mut sum = 0.0;
+                    let mut pairs = 0;
+                    for a in 0..count.min(5) {
+                        for b in a+1..count.min(5) {
+                            sum += directions[a].iter().zip(&directions[b])
+                                .map(|(x,y)| x*y).sum::<f64>().abs();
+                            pairs += 1;
+                        }
+                    }
+                    let pattern = if pairs > 0 { clamp01(sum / pairs as f64) } else { 0.0 };
+                    HandshakeFeatures { direction_coherence: coherence,
+                        pattern_strength: pattern, novelty_signal: coherence,
+                        noise_signal: (1.0-coherence)*(1.0-pattern) }
+                };
+                let actual = analyze_handshakes(&query, &mut tags, 3);
+                for (a,b) in [
+                    (actual.direction_coherence, expected.direction_coherence),
+                    (actual.pattern_strength, expected.pattern_strength),
+                    (actual.novelty_signal, expected.novelty_signal),
+                    (actual.noise_signal, expected.noise_signal),
+                ] { assert_eq!(a.to_bits(), b.to_bits(), "count={count} scale={scale}"); }
+                for (tag, distance) in tags.iter().zip(distances) {
+                    assert_eq!(tag.handshake_magnitude.to_bits(), distance.to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cached_lexical_query_preserves_boundary_scores() {
+        for query in ["", "Rust rustacean", "武汉小雨，工程施工", "VCP-Rust 2026，中文A"] {
+            let cached = lexical_tokens(query);
+            for name in ["", "rust", "rustacean", "武汉", "小雨", "中文A", "VCP-Rust", "2026"] {
+                let original_query = lexical_tokens(query);
+                let original_tag = lexical_tokens(name);
+                let expected = if original_tag.is_empty() { 0.0 } else {
+                    original_tag.intersection(&original_query).count() as f64
+                        / original_tag.len() as f64
+                };
+                assert_eq!(lexical_grounding_with_tokens(&cached, name).to_bits(),
+                    expected.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn signed_axis_is_not_an_original_tag_nonnegative_coefficient() {
+        let q = [0.94_f32, 0.342];
+        let tags = vec![work(vec![1.0, 0.0]), work(vec![0.94, -0.342])];
+        assert!(cosine(&q, &tags[1].vector) > 0.0);
+        let (_, residual, coefficients) = orthogonal_projection(&q, &tags, 2);
+        assert!(magnitude(&residual) < 1e-6);
+        assert!(coefficients[1] > 0.34);
+        // A nonnegative combination of these original Tags has y <= 0.
+        // The subspace projection above is valid, but cannot be described as
+        // a nonnegative cone projection or original-Tag coefficient fit.
+        for a in [0.0_f64, 0.5, 1.0] {
+            for b in [0.0_f64, 0.5, 1.0] {
+                let y = a * tags[0].vector[1] as f64 + b * tags[1].vector[1] as f64;
+                assert!(y <= 0.0);
+            }
+        }
     }
 }
