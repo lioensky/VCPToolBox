@@ -42,11 +42,39 @@ fn reconstruct(columns: &[Vec<f64>], x: &[f64], dimension: usize) -> Vec<f64> {
 /// Entries are (stable Tag ID, original vector). Sorting only controls exact
 /// ties and nonunique coefficient allocation; projection solves the original cone.
 pub(crate) fn solve(query: &[f32], tags: &[(i64, &[f32])]) -> Result<Solution, String> {
+    if tags.len() > 128 {
+        return Err("MEMO_NNLS_INVALID_TAGS".into());
+    }
+    let query64: Vec<f64> = query.iter().map(|&x| x as f64).collect();
+    let columns: Vec<Vec<f64>> = tags.iter()
+        .map(|(_, v)| v.iter().map(|&x| x as f64).collect()).collect();
+    let refs: Vec<_> = tags.iter().zip(&columns)
+        .map(|((id, _), v)| (*id, v.as_slice())).collect();
+    let result = solve_f64(&query64, &refs)?;
+    let projection: Vec<f32> = result.projection.iter().map(|&x| x as f32).collect();
+    let residual: Vec<f32> = result.residual.iter().map(|&x| x as f32).collect();
+    if projection.iter().chain(&residual).any(|x| !x.is_finite()) {
+        return Err("MEMO_NNLS_OUTPUT_OVERFLOW".into());
+    }
+    Ok(Solution { projection, residual, contributions: result.contributions,
+        diagnostics: result.diagnostics })
+}
+
+pub(crate) struct Solution64 {
+    pub(crate) projection: Vec<f64>,
+    pub(crate) residual: Vec<f64>,
+    pub(crate) contributions: Vec<f64>,
+    pub(crate) diagnostics: Diagnostics,
+}
+
+/// Same active-set/SVD solver without a lossy FP32 round trip.
+/// Normalizes original generators, never QR-coordinate columns implicitly.
+pub(crate) fn solve_f64(query: &[f64], tags: &[(i64, &[f64])]) -> Result<Solution64, String> {
     let dimension = query.len();
     if dimension == 0 || query.iter().any(|v| !v.is_finite()) {
         return Err("MEMO_NNLS_INVALID_QUERY".into());
     }
-    if tags.len() > 128 || tags.iter().any(|(_, v)|
+    if tags.len() > 256 || tags.iter().any(|(_, v)|
         v.len() != dimension || v.iter().any(|x| !x.is_finite())) {
         return Err("MEMO_NNLS_INVALID_TAGS".into());
     }
@@ -140,12 +168,12 @@ pub(crate) fn solve(query: &[f32], tags: &[(i64, &[f32])]) -> Result<Solution, S
     }
     let mut contributions = vec![0.0; tags.len()];
     for (&slot, &a) in slots.iter().zip(&x) { contributions[slot] = a; }
-    let projection: Vec<f32> = p.iter().map(|v| (v*norm) as f32).collect();
-    let residual: Vec<f32> = r.iter().map(|v| (v*norm) as f32).collect();
+    let projection: Vec<f64> = p.iter().map(|v| v*norm).collect();
+    let residual: Vec<f64> = r.iter().map(|v| v*norm).collect();
     if projection.iter().chain(&residual).any(|v| !v.is_finite()) {
         return Err("MEMO_NNLS_OUTPUT_OVERFLOW".into());
     }
-    Ok(Solution { projection, residual, contributions,
+    Ok(Solution64 { projection, residual, contributions,
         diagnostics: Diagnostics {
             iterations, active_tags: x.iter().filter(|&&a| a > 0.0).count(),
             dual_violation: dual, stationarity_error: stationarity,
@@ -154,6 +182,90 @@ pub(crate) fn solve(query: &[f32], tags: &[(i64, &[f32])]) -> Result<Solution, S
         } })
 }
 
+/// All supplied rays remain columns of R, including dependent rays.
+/// QR changes coordinates; nonnegativity still constrains original Tag weights.
+pub(crate) fn solve_qr_f64(query: &[f64], tags: &[(i64, &[f64])])
+    -> Result<Solution64, String>
+{
+    let dimension = query.len();
+    if dimension == 0 || query.iter().any(|x| !x.is_finite()) {
+        return Err("MEMO_CONE_INVALID_QUERY".into());
+    }
+    if tags.len() > 256 || tags.iter().any(|(_, v)|
+        v.len() != dimension || v.iter().any(|x| !x.is_finite())) {
+        return Err("MEMO_CONE_INVALID_COLUMNS".into());
+    }
+    let norm = dot(query, query).sqrt();
+    if !norm.is_finite() {
+        return Err("MEMO_CONE_QUERY_OVERFLOW".into());
+    }
+    if norm == 0.0 || tags.is_empty() { return solve_f64(query, tags); }
+    let y: Vec<_> = query.iter().map(|x| x / norm).collect();
+    let mut entries: Vec<_> = tags.iter().enumerate().collect();
+    entries.sort_by_key(|(slot, (id, _))| (*id, *slot));
+    let mut columns = Vec::new();
+    let mut slots = Vec::new();
+    let mut ids = Vec::new();
+    for (slot, (id, v)) in entries {
+        let n = dot(v, v).sqrt();
+        if !n.is_finite() { return Err("MEMO_CONE_COLUMN_OVERFLOW".into()); }
+        if n > 0.0 {
+            columns.push(v.iter().map(|x| x/n).collect::<Vec<_>>());
+            slots.push(slot);
+            ids.push(*id);
+        }
+    }
+    if columns.is_empty() { return solve_f64(query, tags); }
+    let matrix = DMatrix::from_fn(dimension, columns.len(), |i,j| columns[j][i]);
+    let qr = matrix.qr();
+    let q = qr.q();
+    let r = qr.r();
+    let z = q.transpose() * DVector::from_column_slice(&y);
+    let z_norm = z.norm();
+    let compressed: Vec<Vec<f64>> = (0..columns.len())
+        .map(|j| r.column(j).iter().copied().collect()).collect();
+    let refs: Vec<_> = ids.iter().zip(&compressed)
+        .map(|(&id,v)| (id,v.as_slice())).collect();
+    let small = solve_f64(z.as_slice(), &refs)?;
+    // The common solver normalizes both query and columns: undo those scales.
+    let x: Vec<_> = compressed.iter().zip(&small.contributions).map(|(v,c)| {
+        let n = dot(v,v).sqrt();
+        if n > 0.0 { c*z_norm/n } else { 0.0 }
+    }).collect();
+    let p = reconstruct(&columns, &x, dimension);
+    let residual: Vec<_> = y.iter().zip(&p).map(|(a,b)| a-b).collect();
+    let mut dual = 0.0_f64;
+    let mut stationarity = 0.0_f64;
+    let mut complementarity = 0.0_f64;
+    for (v,&c) in columns.iter().zip(&x) {
+        let w = dot(v,&residual);
+        dual = dual.max(w.max(0.0));
+        if c > 0.0 { stationarity = stationarity.max(w.abs()); }
+        complementarity = complementarity.max((c*w).abs());
+    }
+    let energy = dot(&residual,&residual);
+    let closure = (dot(&y,&y)-dot(&p,&p)-energy).abs();
+    if x.iter().any(|c| !c.is_finite() || *c < 0.0)
+        || !energy.is_finite() || energy > 1.0+CHECK_TOL
+        || dual > CHECK_TOL || stationarity > CHECK_TOL
+        || complementarity > CHECK_TOL || closure > CHECK_TOL {
+        return Err(format!("MEMO_CONE_ORIGINAL_KKT: dual={dual:e} stationarity={stationarity:e} complementarity={complementarity:e} closure={closure:e}"));
+    }
+    let mut contributions = vec![0.0; tags.len()];
+    for (&slot,&c) in slots.iter().zip(&x) { contributions[slot] = c; }
+    Ok(Solution64 {
+        projection: p.iter().map(|x| x*norm).collect(),
+        residual: residual.iter().map(|x| x*norm).collect(),
+        contributions,
+        diagnostics: Diagnostics {
+            iterations: small.diagnostics.iterations,
+            active_tags: x.iter().filter(|&&c| c>0.0).count(),
+            dual_violation: dual, stationarity_error: stationarity,
+            complementarity_error: complementarity, energy_closure_error: closure,
+            residual_ratio: energy,
+        },
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +476,70 @@ mod default_scale_performance_tests {
             times.sort_by(f64::total_cmp);
             eprintln!("NNLS dense 3072d/{count} active: min_ms={:.3}, median_ms={:.3}, max_ms={:.3}",
                 times[0], times[2], times[4]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod offline_qr_tests {
+    use super::*;
+
+    fn compare(y: &[f64], tags: &[(i64, &[f64])]) -> Solution64 {
+        let direct = solve_f64(y, tags).unwrap();
+        let small = solve_qr_f64(y, tags).unwrap();
+        for (a,b) in direct.projection.iter().zip(&small.projection) {
+            assert!((a-b).abs() < 2e-8, "projection {a} != {b}");
+        }
+        assert!((direct.diagnostics.residual_ratio-small.diagnostics.residual_ratio).abs()<2e-8);
+        assert!(small.contributions.iter().all(|x| x.is_finite() && *x>=0.0));
+        small
+    }
+
+    #[test]
+    fn qr_constrains_original_rays_not_orthogonal_axes() {
+        let a = [1.0,0.0]; let b = [0.94,-0.342];
+        let s = compare(&[0.94,0.342], &[(1,&a),(2,&b)]);
+        assert!(s.residual[1] > 0.34);
+        assert_eq!(s.contributions[1],0.0);
+        compare(&[-1.0,0.0], &[(1,&a)]);
+    }
+
+    #[test]
+    fn qr_keeps_linearly_dependent_cone_necessary_rays() {
+        let a=[1.0,1.0]; let b=[0.0,-1.0]; let c=[-1.0,0.0];
+        // Three rays in R2: linear dependence does not permit deleting a ray.
+        let s=compare(&[-1.0,0.0], &[(1,&a),(2,&b),(3,&c)]);
+        assert!(s.residual.iter().all(|x|x.abs()<1e-8));
+        assert!(s.contributions[2]>0.9);
+        let joint=compare(&[1.0,0.1], &[(1,&a),(2,&b)]);
+        assert!(joint.contributions[1]>0.8);
+    }
+
+    #[test]
+    fn qr_preserves_external_residual_scale_duplicates_and_zero_columns() {
+        let a=[1.0,0.0,0.0]; let z=[0.0;3];
+        let s=compare(&[0.3,0.0,0.4], &[(3,&a),(1,&a),(2,&z)]);
+        assert!((s.diagnostics.residual_ratio-0.64).abs()<1e-10);
+        compare(&[0.0,1.0,0.0], &[(1,&a)]);
+        compare(&[0.0;3], &[(1,&a)]);
+        compare(&[1.0,0.0,0.0], &[]);
+        assert!(solve_qr_f64(&[f64::NAN],&[]).is_err());
+    }
+
+    #[test]
+    fn qr_randomized_and_near_collinear_match_original_space() {
+        let mut state=20261114_u64;
+        let mut next=|| {
+            state=state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((state>>11) as f64)/(1_u64<<53) as f64-0.5
+        };
+        for round in 0..24 {
+            let columns:Vec<Vec<f64>>=(0..8).map(|_|(0..16).map(|_|next()).collect()).collect();
+            let mut columns=columns;
+            if round%3==0 { columns[1]=columns[0].clone(); columns[1][0]+=1e-7; }
+            let y:Vec<_>=(0..16).map(|_|next()).collect();
+            let refs:Vec<_>=columns.iter().enumerate().map(|(i,v)|(i as i64,v.as_slice())).collect();
+            compare(&y,&refs);
         }
     }
 }

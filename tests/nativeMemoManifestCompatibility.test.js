@@ -499,8 +499,18 @@ async function main() {
         nativeKnowledgeRuntime.openAndInitStore(path.join(root, 'other.sqlite'));
         assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false,
             'store replacement must discard the previous database table');
+        await assert.rejects(
+            () => lightQuery({
+                ...lightPlan, engineMode: 'knn', abMode: false,
+                scope: { searchAll: true }
+            }),
+            /observation handle .* is unavailable/,
+            'store replacement must invalidate explicitly supplied old handles'
+        );
         const other = await lightQuery({
-            ...lightPlan, engineMode: 'knn', abMode: false,
+            modelSig: 'manifest-test-model',
+            engineMode: 'knn', abMode: false,
+            k: 2, candidateK: 16,
             scope: { searchAll: true }
         });
         assert.strictEqual(other.results.length, 0);

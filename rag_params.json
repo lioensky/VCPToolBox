@@ -159,9 +159,9 @@
     },
     "geometry": {
       "local": {
-        "maxNeighbors": 48,
+        "maxNeighbors": 96,
         "minNeighbors": 3,
-        "maxBasis": 4,
+        "maxBasis": 24,
         "minGain": 0.015,
         "positionDecay": 0.15,
         "semanticGate": {
