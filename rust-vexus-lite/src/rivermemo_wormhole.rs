@@ -57,7 +57,7 @@ pub(super) fn gate(model: &mut Model, connection: &Connection)
 }
  
 pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
-    connection: &Connection, input: &NativeInput)
+    connection: &Connection, input: &NativeInput, artifact: &NativeArtifact)
     -> std::result::Result<(), String> {
     const FILE_LIMIT: usize = 128;
     const TAG_LIMIT: usize = 128;
@@ -97,14 +97,26 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
                     let other_focus = focus.iter().copied().filter(|id|
                         *id != decision.source_id && *id != decision.target_id
                         && (left.2.contains(id) || right.2.contains(id))).min();
-                    let Some(anchor) = other_focus else { continue };
+                    // Missing global statistics are not evidence of rarity.
+                    let specificity = artifact.inbound.get(&decision.source_id)
+                        .filter(|mass| mass.is_finite() && **mass >= 0.0)
+                        .filter(|_| artifact.max_inbound.is_finite() && artifact.max_inbound > 0.0)
+                        .map(|mass| 1.0 - clamp01(*mass / artifact.max_inbound).sqrt());
+                    let calibrated = !input.calibration.superseded_ids.is_empty()
+                        && input.calibration.differentia_confidence > 0.0;
+                    let single_specific = focus.len() == 1
+                        && focus.contains(&decision.source_id)
+                        && (calibrated || specificity.is_some_and(|value| value >= 0.65));
+                    if other_focus.is_none() && !single_specific { continue; }
+                    let anchor = other_focus;
                     let bridge = left.2.intersection(&right.2).copied().filter(|id|
                         *id != decision.source_id && *id != decision.target_id
                         && !focus.contains(id)).min();
                     if let Some(bridge) = bridge {
                         witness = Some(serde_json::json!({
                             "fileIds": [left.0, right.0], "focusId": anchor,
-                            "bridgeTagId": bridge, "differentChecksums": true
+                            "bridgeTagId": bridge, "differentChecksums": true,
+                            "sourceSpecificity": specificity, "singleFocusAdmission": single_specific
                         }));
                         break 'pairs;
                     }
@@ -376,7 +388,7 @@ mod gate_regressions {
         let check = |db: &Connection| {
             let mut m = model();
             let mut d = gate(&mut m, db).unwrap();
-            refine(&mut m, &mut d, db, &input).unwrap();
+            refine(&mut m, &mut d, db, &input, &NativeArtifact::default()).unwrap();
             d[0].accepted
         };
         assert!(!check(&db), "same content cannot qualify");
@@ -387,6 +399,71 @@ mod gate_regressions {
         db.execute("INSERT INTO file_tags VALUES (11,9)", []).unwrap();
         db.execute("DELETE FROM file_tags WHERE tag_id=3", []).unwrap();
         assert!(!check(&db), "implicit context alone cannot qualify");
+    }
+
+    #[test]
+    fn single_specific_focus_still_requires_content_and_bridge() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE TABLE files(id INTEGER PRIMARY KEY, checksum TEXT);
+            INSERT INTO files VALUES (10,'a'),(11,'b');
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,9),(11,1),(11,2),(11,9);").unwrap();
+        let mut input: NativeInput = serde_json::from_value(serde_json::json!({
+            "query":{"vector":[1,0]}, "queryState":{"fieldProvenance":[
+                {"id":1,"hop":0,"sourceType":"lexical_seed"}
+            ]}
+        })).unwrap();
+        let check = |input: &NativeInput| {
+            let mut m = model();
+            let mut decisions = gate(&mut m, &db).unwrap();
+            refine(&mut m, &mut decisions, &db, input, &NativeArtifact::default()).unwrap();
+            decisions[0].accepted
+        };
+        assert!(!check(&input), "ordinary single focus must not bypass the firewall");
+        input.calibration.superseded_ids = vec![3];
+        input.calibration.differentia_confidence = 1.0;
+        assert!(check(&input));
+        db.execute("UPDATE files SET checksum='a' WHERE id=11", []).unwrap();
+        assert!(!check(&input), "duplicate content is not a second witness");
+        db.execute("UPDATE files SET checksum='b' WHERE id=11", []).unwrap();
+        db.execute("DELETE FROM file_tags WHERE file_id=11 AND tag_id=9", []).unwrap();
+        assert!(!check(&input), "endpoints alone are not a bridge");
+    }
+
+    #[test]
+    fn rare_single_focus_requires_known_statistics_and_full_witness() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE TABLE files(id INTEGER PRIMARY KEY, checksum TEXT);
+            INSERT INTO files VALUES (10,'a'),(11,'b');
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,9),(11,1),(11,2),(11,9);").unwrap();
+        let input: NativeInput = serde_json::from_value(serde_json::json!({
+            "query":{"vector":[1,0]}, "queryState":{"fieldProvenance":[
+                {"id":1,"hop":0,"sourceType":"lexical_seed"}
+            ]}
+        })).unwrap();
+        let check = |graph: &NativeArtifact| {
+            let mut m = model();
+            let mut d = gate(&mut m, &db).unwrap();
+            refine(&mut m, &mut d, &db, &input, graph).unwrap();
+            d[0].accepted
+        };
+        let mut graph = NativeArtifact { max_inbound:100.0,
+            inbound:HashMap::from([(1,4.0)]), ..NativeArtifact::default() };
+        assert!(check(&graph), "known rare focus qualifies without superseded parents");
+        graph.inbound.insert(1,100.0);
+        assert!(!check(&graph), "hub cannot use rarity admission");
+        graph.inbound.clear();
+        assert!(!check(&graph), "missing is not rare");
+        graph.inbound.insert(1,4.0);
+        graph.max_inbound=0.0;
+        assert!(!check(&graph), "invalid global denominator");
+        graph.max_inbound=100.0;
+        db.execute("UPDATE files SET checksum='a' WHERE id=11", []).unwrap();
+        assert!(!check(&graph), "rarity cannot bypass duplicate content");
+        db.execute("UPDATE files SET checksum='b' WHERE id=11", []).unwrap();
+        db.execute("DELETE FROM file_tags WHERE file_id=11 AND tag_id=9", []).unwrap();
+        assert!(!check(&graph), "rarity cannot bypass bridge witness");
     }
 
     #[test]
@@ -410,7 +487,71 @@ mod gate_regressions {
     }
 }
 
-/// `work` must already be sorted by the untouched baseline comparator.
+/// Candidate-self continuous readout. Ordinary one-hop transport and admitted
+/// XW and proxy routes share a maximum envelope; graph evidence joins through
+/// bounded complement composition inside the same topology budget.
+pub(super) fn apply_unified_bonus(
+    work: &mut [ScoredWork], model: &Model, input: &NativeInput,
+    omega: &OmegaOutput, artifact: &NativeArtifact,
+) -> HashMap<i64, Value> {
+    let explicit: HashSet<i64> = input.query_state.field_provenance.iter()
+        .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
+        .map(|p| p.id).collect();
+    let hops: HashMap<i64, i64> = input.query_state.river_nodes.iter()
+        .map(|n| (n.id,n.hop)).collect();
+    let gate = omega.omega.powf(input.config.omega_gamma.max(0.0));
+    let cap = positive(input.config.topology_bonus_cap);
+    let mut traces = HashMap::new();
+    for item in work {
+        let xw = correction(model, &item.curve, input, omega);
+        let mut proxy = 0.0_f64;
+        let mut proxy_edge = None;
+        if input.query_state.complete_observation {
+            for edge in &input.query_state.river_edges {
+                if edge.wormhole || edge.immediate_return
+                    || !explicit.contains(&edge.source_id)
+                    || hops.get(&edge.target_id) != Some(&1)
+                    || positive(edge.flow) == 0.0 { continue; }
+                let conductance = artifact.edge_weight(edge.source_id, edge.target_id);
+                let Some(&source) = artifact.node_index.get(&edge.source_id) else { continue };
+                let row = artifact.row_offsets[source]..artifact.row_offsets[source+1];
+                let total: f64 = row.clone().map(|i| positive(artifact.weights[i])).sum();
+                let strongest = row.map(|i| positive(artifact.weights[i])).fold(0.0_f64,f64::max);
+                if conductance <= 0.0 || conductance < 0.5 * strongest || total <= 0.0 { continue; }
+                let closure = item.curve.tags.iter().filter(|t| t.id == edge.target_id)
+                    .map(|t| t.chunk_cosine).fold(0.0_f64, f64::max);
+                let evidence = clamp01(conductance / total) * closure * gate;
+                if evidence > proxy {
+                    proxy = evidence;
+                    proxy_edge = Some((edge.source_id, edge.target_id));
+                }
+            }
+        }
+        let transport = cap * proxy.max(xw.evidence);
+        // Rebuild from immutable raw evidence, not the previous merged result.
+        // Noisy-OR is a bounded complement operator, not an independence claim.
+        let previous = (item.v2_bonus * gate).min(positive(cap - item.path_bonus));
+        let merged = if transport <= 0.0 { previous }
+        else if previous <= 0.0 { transport }
+        else if cap > 0.0 {
+            cap * (1.0 - (1.0 - clamp01(previous / cap))
+                * (1.0 - clamp01(transport / cap)))
+        } else { 0.0 };
+        item.gated_bonus = merged.min(positive(cap - item.path_bonus));
+        item.final_score = clamp01(item.pure_score + item.path_bonus
+            + item.gated_bonus + item.anchor_bonus);
+        item.ranking_score = item.final_score;
+        traces.insert(item.curve.id, serde_json::json!({
+            "mode":"continuous-shared-topology-budget", "active": xw.eligible || proxy > 0.0,
+            "wormhole":xw, "proxyEvidence":proxy, "proxyEdge":proxy_edge,
+            "previousGraphBonus":previous, "transportRequested":transport,
+            "appliedGraphBonus":item.gated_bonus, "finalScore":item.final_score
+        }));
+    }
+    traces
+}
+/// Historical B scorer, available only to document the retired contract.
+#[cfg(test)]
 pub(super) fn fuse_rrf(work: &mut [ScoredWork], model: &Model,
     input: &NativeInput, omega: &OmegaOutput) -> HashMap<i64, Value> {
     const K: f64 = 60.0;
@@ -550,6 +691,107 @@ mod score_contract_fixture_tests {
         }
         assert!(fuse_rrf(&mut [], &Model::default(),
             &serde_json::from_value(json!({"query":{"vector":[1,0]},"queryState":{}})).unwrap(), &omega).is_empty());
+    }
+
+    #[test]
+    fn unified_score_closes_and_does_not_depend_on_unrelated_candidates() {
+        let input: NativeInput = serde_json::from_value(json!({
+            "query":{"vector":[1,0]}, "queryState":{
+                "completeObservation":true,
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}]
+            }
+        })).unwrap();
+        let omega = OmegaOutput { omega:1.0, omega_edge:1.0, omega_emerge:1.0,
+            omega_flow:1.0, regime:"dense".into(), active_edges:1,
+            seed_nodes:1,reached_nodes:2,emergent_nodes:1,complete_observation:true };
+        let model = Model { eligible_routes:1, routes:vec![Route {
+            source_id:1,target_id:2,flow:1.0,relative_flow:1.0,
+            vector:Arc::from(vec![1.0_f32,0.0]),
+        }] };
+        let mut work = vec![candidate(1,0.5,true)];
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        let score = work[0].final_score;
+        assert!(score > 0.5);
+        assert_eq!(score.to_bits(),work[0].ranking_score.to_bits());
+        assert!(work[0].path_bonus+work[0].gated_bonus <= input.config.topology_bonus_cap);
+        work.push(candidate(2,0.9,false));
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert_eq!(score.to_bits(),work[0].final_score.to_bits());
+        assert_eq!(work[1].final_score,0.9);
+    }
+
+    #[test]
+    fn complementary_graph_and_transport_are_bounded_and_idempotent() {
+        let input: NativeInput = serde_json::from_value(json!({
+            "query":{"vector":[1,0]}, "queryState":{
+                "completeObservation":true,
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}]
+            }
+        })).unwrap();
+        let omega = OmegaOutput { omega:1.0, omega_edge:1.0, omega_emerge:1.0,
+            omega_flow:1.0, regime:"dense".into(), active_edges:1,
+            seed_nodes:1,reached_nodes:2,emergent_nodes:1,complete_observation:true };
+        let model = Model { eligible_routes:1, routes:vec![Route {
+            source_id:1,target_id:2,flow:1.0,relative_flow:0.625,
+            vector:Arc::from(vec![1.0_f32,0.0]),
+        }] };
+        let mut work=vec![candidate(1,0.5,true)];
+        let cap=input.config.topology_bonus_cap;
+        work[0].v2_bonus=0.5*cap;
+        work[0].gated_bonus=0.5*cap;
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert!((work[0].gated_bonus-cap*0.8125).abs()<1e-14);
+        let bits=work[0].final_score.to_bits();
+        for _ in 0..5 {
+            apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+            assert_eq!(work[0].final_score.to_bits(),bits);
+            assert_eq!(work[0].ranking_score.to_bits(),bits);
+        }
+        work[0].path_bonus=0.75*cap;
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert!(work[0].path_bonus+work[0].gated_bonus<=cap);
+        let mut empty=vec![candidate(2,0.5,false)];
+        empty[0].v2_bonus=0.013;
+        apply_unified_bonus(&mut empty,&Model::default(),&input,&omega,&NativeArtifact::default());
+        assert_eq!(empty[0].gated_bonus.to_bits(),0.013_f64.to_bits());
+    }
+
+    #[test]
+    fn ordinary_proxy_requires_real_forward_hop_one_and_shares_budget() {
+        let mut input: NativeInput = serde_json::from_value(json!({
+            "query":{"vector":[1,0]}, "queryState":{
+                "completeObservation":true,
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}],
+                "riverNodes":[{"id":1,"hop":0},{"id":2,"hop":1}],
+                "riverEdges":[{"sourceId":1,"targetId":2,"flow":0.1}]
+            }
+        })).unwrap();
+        let omega = OmegaOutput { omega:1.0, omega_edge:1.0, omega_emerge:1.0,
+            omega_flow:1.0, regime:"dense".into(), active_edges:1,
+            seed_nodes:1,reached_nodes:2,emergent_nodes:1,complete_observation:true };
+        let graph = NativeArtifact {
+            node_ids:vec![1,2], node_index:HashMap::from([(1,0),(2,1)]),
+            row_offsets:vec![0,1,1], targets:vec![1], weights:vec![0.4],
+            ..NativeArtifact::default()
+        };
+        let score = |input: &NativeInput, graph: &NativeArtifact, omega: &OmegaOutput| {
+            let mut items = vec![candidate(1,0.5,true)];
+            apply_unified_bonus(&mut items,&Model::default(),input,omega,graph);
+            assert_eq!(items[0].ranking_score,items[0].final_score);
+            assert!(items[0].path_bonus+items[0].gated_bonus <= input.config.topology_bonus_cap);
+            items[0].final_score
+        };
+        assert!(score(&input,&graph,&omega)>0.5);
+        assert_eq!(score(&input,&NativeArtifact::default(),&omega),0.5);
+        input.query_state.river_edges[0].immediate_return=true;
+        assert_eq!(score(&input,&graph,&omega),0.5);
+        input.query_state.river_edges[0].immediate_return=false;
+        input.query_state.river_nodes[1].hop=2;
+        assert_eq!(score(&input,&graph,&omega),0.5);
+        input.query_state.river_nodes[1].hop=1;
+        let mut zero=omega.clone();
+        zero.omega=0.0;
+        assert_eq!(score(&input,&graph,&zero),0.5);
     }
 
     #[test]

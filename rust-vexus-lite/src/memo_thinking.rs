@@ -403,6 +403,7 @@ mod tests {
                 vec![],
                 Arc::new(HashMap::new()),
                 0,
+                crate::rivermemo_topology_v3::QueryCalibration::default(),
                 graph.clone(),
             )
             .unwrap();
