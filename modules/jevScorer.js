@@ -127,14 +127,45 @@ async function askNouls(p = {}) {
     const timeoutSignal = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
         ? AbortSignal.timeout(timeoutMs + 500)
         : null;
-    if (p.signal && timeoutSignal && typeof AbortSignal.any === 'function') {
+    const drainInFlight = p.drainOnAbort === true;
+    if (!drainInFlight && p.signal && timeoutSignal && typeof AbortSignal.any === 'function') {
         options.signal = AbortSignal.any([p.signal, timeoutSignal]);
-    } else if (p.signal || timeoutSignal) {
-        options.signal = p.signal || timeoutSignal;
+    } else if (!drainInFlight && p.signal) {
+        options.signal = p.signal;
+    } else if (timeoutSignal) {
+        options.signal = timeoutSignal;
     }
 
     const startedAt = Date.now();
-    const response = await client.decide(state, questions, options);
+    const decidePromise = client.decide(state, questions, options);
+    const response = (drainInFlight && p.signal)
+        ? await new Promise((resolve, reject) => {
+            if (p.signal.aborted) {
+                decidePromise.catch(() => {});
+                const abortErr = fail('JEV_ABORTED', '请求已中止');
+                abortErr.name = 'AbortError';
+                reject(abortErr);
+                return;
+            }
+            const onAbort = () => {
+                decidePromise.catch(() => {});
+                const abortErr = fail('JEV_ABORTED', '请求已中止');
+                abortErr.name = 'AbortError';
+                reject(abortErr);
+            };
+            p.signal.addEventListener('abort', onAbort, { once: true });
+            decidePromise.then(
+                val => {
+                    p.signal.removeEventListener('abort', onAbort);
+                    resolve(val);
+                },
+                err => {
+                    p.signal.removeEventListener('abort', onAbort);
+                    reject(err);
+                }
+            );
+        })
+        : await decidePromise;
     const latencyMs = Date.now() - startedAt;
 
     const answers = response && response.answers;

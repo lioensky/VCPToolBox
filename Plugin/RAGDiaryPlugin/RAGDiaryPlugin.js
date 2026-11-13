@@ -5287,7 +5287,8 @@ class RAGDiaryPlugin {
             const results = await getEmbeddingsBatch(chunks, {
                 apiUrl,
                 apiKey,
-                ...(options?.signal ? { signal: options.signal } : {})
+                ...(options?.signal ? { signal: options.signal } : {}),
+                ...(typeof options?.onBatchComplete === 'function' ? { onBatchComplete: options.onBatchComplete } : {})
             });
             const weights = chunks.map(chunk => Math.max(
                 1,
@@ -5414,7 +5415,8 @@ class RAGDiaryPlugin {
             return await getEmbeddingsBatch(texts, {
                 apiUrl,
                 apiKey,
-                ...(options?.signal ? { signal: options.signal } : {})
+                ...(options?.signal ? { signal: options.signal } : {}),
+                ...(typeof options?.onBatchComplete === 'function' ? { onBatchComplete: options.onBatchComplete } : {})
             });
         } catch (error) {
             if (error?.name === 'AbortError' || options?.signal?.aborted) {
@@ -5427,7 +5429,12 @@ class RAGDiaryPlugin {
         }
     }
 
-    async getBatchEmbeddingsCached(texts) {
+    async getBatchEmbeddingsCached(texts, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Batch embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!texts || !Array.isArray(texts) || texts.length === 0) return [];
 
         const results = new Array(texts.length).fill(null);
@@ -5436,9 +5443,11 @@ class RAGDiaryPlugin {
 
         texts.forEach((text, index) => {
             if (!text || !text.trim()) return;
-            const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
+            const normalized = text.trim();
+            const cacheKey = this.cacheManager.generateKey({ text: normalized });
             const vector = this.cacheManager.get('embedding', cacheKey);
             if (vector) {
+                this._rememberEmbeddingText(cacheKey, normalized);
                 results[index] = vector;
             } else {
                 missingIndices.push(index);
@@ -5448,14 +5457,25 @@ class RAGDiaryPlugin {
 
         if (missingTexts.length > 0) {
             console.log(`[RAGDiaryPlugin] Batch cache miss: ${missingTexts.length}/${texts.length} texts. Requesting API...`);
-            const newEmbeddings = await this.getBatchEmbeddings(missingTexts);
+            const persistCompletedItem = (text, vec) => {
+                if (!vec || !text || !text.trim()) return;
+                const normalized = text.trim();
+                const cacheKey = this.cacheManager.generateKey({ text: normalized });
+                this.cacheManager.set('embedding', cacheKey, vec);
+                this._rememberEmbeddingText(cacheKey, normalized);
+            };
+            const newEmbeddings = await this.getBatchEmbeddings(missingTexts, {
+                ...(options?.signal ? { signal: options.signal } : {}),
+                onBatchComplete: ({ texts: batchTexts, vectors: batchVectors }) => {
+                    if (!Array.isArray(batchTexts) || !Array.isArray(batchVectors)) return;
+                    batchVectors.forEach((vec, idx) => persistCompletedItem(batchTexts[idx], vec));
+                }
+            });
             newEmbeddings.forEach((vec, i) => {
                 if (vec) {
                     const originalIndex = missingIndices[i];
                     results[originalIndex] = vec;
-                    const text = missingTexts[i];
-                    const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-                    this.cacheManager.set('embedding', cacheKey, vec);
+                    persistCompletedItem(missingTexts[i], vec);
                 }
             });
         }
@@ -5476,12 +5496,14 @@ class RAGDiaryPlugin {
             if (!signal) return promise;
             return new Promise((resolve, reject) => {
                 if (signal.aborted) {
+                    promise.catch(() => {});
                     const abortErr = new Error('Embedding request aborted');
                     abortErr.name = 'AbortError';
                     reject(abortErr);
                     return;
                 }
                 const onAbort = () => {
+                    promise.catch(() => {});
                     const abortErr = new Error('Embedding request aborted');
                     abortErr.name = 'AbortError';
                     reject(abortErr);
@@ -5526,10 +5548,12 @@ class RAGDiaryPlugin {
             return fuzzyMatch.vector;
         }
 
+        // 共享单飞请求不绑定单个调用方的取消信号：调用侧通过 awaitWithSignal 0ms 脱钩，
+        // 在途向量请求继续静默收割入库供重发/模糊匹配复用，同时避免误杀搭便车的并发请求。
         const requestPromise = (async () => {
             try {
-                const vector = await this.getSingleEmbedding(normalizedText, { signal });
-                if (vector && !signal?.aborted) {
+                const vector = await this.getSingleEmbedding(normalizedText);
+                if (vector) {
                     this.cacheManager.set('embedding', cacheKey, vector);
                     this._rememberEmbeddingText(cacheKey, normalizedText);
                 }

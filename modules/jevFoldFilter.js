@@ -198,7 +198,39 @@ function composeUserMessage(userText, recentMessages, cfg) {
  * 就一批 desc 向 Jev 提问，返回 { intent, probs: Map<desc, number>, latencyMs }。
  * 任何异常都抛出，由 filterCandidates 转成 applied=false。
  */
-async function askJev({ client, stateText, descs, cfg, debug, placeholderKey, signal }) {
+function awaitJevWithCallerDetach(promise, signal) {
+    if (!signal) return promise;
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            promise.catch(() => {});
+            const abortErr = new Error('Jev fold aborted');
+            abortErr.name = 'AbortError';
+            abortErr.code = 'JEV_ABORTED';
+            reject(abortErr);
+            return;
+        }
+        const onAbort = () => {
+            promise.catch(() => {});
+            const abortErr = new Error('Jev fold aborted');
+            abortErr.name = 'AbortError';
+            abortErr.code = 'JEV_ABORTED';
+            reject(abortErr);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        promise.then(
+            val => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(val);
+            },
+            err => {
+                signal.removeEventListener('abort', onAbort);
+                reject(err);
+            }
+        );
+    });
+}
+
+async function askJev({ client, stateText, descs, cfg, debug, placeholderKey }) {
     const state = { user_message: stateText };
     const questions = {
         turn_intent: { type: 'noul', instructions: INTENT_QUESTION }
@@ -215,7 +247,6 @@ async function askJev({ client, stateText, descs, cfg, debug, placeholderKey, si
         state,
         questions,
         timeoutMs: cfg.timeoutMs,
-        signal,
         debug,
         label: `JevFold ${placeholderKey || '-'}`
     });
@@ -271,6 +302,13 @@ async function filterCandidates(p = {}) {
     const universeDescs = Array.isArray(p.universe) ? p.universe.map(normalizeDesc).filter(Boolean) : getDescUniverse();
     universeDescs.forEach(d => needed.add(d));
 
+    if (p.signal?.aborted) {
+        const abortErr = new Error('Jev fold aborted');
+        abortErr.name = 'AbortError';
+        abortErr.code = 'JEV_ABORTED';
+        throw abortErr;
+    }
+
     try {
         const client = p.client || require('./jevClient');
         if (!client || typeof client.decide !== 'function') {
@@ -285,33 +323,39 @@ async function filterCandidates(p = {}) {
             if (totalChars < cfg.minChars) {
                 return { applied: false, reason: 'below_min_chars', totalChars };
             }
-            const result = await askJev({
+            const inflightTask = askJev({
                 client,
                 stateText,
                 descs: [...needed],
                 cfg,
-                signal: p.signal,
                 debug: p.debug,
                 placeholderKey: p.placeholderKey
+            }).then(result => {
+                const cachedEntry = { intent: result.intent, probs: result.probs };
+                turnCache.set(cacheKey, cachedEntry);
+                return cachedEntry;
             });
-            entry = { intent: result.intent, probs: result.probs };
-            turnCache.set(cacheKey, entry);
+            entry = await awaitJevWithCallerDetach(inflightTask, p.signal);
         } else {
             // 命中缓存但缺某些 desc（例如随后才出现的插件折叠块）：只补问缺的那些
             const missing = [...needed].filter(d => !entry.probs.has(d));
             if (missing.length > 0) {
-                const extra = await askJev({
+                const inflightExtra = askJev({
                     client,
                     stateText,
                     descs: missing,
                     cfg,
-                    signal: p.signal,
                     debug: p.debug,
                     placeholderKey: p.placeholderKey
+                }).then(extra => {
+                    extra.probs.forEach((v, k) => entry.probs.set(k, v));
+                    turnCache.touch(cacheKey);
+                    return extra;
                 });
-                extra.probs.forEach((v, k) => entry.probs.set(k, v));
+                await awaitJevWithCallerDetach(inflightExtra, p.signal);
+            } else {
+                turnCache.touch(cacheKey);
             }
-            turnCache.touch(cacheKey);
         }
     } catch (e) {
         if (p.signal?.aborted || e?.name === 'AbortError' || e?.code === 'JEV_ABORTED') {

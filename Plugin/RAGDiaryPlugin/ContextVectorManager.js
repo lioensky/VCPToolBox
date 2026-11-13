@@ -260,6 +260,11 @@ class ContextVectorManager {
         });
 
         await Promise.all(tasks);
+        if (signal?.aborted) {
+            const abortErr = new Error('ContextVectorManager update aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
 
         // 保持原始顺序
         this.historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
