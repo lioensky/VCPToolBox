@@ -78,7 +78,16 @@ async function _sendBatch(batchTexts, config, batchNumber) {
     const modelCandidates = _getEmbeddingModelCandidates(config);
     const baseDelay = 1000;
 
+    const throwIfEmbeddingAborted = () => {
+        if (config?.signal?.aborted) {
+            const abortErr = new Error('Embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
+    };
+
     for (let attempt = 1; attempt <= modelCandidates.length; attempt++) {
+        throwIfEmbeddingAborted();
         const model = modelCandidates[attempt - 1];
         try {
             const requestUrl = `${config.apiUrl}/v1/embeddings`;
@@ -96,7 +105,8 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             const response = await fetch(requestUrl, {
                 method: 'POST',
                 headers: requestHeaders,
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(requestBody),
+                ...(config?.signal ? { signal: config.signal } : {})
             });
 
             const responseBodyText = await response.text();
@@ -167,9 +177,31 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             return sortedData.map(item => item.embedding);
 
         } catch (e) {
+            if (e?.name === 'AbortError' || config?.signal?.aborted) {
+                throwIfEmbeddingAborted();
+                throw e;
+            }
             console.warn(`[Embedding] Batch ${batchNumber}, Model "${model}" failed (${attempt}/${modelCandidates.length}): ${e.message}`);
             if (attempt === modelCandidates.length) throw e;
-            await new Promise(r => setTimeout(r, baseDelay * attempt));
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    config?.signal?.removeEventListener?.('abort', onAbort);
+                    resolve();
+                }, baseDelay * attempt);
+                const onAbort = () => {
+                    clearTimeout(timer);
+                    const abortErr = new Error('Embedding retry wait aborted');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                };
+                if (config?.signal) {
+                    if (config.signal.aborted) {
+                        onAbort();
+                        return;
+                    }
+                    config.signal.addEventListener('abort', onAbort, { once: true });
+                }
+            });
         }
     }
 }
@@ -230,6 +262,11 @@ async function getEmbeddingsBatch(texts, config) {
     // 定义 Worker：只要队列里还有任务，就不断抢任务做
     const worker = async (workerId) => {
         while (true) {
+            if (config?.signal?.aborted) {
+                const abortErr = new Error('Embedding batch worker aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
             // 🔒 获取任务索引 (原子操作模拟)
             const batchIndex = cursor++;
             if (batchIndex >= batches.length) break; // 没任务了，下班
@@ -242,6 +279,11 @@ async function getEmbeddingsBatch(texts, config) {
                     originalIndices: batch.originalIndices
                 };
             } catch (e) {
+                if (e?.name === 'AbortError' || config?.signal?.aborted) {
+                    const abortErr = e instanceof Error ? e : new Error('Embedding batch aborted');
+                    abortErr.name = 'AbortError';
+                    throw abortErr;
+                }
                 // 🛡️ 不再让单个 batch 失败导致整个 Promise.all 崩溃
                 // 而是记录失败，对应位置将填 null
                 console.error(`[Embedding] ❌ Batch ${batchIndex + 1} failed permanently: ${e.message}`);

@@ -118,10 +118,19 @@ async function askNouls(p = {}) {
         throw fail('JEV_NO_QUESTIONS', '没有可提的问题');
     }
 
+    if (p.signal?.aborted) {
+        const abortErr = fail('JEV_ABORTED', '请求已中止');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+    }
     const options = { timeoutMs, maxRetries: 0 };
-    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-        // 硬保险：即使底层超时未生效也在此刻中止，绝不拖住调用方的关键路径
-        options.signal = AbortSignal.timeout(timeoutMs + 500);
+    const timeoutSignal = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
+        ? AbortSignal.timeout(timeoutMs + 500)
+        : null;
+    if (p.signal && timeoutSignal && typeof AbortSignal.any === 'function') {
+        options.signal = AbortSignal.any([p.signal, timeoutSignal]);
+    } else if (p.signal || timeoutSignal) {
+        options.signal = p.signal || timeoutSignal;
     }
 
     const startedAt = Date.now();

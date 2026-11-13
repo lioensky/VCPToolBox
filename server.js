@@ -1092,6 +1092,7 @@ app.post('/v1/interrupt', (req, res) => {
         // 1. 设置中止标志，防止 chatCompletionHandler 继续写入
         if (!context.aborted) {
             context.aborted = true; // 标记为已中止
+            context.abortReason = 'explicit_interrupt';
 
             // 2. 立即触发 abort 信号（中断正在进行的 fetch 请求）
             if (context.abortController && !context.abortController.signal.aborted) {
@@ -1181,11 +1182,11 @@ app.post('/v1/interrupt', (req, res) => {
             }
         }, 1000); // 延迟1秒删除，确保所有异步操作完成
 
-        // 向中断请求的发起者返回成功响应
-        res.status(200).json({ status: 'success', message: `Interrupt signal sent for request ${id}.` });
+        // 向中断请求的发起者返回成功响应（同时携带 success 布尔值与 status 字段兼容单聊/群聊调用方）
+        res.status(200).json({ success: true, status: 'success', message: `Interrupt signal sent for request ${id}.` });
     } else {
         console.log(`[Interrupt] Received stop signal for non-existent or completed ID: ${id}`);
-        res.status(404).json({ status: 'error', message: `Request ${id} not found or already completed.` });
+        res.status(404).json({ success: false, status: 'error', code: 'REQUEST_NOT_FOUND', message: `Request ${id} not found or already completed.` });
     }
 });
 

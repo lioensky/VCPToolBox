@@ -1411,6 +1411,15 @@ class RAGDiaryPlugin {
     }
 
     async _processMessagesWithMemoScope(messages, pluginConfig) {
+        const signal = pluginConfig?.signal || null;
+        const throwIfRagAborted = () => {
+            if (signal?.aborted) {
+                const abortErr = new Error('RAGDiaryPlugin preprocessing aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
+        };
+        throwIfRagAborted();
         const ownedMemoObservations = new Set();
         let systemMessageTasks = [];
         try {
@@ -1494,8 +1503,10 @@ class RAGDiaryPlugin {
             // 仅在确实存在 RAG / 记忆 / 元思考占位符时构建上下文向量。
             // CONTEXT_VECTOR_ALLOW_API_HISTORY=false 只禁止 API 请求，并不会自动省略缓存扫描，
             // 因此该门控必须放在调用方，才能让普通请求真正走零开销快速路径。
+            throwIfRagAborted();
             await this.contextVectorManager.updateContext(messages, {
-                allowApi: this.contextVectorAllowApi
+                allowApi: this.contextVectorAllowApi,
+                signal
             });
 
             // V2 折叠同步同样只服务于记忆链路，避免普通请求重复扫描全部 assistant 历史。
@@ -1588,10 +1599,12 @@ class RAGDiaryPlugin {
             const config = this.ragParams?.RAGDiaryPlugin || {};
             const mainWeights = config.mainSearchWeights || [0.7, 0.3]; // 默认 用户0.7 : AI 0.3
 
+            throwIfRagAborted();
             const [userVector, aiVector] = await Promise.all([
-                userContent ? this.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
-                aiContent ? this.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+                userContent ? this.getSingleEmbeddingCached(userContent, { signal }) : Promise.resolve(null),
+                aiContent ? this.getSingleEmbeddingCached(aiContent, { signal }) : Promise.resolve(null)
             ]);
+            throwIfRagAborted();
 
             const queryVector = this._getWeightedAverageVector([userVector, aiVector], mainWeights);
 
@@ -1677,6 +1690,7 @@ class RAGDiaryPlugin {
             }
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
             systemMessageTasks = targetSystemMessageIndices.map(async (index) => {
+                throwIfRagAborted();
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
                 const systemMessage = newMessages[index];
 
@@ -1786,8 +1800,13 @@ class RAGDiaryPlugin {
                 }
             }
 
+            throwIfRagAborted();
             return newMessages;
         } catch (error) {
+            if (error?.name === 'AbortError' || signal?.aborted) {
+                throwIfRagAborted();
+                throw error;
+            }
             console.error('[RAGDiaryPlugin] processMessages 发生严重错误:', error);
             console.error('[RAGDiaryPlugin] Error stack:', error.stack);
             console.error('[RAGDiaryPlugin] Error name:', error.name);
@@ -5228,7 +5247,12 @@ class RAGDiaryPlugin {
         return RAGResultFormatter.aggregateTagStats(results);
     }
 
-    async getSingleEmbedding(text) {
+    async getSingleEmbedding(text, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!text) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
             return null;
@@ -5260,7 +5284,11 @@ class RAGDiaryPlugin {
             // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾链、并发批量、token 精确切分、429 退避。
             // 对超长用户/AI 上下文，先按 TextChunker 的 safeMaxTokens 切分，再对各 chunk 向量做 token 加权平均，
             // 避免单条 6800+ token 文本被 EmbeddingUtils 直接跳过导致 RAG 查询向量为 null。
-            const results = await getEmbeddingsBatch(chunks, { apiUrl, apiKey });
+            const results = await getEmbeddingsBatch(chunks, {
+                apiUrl,
+                apiKey,
+                ...(options?.signal ? { signal: options.signal } : {})
+            });
             const weights = chunks.map(chunk => Math.max(
                 1,
                 typeof getTokenCount === 'function' ? getTokenCount(chunk) : this._estimateTokens(chunk)
@@ -5272,6 +5300,11 @@ class RAGDiaryPlugin {
             }
             return vector || null;
         } catch (error) {
+            if (error?.name === 'AbortError' || options?.signal?.aborted) {
+                const abortErr = error instanceof Error ? error : new Error('Embedding request aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
             console.error('[RAGDiaryPlugin] getSingleEmbedding failed via EmbeddingUtils:', error.message);
             return null;
         }
@@ -5360,7 +5393,12 @@ class RAGDiaryPlugin {
     /**
      * ✅ 批量向量化方法（支持 OpenAI 兼容接口）
      */
-    async getBatchEmbeddings(texts) {
+    async getBatchEmbeddings(texts, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Batch embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!texts || !Array.isArray(texts) || texts.length === 0) return [];
 
         const apiKey = process.env.API_Key;
@@ -5373,8 +5411,17 @@ class RAGDiaryPlugin {
 
         try {
             // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾链、并发批量、token 精确切分、429 退避
-            return await getEmbeddingsBatch(texts, { apiUrl, apiKey });
+            return await getEmbeddingsBatch(texts, {
+                apiUrl,
+                apiKey,
+                ...(options?.signal ? { signal: options.signal } : {})
+            });
         } catch (error) {
+            if (error?.name === 'AbortError' || options?.signal?.aborted) {
+                const abortErr = error instanceof Error ? error : new Error('Batch embedding request aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
             console.error('[RAGDiaryPlugin] getBatchEmbeddings failed via EmbeddingUtils:', error.message);
             return new Array(texts.length).fill(null);
         }
@@ -5416,8 +5463,42 @@ class RAGDiaryPlugin {
         return results;
     }
 
-    async getSingleEmbeddingCached(text) {
+    async getSingleEmbeddingCached(text, options = {}) {
+        const signal = options?.signal || null;
+        if (signal?.aborted) {
+            const abortErr = new Error('Embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!text || !text.trim()) return null;
+
+        const awaitWithSignal = (promise) => {
+            if (!signal) return promise;
+            return new Promise((resolve, reject) => {
+                if (signal.aborted) {
+                    const abortErr = new Error('Embedding request aborted');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                    return;
+                }
+                const onAbort = () => {
+                    const abortErr = new Error('Embedding request aborted');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                };
+                signal.addEventListener('abort', onAbort, { once: true });
+                promise.then(
+                    value => {
+                        signal.removeEventListener('abort', onAbort);
+                        resolve(value);
+                    },
+                    err => {
+                        signal.removeEventListener('abort', onAbort);
+                        reject(err);
+                    }
+                );
+            });
+        };
 
         const normalizedText = text.trim();
         const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
@@ -5428,7 +5509,7 @@ class RAGDiaryPlugin {
         }
 
         if (this.pendingEmbeddingRequests.has(cacheKey)) {
-            return await this.pendingEmbeddingRequests.get(cacheKey);
+            return await awaitWithSignal(this.pendingEmbeddingRequests.get(cacheKey));
         }
 
         // 🌟 最小修复：精确缓存未命中时，在 API 前尝试高阈值 fuzzy 复用。
@@ -5447,8 +5528,8 @@ class RAGDiaryPlugin {
 
         const requestPromise = (async () => {
             try {
-                const vector = await this.getSingleEmbedding(normalizedText);
-                if (vector) {
+                const vector = await this.getSingleEmbedding(normalizedText, { signal });
+                if (vector && !signal?.aborted) {
                     this.cacheManager.set('embedding', cacheKey, vector);
                     this._rememberEmbeddingText(cacheKey, normalizedText);
                 }
@@ -5459,7 +5540,7 @@ class RAGDiaryPlugin {
         })();
 
         this.pendingEmbeddingRequests.set(cacheKey, requestPromise);
-        return await requestPromise;
+        return await awaitWithSignal(requestPromise);
     }
 
     _rememberEmbeddingText(cacheKey, normalizedText) {

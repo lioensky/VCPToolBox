@@ -198,7 +198,7 @@ function composeUserMessage(userText, recentMessages, cfg) {
  * 就一批 desc 向 Jev 提问，返回 { intent, probs: Map<desc, number>, latencyMs }。
  * 任何异常都抛出，由 filterCandidates 转成 applied=false。
  */
-async function askJev({ client, stateText, descs, cfg, debug, placeholderKey }) {
+async function askJev({ client, stateText, descs, cfg, debug, placeholderKey, signal }) {
     const state = { user_message: stateText };
     const questions = {
         turn_intent: { type: 'noul', instructions: INTENT_QUESTION }
@@ -215,6 +215,7 @@ async function askJev({ client, stateText, descs, cfg, debug, placeholderKey }) 
         state,
         questions,
         timeoutMs: cfg.timeoutMs,
+        signal,
         debug,
         label: `JevFold ${placeholderKey || '-'}`
     });
@@ -289,6 +290,7 @@ async function filterCandidates(p = {}) {
                 stateText,
                 descs: [...needed],
                 cfg,
+                signal: p.signal,
                 debug: p.debug,
                 placeholderKey: p.placeholderKey
             });
@@ -303,6 +305,7 @@ async function filterCandidates(p = {}) {
                     stateText,
                     descs: missing,
                     cfg,
+                    signal: p.signal,
                     debug: p.debug,
                     placeholderKey: p.placeholderKey
                 });
@@ -311,6 +314,11 @@ async function filterCandidates(p = {}) {
             turnCache.touch(cacheKey);
         }
     } catch (e) {
+        if (p.signal?.aborted || e?.name === 'AbortError' || e?.code === 'JEV_ABORTED') {
+            const abortErr = e instanceof Error ? e : new Error('Jev fold aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         // 热路径铁律：Jev 出任何问题都退回 embedding 的原结果，绝不因过滤失败而少给工具文档
         if (p.debug) {
             console.log(`[JevFold] 跳过过滤（${(e && e.code) || ''} ${(e && e.message) || e}）`);

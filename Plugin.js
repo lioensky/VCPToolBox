@@ -724,6 +724,11 @@ class PluginManager extends EventEmitter {
             if (this.debugMode) console.log(`[PluginManager] Message preprocessor ${pluginName} finished.`);
             return processedMessages;
         } catch (error) {
+            if (error?.name === 'AbortError' || requestConfig?.signal?.aborted) {
+                const abortErr = error instanceof Error ? error : new Error(`Preprocessor ${pluginName} aborted`);
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
             console.error(`[PluginManager] Error in message preprocessor ${pluginName}:`, error);
             return messages;
         }

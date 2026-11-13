@@ -242,7 +242,16 @@ function findLastRealUserMessage(messages, options = {}) {
     return { index: -1, rawContent: '', sanitizedContent: '' };
 }
 
+function throwIfContextAborted(context) {
+    if (context?.signal?.aborted) {
+        const abortErr = new Error('Message preprocessing aborted');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+    }
+}
+
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
+    throwIfContextAborted(context);
     if (text == null) return '';
     let processedText = String(text);
 
@@ -327,14 +336,19 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                     continue;
                 }
 
+                throwIfContextAborted(context);
                 processingStack.add(stackKey);
-                const foldObj = await toolboxManager.getFoldObject(alias);
-                const expandedText = await resolveDynamicFoldProtocol(
-                    foldObj,
-                    context,
-                    `{{${alias}}}`
-                );
-                processingStack.delete(stackKey);
+                let expandedText;
+                try {
+                    const foldObj = await toolboxManager.getFoldObject(alias);
+                    expandedText = await resolveDynamicFoldProtocol(
+                        foldObj,
+                        context,
+                        `{{${alias}}}`
+                    );
+                } finally {
+                    processingStack.delete(stackKey);
+                }
 
                 processedText = replaceFirstAliasPlaceholder(processedText, alias, expandedText, 'toolbox');
 
@@ -507,7 +521,8 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                 }
             }
 
-            return await ragPlugin.getSingleEmbeddingCached(text);
+            throwIfContextAborted(context);
+            return await ragPlugin.getSingleEmbeddingCached(text, { signal: context?.signal });
         };
 
         const [uVec, aVec] = await Promise.all([
@@ -528,13 +543,14 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             if (vectorCache.has(key)) return vectorCache.get(key);
 
             let descVector = null;
+            throwIfContextAborted(context);
             if (ragPlugin.vectorDBManager && typeof ragPlugin.vectorDBManager.getPluginDescriptionVector === 'function') {
                 descVector = await ragPlugin.vectorDBManager.getPluginDescriptionVector(
                     key,
-                    ragPlugin.getSingleEmbeddingCached.bind(ragPlugin)
+                    descText => ragPlugin.getSingleEmbeddingCached(descText, { signal: context?.signal })
                 );
             } else {
-                descVector = await ragPlugin.getSingleEmbeddingCached(key);
+                descVector = await ragPlugin.getSingleEmbeddingCached(key, { signal: context?.signal });
             }
             vectorCache.set(key, descVector);
             return descVector;
@@ -660,6 +676,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                         description: item.entry.description,
                         content: item.entry.content
                     })),
+                    signal: context?.signal,
                     debug: Boolean(context.DEBUG_MODE),
                     placeholderKey
                 });
@@ -681,6 +698,10 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                     console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤未生效: ${decision.reason}`);
                 }
             } catch (e) {
+                if (e?.name === 'AbortError' || context?.signal?.aborted) {
+                    throwIfContextAborted(context);
+                    throw e;
+                }
                 droppedEntryIndices.clear();
                 if (context.DEBUG_MODE) {
                     console.log(`[DynamicFold] ${placeholderKey} Jev 二次过滤异常，保留 embedding 结果: ${e && e.message}`);
@@ -704,6 +725,10 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
         return combinedContent;
     } catch (e) {
+        if (e?.name === 'AbortError' || context?.signal?.aborted) {
+            throwIfContextAborted(context);
+            throw e;
+        }
         console.error(`[DynamicFold] 处理动态折叠时发生异常 (${placeholderKey}):`, e.message);
         return fallbackBlock.content;
     }
