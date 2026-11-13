@@ -2928,7 +2928,7 @@ pub(crate) fn run_native_with_observation(
     let query_and_seed_tag_vectors = tag_vectors;
     let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
     let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
-    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input)?;
+    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input, &artifact)?;
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();

@@ -57,7 +57,7 @@ pub(super) fn gate(model: &mut Model, connection: &Connection)
 }
  
 pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
-    connection: &Connection, input: &NativeInput)
+    connection: &Connection, input: &NativeInput, artifact: &NativeArtifact)
     -> std::result::Result<(), String> {
     const FILE_LIMIT: usize = 128;
     const TAG_LIMIT: usize = 128;
@@ -97,10 +97,16 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
                     let other_focus = focus.iter().copied().filter(|id|
                         *id != decision.source_id && *id != decision.target_id
                         && (left.2.contains(id) || right.2.contains(id))).min();
+                    // Missing global statistics are not evidence of rarity.
+                    let specificity = artifact.inbound.get(&decision.source_id)
+                        .filter(|mass| mass.is_finite() && **mass >= 0.0)
+                        .filter(|_| artifact.max_inbound.is_finite() && artifact.max_inbound > 0.0)
+                        .map(|mass| 1.0 - clamp01(*mass / artifact.max_inbound).sqrt());
+                    let calibrated = !input.calibration.superseded_ids.is_empty()
+                        && input.calibration.differentia_confidence > 0.0;
                     let single_specific = focus.len() == 1
                         && focus.contains(&decision.source_id)
-                        && !input.calibration.superseded_ids.is_empty()
-                        && input.calibration.differentia_confidence > 0.0;
+                        && (calibrated || specificity.is_some_and(|value| value >= 0.65));
                     if other_focus.is_none() && !single_specific { continue; }
                     let anchor = other_focus;
                     let bridge = left.2.intersection(&right.2).copied().filter(|id|
@@ -109,7 +115,8 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
                     if let Some(bridge) = bridge {
                         witness = Some(serde_json::json!({
                             "fileIds": [left.0, right.0], "focusId": anchor,
-                            "bridgeTagId": bridge, "differentChecksums": true
+                            "bridgeTagId": bridge, "differentChecksums": true,
+                            "sourceSpecificity": specificity, "singleFocusAdmission": single_specific
                         }));
                         break 'pairs;
                     }
@@ -381,7 +388,7 @@ mod gate_regressions {
         let check = |db: &Connection| {
             let mut m = model();
             let mut d = gate(&mut m, db).unwrap();
-            refine(&mut m, &mut d, db, &input).unwrap();
+            refine(&mut m, &mut d, db, &input, &NativeArtifact::default()).unwrap();
             d[0].accepted
         };
         assert!(!check(&db), "same content cannot qualify");
@@ -409,7 +416,7 @@ mod gate_regressions {
         let check = |input: &NativeInput| {
             let mut m = model();
             let mut decisions = gate(&mut m, &db).unwrap();
-            refine(&mut m, &mut decisions, &db, input).unwrap();
+            refine(&mut m, &mut decisions, &db, input, &NativeArtifact::default()).unwrap();
             decisions[0].accepted
         };
         assert!(!check(&input), "ordinary single focus must not bypass the firewall");
@@ -421,6 +428,42 @@ mod gate_regressions {
         db.execute("UPDATE files SET checksum='b' WHERE id=11", []).unwrap();
         db.execute("DELETE FROM file_tags WHERE file_id=11 AND tag_id=9", []).unwrap();
         assert!(!check(&input), "endpoints alone are not a bridge");
+    }
+
+    #[test]
+    fn rare_single_focus_requires_known_statistics_and_full_witness() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE TABLE files(id INTEGER PRIMARY KEY, checksum TEXT);
+            INSERT INTO files VALUES (10,'a'),(11,'b');
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,9),(11,1),(11,2),(11,9);").unwrap();
+        let input: NativeInput = serde_json::from_value(serde_json::json!({
+            "query":{"vector":[1,0]}, "queryState":{"fieldProvenance":[
+                {"id":1,"hop":0,"sourceType":"lexical_seed"}
+            ]}
+        })).unwrap();
+        let check = |graph: &NativeArtifact| {
+            let mut m = model();
+            let mut d = gate(&mut m, &db).unwrap();
+            refine(&mut m, &mut d, &db, &input, graph).unwrap();
+            d[0].accepted
+        };
+        let mut graph = NativeArtifact { max_inbound:100.0,
+            inbound:HashMap::from([(1,4.0)]), ..NativeArtifact::default() };
+        assert!(check(&graph), "known rare focus qualifies without superseded parents");
+        graph.inbound.insert(1,100.0);
+        assert!(!check(&graph), "hub cannot use rarity admission");
+        graph.inbound.clear();
+        assert!(!check(&graph), "missing is not rare");
+        graph.inbound.insert(1,4.0);
+        graph.max_inbound=0.0;
+        assert!(!check(&graph), "invalid global denominator");
+        graph.max_inbound=100.0;
+        db.execute("UPDATE files SET checksum='a' WHERE id=11", []).unwrap();
+        assert!(!check(&graph), "rarity cannot bypass duplicate content");
+        db.execute("UPDATE files SET checksum='b' WHERE id=11", []).unwrap();
+        db.execute("DELETE FROM file_tags WHERE file_id=11 AND tag_id=9", []).unwrap();
+        assert!(!check(&graph), "rarity cannot bypass bridge witness");
     }
 
     #[test]
@@ -445,7 +488,8 @@ mod gate_regressions {
 }
 
 /// Candidate-self continuous readout. Ordinary one-hop transport and admitted
-/// XW routes share a maximum envelope, never a second additive topology budget.
+/// XW and proxy routes share a maximum envelope; graph evidence joins through
+/// bounded complement composition inside the same topology budget.
 pub(super) fn apply_unified_bonus(
     work: &mut [ScoredWork], model: &Model, input: &NativeInput,
     omega: &OmegaOutput, artifact: &NativeArtifact,
@@ -484,9 +528,16 @@ pub(super) fn apply_unified_bonus(
             }
         }
         let transport = cap * proxy.max(xw.evidence);
-        let previous = item.gated_bonus;
-        item.gated_bonus = previous.max(transport)
-            .min(positive(cap - item.path_bonus));
+        // Rebuild from immutable raw evidence, not the previous merged result.
+        // Noisy-OR is a bounded complement operator, not an independence claim.
+        let previous = (item.v2_bonus * gate).min(positive(cap - item.path_bonus));
+        let merged = if transport <= 0.0 { previous }
+        else if previous <= 0.0 { transport }
+        else if cap > 0.0 {
+            cap * (1.0 - (1.0 - clamp01(previous / cap))
+                * (1.0 - clamp01(transport / cap)))
+        } else { 0.0 };
+        item.gated_bonus = merged.min(positive(cap - item.path_bonus));
         item.final_score = clamp01(item.pure_score + item.path_bonus
             + item.gated_bonus + item.anchor_bonus);
         item.ranking_score = item.final_score;
@@ -667,6 +718,42 @@ mod score_contract_fixture_tests {
         apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
         assert_eq!(score.to_bits(),work[0].final_score.to_bits());
         assert_eq!(work[1].final_score,0.9);
+    }
+
+    #[test]
+    fn complementary_graph_and_transport_are_bounded_and_idempotent() {
+        let input: NativeInput = serde_json::from_value(json!({
+            "query":{"vector":[1,0]}, "queryState":{
+                "completeObservation":true,
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}]
+            }
+        })).unwrap();
+        let omega = OmegaOutput { omega:1.0, omega_edge:1.0, omega_emerge:1.0,
+            omega_flow:1.0, regime:"dense".into(), active_edges:1,
+            seed_nodes:1,reached_nodes:2,emergent_nodes:1,complete_observation:true };
+        let model = Model { eligible_routes:1, routes:vec![Route {
+            source_id:1,target_id:2,flow:1.0,relative_flow:0.625,
+            vector:Arc::from(vec![1.0_f32,0.0]),
+        }] };
+        let mut work=vec![candidate(1,0.5,true)];
+        let cap=input.config.topology_bonus_cap;
+        work[0].v2_bonus=0.5*cap;
+        work[0].gated_bonus=0.5*cap;
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert!((work[0].gated_bonus-cap*0.8125).abs()<1e-14);
+        let bits=work[0].final_score.to_bits();
+        for _ in 0..5 {
+            apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+            assert_eq!(work[0].final_score.to_bits(),bits);
+            assert_eq!(work[0].ranking_score.to_bits(),bits);
+        }
+        work[0].path_bonus=0.75*cap;
+        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert!(work[0].path_bonus+work[0].gated_bonus<=cap);
+        let mut empty=vec![candidate(2,0.5,false)];
+        empty[0].v2_bonus=0.013;
+        apply_unified_bonus(&mut empty,&Model::default(),&input,&omega,&NativeArtifact::default());
+        assert_eq!(empty[0].gated_bonus.to_bits(),0.013_f64.to_bits());
     }
 
     #[test]
