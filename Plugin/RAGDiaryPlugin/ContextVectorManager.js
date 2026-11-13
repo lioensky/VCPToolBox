@@ -136,7 +136,12 @@ class ContextVectorManager {
      */
     async updateContext(messages, options = {}) {
         if (!Array.isArray(messages)) return;
-        const { allowApi = false } = options;
+        const { allowApi = false, signal = null } = options;
+        if (signal?.aborted) {
+            const abortErr = new Error('ContextVectorManager update aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
 
         const newAssistantVectors = [];
         const newUserVectors = [];
@@ -213,7 +218,12 @@ class ContextVectorManager {
 
                 // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
                 if (!vector && allowApi) {
-                    vector = await this.plugin.getSingleEmbeddingCached(content);
+                    if (signal?.aborted) {
+                        const abortErr = new Error('ContextVectorManager update aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    vector = await this.plugin.getSingleEmbeddingCached(content, { signal });
                     if (vector) {
                         vectorSource = 'api';
                     }
@@ -250,6 +260,11 @@ class ContextVectorManager {
         });
 
         await Promise.all(tasks);
+        if (signal?.aborted) {
+            const abortErr = new Error('ContextVectorManager update aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
 
         // 保持原始顺序
         this.historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);

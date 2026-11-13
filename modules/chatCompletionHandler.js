@@ -126,7 +126,7 @@ class ResponseReplayCache {
   }
 }
 
-function installResponseCacheRecorder(res, { cache, cacheKey, id, clientIp, streamMode, debugMode }) {
+function installResponseCacheRecorder(res, { cache, cacheKey, id, clientIp, streamMode, debugMode, shouldSkipCache = null }) {
   if (!cache?.enabled || !cacheKey || res.__vcpReplayCacheRecorderInstalled) {
     return () => {};
   }
@@ -160,6 +160,13 @@ function installResponseCacheRecorder(res, { cache, cacheKey, id, clientIp, stre
   const finalize = () => {
     if (finalized) return;
     finalized = true;
+
+    if (typeof shouldSkipCache === 'function' && shouldSkipCache()) {
+      if (debugMode) {
+        console.log(`[ResponseReplayCache] Skip caching aborted request key=${cacheKey}`);
+      }
+      return;
+    }
 
     const statusCode = res.statusCode || 200;
     if (statusCode >= 200 && statusCode < 500 && capturedChunks.length > 0) {
@@ -775,6 +782,15 @@ class ChatCompletionHandler {
 
     const abortController = new AbortController();
     const handoffGate = createHandoffGate(abortController.signal);
+    requestPreprocessorConfig.signal = abortController.signal;
+
+    const throwIfRequestAborted = () => {
+      if (abortController.signal.aborted || activeRequests.get(id)?.aborted) {
+        const abortErr = new Error('Request aborted during preprocessing');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+    };
 
     let clientDisconnectedAbortReason = null;
     let cleanupClientDisconnectListeners = () => {};
@@ -789,7 +805,12 @@ class ChatCompletionHandler {
         id,
         clientIp,
         streamMode: isOriginalRequestStreaming,
-        debugMode: DEBUG_MODE
+        debugMode: DEBUG_MODE,
+        shouldSkipCache: () => Boolean(
+          abortController.signal.aborted
+          || clientDisconnectedAbortReason
+          || activeRequests.get(id)?.aborted
+        )
       });
     }
 
@@ -1018,6 +1039,7 @@ class ChatCompletionHandler {
 
       // --- 统一处理所有变量替换 ---
       // 创建一个包含所有所需依赖的统一上下文
+      throwIfRequestAborted();
       const processingContext = {
         pluginManager,
         webSocketServer,
@@ -1025,6 +1047,7 @@ class ChatCompletionHandler {
         detectors: this.config.detectors,
         superDetectors: this.config.superDetectors,
         DEBUG_MODE,
+        signal: abortController.signal,
         messages: tavernProcessedMessages, // 将近期消息列表传递下去，用于支持上下文动态折叠 (Contextual Folding)
         // 静态/混合/分布式插件上报内容由 preprocessor_order.json 中的
         // $StaticPlaceholderInjection 虚拟阶段注入，避免动态网页文本在
@@ -1045,6 +1068,7 @@ class ChatCompletionHandler {
       // 如果使用 Promise.all 并发，多条消息可能同时展开同一个 agent，违反"只展开一个"的约束
       let processedMessages = [];
       for (const msg of tavernProcessedMessages) {
+        throwIfRequestAborted();
         const newMessage = JSON.parse(JSON.stringify(msg));
         if (newMessage.content && typeof newMessage.content === 'string') {
           newMessage.content = await messageProcessor.replaceAgentVariables(
@@ -1098,6 +1122,7 @@ class ChatCompletionHandler {
         : Array.from(pluginManager.messagePreprocessors.keys());
 
       for (const name of orderedPipeline) {
+        throwIfRequestAborted();
         if (name === 'VCPTavern') continue;
 
         if (name === STATIC_PLACEHOLDER_INJECTION_STAGE) {
@@ -1126,6 +1151,10 @@ class ChatCompletionHandler {
             requestPreprocessorConfig
           );
         } catch (pluginError) {
+          if (pluginError?.name === 'AbortError' || abortController.signal.aborted) {
+            throwIfRequestAborted();
+            throw pluginError;
+          }
           console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
         }
       }
@@ -1237,6 +1266,7 @@ class ChatCompletionHandler {
         capturedStage: 'before_upstream_fetch'
       });
 
+      throwIfRequestAborted();
       await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
 
       let firstAiAPIResponse = await fetchWithRetry(
