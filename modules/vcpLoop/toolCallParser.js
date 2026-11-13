@@ -315,7 +315,7 @@ class ToolCallParser {
     };
 
     // 严格单行无尖括号思考标签正则（动态构造以避免自指）：
-    const TAG_PATTERN = '<[ \\t]*(\\/?)[ \\t]*(think(?:ing)?|thought|antthinking)\\b(?:[ \\t]+[^>\\r\\n<]*?)?[ \\t]*>';
+    const TAG_PATTERN = '<[ \\t]*(\\/?)[ \\t]*(think(?:ing)?|thought(?:s)?|antthinking)\\b(?:[ \\t]+[^>\\r\\n<]*?)?[ \\t]*>';
     const tagRegex = new RegExp(TAG_PATTERN, 'gi');
 
     // 预检某个句中内联开标签（!lineStart）在后续非保护域中是否存在配对的闭合标签：

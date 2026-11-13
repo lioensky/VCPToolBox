@@ -188,7 +188,8 @@ class StreamHandler {
         let streamAborted = false;
         let keepAliveTimer = null;
         let chunkIdleTimer = null;
-        const CHUNK_IDLE_TIMEOUT = 90000; // 90 秒无新 chunk 则判定上游流冻结
+        const configuredIdleTimeout = Number(process.env.STREAM_CHUNK_IDLE_TIMEOUT_MS);
+        const CHUNK_IDLE_TIMEOUT = Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0 ? configuredIdleTimeout : 90000; // 默认 90 秒（可通过 STREAM_CHUNK_IDLE_TIMEOUT_MS 配置）
         let message = { content: '', reasoning_content: '' };
         let clientReasoningBlockOpen = false;
         let clientReasoningEndsWithNewline = false;
@@ -655,8 +656,22 @@ class StreamHandler {
         break;
       }
 
-      // 执行普通调用
-      const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForLoop);
+      // 执行普通调用（启动 SSE 保活心跳，防止长耗时工具/RAG刷新/下轮首字等待期间连接空闲断开）
+      const loopKeepAliveTimer = setInterval(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          try {
+            res.write(': vcp-tool-keepalive\n\n');
+          } catch (e) { /* ignore */ }
+        }
+      }, 5000);
+      loopKeepAliveTimer.unref?.();
+      let toolResults;
+      try {
+        toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForLoop);
+      } catch (toolExecErr) {
+        clearInterval(loopKeepAliveTimer);
+        throw toolExecErr;
+      }
       const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
@@ -742,22 +757,27 @@ class StreamHandler {
         } catch (e) { }
       }
 
-      if (this.context.handoffGate?.isReady()) await waitForHandoff();
-      if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
-      const nextAiAPIResponse = await fetchWithRetry(
-        `${apiUrl}/v1/chat/completions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-            Accept: 'text/event-stream',
+      let nextAiAPIResponse;
+      try {
+        if (this.context.handoffGate?.isReady()) await waitForHandoff();
+        if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
+        nextAiAPIResponse = await fetchWithRetry(
+          `${apiUrl}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              Accept: 'text/event-stream',
+            },
+            body: JSON.stringify(projectToolBatchForUpstream({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
+            signal: abortController.signal,
           },
-          body: JSON.stringify(projectToolBatchForUpstream({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
-          signal: abortController.signal,
-        },
-        { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
-      );
+          { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
+        );
+      } finally {
+        clearInterval(loopKeepAliveTimer);
+      }
 
       if (!nextAiAPIResponse.ok) {
         await streamUpstreamErrorAndEnd(res, nextAiAPIResponse, originalBody?.model, 'Normal Tool Loop');

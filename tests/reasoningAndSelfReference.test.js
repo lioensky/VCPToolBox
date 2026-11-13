@@ -399,3 +399,23 @@ test('M19 & M20 [前端协同] EmotionTagScanner：行内反引号与句中提�
   assert.equal(tagEvents2.length, 1);
   assert.equal(tagEvents2[0].emotion, 'calm');
 });
+
+test('M21 [外测度与适配器] 支持复数 <thoughts> 思考标签剥离与 reasoningContentAdapter 单复数归一化', () => {
+  const { extractReasoningText, normalizeReasoningTag, wrapReasoningText } = require('../modules/reasoningContentAdapter');
+  const input = [
+    openTag('thoughts'),
+    buildToolBlock('FakeToolInsideThoughts'),
+    closeTag('thoughts'),
+    buildToolBlock('RealToolAfterThoughts')
+  ].join('\n');
+
+  const calls = ToolCallParser.parse(input);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'RealToolAfterThoughts');
+
+  assert.equal(extractReasoningText({ thought: 'step-1' }), 'step-1');
+  assert.equal(extractReasoningText({ thoughts: [{ thought: 'step-2' }] }), 'step-2');
+  assert.equal(normalizeReasoningTag('thought'), 'thought');
+  assert.equal(normalizeReasoningTag('thoughts'), 'thoughts');
+  assert.equal(wrapReasoningText('abc', 'thought'), '<thought>\nabc\n</thought>\n');
+});

@@ -10,6 +10,7 @@ const REASONING_KEYS = Object.freeze([
   'reasoning_text',
   'reasoningText',
   'thinking',
+  'thought',
   'thoughts'
 ]);
 
@@ -19,13 +20,17 @@ const TEXT_VALUE_KEYS = new Set([
   'summary',
   'value',
   'reasoning',
-  'thinking'
+  'thinking',
+  'thought',
+  'thoughts'
 ]);
 
 function normalizeReasoningTag(value) {
-  return String(value || '').trim().toLowerCase() === 'thinking'
-    ? 'thinking'
-    : 'think';
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'thinking' || normalized === 'thought' || normalized === 'thoughts') {
+    return normalized;
+  }
+  return 'think';
 }
 
 function normalizeReasoningModelFilters(value) {
