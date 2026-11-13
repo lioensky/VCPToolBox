@@ -20,7 +20,7 @@ use crate::storage::{ensure_tag_vectors_loaded, TagVectorPool};
 use crate::storage::load_vectors_by_ids;
 
 const PIPELINE_SCHEMA: &str = "vexus-unified-memo-pipeline-v1";
-const PIPELINE_ALGORITHM: &str = "memo.conservative-topology-v2.2";
+const PIPELINE_ALGORITHM: &str = "memo.nnls-cone-experiment-b-v1";
 
 fn positive(value: f64) -> f64 {
     if value.is_finite() {
@@ -478,6 +478,7 @@ struct PyramidLevelOutput {
     residual_energy_ratio: f64,
     energy_explained: f64,
     handshake_features: HandshakeFeatures,
+    nnls_diagnostics: crate::memo_nnls::Diagnostics,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -499,6 +500,7 @@ struct PyramidOutput {
     features: PyramidFeatures,
 }
 
+#[cfg(test)]
 fn orthogonal_projection(
     query: &[f32],
     tags: &[PyramidTagWork],
@@ -770,7 +772,7 @@ fn analyze_pyramid_with_pool(
         if matches.is_empty() {
             break;
         }
-        // Filter before Gram-Schmidt: graph-external tags cannot consume energy
+        // Filter before cone fitting: graph-external tags cannot consume energy
         // that no admitted propagation seed can carry. Do not require outdegree.
         let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64)
             .filter(|id| eligible.map_or(true, |nodes| nodes.contains_key(id))).collect();
@@ -798,10 +800,16 @@ fn analyze_pyramid_with_pool(
         }
 
         let current_energy = magnitude(&residual).powi(2);
-        let (projection, next_residual, coefficients) =
-            orthogonal_projection(&residual, &tags, dimension);
-        for (tag, coefficient) in tags.iter_mut().zip(coefficients.iter()) {
-            tag.contribution = *coefficient / current_energy.sqrt().max(1e-12);
+        let cone_tags: Vec<(i64, &[f32])> = tags.iter()
+            .map(|tag| (tag.id, tag.vector.as_ref())).collect();
+        let solution = crate::memo_nnls::solve(&residual, &cone_tags)
+            .map_err(|error| format!("Memo pyramid layer {level}: {error}"))?;
+        let projection = solution.projection;
+        let next_residual = solution.residual;
+        for (tag, coefficient) in tags.iter_mut().zip(&solution.contributions) {
+            // Original unit-Tag reconstruction amplitude relative to layer
+            // input norm, not an independent orthogonal energy contribution.
+            tag.contribution = *coefficient;
         }
         let handshake = analyze_handshakes(&residual, &mut tags, dimension);
         let residual_magnitude = magnitude(&next_residual);
@@ -830,6 +838,7 @@ fn analyze_pyramid_with_pool(
             residual_energy_ratio: residual_energy / original_energy,
             energy_explained,
             handshake_features: handshake,
+            nnls_diagnostics: solution.diagnostics,
         });
         if config.spike_routing.dynamic_wormholes {
             residuals.push(residual.clone());
