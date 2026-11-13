@@ -931,6 +931,78 @@ fn lexical_grounding_with_tokens(query: &HashSet<String>, name: &str) -> f64 {
     tag.intersection(query).count() as f64 / tag.len() as f64
 }
 
+/// Conservative lexical containment heuristic, not an ontology assertion.
+/// Collinear short names retain legacy alias rescue; independent coefficients win.
+fn superseded_hypernym(tag: &PyramidTagWork, peers: &[PyramidTagWork], threshold: f64) -> bool {
+    if tag.contribution >= threshold { return false; }
+    let tokens = lexical_tokens(&tag.name);
+    if tokens.is_empty() { return false; }
+    peers.iter().any(|peer| {
+        if peer.id == tag.id || peer.contribution < threshold || peer.similarity <= 0.0 {
+            return false;
+        }
+        let superset = lexical_tokens(&peer.name);
+        tokens.len() < superset.len() && tokens.is_subset(&superset)
+            && cosine(&tag.vector, &peer.vector) < 0.90
+    })
+}
+
+/// Remove only admitted redundant parent directions. All work is FP64;
+/// two-pass reorthogonalization and relative norm guards reject numerical axes.
+fn differentia_direction(
+    query: &[f32], levels: &[Vec<PyramidTagWork>], config: &PipelineConfig,
+    explicit_names: &HashSet<String>,
+) -> (Vec<f32>, Vec<i64>, f64) {
+    let qnorm = magnitude(query);
+    if !qnorm.is_finite() || qnorm <= 1e-12 { return (Vec::new(), Vec::new(), 0.0); }
+    let mut parents: Vec<&PyramidTagWork> = Vec::new();
+    for tags in levels {
+        let maximum = tags.iter().map(|t| positive(t.contribution)).fold(0.0, f64::max);
+        let threshold = (maximum * config.seed_contribution_ratio.clamp(0.0, 1.0))
+            .max(config.seed_contribution_floor.max(0.0));
+        for tag in tags {
+            if !explicit_names.contains(&tag.name.trim().to_lowercase())
+                && superseded_hypernym(tag, tags, threshold)
+                && cosine(query, &tag.vector) >= 0.65 {
+                parents.push(tag);
+            }
+        }
+    }
+    parents.sort_by_key(|t| t.id);
+    parents.dedup_by_key(|t| t.id);
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+    let mut ids = Vec::new();
+    for parent in parents {
+        if parent.vector.len() != query.len() { continue; }
+        let mut axis: Vec<f64> = parent.vector.iter().map(|v| *v as f64).collect();
+        let original = axis.iter().map(|v| v*v).sum::<f64>().sqrt();
+        if !original.is_finite() || original <= 1e-12 { continue; }
+        for _ in 0..2 {
+            for unit in &basis {
+                let projection = axis.iter().zip(unit).map(|(a,b)| a*b).sum::<f64>();
+                for (a,b) in axis.iter_mut().zip(unit) { *a -= projection*b; }
+            }
+        }
+        let norm = axis.iter().map(|v| v*v).sum::<f64>().sqrt();
+        if !norm.is_finite() || norm <= 1e-5 * original { continue; }
+        for value in &mut axis { *value /= norm; }
+        basis.push(axis);
+        ids.push(parent.id);
+    }
+    if basis.is_empty() { return (Vec::new(), ids, 0.0); }
+    let mut residual: Vec<f64> = query.iter().map(|v| *v as f64 / qnorm).collect();
+    for _ in 0..2 {
+        for unit in &basis {
+            let projection = residual.iter().zip(unit).map(|(a,b)| a*b).sum::<f64>();
+            for (a,b) in residual.iter_mut().zip(unit) { *a -= projection*b; }
+        }
+    }
+    let norm = residual.iter().map(|v| v*v).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm < 1e-4 { return (Vec::new(), ids, 0.0); }
+    // Smoothly attenuate near-degenerate directions instead of amplifying noise.
+    let confidence = clamp01(norm / 0.1);
+    (residual.into_iter().map(|v| (v/norm) as f32).collect(), ids, confidence)
+}
 fn range_value(values: &[f64], index: usize, fallback: f64) -> f64 {
     values
         .get(index)
@@ -1070,6 +1142,9 @@ fn gate_tags_for_graph(
             if tag.id <= 0 || seen.contains(&tag.id) {
                 continue;
             }
+            // Do not resurrect a geometrically redundant lexical parent.
+            // Explicit user cores remain authoritative and bypass this heuristic.
+            if !is_core && superseded_hypernym(tag, tags, threshold) { continue; }
             let grounding = lexical_grounding_with_tokens(&query_tokens, &tag.name);
             let lexical = grounding >= 0.5;
             // Only already independently supported peers can lend amplitude.
@@ -2220,6 +2295,17 @@ fn run_pipeline_with_connection(
         dual_fields.transfer_domain_ids.clone(),
         Arc::new(tag_vectors),
         crate::storage::read_generation(connection)?,
+        {
+            let explicit_names = input.core_tags.iter().map(|s| s.trim().to_lowercase())
+                .chain(explicit_cores.iter().map(|(_,s)| s.trim().to_lowercase()))
+                .collect();
+            let (differentia_vector, superseded_ids, differentia_confidence) =
+                differentia_direction(&input.query_vector, &level_tags, &input.config, &explicit_names);
+            crate::rivermemo_topology_v3::QueryCalibration {
+                differentia_vector, superseded_ids, differentia_confidence,
+                explained_ratio: Some(clamp01(pyramid.total_explained_energy)),
+            }
+        },
         artifact.clone(),
     )?;
     let observation_cached = true;
@@ -3298,5 +3384,41 @@ mod optimization_invariant_tests {
                 assert!(y <= 0.0);
             }
         }
+    }
+}
+#[cfg(test)]
+mod experiment_c_tests {
+    use super::*;
+    fn tag(id: i64, name: &str, vector: Vec<f32>, contribution: f64) -> PyramidTagWork {
+        PyramidTagWork { id, name: name.into(), vector: vector.into(),
+            similarity: 1.0, contribution, handshake_magnitude: 0.0 }
+    }
+    #[test]
+    fn parent_is_suppressed_but_alias_and_independent_parent_survive() {
+        let child = tag(2, "华为汽车", vec![0.8,0.6], 1.0);
+        let parent = tag(1, "华为", vec![1.0,0.0], 0.0);
+        assert!(superseded_hypernym(&parent, &[parent.clone(),child.clone()], 0.1));
+        let mut independent = parent.clone();
+        independent.contribution = 0.2;
+        assert!(!superseded_hypernym(&independent, &[independent.clone(),child], 0.1));
+        let alias = tag(3,"Lunarium",vec![1.0,0.0],0.0);
+        let full = tag(4,"Lunarium星之旅",vec![1.0,0.0],1.0);
+        assert!(!superseded_hypernym(&alias,&[alias.clone(),full],0.1));
+    }
+    #[test]
+    fn differentia_is_orthogonal_and_explicit_parent_is_protected() {
+        let levels = vec![vec![
+            tag(1,"华为",vec![1.0,0.0],0.0),
+            tag(2,"华为汽车",vec![0.8,0.6],1.0),
+        ]];
+        let (direction, ids, confidence) = differentia_direction(
+            &[0.8,0.6], &levels, &PipelineConfig::default(), &HashSet::new());
+        assert_eq!(ids,vec![1]);
+        assert!(direction[0].abs() < 1e-6 && direction[1] > 0.99);
+        assert_eq!(confidence,1.0);
+        let (direction,ids,_) = differentia_direction(
+            &[0.8,0.6], &levels, &PipelineConfig::default(),
+            &HashSet::from(["华为".into()]));
+        assert!(direction.is_empty() && ids.is_empty());
     }
 }
