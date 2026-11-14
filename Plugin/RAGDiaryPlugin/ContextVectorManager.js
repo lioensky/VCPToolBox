@@ -10,10 +10,11 @@
 const crypto = require('crypto');
 
 class ContextVectorManager {
-    constructor(plugin) {
+    constructor(plugin, maxVectorMapSize = 1000) {
         this.plugin = plugin;
-        // 核心映射：normalizedHash -> { vector, role, originalText, timestamp }
+        // 核心映射：normalizedHash -> { vector, role, normalizedText, timestamp }，有界 LRU。
         this.vectorMap = new Map();
+        this.maxVectorMapSize = maxVectorMapSize;
         // 原始消息 -> { normalized, hash }，有界 LRU。
         this.normalizationCache = new Map();
         this.maxNormalizationCacheSize = 512;
@@ -108,9 +109,7 @@ class ContextVectorManager {
         let queryBigrams = null;
 
         for (const entry of this.vectorMap.values()) {
-            const targetNormalized = entry.normalizedText !== undefined
-                ? entry.normalizedText
-                : (entry.normalizedText = this._normalize(entry.originalText));
+            const targetNormalized = entry.normalizedText;
 
             if (!targetNormalized || targetNormalized.length < 2) continue;
             if (normalizedText === targetNormalized) return entry.vector;
@@ -231,10 +230,14 @@ class ContextVectorManager {
 
                 // 存入映射
                 if (vector) {
+                    // 按写入先后淘汰：不刷新顺序，上限以内模糊匹配的扫描顺序与原来相同
+                    if (!this.vectorMap.has(hash) && this.vectorMap.size >= this.maxVectorMapSize) {
+                        const oldestKey = this.vectorMap.keys().next().value;
+                        if (oldestKey !== undefined) this.vectorMap.delete(oldestKey);
+                    }
                     this.vectorMap.set(hash, {
                         vector,
                         role: msg.role,
-                        originalText: content,
                         normalizedText: normalized,
                         timestamp: Date.now()
                     });
@@ -443,24 +446,15 @@ class ContextVectorManager {
      * @returns {Array<{vector: Float32Array, text: string, role: string, range: [number, number]}>}
      */
     segmentContext(messages, similarityThreshold = 0.70) {
-        // 1. 获取所有有效向量并按顺序排列
-        // 我们需要合并 assistant 和 user 的向量，按 index 排序
-        const allEntries = [];
-        this.vectorMap.forEach((entry, hash) => {
-            // 注意：vectorMap 中存储的是无序的 hash 映射，我们需要找到对应的 index
-            // 但 updateContext 中构建的 historyAssistantVectors 丢失了原始 index
-            // 因此我们需要重新扫描一次 messages 来对齐向量
-            // 优化：直接在 updateContext 时存储带 index 的列表会更好，但为了少改动，这里重新扫描
-        });
-
-        // 由于 vectorMap hash 丢失了 index，我们利用 updateContext 中的逻辑重新构建有序列表
-        // 或者直接修改 updateContext 让 vectorMap 存 index? 不行，hash是去重的。
-        // 最好的办法是重新遍历 messages，查 vectorMap
+        // 1. 重新遍历消息，按原始顺序对齐向量并排除最后一轮
+        const lastUserIndex = messages.findLastIndex(m => m.role === 'user');
+        const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const sequence = [];
         messages.forEach((msg, index) => {
             // 跳过系统消息和无关消息
             if (msg.role === 'system') return;
+            if (index === lastUserIndex || index === lastAiIndex) return;
 
             const content = typeof msg.content === 'string'
                 ? msg.content
@@ -468,19 +462,10 @@ class ContextVectorManager {
 
             if (!content || content.length < 2) return;
 
-            const normalized = this._normalize(content);
-            const hash = this._generateHash(normalized);
+            const { hash } = this._getNormalizedAndHash(content);
 
             // 尝试精确匹配
-            let entry = this.vectorMap.get(hash);
-
-            // 尝试模糊匹配 (如果精确匹配失败)
-            if (!entry) {
-                // 这里为了性能，只做精确查找。模糊查找开销较大且 updateContext 已经做过了并存入 vectorMap
-                // 理论上如果 updateContext 刚跑过，vectorMap 里应该有（或是 fuzzy 后的 match）
-                // 我们再次计算 fuzzy 可能会很慢。
-                // 妥协：如果没有 vector，跳过
-            }
+            const entry = this.vectorMap.get(hash);
 
             if (entry && entry.vector) {
                 sequence.push({
