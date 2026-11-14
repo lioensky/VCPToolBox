@@ -15,6 +15,7 @@ const { PDFParse } = require('pdf-parse');
 const https = require('https');
 const http = require('http');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
+const { extractHtml, preparePage, extractPage } = require('./pageExtraction.js');
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -789,23 +790,7 @@ async function fetchWithDirectHttp(url) {
         return text;
     }
 
-    const doc = new JSDOM(body, { url: finalUrl });
-    const reader = new Readability(doc.window.document);
-    const article = reader.parse();
-
-    if (article && (article.content || article.textContent)) {
-        const formattedContent = formatExtractedArticleContent(article);
-        if (formattedContent && formattedContent.length >= 80) {
-            return `标题: ${article.title || doc.window.document.title || finalUrl}\n\n${formattedContent}`;
-        }
-    }
-
-    const fallbackText = normalizeExtractedText(doc.window.document.body?.innerText || doc.window.document.body?.textContent || '');
-    if (fallbackText.length >= 80) {
-        return `标题: ${doc.window.document.title || finalUrl}\n\n${fallbackText}`;
-    }
-
-    throw new Error('直接读取失败: 无法提取有效正文');
+    return extractHtml(body, finalUrl).text;
 }
 
 function shouldUseManagedChrome(url, mode) {
@@ -901,27 +886,8 @@ async function fetchWithManagedChrome(url, mode = 'text') {
             return await captureAndFormatScreenshot(page, url);
         }
 
-        await autoScroll(page, mode);
-
-        const pageContent = await page.content();
-        const doc = new JSDOM(pageContent, { url });
-        const reader = new Readability(doc.window.document);
-        const article = reader.parse();
-
-        if (article && (article.content || article.textContent)) {
-            const formattedContent = formatExtractedArticleContent(article) || normalizeExtractedText(article.textContent || '');
-            if (formattedContent && formattedContent.length >= 80) {
-                return `标题: ${article.title || await page.title() || url}\n\n${formattedContent}`;
-            }
-        }
-
-        const renderedText = await page.evaluate(() => document.body ? document.body.innerText : '');
-        const normalized = normalizeExtractedText(renderedText);
-        if (normalized && normalized.length >= 80) {
-            return `标题: ${await page.title() || url}\n\n${normalized}`;
-        }
-
-        throw new Error('managed Chrome backend 未提取到有效正文');
+        await preparePage(page);
+        return await extractPage(page);
     } finally {
         if (URLFETCH_MANAGED_CHROME_CLOSE_TAB && page) {
             try {
@@ -1110,7 +1076,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             return await captureAndFormatScreenshot(page, url);
         } else {
             // 默认的文本提取模式
-            await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
+            await preparePage(page);
 
             // === 特定站点提取增强 ===
             const isGithub = urlObj.hostname.includes('github.com');
@@ -1255,24 +1221,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 return markdownOutput.trim();
             }
 
-            // 如果链接提取失败或链接很少，则回退到使用Readability提取文章正文
-            const pageContent = await page.content();
-            const doc = new JSDOM(pageContent, { url });
-            const reader = new Readability(doc.window.document);
-            const article = reader.parse();
-
-            if (article && (article.content || article.textContent)) {
-                // Format the output with title and content while preserving paragraph/list/heading boundaries.
-                let formattedContent = formatExtractedArticleContent(article);
-                if (!formattedContent && article.textContent) {
-                    formattedContent = normalizeExtractedText(article.textContent);
-                }
-                const result = `标题: ${article.title}\n\n${formattedContent}`;
-                return result;
-            } else {
-                // Fallback if Readability fails to extract content
-                return "成功获取网页，但无法提取主要内容或链接列表。";
-            }
+            return await extractPage(page);
         }
     } finally {
         if (browser) {
