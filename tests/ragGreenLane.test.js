@@ -146,7 +146,8 @@ test('Group and BM25 share a sparse plan while Time only feeds the River pool', 
         timeRanges: [{ start: new Date(0), end: new Date() }], returnRawResults: true
     });
     assert.equal(sparseCalls, 1);
-    assert.deepEqual(results.map(doc => doc.chunkId), [9]);
+    // As on the non-GreenLane path, ::Time keeps one semantic and one Time slot even at K = 1.
+    assert.deepEqual(results.map(doc => doc.chunkId), [9, 2]);
 });
 
 test('Omega mapping uses conservative endpoints and neutral invalid fallback', () => {

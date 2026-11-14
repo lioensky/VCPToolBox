@@ -3062,7 +3062,7 @@ class RAGDiaryPlugin {
         // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]/[minScore]/[whitelistTags]
         // 示例：::TimeDecay30/0.5/box归档
         // 统一使用 / 分隔符
-        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([\w,]+))?/);
+        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([^:]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
         const tagWeight = null;
@@ -3683,12 +3683,15 @@ class RAGDiaryPlugin {
 
         if (greenTask) {
             const external = await greenTask;
+            const timeQuota = useTime ? Math.max(1, Math.round(finalK * timeRatio)) : 0;
             if (external.error) {
                 console.warn(`[RAGDiaryPlugin] Green lane failed; keeping River order: ${external.error.message}`);
-                finalResultsForBroadcast = finalResultsForBroadcast.slice(0, finalK);
+                finalResultsForBroadcast = this._applyTimeQuota(
+                    finalResultsForBroadcast, finalResultsForBroadcast, finalK, timeQuota
+                );
             } else {
                 finalResultsForBroadcast = this._fuseIndependentRankings(
-                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK
+                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK, timeQuota
                 );
             }
             const diagnostics = {
@@ -3705,8 +3708,14 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] Green lane RRF: diaries=${dbScopeKey}, backend=${useJev ? 'jev' : 'rerank'}, httpReadyMs=${diagnostics.httpReadyMs ?? 'n/a'}, totalMs=${diagnostics.totalMs}, returned=${finalResultsForBroadcast.length}, degraded=${!!external.error}.`);
         }
 
-        // 统一添加 source 标识并格式化
-        finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
+        // 统一添加 source 标识并格式化；时间路 chunk 缺 date 时从本请求已加载的日期索引补上。
+        const diaryDates = new Map(diaryNames
+            .flatMap(name => requestCache?.diaryDateIndex?.get(name) || [])
+            .map(meta => [meta.relativePath, meta.date]));
+        finalResultsForBroadcast = finalResultsForBroadcast.map(r => {
+            const date = r.source === 'time' && !r.date && diaryDates.get(r.fullPath || r.sourceFile);
+            return date ? { ...r, date } : { ...r, source: r.source || 'rag' };
+        });
 
         // 🌟 Time 连续性补充：主召回完成后，额外追加最近 3 条，不占用 K，并与主结果去重
         if (extraContinuityResults.length > 0) {
@@ -3913,7 +3922,9 @@ class RAGDiaryPlugin {
         return 1 - Math.max(0.3, Math.min(0.7, 0.5 + 0.8 * (omega - 0.65)));
     }
 
-    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10) {
+    // timeQuota > 0 keeps the best River-order Time entries (the ::Time route quota);
+    // the remaining slots come from the fused ranking of non-Time entries.
+    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10, timeQuota = 0) {
         const weight = Math.max(0, Math.min(1, Number(alpha ?? 0.5)));
         const merged = new Map();
         const identity = doc => {
@@ -3940,10 +3951,20 @@ class RAGDiaryPlugin {
                 merged.set(key, result);
             }
         }
-        return [...merged.values()].filter(doc => doc.rrf_score > 0)
+        const ranked = [...merged.values()].filter(doc => doc.rrf_score > 0)
             .sort((a, b) => b.rrf_score - a.rrf_score
-                || identity(a).localeCompare(identity(b)))
-            .slice(0, limit);
+                || identity(a).localeCompare(identity(b)));
+        return this._applyTimeQuota(ranked, [...merged.values()], limit, timeQuota);
+    }
+
+    // ::Time 路名额：语义路按 ordered 的顺序，时间路取 river 顺序里最靠前的 timeQuota 条；
+    // 名额规则与非 GreenLane 路径相同（语义路至少 1 条）。没有时间条目时等同于截断到 limit。
+    _applyTimeQuota(ordered, river, limit, timeQuota) {
+        const time = timeQuota > 0 ? river.filter(doc => doc.source === 'time').slice(0, timeQuota) : [];
+        if (time.length === 0) return ordered.slice(0, limit);
+        const semantic = ordered.filter(doc => doc.source !== 'time')
+            .slice(0, Math.max(1, limit - time.length));
+        return [...semantic, ...time];
     }
 
     async _rerankRAGCandidatesWithRiverMemo({
@@ -4429,11 +4450,14 @@ class RAGDiaryPlugin {
         const metaGroups = await Promise.all(
             diaryNames.map(name => this._getDiaryDateIndexCached(name, requestCache))
         );
-        const fileMetas = metaGroups.flat();
+        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
+        // 每本的日期索引已按新到旧排序；联合日记本先各取最近 limit 个再按日期合并。
+        const fileMetas = metaGroups.length === 1 ? metaGroups[0] : metaGroups
+            .flatMap(metas => metas.slice(0, Math.max(1, limit)))
+            .sort((a, b) => b.diaryDate.getTime() - a.diaryDate.getTime()
+                || a.relativePath.localeCompare(b.relativePath));
 
         if (fileMetas.length === 0) return [];
-        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
-        // 日期索引已按新到旧排序；只展开最近 limit 个文件即可。
         const recentFileMetas = fileMetas.slice(0, Math.max(1, limit));
         const recentFilePaths = recentFileMetas.map(meta => meta.relativePath);
         const fileDateMap = new Map(
@@ -4463,8 +4487,8 @@ class RAGDiaryPlugin {
 
             recentResults = this._filterContextDuplicates(recentResults, contextDiaryPrefixes);
             recentResults.sort((a, b) => {
-                const dateA = a.date ? new Date(a.date).getTime() : 0;
-                const dateB = b.date ? new Date(b.date).getTime() : 0;
+                const dateA = a.date ? diaryDayStart(a.date).getTime() : 0;
+                const dateB = b.date ? diaryDayStart(b.date).getTime() : 0;
                 if (dateB !== dateA) return dateB - dateA;
                 return (b.score || 0) - (a.score || 0);
             });
