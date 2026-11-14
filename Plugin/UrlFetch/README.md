@@ -292,3 +292,22 @@ A: 当直接访问某些网站失败时，会自动尝试通过配置的代理�
 取证案例：Google Issue 585707059 的初始 HTTP 是应用壳；实际浏览器 DOM 含主帖及 #2–#15 评论。旧 Readability 路径会选择长评论而丢弃讨论结构。主帖中的 “Attachments” 文本清单不等于实际下载到的附件。
 
 回归命令：`node --test tests/urlFetchExtraction.test.js`。
+## 常驻浏览器池（2026-11-14）
+
+正式工具入口为 `hybridservice/direct`，导出 `initialize/processToolCall/shutdown`，不再每次 spawn 新进程。单服务实例内按 Profile/代理出口复用浏览器；同键启动合并，请求各自拥有独立 page。
+
+- 默认全服务最多 **5 个活动页面租约**，额外请求 FIFO 排队；默认最多100个等待项，排队预算90秒。
+- 页面取得后执行预算60秒；单请求总预算160秒；manifest外层超时180秒。队列不是无限等待保证。
+- 请求结束只关自己的页面，自有浏览器最后一个租约释放后空闲30秒回收。共享 managed Chrome 只断开本插件连接，不主动关闭整个浏览器；其外部管理器仍可能影响页面寿命。
+- 请求取消关闭对应页面或销毁HTTP请求；关闭服务取消请求并清空队列。
+- 配置：`URLFETCH_MAX_TABS`、`URLFETCH_MAX_QUEUE`、`URLFETCH_QUEUE_TIMEOUT_MS`、`URLFETCH_BROWSER_IDLE_MS`。
+- 同 Profile 标签页共享 Cookie/站点存储，不是多账号隔离；不同代理出口使用不同实例。
+- `node UrlFetch.js` 保留单次stdin调用兼容，但多个CLI/多个服务进程不共享池，不能混用同一个Profile目录。
+- Profile 被旧进程或外部浏览器占用时，不强杀或删除锁，也不把占用错误重试到代理。
+
+### 部署顺序
+先排空旧版stdio调用，再同步 `UrlFetch.js`、`browserPool.js`、`pageExtraction.js` 和 `plugin-manifest.json`，最后重载插件或重启服务。必须整体切换 manifest 与代码；不能只更新入口文件。`config.env` 保留，不覆盖真实Cookie配置。
+
+### 验证
+`node --test tests/urlFetchBrowserPool.test.js tests/urlFetchExtraction.test.js`
+真实浏览器十请求：设置 `URLFETCH_LIVE_TEST=1` 后执行 `node --test tests/urlFetchBrowserLive.test.js`。测试使用临时独立持久化Profile，不接触生产浏览器配置。

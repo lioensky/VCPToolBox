@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
+// Plugin configuration is local to this module; never mutate the server's process.env.
 const dotenv = require('dotenv');
 const fsSync = require('fs');
 const puppeteer = require('puppeteer-extra');
@@ -16,6 +16,16 @@ const https = require('https');
 const http = require('http');
 const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
 const { extractHtml, preparePage, extractPage } = require('./pageExtraction.js');
+const { BrowserPool } = require('./browserPool.js');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const requestScope = new AsyncLocalStorage();
+let pagePool = new BrowserPool();
+let serviceStopped = false;
+const activeRequests = new Set();
+function checkCancelled() {
+    const signal = requestScope.getStore()?.signal;
+    if (signal?.aborted) throw signal.reason || new Error('UrlFetch 请求已取消');
+}
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -26,33 +36,35 @@ const MIME_MAP = {
 };
 
 // --- Configuration (from environment variables set by Plugin.js) ---
-const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
-const SERVER_PORT = process.env.SERVER_PORT;
-const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
-const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
-const JINA_API_KEY = process.env.JINA_API_KEY;
-const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
-const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
-const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
-const PDF_FETCH_MAX_BYTES = Number(process.env.PDF_FETCH_MAX_BYTES || 50 * 1024 * 1024);
-const KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'knowledge');
-const URLFETCH_PERSISTENT_PROFILE = String(process.env.URLFETCH_PERSISTENT_PROFILE || 'true').toLowerCase() !== 'false';
-const URLFETCH_PROFILE_DIR = process.env.URLFETCH_PROFILE_DIR || path.resolve(__dirname, 'browser-profiles');
-const URLFETCH_PROFILE_MODE = String(process.env.URLFETCH_PROFILE_MODE || 'domain').toLowerCase();
-const URLFETCH_BROWSER_FIRST = String(process.env.URLFETCH_BROWSER_FIRST || 'false').toLowerCase() === 'true';
-const URLFETCH_HEADLESS = String(process.env.URLFETCH_HEADLESS || 'true').toLowerCase();
-const URLFETCH_BROWSER_BACKEND = String(process.env.URLFETCH_BROWSER_BACKEND || 'auto').toLowerCase();
-const URLFETCH_USE_MANAGED_CHROME = String(process.env.URLFETCH_USE_MANAGED_CHROME || 'false').toLowerCase() === 'true';
-const URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY = String(process.env.URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || 'true').toLowerCase() !== 'false';
-const URLFETCH_MANAGED_CHROME_AUTO_CLOSE = String(process.env.URLFETCH_MANAGED_CHROME_AUTO_CLOSE || process.env.VCP_BROWSER_AUTO_CLOSE_AFTER_URLFETCH || 'true').toLowerCase() === 'true';
-const URLFETCH_MANAGED_CHROME_CLOSE_TAB = String(process.env.URLFETCH_MANAGED_CHROME_CLOSE_TAB || 'true').toLowerCase() !== 'false';
-const URLFETCH_HIGH_RISK_DOMAINS = String(
-    process.env.URLFETCH_HIGH_RISK_DOMAINS ||
-    'mp.weixin.qq.com,zhihu.com,x.com,twitter.com,bilibili.com,weibo.com'
-)
-    .split(',')
-    .map(domain => domain.trim().toLowerCase())
-    .filter(Boolean);
+let PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VAR_HTTP_URL, JINA_API_KEY;
+let JINA_READER_TIMEOUT_MS, DIRECT_FETCH_TIMEOUT_MS, DIRECT_FETCH_MAX_BYTES, PDF_FETCH_MAX_BYTES;
+let KNOWLEDGE_BASE_DIR, URLFETCH_PERSISTENT_PROFILE, URLFETCH_PROFILE_DIR, URLFETCH_PROFILE_MODE;
+let URLFETCH_BROWSER_FIRST, URLFETCH_HEADLESS, URLFETCH_BROWSER_BACKEND, URLFETCH_USE_MANAGED_CHROME;
+let URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY, URLFETCH_HIGH_RISK_DOMAINS;
+function configure(config = {}) {
+    const env = { ...getCurrentUrlFetchCookieEnv(), ...config };
+    PROJECT_BASE_PATH = env.PROJECT_BASE_PATH || process.cwd();
+    SERVER_PORT = env.SERVER_PORT || env.PORT;
+    IMAGESERVER_IMAGE_KEY = env.IMAGESERVER_IMAGE_KEY;
+    VAR_HTTP_URL = env.VarHttpUrl;
+    JINA_API_KEY = env.JINA_API_KEY;
+    JINA_READER_TIMEOUT_MS = Number(env.JINA_READER_TIMEOUT_MS || 20000);
+    DIRECT_FETCH_TIMEOUT_MS = Number(env.DIRECT_FETCH_TIMEOUT_MS || 12000);
+    DIRECT_FETCH_MAX_BYTES = Number(env.DIRECT_FETCH_MAX_BYTES || 5242880);
+    PDF_FETCH_MAX_BYTES = Number(env.PDF_FETCH_MAX_BYTES || 52428800);
+    KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH, 'knowledge');
+    URLFETCH_PERSISTENT_PROFILE = String(env.URLFETCH_PERSISTENT_PROFILE || 'true') !== 'false';
+    URLFETCH_PROFILE_DIR = env.URLFETCH_PROFILE_DIR || path.resolve(__dirname, 'browser-profiles');
+    URLFETCH_PROFILE_MODE = String(env.URLFETCH_PROFILE_MODE || 'domain').toLowerCase();
+    URLFETCH_BROWSER_FIRST = String(env.URLFETCH_BROWSER_FIRST || 'false') === 'true';
+    URLFETCH_HEADLESS = String(env.URLFETCH_HEADLESS || 'true').toLowerCase();
+    URLFETCH_BROWSER_BACKEND = String(env.URLFETCH_BROWSER_BACKEND || 'auto').toLowerCase();
+    URLFETCH_USE_MANAGED_CHROME = String(env.URLFETCH_USE_MANAGED_CHROME || 'false') === 'true';
+    URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY = String(env.URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || 'true') !== 'false';
+    URLFETCH_HIGH_RISK_DOMAINS = String(env.URLFETCH_HIGH_RISK_DOMAINS || 'mp.weixin.qq.com,zhihu.com,x.com,twitter.com,bilibili.com,weibo.com')
+        .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+}
+configure();
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -614,9 +626,11 @@ function requestJinaReader(targetUrl, apiKey = null) {
             headers.Authorization = `Bearer ${apiKey}`;
         }
 
-        const req = https.get(jinaUrl, { headers, timeout: JINA_READER_TIMEOUT_MS }, (res) => {
+        checkCancelled();
+        const req = https.get(jinaUrl, { headers, timeout: JINA_READER_TIMEOUT_MS, signal: requestScope.getStore()?.signal }, (res) => {
             const chunks = [];
-
+            res.on('error', reject);
+            res.on('aborted', () => reject(new Error('Jina Reader 响应中断')));
             res.on('data', chunk => chunks.push(chunk));
             res.on('end', () => {
                 const body = Buffer.concat(chunks).toString('utf8');
@@ -676,15 +690,19 @@ function requestDirectHttp(targetUrl, redirectCount = 0) {
             return;
         }
 
+        checkCancelled();
         const transport = urlObj.protocol === 'https:' ? https : http;
         const req = transport.get(urlObj, {
             timeout: DIRECT_FETCH_TIMEOUT_MS,
+            signal: requestScope.getStore()?.signal,
             headers: {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         }, (res) => {
+            res.on('error', reject);
+            res.on('aborted', () => reject(new Error('直接读取响应中断')));
             const statusCode = res.statusCode || 0;
             const location = res.headers.location;
 
@@ -859,21 +877,25 @@ async function fetchWithManagedChrome(url, mode = 'text') {
         throw new Error(`managed Chrome backend 当前不支持 ${mode} 模式`);
     }
 
+    checkCancelled();
     let browser;
     let page;
+    let lease;
     try {
         if (isPdfUrl(url)) {
             return await fetchWithDirectHttp(url);
         }
 
-        await browserRuntimeManager.ensureManagedBrowser();
-        const browserWSEndpoint = await browserRuntimeManager.getManagedBrowserWebSocketEndpoint();
-        if (!browserWSEndpoint) {
-            throw new Error('无法获取 managed Chrome DevTools WebSocket 端点');
-        }
-
-        browser = await puppeteer.connect({ browserWSEndpoint });
-        page = await browser.newPage();
+        lease = await pagePool.lease('managed', async () => {
+            await browserRuntimeManager.ensureManagedBrowser();
+            const browserWSEndpoint = await browserRuntimeManager.getManagedBrowserWebSocketEndpoint();
+            if (!browserWSEndpoint) throw new Error('无法获取 managed Chrome DevTools WebSocket 端点');
+            const instance = await puppeteer.connect({ browserWSEndpoint });
+            // The managed browser is shared with other plugins. Never own its shutdown.
+            return { browser: instance, close: async () => instance.disconnect() };
+        }, requestScope.getStore()?.signal);
+        browser = lease.browser;
+        page = lease.page;
         await page.setViewport({ width: 1280, height: 900 });
         const navigationWaitUntil = (mode === 'snapshot' || mode === 'screenshot') ? 'domcontentloaded' : 'networkidle2';
         const response = await page.goto(url, { waitUntil: navigationWaitUntil, timeout: 20000 });
@@ -889,34 +911,17 @@ async function fetchWithManagedChrome(url, mode = 'text') {
         await preparePage(page);
         return await extractPage(page);
     } finally {
-        if (URLFETCH_MANAGED_CHROME_CLOSE_TAB && page) {
-            try {
-                await page.close();
-            } catch (_) {
-                // ignore
-            }
-        }
-        if (browser) {
-            await browser.disconnect();
-        }
-        if (URLFETCH_MANAGED_CHROME_AUTO_CLOSE) {
-            try {
-                await browserRuntimeManager.closeManagedBrowser('urlfetch_auto_close');
-            } catch (error) {
-                console.error(`managed Chrome 自动关闭失败: ${error.message}`);
-            }
-        } else {
-            try {
-                browserRuntimeManager.touchManagedBrowser();
-            } catch (_) {
-                // ignore
-            }
+        if (lease) {
+            await lease.release();
+            lease.throwIfCancelled();
         }
     }
 }
 
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
+    checkCancelled();
     let browser;
+    let lease;
     try {
         const userDataDir = getPersistentProfilePath(url, proxyPort);
         const launchOptions = {
@@ -940,8 +945,24 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             launchOptions.executablePath = systemBrowser;
         }
 
-        browser = await puppeteer.launch(launchOptions);
-        const page = await browser.newPage();
+        lease = await pagePool.lease(
+            `puppeteer:${userDataDir ? (process.platform === 'win32' ? path.resolve(userDataDir).toLowerCase() : path.resolve(userDataDir)) : 'ephemeral'}:${proxyPort || 'direct'}`,
+            async () => {
+                const instance = await puppeteer.launch(launchOptions);
+                // Chromium starts with an unused about:blank tab; do not keep
+                // an extra sixth tab outside the five task-page budget.
+                try {
+                    for (const initialPage of await instance.pages()) await initialPage.close();
+                } catch (error) {
+                    await instance.close();
+                    throw error;
+                }
+                return { browser: instance, close: () => instance.close() };
+            },
+            requestScope.getStore()?.signal
+        );
+        browser = lease.browser;
+        const page = lease.page;
 
         // We no longer need to set UserAgent manually, AnonymizeUAPlugin handles it.
         await page.setViewport({ width: 1280, height: 800 });
@@ -998,7 +1019,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         // 方式2：单站点原始格式 (FETCH_COOKIES_RAW)
         if (cookiesToSet.length === 0) {
-            const fetchCookiesRaw = process.env.FETCH_COOKIES_RAW;
+            const fetchCookiesRaw = currentCookieEnv.FETCH_COOKIES_RAW;
             if (fetchCookiesRaw && fetchCookiesRaw.trim()) {
                 try {
                     cookiesToSet = parseRawCookies(fetchCookiesRaw, urlObj);
@@ -1010,7 +1031,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         // 方式3：JSON 数组格式 (FETCH_COOKIES)
         if (cookiesToSet.length === 0) {
-            const fetchCookies = process.env.FETCH_COOKIES;
+            const fetchCookies = currentCookieEnv.FETCH_COOKIES;
             if (fetchCookies && fetchCookies.trim()) {
                 try {
                     const cookies = JSON.parse(fetchCookies);
@@ -1224,28 +1245,17 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             return await extractPage(page);
         }
     } finally {
-        if (browser) {
-            await browser.close();
+        if (lease) {
+            await lease.release();
+            lease.throwIfCancelled();
         }
     }
 }
 
-async function main() {
-    let inputData = '';
-    stdin.setEncoding('utf8');
-
-    stdin.on('data', function (chunk) {
-        inputData += chunk;
-    });
-
-    stdin.on('end', async function () {
+async function runRequest(data) {
         let output = {};
         try {
-            if (!inputData.trim()) {
-                throw new Error("未从 stdin 接收到输入数据。");
-            }
-
-            const data = JSON.parse(inputData);
+            checkCancelled();
             const url = data.url;
             let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', 'jina', or 'download'
             if (mode === 'screenshot') {
@@ -1337,8 +1347,7 @@ async function main() {
                                 sourceMode: effectiveSourceMode
                             })
                         };
-                        process.stdout.write(JSON.stringify(output, null, 2));
-                        return;
+                        return output;
                     } else if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
                     } else if (mode === 'text') {
@@ -1374,7 +1383,9 @@ async function main() {
                         fetchedData = await fetchWithPuppeteer(url, mode);
                     }
                 } catch (e) {
-                    const proxyPort = process.env.FETCH_PROXY_PORT;
+                    checkCancelled();
+                    if (/URLFETCH_|already running|服务已关闭/.test(String(e.code || '') + e.message)) throw e;
+                    const proxyPort = getCurrentUrlFetchCookieEnv().FETCH_PROXY_PORT;
                     if (proxyPort && mode !== 'download') {
                         try {
                             fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
@@ -1417,12 +1428,74 @@ async function main() {
             output = { status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } };
         }
 
-        process.stdout.write(JSON.stringify(output, null, 2));
-    });
+        return output;
 }
 
-main().catch(error => {
-    const errorMsgStr = `未处理的插件错误: ${error.message || error}`;
-    process.stdout.write(JSON.stringify({ status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } }));
-    process.exit(1);
-});
+function numberOption(config, name, fallback, max) {
+    const value = Number(config[name] ?? getCurrentUrlFetchCookieEnv()[name] ?? fallback);
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`Invalid ${name}`);
+    return value;
+}
+
+async function initialize(config = {}, dependencies = {}) {
+    await pagePool.shutdown();
+    const manager = dependencies.pluginManager;
+    configure({
+        ...config,
+        IMAGESERVER_IMAGE_KEY: manager?.getResolvedPluginConfigValue('ImageServer', 'Image_Key') || config.IMAGESERVER_IMAGE_KEY
+    });
+    pagePool = new BrowserPool({
+        maxPages: numberOption(config, 'URLFETCH_MAX_TABS', 5, 32),
+        maxQueue: numberOption(config, 'URLFETCH_MAX_QUEUE', 100, 1000),
+        queueTimeoutMs: numberOption(config, 'URLFETCH_QUEUE_TIMEOUT_MS', 90000, 90000),
+        executionTimeoutMs: 60000,
+        idleMs: numberOption(config, 'URLFETCH_BROWSER_IDLE_MS', 30000, 3600000)
+    });
+    serviceStopped = false;
+}
+
+async function processToolCall(data, context = {}) {
+    if (serviceStopped) throw new Error('UrlFetch 服务已关闭');
+    const controller = new AbortController();
+    activeRequests.add(controller);
+    const abort = () => controller.abort(context.signal?.reason || new Error('UrlFetch 请求已取消'));
+    context.signal?.addEventListener('abort', abort, { once: true });
+    if (context.signal?.aborted) abort();
+    const timer = setTimeout(() => controller.abort(new Error('UrlFetch 请求总预算超时')), 160000);
+    try {
+        const output = await requestScope.run({ signal: controller.signal }, () => runRequest(data));
+        controller.signal.throwIfAborted();
+        if (output.status === 'error') throw new Error(output.error);
+        return output.result;
+    } finally {
+        clearTimeout(timer);
+        activeRequests.delete(controller);
+        context.signal?.removeEventListener('abort', abort);
+    }
+}
+
+async function shutdown() {
+    serviceStopped = true;
+    for (const controller of activeRequests) controller.abort(new Error('UrlFetch 服务已关闭'));
+    await pagePool.shutdown();
+}
+
+module.exports = { initialize, processToolCall, shutdown, _poolStats: () => pagePool.stats() };
+
+if (require.main === module) {
+    (async () => {
+        let input = '';
+        for await (const chunk of stdin) input += chunk;
+        try {
+            await initialize();
+            const result = await processToolCall(JSON.parse(input));
+            process.stdout.write(JSON.stringify({ status: 'success', result }));
+        } catch (error) {
+            const text = `UrlFetch 错误: ${error.message}`;
+            process.stdout.write(JSON.stringify({ status: 'error', error: text, result: { content: [{ type: 'text', text }] } }));
+            process.exitCode = 1;
+        } finally {
+            await shutdown();
+        }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+}
