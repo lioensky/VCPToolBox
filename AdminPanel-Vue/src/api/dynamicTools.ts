@@ -1,15 +1,33 @@
-import {
-  requestWithUi,
-  type RequestUiOptions,
-} from "./requestWithUi";
+import { requestWithUi, type RequestUiOptions } from "./requestWithUi";
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
 export interface DynamicToolsSmallModelConfig {
   enabled: boolean;
-  useMainConfig: boolean;
-  endpoint: string;
   model: string;
+  maxRetries: number;
+  retryDelayMs: number;
+  maxTokens: number;
+  temperature: number;
+}
+
+export interface DynamicToolsCategoryRule {
+  category: string;
+  parent?: string;
+  description: string;
+  keywords: string[];
+}
+
+export interface DynamicToolsSummaryConfig {
+  lightListTokenBudget: number;
+  briefTokenBudget: number;
+  minBriefTokenBudget: number;
+}
+
+export interface DynamicToolsClassificationConfig {
+  maxCategories: number;
+  embeddingThreshold: number;
+  categoryRules: DynamicToolsCategoryRule[];
 }
 
 export interface DynamicToolsManualOverrides {
@@ -28,6 +46,7 @@ export interface DynamicToolsManualOverrides {
 }
 
 export interface DynamicToolsConfig {
+  version: 2;
   enabled: boolean;
   placeholder: string;
   maxBriefListItems: number;
@@ -39,7 +58,25 @@ export interface DynamicToolsConfig {
   useRagEmbeddings: boolean;
   manualOverrides: DynamicToolsManualOverrides;
   smallModel: DynamicToolsSmallModelConfig;
+  summary: DynamicToolsSummaryConfig;
+  classification: DynamicToolsClassificationConfig;
 }
+
+export type DynamicToolsConfigPatch = Partial<
+  Omit<
+    DynamicToolsConfig,
+    | "smallModel"
+    | "manualOverrides"
+    | "summary"
+    | "classification"
+    | "placeholder"
+  >
+> & {
+  smallModel?: Partial<DynamicToolsSmallModelConfig>;
+  manualOverrides?: Partial<DynamicToolsManualOverrides>;
+  summary?: Partial<DynamicToolsSummaryConfig>;
+  classification?: Partial<DynamicToolsClassificationConfig>;
+};
 
 export interface DynamicToolRecord {
   originKey: string;
@@ -82,31 +119,31 @@ export type DynamicToolsRebuildMode = "classification" | "catalog" | "all";
 
 export const dynamicToolsApi = {
   async getState(
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
   ): Promise<DynamicToolsState> {
     return requestWithUi<DynamicToolsState>(
       {
         url: "/admin_api/dynamic-tools/state",
       },
-      uiOptions
+      uiOptions,
     );
   },
 
   async getConfig(
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
   ): Promise<DynamicToolsConfig> {
     const response = await requestWithUi<DynamicToolsConfigResponse>(
       {
         url: "/admin_api/dynamic-tools/config",
       },
-      uiOptions
+      uiOptions,
     );
     return response.config;
   },
 
   async saveConfig(
-    config: Partial<DynamicToolsConfig>,
-    uiOptions: RequestUiOptions = {}
+    config: DynamicToolsConfigPatch,
+    uiOptions: RequestUiOptions = {},
   ): Promise<DynamicToolsConfig> {
     const response = await requestWithUi<DynamicToolsConfigResponse>(
       {
@@ -114,7 +151,7 @@ export const dynamicToolsApi = {
         method: "POST",
         body: config,
       },
-      uiOptions
+      uiOptions,
     );
     return response.config;
   },
@@ -122,7 +159,7 @@ export const dynamicToolsApi = {
   async rebuild(
     mode: DynamicToolsRebuildMode,
     uiOptions: RequestUiOptions = {},
-    options: { wait?: boolean } = {}
+    options: { wait?: boolean } = {},
   ): Promise<DynamicToolsState> {
     const response = await requestWithUi<DynamicToolsStateResponse>(
       {
@@ -133,7 +170,7 @@ export const dynamicToolsApi = {
           wait: options.wait ?? true,
         },
       },
-      uiOptions
+      uiOptions,
     );
     return response.state;
   },
@@ -143,9 +180,9 @@ export const dynamicToolsApi = {
       originKey?: string;
       excluded?: boolean;
       pinned?: boolean;
-      manualOverrides?: DynamicToolsManualOverrides;
+      manualOverrides?: Partial<DynamicToolsManualOverrides>;
     },
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
   ): Promise<DynamicToolsConfig> {
     const response = await requestWithUi<DynamicToolsConfigResponse>(
       {
@@ -153,7 +190,7 @@ export const dynamicToolsApi = {
         method: "POST",
         body: payload,
       },
-      uiOptions
+      uiOptions,
     );
     return response.config;
   },
