@@ -39,6 +39,16 @@ fn reconstruct(columns: &[Vec<f64>], x: &[f64], dimension: usize) -> Vec<f64> {
     p
 }
 
+fn reconstruct_into(columns: &[f64], x: &[f64], p: &mut [f64]) {
+    p.fill(0.0);
+    let dimension = p.len();
+    for (column, &weight) in columns.chunks_exact(dimension).zip(x) {
+        if weight != 0.0 {
+            for (value, &axis) in p.iter_mut().zip(column) { *value += weight * axis; }
+        }
+    }
+}
+
 /// Entries are (stable Tag ID, original vector). Sorting only controls exact
 /// ties and nonunique coefficient allocation; projection solves the original cone.
 pub(crate) fn solve(query: &[f32], tags: &[(i64, &[f32])]) -> Result<Solution, String> {
@@ -46,10 +56,15 @@ pub(crate) fn solve(query: &[f32], tags: &[(i64, &[f32])]) -> Result<Solution, S
         return Err("MEMO_NNLS_INVALID_TAGS".into());
     }
     let query64: Vec<f64> = query.iter().map(|&x| x as f64).collect();
-    let columns: Vec<Vec<f64>> = tags.iter()
-        .map(|(_, v)| v.iter().map(|&x| x as f64).collect()).collect();
-    let refs: Vec<_> = tags.iter().zip(&columns)
-        .map(|((id, _), v)| (*id, v.as_slice())).collect();
+    let columns: Vec<f64> = tags.iter()
+        .flat_map(|(_, v)| v.iter().map(|&x| x as f64)).collect();
+    // Keep each original length so malformed inputs reach the solver's checks.
+    let mut offset = 0;
+    let refs: Vec<_> = tags.iter().map(|(id, v)| {
+        let start = offset;
+        offset += v.len();
+        (*id, &columns[start..offset])
+    }).collect();
     let result = solve_f64(&query64, &refs)?;
     let projection: Vec<f32> = result.projection.iter().map(|&x| x as f32).collect();
     let residual: Vec<f32> = result.residual.iter().map(|&x| x as f32).collect();
@@ -81,29 +96,35 @@ pub(crate) fn solve_f64(query: &[f64], tags: &[(i64, &[f64])]) -> Result<Solutio
     let norm = query.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
     let mut entries: Vec<_> = tags.iter().enumerate().collect();
     entries.sort_by_key(|(slot, (id, _))| (*id, *slot));
-    let mut columns = Vec::new();
+    let mut columns = Vec::with_capacity(tags.len() * dimension);
     let mut slots = Vec::new();
     for (slot, (_, vector)) in entries {
         let n = vector.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
         if n > 0.0 {
-            columns.push(vector.iter().map(|&v| v as f64 / n).collect::<Vec<_>>());
+            columns.extend(vector.iter().map(|&v| v as f64 / n));
             slots.push(slot);
         }
     }
     let y: Vec<f64> = query.iter().map(|&v| if norm > 0.0 { v as f64 / norm } else { 0.0 }).collect();
-    let count = columns.len();
+    let count = slots.len();
     let mut x = vec![0.0_f64; count];
     let mut passive = vec![false; count];
     let mut iterations = 0;
     let limit = 32 * count.max(1) + 128;
+    let mut p = vec![0.0; dimension];
+    let mut r = vec![0.0; dimension];
+    let mut z = vec![0.0; count];
+    let mut indices = Vec::with_capacity(count);
+    let y_vec = DVector::from_column_slice(&y);
     loop {
-        let p = reconstruct(&columns, &x, dimension);
-        let r: Vec<_> = y.iter().zip(&p).map(|(a,b)| a-b).collect();
+        reconstruct_into(&columns, &x, &mut p);
+        for ((r, a), b) in r.iter_mut().zip(&y).zip(&p) { *r = a-b; }
         let mut best = None;
         let mut maximum = DUAL_TOL;
         for i in 0..count {
-            let w = dot(&columns[i], &r);
-            if !passive[i] && w > maximum { maximum = w; best = Some(i); }
+            if passive[i] { continue; }
+            let w = dot(&columns[i * dimension..(i + 1) * dimension], &r);
+            if w > maximum { maximum = w; best = Some(i); }
         }
         let Some(entering) = best else { break };
         passive[entering] = true;
@@ -112,21 +133,24 @@ pub(crate) fn solve_f64(query: &[f64], tags: &[(i64, &[f64])]) -> Result<Solutio
             if iterations > limit {
                 return Err(format!("MEMO_NNLS_ITERATION_LIMIT: {limit}"));
             }
-            let indices: Vec<_> = (0..count).filter(|&i| passive[i]).collect();
-            let matrix = DMatrix::from_fn(dimension, indices.len(),
-                |row, column| columns[indices[column]][row]);
+            indices.clear();
+            indices.extend((0..count).filter(|&i| passive[i]));
+            let mut matrix = DMatrix::zeros(dimension, indices.len());
+            for (column, &i) in matrix.as_mut_slice().chunks_exact_mut(dimension).zip(&indices) {
+                column.copy_from_slice(&columns[i * dimension..(i + 1) * dimension]);
+            }
             // SVD on original columns avoids squaring the condition number.
             let svd = nalgebra::linalg::SVD::try_new(matrix, true, true,
                 f64::EPSILON * 8.0, 4096)
                 .ok_or_else(|| "MEMO_NNLS_SVD_ITERATION_LIMIT".to_string())?;
-            let fitted = svd.solve(&DVector::from_column_slice(&y), RANK_TOL)
+            let fitted = svd.solve(&y_vec, RANK_TOL)
                 .map_err(|e| format!("MEMO_NNLS_SVD: {e}"))?;
-            let mut z = vec![0.0; count];
+            z.fill(0.0);
             for (&i, &value) in indices.iter().zip(fitted.iter()) {
                 if !value.is_finite() { return Err("MEMO_NNLS_NONFINITE_FIT".into()); }
                 z[i] = value;
             }
-            if indices.iter().all(|&i| z[i] > 0.0) { x = z; break; }
+            if indices.iter().all(|&i| z[i] > 0.0) { x.copy_from_slice(&z); break; }
             let mut alpha = 1.0_f64;
             for &i in &indices {
                 if z[i] <= 0.0 {
@@ -148,13 +172,13 @@ pub(crate) fn solve_f64(query: &[f64], tags: &[(i64, &[f64])]) -> Result<Solutio
             }
         }
     }
-    let p = reconstruct(&columns, &x, dimension);
-    let r: Vec<_> = y.iter().zip(&p).map(|(a,b)| a-b).collect();
+    reconstruct_into(&columns, &x, &mut p);
+    for ((r, a), b) in r.iter_mut().zip(&y).zip(&p) { *r = a-b; }
     let mut dual = 0.0_f64;
     let mut stationarity = 0.0_f64;
     let mut complementarity = 0.0_f64;
     for i in 0..count {
-        let w = dot(&columns[i], &r);
+        let w = dot(&columns[i * dimension..(i + 1) * dimension], &r);
         dual = dual.max(w.max(0.0));
         if x[i] > 0.0 { stationarity = stationarity.max(w.abs()); }
         complementarity = complementarity.max((x[i]*w).abs());
