@@ -147,18 +147,20 @@ fn unregister_storage_if_same(
 
 /// Optional optimization state belongs to this registered database instance.
 pub(crate) fn memo_workspace_slot(path: &str) -> Option<Arc<crate::memo_geometry::workspace::WorkspaceSlot>> {
+    let key = normalized_path(path);
     let registry = storage_registry().lock().ok()?;
-    registry.get(&normalized_path(path)).map(|storage| storage.inner.memo_workspace.clone())
+    registry.get(&key).map(|storage| storage.inner.memo_workspace.clone())
 }
 
 pub(crate) fn with_registered_read<T, F>(path: impl AsRef<Path>, operation: F) -> Result<T, String>
 where
     F: FnOnce(&Connection) -> Result<T, String>,
 {
+    let key = normalized_path(path);
     let storage = storage_registry()
         .lock()
         .map_err(|_| "KNOWLEDGE_STORE_REGISTRY_POISONED".to_string())?
-        .get(&normalized_path(path))
+        .get(&key)
         .cloned()
         .ok_or_else(|| "KNOWLEDGE_STORE_NOT_REGISTERED".to_string())?;
     storage.read(operation)
@@ -171,10 +173,11 @@ pub(crate) fn with_registered_read_transaction<T, F>(
 where
     F: FnOnce(&Connection) -> Result<T, String>,
 {
+    let key = normalized_path(path);
     let storage = storage_registry()
         .lock()
         .map_err(|_| "KNOWLEDGE_STORE_REGISTRY_POISONED".to_string())?
-        .get(&normalized_path(path))
+        .get(&key)
         .cloned()
         .ok_or_else(|| "KNOWLEDGE_STORE_NOT_REGISTERED".to_string())?;
 
@@ -204,10 +207,11 @@ pub(crate) fn with_registered_read_napi<T, F>(path: impl AsRef<Path>, operation:
 where
     F: FnOnce(&Connection) -> NapiResult<T>,
 {
+    let key = normalized_path(path);
     let storage = storage_registry()
         .lock()
         .map_err(|_| NapiError::from_reason("KNOWLEDGE_STORE_REGISTRY_POISONED".to_string()))?
-        .get(&normalized_path(path))
+        .get(&key)
         .cloned()
         .ok_or_else(|| NapiError::from_reason("KNOWLEDGE_STORE_NOT_REGISTERED".to_string()))?;
 
@@ -612,10 +616,11 @@ impl Drop for ReadConnectionGuard {
             if let Ok(mut pool) = self.storage.inner.read_pool.lock() {
                 pool.push(connection);
                 self.storage.inner.read_pool_changed.notify_one();
+            } else {
+                self.storage.inner.read_pool_changed.notify_all();
             }
         }
         self.storage.release_read_slot();
-        self.storage.inner.read_pool_changed.notify_all();
     }
 }
 
@@ -1015,7 +1020,8 @@ pub(crate) fn load_vectors_by_ids(
         let mut rows = statement.query(rusqlite::params_from_iter(batch.iter()))
             .map_err(|error| format!("query authoritative vectors failed: {error}"))?;
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-            let (Ok(id), Ok(bytes)) = (row.get::<_, i64>(0), row.get::<_, Vec<u8>>(1)) else {
+            let (Ok(id), Ok(bytes)) = (row.get::<_, i64>(0), row.get_ref(1)
+                .and_then(|value| value.as_blob().map_err(Into::into))) else {
                 // Preserve row-level fault isolation; query/I/O failures still propagate.
                 continue;
             };
