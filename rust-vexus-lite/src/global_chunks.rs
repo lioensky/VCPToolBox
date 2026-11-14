@@ -148,11 +148,13 @@ impl GlobalChunks {
         Ok(changed)
     }
 
-    pub fn search(&self, query: &[f32], limit: usize, allowed: &HashSet<i64>)
-        -> Result<Vec<i64>, String> {
+    /// `admits` is called exactly once per live row, at that row's current slot,
+    /// when `limit > 0` and the scan completes (an empty search returns early).
+    pub fn search<P>(&self, query: &[f32], limit: usize, mut admits: P)
+        -> Result<Vec<i64>, String>
+    where P: FnMut(&ChunkHeader) -> bool {
         self.routing.search_flat_filtered(query, limit, |slot, id| {
-            allowed.contains(&(id as i64))
-                && self.rows.get(&(id as i64)).is_some_and(|row| row.slot == slot)
+            self.rows.get(&(id as i64)).is_some_and(|row| row.slot == slot && admits(row))
         }).map(|hits| hits.into_iter().map(|hit| hit.0 as i64).collect())
             .map_err(|e| e.to_string())
     }
@@ -380,7 +382,7 @@ mod tests {
         assert!(!table.checkpoint(&db,&root,1,0.05,true).unwrap());
         let mut restored = crate::storage::with_registered_read_transaction(&db,
             |c| GlobalChunks::load(c,&root,2,"model")).unwrap();
-        assert_eq!(restored.search(&[1.,0.],5,&HashSet::from([1])).unwrap(),vec![1]);
+        assert_eq!(restored.search(&[1.,0.],5,|row| row.id == 1).unwrap(),vec![1]);
         storage.submit_write(|tx| {
             let bytes = [0_f32,1.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
             tx.execute("UPDATE chunks SET vector=?1,content='[2026/11] Bob' WHERE id=1",

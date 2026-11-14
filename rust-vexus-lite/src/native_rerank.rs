@@ -229,7 +229,9 @@ impl Ranker {
             while let Some(result) = pending.join_next().await {
                 match result {
                     Ok(Ok(mut scores)) => output.append(&mut scores),
-                    _ => return Err("RERANK_BATCH_FAILED".into()),
+                    // post/parse_rerank codes are already sanitized; keep them.
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => return Err("RERANK_BATCH_FAILED".into()),
                 }
             }
         }
@@ -246,9 +248,14 @@ fn jev_long_context(body: &Value) -> Result<bool, String> {
     let questions = body["questions"].as_object().ok_or("JEV_INVALID_QUESTIONS")?;
     let total = count(json!({"state":state,"questions":questions}));
     let mut largest = 0;
-    for (key, question) in questions {
-        let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
-        largest = largest.max(count(json!({"state":state,"questions":single})));
+    if questions.len() == 1 {
+        // The single-question body is the whole body; do not tokenize it twice.
+        largest = total;
+    } else {
+        for (key, question) in questions {
+            let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
+            largest = largest.max(count(json!({"state":state,"questions":single})));
+        }
     }
     if total > 240000 || largest > 240000 {
         return Err("JEV_CONTEXT_TOO_LARGE".into());
@@ -423,6 +430,31 @@ mod tests {
             assert!(ranker.rank("query", &[json!({"id":1,"text":"one"})]).await.is_err());
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn traditional_batch_failure_keeps_sanitized_error_code() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let _ = socket.read(&mut bytes).await;
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await.unwrap();
+        });
+        let values = HashMap::from([
+            ("RerankUrl".into(), format!("http://{address}/")),
+            ("RerankApi".into(), "fixture".into()),
+            ("RerankModel".into(), "fixture".into()),
+            ("NativeRerankTimeoutMs".into(), "5000".into()),
+        ]);
+        let ranker = Ranker::from_values(&values, Some(false)).unwrap();
+        let error = ranker.rank("query", &[json!({"id":1,"text":"one"}), json!({"id":2,"text":"two"})])
+            .await.unwrap_err();
+        assert_eq!(error, "RERANK_HTTP_429");
+        server.abort();
     }
 
     #[test]

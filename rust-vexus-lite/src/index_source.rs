@@ -37,8 +37,8 @@ impl SqlIndexBuild {
         let result = self.index().write_staging_with_source(
             path, &self.identity, |id, output| {
                 match statement.query_row(rusqlite::params![id as i64, diary],
-                    |row| row.get::<_, Vec<u8>>(0)) {
-                    Ok(bytes) => decode_into(&bytes, self.identity.dimension, output),
+                    |row| decode_column_into(row, 0, self.identity.dimension, output)) {
+                    Ok(valid) => valid,
                     Err(error) => {
                         source_error = Some(error.to_string());
                         false
@@ -74,6 +74,17 @@ fn decode_into(bytes: &[u8], dimension: usize, output: &mut Vec<f32>) -> bool {
     output.extend(bytes.chunks_exact(4)
         .map(|part| f32::from_le_bytes(part.try_into().unwrap())));
     output.iter().all(|value| value.is_finite())
+}
+
+/// Decode a BLOB column in place, borrowing instead of copying it into a Vec.
+/// Any other value fails exactly as `row.get::<_, Vec<u8>>(column)` does.
+pub(crate) fn decode_column_into(
+    row: &rusqlite::Row<'_>, column: usize, dimension: usize, output: &mut Vec<f32>,
+) -> rusqlite::Result<bool> {
+    match row.get_ref(column)? {
+        rusqlite::types::ValueRef::Blob(bytes) => Ok(decode_into(bytes, dimension, output)),
+        _ => row.get::<_, Vec<u8>>(column).map(|_| false),
+    }
 }
 
 /// Build runtime routing without creating a private vector file.
@@ -150,7 +161,7 @@ fn build_with_source(
     let identity = AssetIdentity {
         dimension,
         scope: u8::from(diary.is_none()),
-        model_hash: Sha256::digest(model_sig.as_bytes()).into(),
+        model_hash: crate::retrieval_index::RetrievalIndex::model_hash(model_sig),
         content_digest: digest.finalize().into(),
     };
     let lookup = if diary.is_some() {
@@ -164,10 +175,10 @@ fn build_with_source(
     let mut fill = |slot: usize, output: &mut Vec<f32>| {
             let result = lookup.query_row(
                 rusqlite::params![ids[slot] as i64, diary],
-                |row| row.get::<_, Vec<u8>>(0),
+                |row| decode_column_into(row, 0, dimension, output),
             );
             match result {
-                Ok(bytes) => decode_into(&bytes, dimension, output),
+                Ok(valid) => valid,
                 Err(error) => {
                     source_error = Some(error.to_string());
                     false

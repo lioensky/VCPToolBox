@@ -1252,6 +1252,20 @@ struct FusionTag {
     weight: f64,
     is_core: bool,
     vector: Arc<[f32]>,
+    norm: f64,
+}
+
+impl FusionTag {
+    fn cosine(&self, other: &Self) -> f64 {
+        // Both vectors were admitted with the request's dimension. Keep the
+        // original multiplication and division order, including the tiny-norm guard.
+        let denominator = self.norm * other.norm;
+        if denominator > 1e-12 {
+            dot(&self.vector, &other.vector) / denominator
+        } else {
+            0.0
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -1384,7 +1398,8 @@ fn fuse_observation_with_pool(
     let mut vectors = Vec::with_capacity(requested_count);
     for tag in merged {
         let Some(vector) = tag_vectors.get(&tag.id).cloned() else { continue };
-        if magnitude(&vector) > 1e-12 {
+        let norm = magnitude(&vector);
+        if norm > 1e-12 {
             vectors.push(FusionTag {
                 id: tag.id,
                 name: if tag.name.is_empty() {
@@ -1395,6 +1410,7 @@ fn fuse_observation_with_pool(
                 weight: tag.weight,
                 is_core: tag.is_core,
                 vector,
+                norm,
             });
         }
     }
@@ -1408,7 +1424,11 @@ fn fuse_observation_with_pool(
             tag.is_core && tag.name.eq_ignore_ascii_case(ghost.name.trim())) {
             continue;
         }
-        if ghost.vector.len() != dimension || magnitude(&ghost.vector) <= 1e-12 {
+        if ghost.vector.len() != dimension {
+            continue;
+        }
+        let norm = magnitude(&ghost.vector);
+        if norm <= 1e-12 {
             continue;
         }
         vectors.push(FusionTag {
@@ -1422,6 +1442,7 @@ fn fuse_observation_with_pool(
                 },
             is_core: ghost.is_core,
             vector: Arc::from(ghost.vector.clone()),
+            norm,
         });
         ghost_id -= 1;
         accepted_ghosts += 1;
@@ -1443,7 +1464,7 @@ fn fuse_observation_with_pool(
     for candidate in vectors {
         let redundant_index = selected
             .iter()
-            .position(|existing| cosine(&candidate.vector, &existing.vector) > threshold);
+            .position(|existing| candidate.cosine(existing) > threshold);
         if let Some(index) = redundant_index {
             selected[index].weight += candidate.weight * 0.2;
             selected[index].is_core |= candidate.is_core;
@@ -2511,6 +2532,36 @@ pub(crate) fn run_with_runtime(
 #[cfg(test)]
 mod audit_gate_tests {
     use super::*;
+
+    #[test]
+    fn fusion_cached_norm_cosines_match_original_bits() {
+        let mut state = 20261114_u64;
+        for dimension in [1, 3, 65, 3072] {
+            let mut vectors = vec![
+                vec![0.0; dimension], vec![-0.0; dimension],
+                vec![f32::from_bits(1); dimension], vec![1e-8; dimension],
+                vec![f32::MAX; dimension], vec![-f32::MAX; dimension],
+            ];
+            for _ in 0..80 {
+                vectors.push((0..dimension).map(|_| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    ((state >> 32) as i32 as f32) / i32::MAX as f32
+                }).collect());
+            }
+            let tags: Vec<FusionTag> = vectors.into_iter().enumerate().map(|(id, vector)| {
+                let norm = magnitude(&vector);
+                FusionTag { id: id as i64, name: String::new(), weight: 1.0,
+                    is_core: false, vector: Arc::from(vector), norm }
+            }).collect();
+            for left in &tags {
+                for right in &tags {
+                    assert_eq!(left.cosine(right).to_bits(),
+                        cosine(&left.vector, &right.vector).to_bits(),
+                        "dimension={dimension}, pair=({}, {})", left.id, right.id);
+                }
+            }
+        }
+    }
 
     #[test]
     fn batched_dual_projection_matches_materialized_projection_bit_for_bit() {

@@ -272,3 +272,55 @@ fn graph_routing_build_retains_no_original_matrix_or_mapping() {
     }).unwrap();
     assert!(hits.iter().any(|(id, score)| *id == 18 && (*score - 1.0).abs() < 1e-5));
 }
+
+#[test]
+fn graph_search_scores_rerank_reads_without_a_second_top_k_read() {
+    let dim = 65;
+    let count = QUIVER_MIN_NODES + 64;
+    let ids: Vec<u64> = (1..=count as u64).map(|id| id * 3).collect();
+    let row_of = |id: u64| -> Vec<f32> {
+        (0..dim).map(|column| ((id as usize * 37 + column * 13 + 1) as f32).sin()).collect()
+    };
+    let index = TdbIndex::routing_from_source(dim, &ids, |slot, row| {
+        row.extend(row_of(ids[slot]));
+        true
+    }).unwrap();
+    let graph = index.graph.as_ref().expect("graph routing above threshold");
+    for (query_id, k, ef) in [(54_u64, 1, None), (300, 10, None), (999, 64, Some(256)), (3, 300, None)] {
+        let query: Vec<f32> = row_of(query_id).iter().map(|v| v * 0.5 + 0.01).collect();
+        let options = SearchOptions { ef_search: ef };
+        let mut reads = 0;
+        let hits = index.search_with_source_options(&query, k, &options, &|_| false, |id, row| {
+            reads += 1;
+            row.clear();
+            row.extend(row_of(id));
+            true
+        }).unwrap();
+        // Previous path: graph rerank reads, then one more read per returned id.
+        let config = QuIVerSearchConfig {
+            top_k: k, ef_search: ef.unwrap_or(128).max(k), rerank_limit: Some(64_usize.max(k)),
+        };
+        let mut rerank_reads = 0;
+        let candidates = graph.search_with_options(&query, |slot, row| {
+            rerank_reads += 1;
+            row.extend(row_of(index.ids[slot]));
+            true
+        }, &config, &|_| false);
+        let mut expected: Vec<(u64, f32)> = candidates.into_iter()
+            .filter(|(id, _)| index.contains(*id))
+            .map(|(id, _)| (id, cosine(&query, &row_of(id)))).collect();
+        expected.retain(|(_, score)| score.is_finite());
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        expected.truncate(k);
+        assert_eq!(hits.len(), k);
+        assert_eq!(
+            hits.iter().map(|(id, score)| (*id, score.to_bits())).collect::<Vec<_>>(),
+            expected.iter().map(|(id, score)| (*id, score.to_bits())).collect::<Vec<_>>(),
+        );
+        if k * 2 >= 64_usize.max(k) {
+            assert_eq!(reads, rerank_reads, "returned rows must not be read twice");
+        } else {
+            assert_eq!(reads, rerank_reads + hits.len(), "small k keeps the second read");
+        }
+    }
+}

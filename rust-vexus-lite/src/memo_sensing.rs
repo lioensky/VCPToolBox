@@ -444,7 +444,7 @@ pub(crate) fn sense_with_context(
         active
             .entry((None, node_index))
             .and_modify(|state| state.energy += energy)
-            .or_insert(SpikeState {
+            .or_insert_with(|| SpikeState {
                 node_index,
                 previous_index: None,
                 energy,
@@ -498,7 +498,8 @@ pub(crate) fn sense_with_context(
             let limit = end.min(start.saturating_add(config.max_neighbors_per_node.max(1)));
             selected_scratch.clear();
             neighbor_scratch.clear();
-            if let Some(ctx) = context.as_deref_mut() {
+            if let Some(ctx) = context.as_deref_mut()
+                .filter(|ctx| spike.residual_level.saturating_add(1) < ctx.residuals.len()) {
                 let began = Instant::now();
                 for cursor in start..end {
                     let conductance = positive(artifact.weights[cursor]);
@@ -628,7 +629,7 @@ pub(crate) fn sense_with_context(
                         state.momentum = state.momentum.max(next_momentum);
                         state.residual_level = state.residual_level.min(spike.residual_level);
                     })
-                    .or_insert(SpikeState {
+                    .or_insert_with(|| SpikeState {
                         node_index: target_index,
                         previous_index: Some(spike.node_index),
                         energy: injected,
@@ -704,7 +705,7 @@ pub(crate) fn sense_with_context(
                         };
                     }
                 })
-                .or_insert(Provenance {
+                .or_insert_with(|| Provenance {
                     source_type: "emergent".to_string(),
                     origin_type: Some(spike.source_type.clone()),
                     hop: spike.hop,
@@ -970,6 +971,38 @@ mod dynamic_wormhole_tests {
             assert!(!output.edges.iter().any(|e| e.target_id == 22));
             assert_eq!(output.diagnostics.dynamic_wormhole_edges_fired, 0);
             assert_eq!(output.diagnostics.dynamic_wormhole_work.sql_batches, 0);
+        }
+    }
+
+    #[test]
+    fn exhausted_and_unmapped_layers_skip_cached_dynamic_scan_bit_for_bit() {
+        let graph = graph();
+        let db = database();
+        for layer in [Some(1), None] {
+            let mut pool = TagVectorPool::new();
+            let levels = layer.map(|level| HashMap::from([(1, level)])).unwrap_or_default();
+            let mut ctx = DynamicWormholeContext::new(&db, &mut pool,
+                vec![vec![1.0, 0.0], vec![0.0, 1.0]], levels);
+            // A different, earlier spike can already have cached these targets.
+            // Even positive scores are unreachable from an exhausted source layer.
+            for node in 0..graph.node_ids.len() { ctx.scores.insert(node, vec![0.0, 1.0]); }
+            let config = SenseConfig { max_safe_hops: 2, max_transition_records: 1000,
+                ..SenseConfig::default() };
+            let expected = sense_typed(&graph, "test", input(config.clone())).unwrap();
+            let actual = sense_with_context(&graph, "test", input(config), Some(&mut ctx)).unwrap();
+            assert_eq!(ctx.diagnostics.cache_hits, 0);
+            assert_eq!(ctx.diagnostics.selection_ms.to_bits(), 0.0_f64.to_bits());
+            assert!(!actual.transitions.is_empty());
+            assert_eq!(actual.source_field.iter().map(|(id, v)| (*id, v.to_bits())).collect::<Vec<_>>(),
+                expected.source_field.iter().map(|(id, v)| (*id, v.to_bits())).collect::<Vec<_>>());
+            // Round-trip JSON text distinguishes every finite f64 value,
+            // including signed zero, as well as all provenance fields.
+            let mut actual = serde_json::to_value(actual).unwrap();
+            let mut expected = serde_json::to_value(expected).unwrap();
+            for output in [&mut actual, &mut expected] {
+                output["diagnostics"]["elapsedMs"] = serde_json::Value::Null;
+            }
+            assert_eq!(actual.to_string(), expected.to_string());
         }
     }
 
