@@ -541,6 +541,9 @@ pub(super) fn apply_unified_bonus(
         item.final_score = clamp01(item.pure_score + item.path_bonus
             + item.gated_bonus + item.anchor_bonus);
         item.ranking_score = item.final_score;
+        // Only the optional topology trace consumes this JSON; score clipping
+        // and ranking use the numeric fields above directly.
+        if !input.include_trace { continue; }
         traces.insert(item.curve.id, serde_json::json!({
             "mode":"continuous-shared-topology-budget", "active": xw.eligible || proxy > 0.0,
             "wormhole":xw, "proxyEvidence":proxy, "proxyEdge":proxy_edge,
@@ -718,6 +721,48 @@ mod score_contract_fixture_tests {
         apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
         assert_eq!(score.to_bits(),work[0].final_score.to_bits());
         assert_eq!(work[1].final_score,0.9);
+    }
+
+    #[test]
+    fn unified_trace_is_optional_and_preserves_score_bits() {
+        let mut input: NativeInput = serde_json::from_value(json!({
+            "query":{"vector":[1,0]}, "queryState":{
+                "completeObservation":true,
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}],
+                "riverNodes":[{"id":1,"hop":0},{"id":2,"hop":1}],
+                "riverEdges":[{"sourceId":1,"targetId":2,"flow":0.1}]
+            }
+        })).unwrap();
+        let omega = compute_omega(&input);
+        let graph = NativeArtifact {
+            node_ids:vec![1,2], node_index:HashMap::from([(1,0),(2,1)]),
+            row_offsets:vec![0,1,1], targets:vec![1], weights:vec![0.4],
+            ..NativeArtifact::default()
+        };
+        let model = Model { eligible_routes:1, routes:vec![Route {
+            source_id:1,target_id:2,flow:1.0,relative_flow:0.625,
+            vector:Arc::from(vec![1.0_f32,0.0]),
+        }] };
+        let mut expected = None;
+        for trace in [true, false] {
+            input.include_trace = trace;
+            let mut work = vec![candidate(1,0.5,true),candidate(2,0.5,false)];
+            work[0].v2_bonus = 0.013;
+            let traces = apply_unified_bonus(&mut work,&model,&input,&omega,&graph);
+            assert_eq!(traces.len(), if trace { work.len() } else { 0 });
+            let bits = work.iter().map(|item| (item.curve.id,
+                item.gated_bonus.to_bits(), item.final_score.to_bits(), item.ranking_score.to_bits()))
+                .collect::<Vec<_>>();
+            if trace {
+                for item in &work {
+                    assert_eq!(traces[&item.curve.id]["finalScore"].as_f64().unwrap().to_bits(),
+                        item.final_score.to_bits());
+                }
+                expected = Some(bits);
+            } else {
+                assert_eq!(&bits, expected.as_ref().unwrap());
+            }
+        }
     }
 
     #[test]
