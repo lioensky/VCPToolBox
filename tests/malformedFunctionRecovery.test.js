@@ -223,3 +223,84 @@ for (const bad of ['data: {broken-json}\n\n',
     assert.equal(result.completed, false);
   });
 }
+
+const { PassThrough } = require('node:stream');
+
+test('complete tool tail takes over after 15s despite heartbeat/native FC traffic', { timeout: 22000 }, async () => {
+  const s = toolSetup([success('done')]);
+  const upstream = new PassThrough();
+  const started = Date.now();
+  const pending = s.handler.handle({}, s.res, { ok: true, status: 200, body: upstream });
+  // Delimiter crosses SSE frames.
+  upstream.write(frame({ content: bodyTool.slice(0, -8) }));
+  upstream.write(frame({ content: bodyTool.slice(-8) }));
+  const noise = setInterval(() => {
+    upstream.write(': heartbeat\n\n');
+    upstream.write(frame({ tool_calls: [{ index: 0, function: { arguments: 'noise' } }] }));
+  }, 100);
+  try {
+    const result = await pending;
+    assert.ok(Date.now() - started >= 14900);
+    assert.ok(Date.now() - started < 21000);
+    assert.equal(upstream.destroyed, true);
+    assert.equal(s.controller.signal.aborted, false);
+    assert.equal(s.stats.executed, 1);
+    assert.equal(s.stats.fetched, 1);
+    assert.equal(result.completed, true);
+    assert.doesNotMatch(s.res.output, /响应超时|STREAM_READ_ERROR|tool_calls/);
+    assert.equal((s.res.output.match(/data: \[DONE\]/g) || []).length, 1);
+  } finally {
+    clearInterval(noise);
+    upstream.destroy();
+  }
+});
+
+for (const mode of ['close', 'error', 'end']) {
+  test(`complete tool tail survives upstream ${mode}`, async () => {
+    const s = toolSetup([success('done')]);
+    const upstream = new PassThrough();
+    const pending = s.handler.handle({}, s.res, { ok: true, status: 200, body: upstream });
+    upstream.write(frame({ content: bodyTool }));
+    if (mode === 'error') upstream.destroy(new Error('connection reset'));
+    else if (mode === 'close') upstream.destroy();
+    else upstream.end();
+    const result = await pending;
+    assert.equal(s.stats.executed, 1);
+    assert.equal(s.stats.fetched, 1);
+    assert.equal(s.controller.signal.aborted, false);
+    assert.equal(result.completed, true);
+    assert.doesNotMatch(s.res.output, /STREAM_READ_ERROR|\[ERROR\]/);
+  });
+}
+
+for (const [label, text, overrides] of [
+  ['partial tool', bodyTool.slice(0, -5), {}],
+  ['body after tool', bodyTool + '\nnot finished', {}],
+  ['thought after tool', bodyTool + '\n<think>unfinished', {}],
+  ['tool in thought', '<think>\n' + bodyTool, {}],
+  ['disabled', bodyTool, { vcpToolUseForbidden: true }]
+]) {
+  test(`abnormal close must not execute ${label}`, async () => {
+    const s = toolSetup([], overrides);
+    const upstream = new PassThrough();
+    const pending = s.handler.handle({}, s.res, { ok: true, status: 200, body: upstream });
+    upstream.write(frame({ content: text }));
+    upstream.destroy();
+    const result = await pending;
+    assert.equal(s.stats.executed, 0);
+    assert.equal(s.stats.fetched, 0);
+    assert.equal(result.completed, false);
+  });
+}
+
+test('explicit user abort after complete tool tail never executes tools', async () => {
+  const s = toolSetup([]);
+  const upstream = new PassThrough();
+  const pending = s.handler.handle({}, s.res, { ok: true, status: 200, body: upstream });
+  upstream.write(frame({ content: bodyTool }));
+  s.controller.abort();
+  const result = await pending;
+  assert.equal(s.stats.executed, 0);
+  assert.equal(s.stats.fetched, 0);
+  assert.equal(result.completed, false);
+});

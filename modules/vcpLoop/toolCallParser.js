@@ -424,6 +424,22 @@ class ToolCallParser {
     return chunks.join('');
   }
 
+  static endsWithCompleteToolRequest(content) {
+    if (typeof content !== 'string') return false;
+    const raw = content.trimEnd();
+    const text = this.stripReasoningBlocks(raw).trimEnd();
+    // Do not treat a trailing reasoning block or unfinished thought as a tool boundary.
+    if (!text || !raw.endsWith(text.slice(-Math.min(text.length, 32)))) return false;
+    let offset = 0;
+    let last = null;
+    while (offset < text.length) {
+      const block = this.extractNextToolBlock(text, offset);
+      if (!block) break;
+      last = block;
+      offset = block.nextOffset;
+    }
+    return !!last && last.nextOffset === text.length && !!this.parseBlock(last.blockContent);
+  }
   /**
    * 解析AI响应中的所有工具调用
    * @param {string} content - AI响应内容

@@ -188,6 +188,9 @@ class StreamHandler {
         let streamAborted = false;
         let keepAliveTimer = null;
         let chunkIdleTimer = null;
+        let toolTailTimer = null;
+        let streamSettled = false;
+        const TOOL_TAIL_TIMEOUT_MS = 15000;
         const configuredIdleTimeout = Number(process.env.STREAM_CHUNK_IDLE_TIMEOUT_MS);
         const CHUNK_IDLE_TIMEOUT = Number.isFinite(configuredIdleTimeout) && configuredIdleTimeout > 0 ? configuredIdleTimeout : 90000; // 默认 90 秒（可通过 STREAM_CHUNK_IDLE_TIMEOUT_MS 配置）
         let message = { content: '', reasoning_content: '' };
@@ -200,16 +203,17 @@ class StreamHandler {
         let invalidPayload = false;
         let hasPayloadError = false;
         let upstreamEnded = false;
-        const result = () => ({
-          content: collectedContentThisTurn,
-          message,
-          malformedFunctionCall,
-          streamAborted,
-          hasPayloadError,
-          completed: !streamAborted && !invalidPayload && aiResponse.ok &&
-            collectedContentThisTurn.trim().length > 0 &&
-            (finishReason === 'stop' || (!finishReason && sawDone))
-        });
+        const result = () => {
+          streamSettled = true;
+          if (toolTailTimer) clearTimeout(toolTailTimer);
+          return {
+            content: collectedContentThisTurn, message, malformedFunctionCall,
+            streamAborted, hasPayloadError,
+            completed: !streamAborted && !invalidPayload && aiResponse.ok &&
+              collectedContentThisTurn.trim().length > 0 &&
+              (finishReason === 'stop' || (!finishReason && sawDone))
+          };
+        };
         const observePayload = (parsedData) => {
           if (parsedData?.error) {
             invalidPayload = true;
@@ -237,6 +241,7 @@ class StreamHandler {
             // 客户端展示转换在独立副本上进行，避免进入 VCP Loop、OneRing 和日记。
             message.reasoning_content += reasoningText;
           }
+          if (delta?.content || reasoningText) refreshToolTailTimer();
         };
 
         const transformParsedDataForClient = (parsedData) => {
@@ -318,6 +323,37 @@ class StreamHandler {
           };
           res.write(`data: ${JSON.stringify(closePayload)}\n\n`);
         };
+        const canTakeToolTail = () =>
+          !streamSettled && !streamAborted && !hasPayloadError && aiResponse.ok &&
+          !vcpToolUseForbidden && !abortController?.signal.aborted &&
+          !res.writableEnded && !res.destroyed &&
+          (!finishReason || ['stop', 'tool_calls', 'function_call'].includes(finishReason) || malformedFunctionCall) &&
+          !sseLineBuffer.trim() &&
+          ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn) === true;
+
+        const takeToolTail = (reason) => {
+          if (!canTakeToolTail()) return false;
+          streamSettled = true;
+          if (toolTailTimer) clearTimeout(toolTailTimer);
+          if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
+          abortController?.signal.removeEventListener('abort', abortHandler);
+          writeClientReasoningCloseChunk();
+          console.warn(`[VCP Stream ToolTail] requestId=${id || 'unknown'} reason=${reason}；完整工具尾部接管，关闭旧上游流并继续 ToolLoop。`);
+          aiResponse.body?.destroy();
+          resolve({ ...result(), malformedFunctionCall: false, completed: true });
+          return true;
+        };
+
+        const refreshToolTailTimer = () => {
+          if (toolTailTimer) clearTimeout(toolTailTimer);
+          toolTailTimer = null;
+          if (!streamSettled && !vcpToolUseForbidden &&
+              ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn) === true) {
+            toolTailTimer = setTimeout(() => takeToolTail('tool_tail_idle_15s'), TOOL_TAIL_TIMEOUT_MS);
+          }
+        };
+
         // 🌟 核心修复：注入 SSE 幽灵心跳保活，防止上游卡顿时浏览器假死
         keepAliveTimer = setInterval(() => {
           if (!res.writableEnded && !res.destroyed) {
@@ -335,7 +371,8 @@ class StreamHandler {
         const resetChunkIdleTimer = () => {
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
           chunkIdleTimer = setTimeout(() => {
-            if (streamAborted) return;
+            if (streamSettled || streamAborted) return;
+            if (takeToolTail('upstream_idle')) return;
             console.warn(`[Stream IdleTimeout] No upstream chunk received for ${CHUNK_IDLE_TIMEOUT / 1000}s. Assuming stream stalled. Forcing end.`);
             streamAborted = true;
             // 通知前端这次流异常结束
@@ -363,6 +400,7 @@ class StreamHandler {
         resetChunkIdleTimer(); // 启动首次空闲计时
 
         const abortHandler = () => {
+          if (streamSettled) return;
           streamAborted = true;
           if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
@@ -378,7 +416,8 @@ class StreamHandler {
         }
 
         aiResponse.body.on('close', () => {
-          if (upstreamEnded) return;
+          if (streamSettled || upstreamEnded) return;
+          if (takeToolTail('upstream_close')) return;
           streamAborted = true;
           if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
@@ -387,7 +426,7 @@ class StreamHandler {
         });
 
         aiResponse.body.on('data', chunk => {
-          if (streamAborted) return;
+          if (streamSettled || streamAborted) return;
           resetChunkIdleTimer(); // 每收到一个 chunk 就重置空闲计时器
 
           const chunkString = decoder.write(chunk);
@@ -438,6 +477,7 @@ class StreamHandler {
         });
 
         aiResponse.body.on('end', () => {
+          if (streamSettled) return;
           upstreamEnded = true;
           if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
@@ -477,12 +517,17 @@ class StreamHandler {
             }
           }
 
+          sseLineBuffer = '';
+          if (!finishReason && !sawDone && takeToolTail('upstream_end_without_terminal')) return;
           writeClientReasoningCloseChunk();
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
           resolve(result());
         });
 
         aiResponse.body.on('error', streamError => {
+          if (streamSettled) return;
+          if (takeToolTail('upstream_error')) return;
+          if (toolTailTimer) clearTimeout(toolTailTimer);
           if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
@@ -498,6 +543,7 @@ class StreamHandler {
               res.end();
             } catch (e) { }
           }
+          streamSettled = true;
           reject(streamError);
         });
       });
@@ -516,6 +562,7 @@ class StreamHandler {
     // Semantic recovery is per upstream turn, separate from transport retries and tool execution.
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
       let data = await readAIResponseStream(aiResponse, isInitialCall);
+      if (data.streamAborted) return { ...data, content: '', completed: false };
       if (!data.malformedFunctionCall) return data;
       if (abortController?.signal.aborted || data.streamAborted || res.writableEnded || res.destroyed) return data;
 
@@ -564,6 +611,7 @@ class StreamHandler {
           return { ...data, content: '', completed: false };
         }
         data = await readAIResponseStream(response, false);
+        if (data.streamAborted) return { ...data, content: '', completed: false };
         if (!data.malformedFunctionCall) return data;
         const acceptedRecovery = acceptMalformedToolTurn(data);
         if (acceptedRecovery) return acceptedRecovery;
