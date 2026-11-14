@@ -198,18 +198,23 @@ class StreamHandler {
         let malformedFunctionCall = false;
         let sawDone = false;
         let invalidPayload = false;
+        let hasPayloadError = false;
         let upstreamEnded = false;
         const result = () => ({
           content: collectedContentThisTurn,
           message,
           malformedFunctionCall,
           streamAborted,
+          hasPayloadError,
           completed: !streamAborted && !invalidPayload && aiResponse.ok &&
             collectedContentThisTurn.trim().length > 0 &&
             (finishReason === 'stop' || (!finishReason && sawDone))
         });
         const observePayload = (parsedData) => {
-          if (parsedData?.error) invalidPayload = true;
+          if (parsedData?.error) {
+            invalidPayload = true;
+            hasPayloadError = true;
+          }
           const choice = parsedData?.choices?.[0];
           if ([choice?.native_finish_reason, choice?.finish_reason]
             .some(reason => typeof reason === 'string' && reason.toLowerCase() === 'malformed_function_call')) {
@@ -235,11 +240,21 @@ class StreamHandler {
         };
 
         const transformParsedDataForClient = (parsedData) => {
-          if (!reasoningToContentEnabled || !parsedData || typeof parsedData !== 'object') {
-            return parsedData;
-          }
+          if (!parsedData || typeof parsedData !== 'object') return parsedData;
 
           const transformed = JSON.parse(JSON.stringify(parsedData));
+          for (const item of transformed.choices || []) {
+            for (const payload of [item.delta, item.message]) {
+              if (!payload || typeof payload !== 'object') continue;
+              delete payload.tool_calls;
+              delete payload.function_call;
+            }
+            // Native FC is not a frontend termination or execution channel in VCP.
+            for (const key of ['finish_reason', 'native_finish_reason']) {
+              if (['tool_calls', 'function_call'].includes(item[key])) item[key] = null;
+            }
+          }
+          if (!reasoningToContentEnabled) return transformed;
           const choice = transformed.choices?.[0];
           const delta = choice?.delta;
           if (!delta || typeof delta !== 'object') return transformed;
@@ -397,7 +412,7 @@ class StreamHandler {
                   observePayload(parsedData);
                   // 后台始终收集未经展示转换的原始 delta。
                   appendDelta(parsedData.choices?.[0]?.delta);
-                } catch (e) { invalidPayload = true; }
+                } catch (e) { invalidPayload = true; hasPayloadError = true; }
               }
             }
 
@@ -408,7 +423,7 @@ class StreamHandler {
               try {
                 if (isDoneLine) {
                   writeClientReasoningCloseChunk();
-                } else if (reasoningToContentEnabled && parsedData) {
+                } else if (parsedData) {
                   const transformedData = transformParsedDataForClient(parsedData);
                   res.write(`data: ${JSON.stringify(transformedData)}\n`);
                 } else {
@@ -445,7 +460,7 @@ class StreamHandler {
                   parsedData = JSON.parse(jsonData);
                   observePayload(parsedData);
                   appendDelta(parsedData.choices?.[0]?.delta);
-                } catch (e) { invalidPayload = true; }
+                } catch (e) { invalidPayload = true; hasPayloadError = true; }
               }
             }
 
@@ -453,7 +468,7 @@ class StreamHandler {
               try {
                 if (isDoneLine) {
                   writeClientReasoningCloseChunk();
-                } else if (reasoningToContentEnabled && parsedData && !malformedFunctionCall) {
+                } else if (parsedData && !malformedFunctionCall) {
                   res.write(`data: ${JSON.stringify(transformParsedDataForClient(parsedData))}\n`);
                 } else {
                   if (!malformedFunctionCall) res.write(sseLineBuffer + '\n');
@@ -488,13 +503,26 @@ class StreamHandler {
       });
     };
 
+    // Only normal body content is eligible; never recover tools from reasoning or error diagnostics.
+    const acceptMalformedToolTurn = (data) => {
+      if (!data.malformedFunctionCall || data.streamAborted || data.hasPayloadError ||
+          vcpToolUseForbidden || abortController?.signal.aborted || res.writableEnded || res.destroyed) return null;
+      const calls = ToolCallParser.parse(data.content);
+      if (calls.length === 0) return null;
+      console.warn(`[VCP Stream Recovery] requestId=${id || 'unknown'} MALFORMED_FUNCTION_CALL，但正文含 ${calls.length} 个可解析 VCP 工具请求；保留正文交由 ToolLoop 执行，不重生成、不执行原生 FC。`);
+      return { ...data, completed: true };
+    };
+
     // Semantic recovery is per upstream turn, separate from transport retries and tool execution.
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
       let data = await readAIResponseStream(aiResponse, isInitialCall);
       if (!data.malformedFunctionCall) return data;
       if (abortController?.signal.aborted || data.streamAborted || res.writableEnded || res.destroyed) return data;
 
-      // Never replay visible body or execute fragments from a failed turn.
+      const accepted = acceptMalformedToolTurn(data);
+      if (accepted) return accepted;
+
+      // Never replay visible body; only complete parsed body tools can survive malformed FC.
       if (!data.content.trim() && !data.message.reasoning_content) {
         // Internal ToolLoop continuation only: reuse processed messages; never re-enter handle/preprocessors.
         currentMessagesForLoop.push({
@@ -537,6 +565,8 @@ class StreamHandler {
         }
         data = await readAIResponseStream(response, false);
         if (!data.malformedFunctionCall) return data;
+        const acceptedRecovery = acceptMalformedToolTurn(data);
+        if (acceptedRecovery) return acceptedRecovery;
       }
 
       if (!abortController.signal.aborted && !res.writableEnded && !res.destroyed) {

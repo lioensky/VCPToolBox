@@ -80,7 +80,7 @@ test('ordinary content filter does not trigger semantic recovery', async () => {
 });
 test('visible content followed by malformed FC is not replayed or executed', async () => {
   const s = setup(async () => { throw new Error('must not retry'); }, {
-    ToolCallParser: { parse: text => { assert.equal(text, ''); return []; } }
+    ToolCallParser: { parse: () => [] }
   });
   const result = await s.handler.handle({}, s.res, response(frame({ content: 'partial' }) + failed));
   assert.equal(result.completed, false);
@@ -127,3 +127,99 @@ test('tool-loop recovery does not repeat previous tool execution', async () => {
   assert.equal(result.aiText, 'CALL\ntool complete');
   assert.equal((s.res.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
+
+const RealToolCallParser = require('../modules/vcpLoop/toolCallParser');
+const bodyTool = [
+  '<<<[TOOL_REQUEST]>>>',
+  'valet:「始」Kerr「末」,',
+  'tool_name:「始」demo「末」,',
+  'command:「始」check「末」',
+  '<<<[END_TOOL_REQUEST]>>>'
+].join('\n');
+
+function toolSetup(responses, overrides = {}) {
+  const stats = { fetched: 0, executed: 0, calls: [] };
+  const s = setup(async () => {
+    const text = responses[stats.fetched++];
+    assert.notEqual(text, undefined, 'unexpected extra upstream request');
+    return response(text);
+  }, {
+    ToolCallParser: RealToolCallParser,
+    toolExecutor: {
+      executeAll: async calls => {
+        stats.executed++;
+        stats.calls.push(...calls);
+        return calls.map(() => ({ success: true, content: [{ type: 'text', text: 'result' }] }));
+      }
+    },
+    isToolResultError: () => false,
+    ...overrides
+  });
+  return { ...s, stats };
+}
+
+for (const split of [false, true]) {
+  test(`complete VCP body survives malformed native FC and executes once; split=${split}`, async () => {
+    const s = toolSetup([success('done')]);
+    const nativeDuplicate = frame({ tool_calls: [{
+      index: 0, id: 'native-duplicate', type: 'function',
+      function: { name: 'demo', arguments: '{"command":"check"}' }
+    }] });
+    const result = await s.handler.handle({}, s.res,
+      response(frame({ content: bodyTool }) + nativeDuplicate + failed, split));
+    assert.equal(s.stats.executed, 1);
+    assert.equal(s.stats.calls.length, 1);
+    assert.equal(s.stats.calls[0].name, 'demo');
+    assert.equal(s.stats.fetched, 1, 'only fetch tool continuation, no correction request');
+    assert.equal(result.completed, true);
+    assert.equal(result.aiText, `${bodyTool}\ndone`);
+    assert.doesNotMatch(s.res.output, /\[ERROR\]|content_filter|native-duplicate/);
+    assert.equal((s.res.output.match(/data: \[DONE\]/g) || []).length, 1);
+  });
+}
+
+test('recovery response containing complete VCP body also survives malformed FC', async () => {
+  const s = toolSetup([frame({ content: bodyTool }) + failed, success('done')]);
+  const result = await s.handler.handle({}, s.res, response(failed));
+  assert.equal(s.stats.executed, 1);
+  assert.equal(s.stats.calls.length, 1);
+  assert.equal(s.stats.fetched, 2);
+  assert.equal(result.completed, true);
+  assert.doesNotMatch(s.res.output, /\[ERROR\]/);
+});
+
+test('complete block followed by incomplete block executes only complete request', async () => {
+  const s = toolSetup([success('done')]);
+  const text = bodyTool + '\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」unfinished';
+  const result = await s.handler.handle({}, s.res, response(frame({ content: text }) + failed));
+  assert.equal(s.stats.calls.length, 1);
+  assert.equal(s.stats.calls[0].name, 'demo');
+  assert.equal(result.completed, true);
+});
+
+for (const [label, text, overrides] of [
+  ['incomplete block', '<<<[TOOL_REQUEST]>>>\ntool_name:「始」demo「末」', {}],
+  ['thinking block', `<think>\n${bodyTool}\n</think>`, {}],
+  ['disabled tools', bodyTool, { vcpToolUseForbidden: true }]
+]) {
+  test(`malformed FC must not execute ${label}`, async () => {
+    const s = toolSetup([], overrides);
+    const result = await s.handler.handle({}, s.res, response(frame({ content: text }) + failed));
+    assert.equal(s.stats.executed, 0);
+    assert.equal(s.stats.fetched, 0);
+    assert.equal(result.completed, false);
+    assert.match(s.res.output, /\[ERROR\]/);
+  });
+}
+
+for (const bad of ['data: {broken-json}\n\n',
+  `data: ${JSON.stringify({ error: { message: 'upstream error' } })}\n\n`]) {
+  test(`payload errors prevent accepting body tools: ${bad.trim()}`, async () => {
+    const s = toolSetup([]);
+    const result = await s.handler.handle({}, s.res,
+      response(frame({ content: bodyTool }) + bad + failed));
+    assert.equal(s.stats.executed, 0);
+    assert.equal(s.stats.fetched, 0);
+    assert.equal(result.completed, false);
+  });
+}
