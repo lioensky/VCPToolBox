@@ -180,7 +180,7 @@ class StreamHandler {
     };
 
     // 辅助函数：处理 AI 响应流 (优化版：直通转发 + 后台解析 + chunk 空闲超时保护)
-    const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
+    const readAIResponseStream = async (aiResponse, isInitialCall) => {
       return new Promise((resolve, reject) => {
         const decoder = new StringDecoder('utf8');
         let collectedContentThisTurn = '';
@@ -195,18 +195,27 @@ class StreamHandler {
         let clientReasoningEndsWithNewline = false;
 
         let finishReason = null;
+        let malformedFunctionCall = false;
         let sawDone = false;
         let invalidPayload = false;
         let upstreamEnded = false;
         const result = () => ({
           content: collectedContentThisTurn,
           message,
+          malformedFunctionCall,
+          streamAborted,
           completed: !streamAborted && !invalidPayload && aiResponse.ok &&
             collectedContentThisTurn.trim().length > 0 &&
             (finishReason === 'stop' || (!finishReason && sawDone))
         });
         const observePayload = (parsedData) => {
           if (parsedData?.error) invalidPayload = true;
+          const choice = parsedData?.choices?.[0];
+          if ([choice?.native_finish_reason, choice?.finish_reason]
+            .some(reason => typeof reason === 'string' && reason.toLowerCase() === 'malformed_function_call')) {
+            malformedFunctionCall = true;
+            invalidPayload = true;
+          }
           const reason = parsedData?.choices?.[0]?.finish_reason;
           if (reason) finishReason = reason;
         };
@@ -392,6 +401,8 @@ class StreamHandler {
               }
             }
 
+            // Failed terminal payloads must not end the frontend listener before recovery.
+            if (malformedFunctionCall) continue;
             // 转发时才将 reasoning 字段改写成标签化正文；内部处理仍使用原始 parsedData。
             if (!res.writableEnded && !res.destroyed) {
               try {
@@ -442,10 +453,10 @@ class StreamHandler {
               try {
                 if (isDoneLine) {
                   writeClientReasoningCloseChunk();
-                } else if (reasoningToContentEnabled && parsedData) {
+                } else if (reasoningToContentEnabled && parsedData && !malformedFunctionCall) {
                   res.write(`data: ${JSON.stringify(transformParsedDataForClient(parsedData))}\n`);
                 } else {
-                  res.write(sseLineBuffer + '\n');
+                  if (!malformedFunctionCall) res.write(sseLineBuffer + '\n');
                 }
               } catch (e) { }
             }
@@ -475,6 +486,69 @@ class StreamHandler {
           reject(streamError);
         });
       });
+    };
+
+    // Semantic recovery is per upstream turn, separate from transport retries and tool execution.
+    const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
+      let data = await readAIResponseStream(aiResponse, isInitialCall);
+      if (!data.malformedFunctionCall) return data;
+      if (abortController?.signal.aborted || data.streamAborted || res.writableEnded || res.destroyed) return data;
+
+      // Never replay visible body or execute fragments from a failed turn.
+      if (!data.content.trim() && !data.message.reasoning_content) {
+        // Internal ToolLoop continuation only: reuse processed messages; never re-enter handle/preprocessors.
+        currentMessagesForLoop.push({
+          role: 'user',
+          content: '[系统提示]你的上一个回复在思维链里输出了call导致报错，不要在思维链里输出call啦，正常回复用户的回复吧！'
+        });
+        const heartbeat = setInterval(() => {
+          if (!res.writableEnded && !res.destroyed) {
+            try { res.write(': vcp-recovery-keepalive\n\n'); } catch (_) {}
+          }
+        }, 5000);
+        heartbeat.unref?.();
+        let response;
+        try {
+          console.warn(`[VCP Stream Recovery] requestId=${id || 'unknown'} 上游 HTTP ${aiResponse.status} 返回 MALFORMED_FUNCTION_CALL；正在 ToolLoop 内追加 user 纠偏消息并直接补发上游（第 1/1 次，不经过预消息处理管线，不结束前端 SSE）。`);
+          response = await fetchWithRetry(`${apiUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              Accept: 'text/event-stream'
+            },
+            body: JSON.stringify(projectToolBatchForUpstream({
+              ...originalBody, messages: currentMessagesForLoop, stream: true
+            })),
+            signal: abortController.signal
+          }, {
+            retries: 1, delay: apiRetryDelay, debugMode: DEBUG_MODE,
+            connectionTimeout: apiConnectionTimeoutMs
+          });
+        } finally {
+          clearInterval(heartbeat);
+        }
+        if (abortController.signal.aborted || res.writableEnded || res.destroyed) {
+          return { ...data, content: '', completed: false };
+        }
+        if (!response.ok) {
+          await streamUpstreamErrorAndEnd(res, response, originalBody.model, 'Malformed FC Recovery');
+          return { ...data, content: '', completed: false };
+        }
+        data = await readAIResponseStream(response, false);
+        if (!data.malformedFunctionCall) return data;
+      }
+
+      if (!abortController.signal.aborted && !res.writableEnded && !res.destroyed) {
+        res.write(`data: ${JSON.stringify({
+          object: 'chat.completion.chunk', model: originalBody.model,
+          choices: [{ index: 0, delta: {
+            content: '\n[ERROR] 上游生成失败：MALFORMED_FUNCTION_CALL。恢复未成功或已有输出；本轮工具未执行。\n'
+          }, finish_reason: null }]
+        })}\n\n`);
+      }
+      // Let the outer handler own the single final stop/DONE; invalid tool text stays out of ToolLoop.
+      return { ...data, content: '', completed: false };
     };
 
     // --- 初始 AI 调用 ---
