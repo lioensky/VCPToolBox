@@ -1357,24 +1357,25 @@ fn commit_plan(
         tag_ids.insert(tag.name.clone(), id);
     }
 
+    let mut repaired_tag_ids = HashSet::new();
     for tag in &plan.tags {
         if !retained_tag_names.contains(tag.name.as_str()) { continue; }
         let Some(slot) = tag.vector_slot else {
             continue;
         };
-        let vector = vector_bytes(tag_vectors, slot, plan.dimension);
         let id = *tag_ids
             .get(&tag.name)
             .ok_or_else(|| format!("Tag '{}' identity was not materialized", tag.name))?;
+        // The planner shares one vector slot for every occurrence of a Tag.
+        if !repaired_tag_ids.insert(id) { continue; }
+        let vector = vector_bytes(tag_vectors, slot, plan.dimension);
         tx.execute(
             "UPDATE tags SET vector = ?1 WHERE id = ?2",
             params![vector, id],
         )
         .map_err(|error| format!("repair Tag '{}' vector failed: {}", tag.name, error))?;
-        if !accumulator.new_tag_ids.contains(&id) {
-            accumulator.new_tag_ids.push(id);
-            accumulator.new_tag_names.push(tag.name.clone());
-        }
+        accumulator.new_tag_ids.push(id);
+        accumulator.new_tag_names.push(tag.name.clone());
     }
 
     for file in &plan.files {
@@ -1486,11 +1487,12 @@ fn commit_plan(
             } else {
                 None
             };
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT INTO chunks(file_id, chunk_index, content, vector)
                  VALUES (?1, ?2, ?3, ?4)",
+            ).and_then(|mut statement| statement.execute(
                 params![file_id, chunk.chunk_index, &chunk.content, vector],
-            )
+            ))
             .map_err(|error| format!("insert Chunk for '{}' failed: {}", file.path, error))?;
             let upserted_chunk_id = tx.last_insert_rowid();
             accumulator.upserted_chunk_ids.push(upserted_chunk_id);
@@ -1511,11 +1513,12 @@ fn commit_plan(
             let Some(tag_id) = tag_ids.get(&tag.name).copied() else {
                 continue;
             };
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT OR IGNORE INTO file_tags(file_id, tag_id, position)
                  VALUES (?1, ?2, ?3)",
+            ).and_then(|mut statement| statement.execute(
                 params![file_id, tag_id, tag.position],
-            )
+            ))
             .map_err(|error| format!("insert file Tag relation failed: {}", error))?;
         }
 
@@ -2336,6 +2339,87 @@ mod receipt_protocol_tests {
             chunks: vec![],
             tags: vec![],
         }
+    }
+
+    #[test]
+    fn repeated_tags_repair_once_and_cached_inserts_preserve_rows_and_receipt() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES ('schema_version','1'),('database_generation','0');"
+        ).unwrap();
+        crate::schema::initialize_schema(&connection, 1).unwrap();
+        connection.execute_batch(
+            "INSERT INTO tags(id,name,vector) VALUES (1,'existing',X'0000000000000000');
+             CREATE TABLE repairs(id INTEGER);
+             CREATE TRIGGER count_repairs AFTER UPDATE OF vector ON tags BEGIN
+               INSERT INTO repairs VALUES (NEW.id);
+             END;"
+        ).unwrap();
+        let mut plan = empty_plan();
+        for file in 0..3 {
+            plan.files.push(PlannedFile {
+                path: format!("file-{file}.txt"), diary_name: "Root".into(),
+                checksum: format!("checksum-{file}"), mtime: 0, size: 2, expected_version: 0,
+                chunk_start: plan.chunks.len(), chunk_count: 2,
+                tag_start: plan.tags.len(), tag_count: 2, tags_only: false,
+                migration_cache_id: None, migration_source_file_id: None,
+            });
+            plan.chunks.extend([
+                PlannedChunk { content: format!("body-{file}"), chunk_index: 0, vector_slot: Some(0) },
+                PlannedChunk { content: "no-vector".into(), chunk_index: 1, vector_slot: None },
+            ]);
+            plan.tags.extend([
+                // A missing first slot must not suppress the later valid repair.
+                PlannedTag { name: "shared".into(), position: 1,
+                    vector_slot: if file == 0 { None } else { Some(0) } },
+                PlannedTag { name: "existing".into(), position: 2, vector_slot: Some(1) },
+            ]);
+        }
+        let chunks = [3.25_f32, -0.0];
+        let tags = [f32::from_bits(1), -0.0, 0.5, -1.25];
+        validate_plan(&plan, &chunks, &tags).unwrap();
+        let details = Arc::new(Mutex::new(None));
+        let tx = connection.transaction().unwrap();
+        let receipt = commit_plan(&tx, &plan, "digest", &chunks, &tags, details.clone()).unwrap();
+        assert!(receipt.facts_changed);
+        tx.commit().unwrap();
+        let details = details.lock().unwrap().take().unwrap();
+        assert_eq!(details.new_tag_names, ["existing", "shared"]);
+        assert_eq!(details.new_tag_ids, [1, 2]);
+        assert_eq!(details.upserted_chunk_ids, [1, 2, 3, 4, 5, 6]);
+        let repairs: Vec<i64> = connection.prepare("SELECT id FROM repairs ORDER BY rowid").unwrap()
+            .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(repairs, [1, 2], "each distinct Tag is repaired exactly once");
+        for (id, slot) in [(1, 1), (2, 0)] {
+            let bytes: Vec<u8> = connection.query_row("SELECT vector FROM tags WHERE id=?1",
+                [id], |row| row.get(0)).unwrap();
+            assert_eq!(bytes, vector_bytes(&tags, slot, 2));
+        }
+        let rows: Vec<(String, i64, String, Option<Vec<u8>>)> = connection.prepare(
+            "SELECT f.path,c.chunk_index,c.content,c.vector FROM chunks c JOIN files f ON f.id=c.file_id
+             ORDER BY f.path,c.chunk_index"
+        ).unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let mut expected = Vec::new();
+        for file in 0..3 {
+            expected.push((format!("file-{file}.txt"), 0, format!("body-{file}"), Some(vector_bytes(&chunks, 0, 2))));
+            expected.push((format!("file-{file}.txt"), 1, "no-vector".into(), None));
+        }
+        assert_eq!(rows, expected);
+        let relations: Vec<(i64, i64)> = connection.prepare(
+            "SELECT tag_id,position FROM file_tags ORDER BY file_id,position"
+        ).unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(relations, [(2,1),(1,2)].repeat(3));
+        let replay = Arc::new(Mutex::new(None));
+        let tx = connection.transaction().unwrap();
+        let receipt = commit_plan(&tx, &plan, "digest", &chunks, &tags, replay.clone()).unwrap();
+        assert!(!receipt.facts_changed);
+        tx.commit().unwrap();
+        assert_eq!(serde_json::to_value(replay.lock().unwrap().take().unwrap()).unwrap(),
+            serde_json::to_value(details).unwrap());
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM repairs", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
     }
 
     #[test]
