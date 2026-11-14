@@ -18,6 +18,9 @@ pub(crate) struct AgsCandidate {
 pub(crate) struct AgsTrace {
     pub picked: Vec<(i64, f64)>,
     pub basis: Vec<Vec<f64>>,
+    /// Unconstrained Explain residual norm; read only by test invariants.
+    /// Production residuals come from the NNLS cone solve, not from AGS.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub residual_norm: Option<f64>,
 }
 
