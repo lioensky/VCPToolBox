@@ -4,6 +4,7 @@ const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const roleDivider = require('./roleDivider.js');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
+const { isolateNativeToolsForUpstream, isolateNativeToolRequestOptions } = require('./nativeToolIsolation.js');
 const { createHandoffGate } = require('./vcpLoop/handoffGate.js');
 const fs = require('fs').promises;
 const path = require('path');
@@ -454,7 +455,9 @@ async function fetchWithRetry(
     };
 
     try {
-      const attemptOptions = applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode);
+      const attemptOptions = isolateNativeToolRequestOptions(
+        applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode)
+      );
       const response = await fetch(url, {
         ...attemptOptions,
         agent: getFetchAgent, // 注入防御性长连接池
@@ -1258,7 +1261,7 @@ class ChatCompletionHandler {
       const willStreamResponse = isOriginalRequestStreaming;
       const finalUpstreamBody = projectToolBatchForUpstream({ ...originalBody, stream: willStreamResponse });
 
-      finalContextStore.setLastFinalContext(finalUpstreamBody, {
+      finalContextStore.setLastFinalContext(isolateNativeToolsForUpstream(finalUpstreamBody), {
         requestId: req.body.requestId || null,
         messageId: req.body.messageId || null,
         clientIp,
@@ -1267,7 +1270,7 @@ class ChatCompletionHandler {
       });
 
       throwIfRequestAborted();
-      await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
+      await writeDebugLog('LogOutputAfterProcessing', isolateNativeToolsForUpstream(finalUpstreamBody));
 
       let firstAiAPIResponse = await fetchWithRetry(
         `${apiUrl}/v1/chat/completions`,
