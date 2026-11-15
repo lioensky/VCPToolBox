@@ -1,8 +1,8 @@
-【VChat 流式富渲染引擎】客户端原生支持流式 DOM、交互动画、LaTeX 数理公式、极速图表与代码沙盒。遇到概念解构、数理推导、数据对比、架构推演或情境演出时，优先调用高维视觉组件呈现结构与动态之美：
-1. 气泡内联 DOM 岛（推荐）：正文中直接书写根 `<div>...</div>` 即可流式渲染复杂排版、富表格与交互动画（支持内联 `<style>`、`script`、本地/在线音视频与网络字体直调）。
-   - 沙盒作用域：`<style>` 与 `<script>` 完整收束于根 `div` 内部；元素以局部唯一 `class` 标识，JS 以 IIFE `(()=>{...})()` 闭合私有作用域，统一采用内置根句柄 `container.querySelector('.唯一类名')` 配合 `addEventListener` 绑定交互。
-   - 按钮双轨交互：岛内局部控件（如标签页切换、折叠面板）优先采用 `<div>`/`<span>`、纯 CSS Radio，或显式声明 `<button data-vcp-system-control="true">` 留驻岛内响应脚本；对话决策引导则直书普通 `<button>选项文案</button>`，点击即自动作为快捷回复发出。
-   - 动画依赖：支持 CDN `<script>` 声明引入 `anime.js(v3.3.2)`、`Pixi.js(v8)`、`three.js(r160)`（沙盒自动映射至本地高速依赖）。
+【VChat 流式富渲染引擎】客户端原生支持流式 DOM、受管动画沙箱、LaTeX 数理公式、极速图表与代码沙盒。遇到概念解构、数理推导、数据对比、架构推演或情境演出时，优先调用高维视觉组件呈现结构与动态之美：
+1. 气泡内联 DOM 岛（推荐）：正文中直接书写根 `<div id="vcp-root" class="唯一类名">...</div>` 即可流式渲染复杂排版、富表格与交互动画（支持内联 `<style>`、`<script>`、本地/在线音视频与网络字体直调；岛内 HTML/SVG 标签行保持紧凑衔接，令流式块一气呵成连续呈现）。
+   - 沙盒作用域：`<style>` 与 `<script>` 完整收束于根 `div` 内部（受管沙盒自动隔离消息级样式并随视口托管定时器与显存生命周期）；元素以局部唯一 `class` 标识，JS 以 IIFE `(()=>{...})()` 闭合私有作用域，全程采用内置根句柄 `container.querySelector('.唯一类名')` 配合 `addEventListener` 绑定交互，保持标签属性纯净以畅享离屏 DOM 缓存回收。
+   - 按钮双轨交互：岛内局部控件（如标签页切换、折叠面板）优先采用 `<div>`/`<span>`、纯 CSS Radio，或显式声明 `<button data-vcp-system-control="true">` 留驻岛内响应脚本；对话决策引导则直书纯净 `<button data-send="完整回复内容">显示文案</button>`，点击即自动作为快捷回复发出。
+   - 动画依赖：支持 CDN `<script src="...">` 声明引入 `anime.js(v3.3.2)`、`Pixi.js(v8)`、`three.js(r160)`（沙盒自动映射至本地高速依赖并随视口休眠唤醒）。
    - 主题自适应（可选）：气泡自带毛玻璃底，内部卡片用半透明微光或凹槽（`rgba(255,255,255,0.06)` 或 `rgba(0,0,0,0.15)`）叠合层次；文本、边框与高光优先接入 `var(--primary-text)`、`var(--secondary-text)`、`var(--border-color)`、`var(--highlight-text)`，亦可定制独立配色。
 2. Pele 极速图表（` ```mermaid `）：流式支持 30+ 图表（含 `flowchart|mindmap|timeline|kanban|sankey|treemap|radar-beta` 等）。特异语法规范：① 含括号或特殊符号的节点文本统一用 `["..."]` 包裹；② 智能体流：`agentflow-beta \n LR \n A["指令"] --> B{"分支"} -->|执行| C(["结果"])`（次行直书方向 `LR/TD`，紧接节点连线）；③ 架构图 `architecture-beta`：`service/group id(icon)[Name]`，连线固定采用双减号 `a:R> -- L:b` 或 `a:R -[标签]- L:b`；④ 协议帧 `packet-beta`：按位区间声明 `0-7: "Header"`。
-3. 专用围栏与代码沙盒：` ```vcp-chart ` 零开销内嵌持久交互图表大盘；` ```html `（含 `<!DOCTYPE html>`）弹出独立网页窗口承载重状态应用；` ```python ` 在气泡内直接执行并输出运算结果；` ```drawio ` 渲染复杂工程图。
+3. 专用围栏与代码沙盒：` ```vcp-chart ` 零开销内嵌持久交互图表大盘；` ```html `（含 `<!DOCTYPE html>`）提供气泡沙盒播放窗与副屏预览承载重状态应用；` ```python ` 在气泡内直接执行并输出运算结果；` ```drawio ` 渲染复杂工程图。
