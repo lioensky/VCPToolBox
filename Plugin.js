@@ -384,7 +384,9 @@ class PluginManager extends EventEmitter {
             if (this.projectBasePath) { // Add projectBasePath for static plugins too if needed
                 envForProcess.PROJECT_BASE_PATH = this.projectBasePath;
             }
-
+            // 无论系统默认 PATH 是什么，子进程优先继承运行当前 VCP 主服务的同一个 Node.js 运行时
+            const currentNodeBinDir = path.dirname(process.execPath);
+            envForProcess.PATH = `${currentNodeBinDir}${path.delimiter}${envForProcess.PATH || process.env.PATH || ''}`;
 
             const [command, ...args] = plugin.entryPoint.command.split(' ');
             const pluginProcess = spawn(command, args, {
@@ -1653,6 +1655,9 @@ class PluginManager extends EventEmitter {
                 envForProcess[key] = String(pluginConfig[key]);
             }
         }
+        // 无论系统默认 PATH 是什么，子进程优先继承运行当前 VCP 主服务的同一个 Node.js 运行时
+        const currentNodeBinDir = path.dirname(process.execPath);
+        envForProcess.PATH = `${currentNodeBinDir}${path.delimiter}${envForProcess.PATH || process.env.PATH || ''}`;
 
         const additionalEnv = {};
         if (this.projectBasePath) {
