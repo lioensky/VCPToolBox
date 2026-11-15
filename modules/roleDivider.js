@@ -64,35 +64,104 @@ function copyArrayMetadata(source, target) {
  * Scan text parts together so a block spanning multimodal parts stays opaque.
  * Restore each fragment afterwards without changing its original text.
  */
-function protectToolContent(message) {
-    const isArray = Array.isArray(message.content);
-    const texts = isArray
-        ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text)
-        : (typeof message.content === 'string' ? [message.content] : []);
-    const text = texts.join('');
-    if (/^\s*<!-- VCP_TOOL_PAYLOAD -->/.test(text)) {
-        return { message, restore: messages => messages, skip: true };
-    }
+const ROLE_TAG_SIGNAL = 'ROLE_DIVIDE_';
+const ROLE_START_PREFIX = '<<<[' + ROLE_TAG_SIGNAL;
 
-    const markers = [
-        { start: '<<<[TOOL_REQUEST]>>>', end: '<<<[END_TOOL_REQUEST]>>>' },
-        { start: '[[VCP调用结果信息汇总:', end: 'VCP调用结果结束]]' }
-    ];
+const ENVELOPE_MARKERS = [
+    { start: '<<<[' + 'TOOL_REQUEST]>>>', end: '<<<[' + 'END_TOOL_REQUEST]>>>', unclosedToEof: true, nested: true },
+    { start: '<<<[' + 'TOOL_REQUEST_ESCAPE]>>>', end: '<<<[' + 'END_TOOL_REQUEST_ESCAPE]>>>', unclosedToEof: true, nested: true },
+    { start: '[[VCP调用结果信息汇总:', end: 'VCP调用结果结束]]', unclosedToEof: true, nested: true },
+    { start: '<!-- VCP_RAG_BLOCK_START', end: '<!-- VCP_RAG_BLOCK_END -->', unclosedToEof: false, nested: false },
+    { start: '[--- TDB 冷知识库检索', end: '[--- 知识库检索结束 ---]', unclosedToEof: false, nested: false }
+];
+
+function extractConcatenatedText(message) {
+    if (Array.isArray(message?.content)) {
+        return message.content
+            .filter(part => part?.type === 'text' && typeof part.text === 'string')
+            .map(part => part.text)
+            .join('');
+    }
+    return typeof message?.content === 'string' ? message.content : '';
+}
+
+function maskMessageRanges(message, ranges, label) {
+    if (!ranges || ranges.length === 0) {
+        return { message, restore: messages => messages };
+    }
+    const isArray = Array.isArray(message.content);
+    const fullText = extractConcatenatedText(message);
+    let prefix = `\uE000VCP_${label}_LITERAL_`;
+    while (fullText.includes(prefix)) prefix += '_';
+
+    const fragments = [];
+    let offset = 0;
+    const mask = value => {
+        const partStart = offset;
+        offset += value.length;
+        let result = '';
+        let localCursor = 0;
+        for (const range of ranges) {
+            const start = Math.max(range.start, partStart) - partStart;
+            const end = Math.min(range.end, offset) - partStart;
+            if (end <= start) continue;
+            result += value.slice(localCursor, start);
+            const token = `${prefix}${fragments.length}\uE001`;
+            fragments.push({ token, value: value.slice(start, end) });
+            result += token;
+            localCursor = end;
+        }
+        return result + value.slice(localCursor);
+    };
+
+    const maskedContent = isArray
+        ? message.content.map(part => part?.type === 'text' && typeof part.text === 'string'
+            ? { ...part, text: mask(part.text) } : part)
+        : mask(message.content);
+
+    const unmask = value => {
+        for (const fragment of fragments) {
+            value = value.split(fragment.token).join(fragment.value);
+        }
+        return value;
+    };
+
+    return {
+        message: { ...message, content: maskedContent },
+        restore: messages => messages.map(msg => ({
+            ...msg,
+            content: typeof msg.content === 'string'
+                ? unmask(msg.content)
+                : (Array.isArray(msg.content) ? msg.content.map(part =>
+                    part?.type === 'text' && typeof part.text === 'string'
+                        ? { ...part, text: unmask(part.text) } : part) : msg.content)
+        }))
+    };
+}
+
+function findEnvelopeRanges(text) {
     const ranges = [];
     const batchScanner = createBatchStartScanner();
     let cursor = 0;
+
     while (cursor < text.length) {
         batchScanner.lastIndex = cursor;
         const batch = batchScanner.exec(text);
         let selected = null;
         let start = -1;
-        for (const marker of markers) {
-            const index = text.indexOf(marker.start, cursor);
-            if (index !== -1 && (start === -1 || index < start)) {
+
+        for (const marker of ENVELOPE_MARKERS) {
+            const candidate = text.indexOf(marker.start, cursor);
+            if (candidate === -1) continue;
+            if (!marker.unclosedToEof && text.indexOf(marker.end, candidate + marker.start.length) === -1) {
+                continue;
+            }
+            if (start === -1 || candidate < start) {
                 selected = marker;
-                start = index;
+                start = candidate;
             }
         }
+
         if (batch && (start === -1 || batch.index <= start)) {
             const end = findBatchEnd(text, batch);
             ranges.push({ start: batch.index, end });
@@ -100,6 +169,14 @@ function protectToolContent(message) {
             continue;
         }
         if (!selected) break;
+
+        if (!selected.nested) {
+            const endIdx = text.indexOf(selected.end, start + selected.start.length);
+            const end = endIdx === -1 ? text.length : endIdx + selected.end.length;
+            ranges.push({ start, end });
+            cursor = end;
+            continue;
+        }
 
         // Balance nested blocks; an incomplete tool block protects the remainder.
         let depth = 1;
@@ -123,53 +200,259 @@ function protectToolContent(message) {
         cursor = end;
     }
 
-    if (ranges.length === 0) {
+    return ranges;
+}
+
+function isBrokenAcrossOuterRole(text, openRoleTag, innerStart, innerEnd, afterEnd) {
+    if (!openRoleTag) return false;
+    const inner = text.slice(innerStart, innerEnd);
+    const firstEnd = inner.indexOf(openRoleTag.END);
+    if (firstEnd === -1) return false;
+
+    const firstStart = inner.indexOf(openRoleTag.START);
+    if (firstStart !== -1 && firstStart < firstEnd) {
+        const lastStart = inner.lastIndexOf(openRoleTag.START);
+        const lastEnd = inner.lastIndexOf(openRoleTag.END);
+        if (lastEnd > lastStart) return false;
+    }
+
+    if (inner.indexOf(openRoleTag.START, firstEnd + openRoleTag.END.length) !== -1) {
+        return true;
+    }
+
+    const nextOuterEnd = text.indexOf(openRoleTag.END, afterEnd);
+    if (nextOuterEnd === -1) return true;
+    const nextOuterStart = text.indexOf(openRoleTag.START, afterEnd);
+    return nextOuterStart !== -1 && nextOuterStart < nextOuterEnd;
+}
+
+function matchFenceLinePrefix(text, lineStart, lineEnd) {
+    let pos = lineStart;
+    while (pos < lineEnd) {
+        let spaces = 0;
+        while (pos + spaces < lineEnd && (text[pos + spaces] === ' ' || text[pos + spaces] === '\t') && spaces < 3) {
+            spaces++;
+        }
+        if (pos + spaces < lineEnd && text[pos + spaces] === '>') {
+            pos += spaces + 1;
+            if (pos < lineEnd && (text[pos] === ' ' || text[pos] === '\t')) pos++;
+        } else {
+            pos += spaces;
+            break;
+        }
+    }
+    return pos;
+}
+
+function findCodeLiteralRanges(text) {
+    const ranges = [];
+    const roleTagList = Object.values(TAGS);
+    const preCloseRe = /<\/pre\s*>/gi;
+    let openRoleTag = null;
+    let cursor = 0;
+
+    while (cursor < text.length) {
+        // 1. Track top-level unquoted ROLE_DIVIDE scopes so broken half-fences inside them cannot swallow outer END tags.
+        if (openRoleTag && text.startsWith(openRoleTag.END, cursor)) {
+            const endTagLength = openRoleTag.END.length;
+            openRoleTag = null;
+            cursor += endTagLength;
+            continue;
+        }
+        if (!openRoleTag && text[cursor] === '<' && text.startsWith(ROLE_START_PREFIX, cursor)) {
+            const matchedRole = roleTagList.find(cfg => text.startsWith(cfg.START, cursor));
+            if (matchedRole && text.indexOf(matchedRole.END, cursor + matchedRole.START.length) !== -1) {
+                openRoleTag = matchedRole;
+                cursor += matchedRole.START.length;
+                continue;
+            }
+        }
+        // 2. Fenced code blocks (``` or ~~~, >=3 chars, optional blockquote > prefix, CommonMark §4.5).
+        if (cursor === 0 || text[cursor - 1] === '\n') {
+            let lineEnd = text.indexOf('\n', cursor);
+            if (lineEnd === -1) lineEnd = text.length;
+            const trimmedLineEnd = lineEnd > cursor && text[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd;
+            const fencePos = matchFenceLinePrefix(text, cursor, trimmedLineEnd);
+            const ch = text[fencePos];
+            if (ch === '`' || ch === '~') {
+                let fenceLen = 0;
+                while (fencePos + fenceLen < trimmedLineEnd && text[fencePos + fenceLen] === ch) {
+                    fenceLen++;
+                }
+                if (fenceLen >= 3) {
+                    const infoString = text.slice(fencePos + fenceLen, trimmedLineEnd);
+                    if (ch !== '`' || !infoString.includes('`')) {
+                        let searchLineStart = lineEnd < text.length ? lineEnd + 1 : text.length;
+                        let closeRangeEnd = -1;
+                        let closeLineStart = -1;
+                        while (searchLineStart < text.length) {
+                            const nextNl = text.indexOf('\n', searchLineStart);
+                            const nextLineEnd = nextNl === -1 ? text.length : nextNl + 1;
+                            const rawEnd = nextNl === -1
+                                ? text.length
+                                : (nextNl > searchLineStart && text[nextNl - 1] === '\r' ? nextNl - 1 : nextNl);
+                            const closePos = matchFenceLinePrefix(text, searchLineStart, rawEnd);
+                            if (text[closePos] === ch) {
+                                let closeLen = 0;
+                                while (closePos + closeLen < rawEnd && text[closePos + closeLen] === ch) {
+                                    closeLen++;
+                                }
+                                if (closeLen >= fenceLen && /^[ \t]*$/.test(text.slice(closePos + closeLen, rawEnd))) {
+                                    closeLineStart = searchLineStart;
+                                    closeRangeEnd = rawEnd;
+                                    break;
+                                }
+                            }
+                            searchLineStart = nextLineEnd;
+                        }
+
+                        if (
+                            closeRangeEnd !== -1 &&
+                            !isBrokenAcrossOuterRole(text, openRoleTag, lineEnd, closeLineStart, closeRangeEnd)
+                        ) {
+                            if (text.slice(cursor, closeRangeEnd).includes(ROLE_TAG_SIGNAL)) {
+                                ranges.push({ start: cursor, end: closeRangeEnd });
+                            }
+                            cursor = closeRangeEnd;
+                            continue;
+                        }
+                        cursor = fencePos + fenceLen;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // 3. HTML <pre>...</pre> and single-line <code>...</code> blocks (rich UI bubbles).
+        if (text[cursor] === '<') {
+            if (/^<pre(?:\s|>)/i.test(text.slice(cursor, cursor + 6))) {
+                const openTagEnd = text.indexOf('>', cursor + 4);
+                if (openTagEnd !== -1) {
+                    preCloseRe.lastIndex = openTagEnd + 1;
+                    const closeMatch = preCloseRe.exec(text);
+                    if (closeMatch) {
+                        const closeStart = closeMatch.index;
+                        const closeEnd = closeStart + closeMatch[0].length;
+                        if (!isBrokenAcrossOuterRole(text, openRoleTag, openTagEnd + 1, closeStart, closeEnd)) {
+                            if (text.slice(cursor, closeEnd).includes(ROLE_TAG_SIGNAL)) {
+                                ranges.push({ start: cursor, end: closeEnd });
+                            }
+                            cursor = closeEnd;
+                            continue;
+                        }
+                    }
+                }
+            } else if (/^<code(?:\s|>)/i.test(text.slice(cursor, cursor + 7))) {
+                let lineEnd = text.indexOf('\n', cursor);
+                if (lineEnd === -1) lineEnd = text.length;
+                const openTagEnd = text.indexOf('>', cursor + 5);
+                if (openTagEnd !== -1 && openTagEnd < lineEnd) {
+                    const closeMatch = /<\/code\s*>/i.exec(text.slice(openTagEnd + 1, lineEnd));
+                    if (closeMatch) {
+                        const closeStart = openTagEnd + 1 + closeMatch.index;
+                        const closeEnd = closeStart + closeMatch[0].length;
+                        if (!isBrokenAcrossOuterRole(text, openRoleTag, openTagEnd + 1, closeStart, closeEnd)) {
+                            if (text.slice(cursor, closeEnd).includes(ROLE_TAG_SIGNAL)) {
+                                ranges.push({ start: cursor, end: closeEnd });
+                            }
+                            cursor = closeEnd;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Single-line inline backtick code spans (`...`, ``...``, CommonMark §6.1 with single-line bound).
+        if (text[cursor] === '`') {
+            let backslashes = 0;
+            for (let b = cursor - 1; b >= 0 && text[b] === '\\'; b--) backslashes++;
+            let tickLen = 0;
+            while (cursor + tickLen < text.length && text[cursor + tickLen] === '`') tickLen++;
+
+            if (backslashes % 2 === 1) {
+                cursor += 1;
+                continue;
+            }
+
+            let lineEnd = text.indexOf('\n', cursor + tickLen);
+            if (lineEnd === -1) lineEnd = text.length;
+            if (lineEnd > cursor && text[lineEnd - 1] === '\r') lineEnd--;
+
+            let scan = cursor + tickLen;
+            let closeStart = -1;
+            let closeEnd = -1;
+            while (scan < lineEnd) {
+                if (text[scan] === '`') {
+                    let runLen = 0;
+                    while (scan + runLen < lineEnd && text[scan + runLen] === '`') runLen++;
+                    if (runLen === tickLen) {
+                        closeStart = scan;
+                        closeEnd = scan + runLen;
+                        break;
+                    }
+                    scan += runLen;
+                } else {
+                    scan++;
+                }
+            }
+
+            if (
+                closeEnd !== -1 &&
+                !isBrokenAcrossOuterRole(text, openRoleTag, cursor + tickLen, closeStart, closeEnd)
+            ) {
+                if (text.slice(cursor, closeEnd).includes(ROLE_TAG_SIGNAL)) {
+                    ranges.push({ start: cursor, end: closeEnd });
+                }
+                cursor = closeEnd;
+                continue;
+            }
+
+            cursor += tickLen;
+            continue;
+        }
+
+        cursor++;
+    }
+
+    return ranges;
+}
+
+function protectToolContent(message) {
+    const text = extractConcatenatedText(message);
+    if (/^\s*<!-- VCP_TOOL_PAYLOAD -->/.test(text)) {
+        return { message, restore: messages => messages, skip: true };
+    }
+    if (!text.includes(ROLE_TAG_SIGNAL)) {
         return { message, restore: messages => messages, skip: false };
     }
 
-    // Choose a request-local placeholder prefix absent from the original content.
-    let prefix = '\uE000VCP_TOOL_LITERAL_';
-    while (text.includes(prefix)) prefix += '_';
-    const fragments = [];
-    let offset = 0;
-    const mask = value => {
-        const partStart = offset;
-        offset += value.length;
-        let result = '';
-        let localCursor = 0;
-        for (const range of ranges) {
-            const start = Math.max(range.start, partStart) - partStart;
-            const end = Math.min(range.end, offset) - partStart;
-            if (end <= start) continue;
-            result += value.slice(localCursor, start);
-            const token = `${prefix}${fragments.length}\uE001`;
-            fragments.push({ token, value: value.slice(start, end) });
-            result += token;
-            localCursor = end;
-        }
-        return result + value.slice(localCursor);
-    };
-    const maskedContent = isArray
-        ? message.content.map(part => part?.type === 'text' && typeof part.text === 'string'
-            ? { ...part, text: mask(part.text) } : part)
-        : mask(message.content);
-    const unmask = value => {
-        for (const fragment of fragments) {
-            value = value.split(fragment.token).join(fragment.value);
-        }
-        return value;
-    };
+    const envelopeRanges = findEnvelopeRanges(text);
+    const stage1 = maskMessageRanges(message, envelopeRanges, 'TOOL');
+    const stage1Text = envelopeRanges.length > 0 ? extractConcatenatedText(stage1.message) : text;
+
+    if (!stage1Text.includes(ROLE_TAG_SIGNAL)) {
+        return {
+            message: stage1.message,
+            skip: false,
+            restore: stage1.restore
+        };
+    }
+
+    const codeRanges = findCodeLiteralRanges(stage1Text);
+    if (codeRanges.length === 0) {
+        return {
+            message: stage1.message,
+            skip: false,
+            restore: stage1.restore
+        };
+    }
+
+    const stage2 = maskMessageRanges(stage1.message, codeRanges, 'CODE');
     return {
-        message: { ...message, content: maskedContent },
+        message: stage2.message,
         skip: false,
-        restore: messages => messages.map(msg => ({
-            ...msg,
-            content: typeof msg.content === 'string'
-                ? unmask(msg.content)
-                : (Array.isArray(msg.content) ? msg.content.map(part =>
-                    part?.type === 'text' && typeof part.text === 'string'
-                        ? { ...part, text: unmask(part.text) } : part) : msg.content)
-        }))
+        restore: messages => stage1.restore(stage2.restore(messages))
     };
 }
 
@@ -448,8 +731,8 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
         const splitResults = processSingleMessage(tempMsg, { ignoreList, switches, scanSwitches, removeDisabledTags });
 
         if (splitResults.length === 1) {
-            // No split occurred in this text part
-            currentPartsBuffer.push({ type: 'text', text: splitResults[0].content });
+            // No split occurred in this text part; preserve part metadata such as cache_control
+            currentPartsBuffer.push({ ...part, type: 'text', text: splitResults[0].content });
         } else {
             // Split occurred!
             
