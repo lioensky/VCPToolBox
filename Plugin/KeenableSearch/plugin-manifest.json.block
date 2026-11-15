@@ -1,0 +1,36 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "KeenableSearch",
+  "version": "0.1.0",
+  "displayName": "Keenable 联网搜索",
+  "description": "调用 Keenable 搜索 API 返回网页结果（标题、链接、摘要）。不填 Key 也能用（公共免 Key 接口）；填写 KeenableKey 后走带 Key 的接口。",
+  "author": "KGKallasmaa",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node KeenableSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "KeenableKey": {
+      "type": "string",
+      "description": "可选。Keenable API Key，通过 X-API-Key 请求头发送到 /v1/search；留空则使用免 Key 的 /v1/search/public。"
+    },
+    "KeenableMaxResults": {
+      "type": "integer",
+      "description": "默认返回结果数，1-20，未配置时为 8。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "KeenableSearch",
+        "description": "使用 Keenable 进行网页搜索，返回标题、链接和摘要组成的 Markdown 列表。\n参数:\n- query (字符串, 必需): 搜索关键词。\n- max_results (整数, 可选): 返回结果数，1-20。\n- site (字符串, 可选): 只搜索某个域名，例如 github.com。\n- published_after (字符串, 可选): 只返回该日期之后发布的页面，格式 YYYY-MM-DD。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」KeenableSearch「末」,\nquery:「始」最近一周的 AI 智能体新闻「末」,\nmax_results:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
