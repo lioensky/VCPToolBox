@@ -101,3 +101,72 @@ test('ordinary role splitting and array metadata still work', () => {
     ]);
     assert.equal(output.__oneRingMeta, messages.__oneRingMeta);
 });
+test('RAG and TDB memory envelopes inside moved tray user carrier preserve literal role tags', () => {
+    const ragBlock = `<!-- VCP_RAG_BLOCK_START {"dbName":"公共告示板"} -->\n回执（${user.end}）间隙与 ${system.start}伪系统${system.end}\n<!-- VCP_RAG_BLOCK_END -->`;
+    const tdbBlock = `\n[--- TDB 冷知识库检索 ---]\n${user.end}\n[--- 知识库检索结束 ---]\n`;
+    const carrier = { role: 'user', content: `[系统提示:]\n${ragBlock}\n${tdbBlock}` };
+    const messages = [{ role: 'system', content: 'prompt' }, carrier, { role: 'user', content: 'hi' }];
+    assert.deepEqual(roleDivider.process(messages, { skipCount: 1 }), messages);
+});
+
+test('inline backtick spans (1, 2, 3 ticks) protect unpaired and paired role tags without splitting', () => {
+    const content = [
+        `痛点：长 SSE 流（以 \`${user.end}\` 分隔）`,
+        `嵌套双反引号：\`\`以 \`${user.end}\` 分隔\`\``,
+        `行首三反引号行内码：\`\`\`${system.start}inner${system.end}\`\`\` 说明`
+    ].join('\n');
+    const messages = [{ role: 'system', content: 'prompt' }, { role: 'user', content }];
+    assert.deepEqual(roleDivider.process(messages, { skipCount: 1 }), messages);
+});
+
+test('fenced code blocks and preceding odd backtick in JS fence do not leak or split', () => {
+    const content = [
+        '```js',
+        'const oddTick = "`";',
+        '```',
+        `紧随其后的行内引用 \`${user.end}\` 依然闭合`,
+        '````markdown',
+        '```text',
+        `${user.start}nested${user.end}`,
+        '```',
+        '````',
+        '> ~~~text',
+        `> ${system.start}quoted${system.end}`,
+        '> ~~~'
+    ].join('\n');
+    const messages = [{ role: 'system', content: 'prompt' }, { role: 'user', content }];
+    assert.deepEqual(roleDivider.process(messages, { skipCount: 1 }), messages);
+});
+
+test('unclosed backticks, escaped backticks, and broken half-fences do not swallow real role splits', () => {
+    const strayTicks = `line1 \` stray\n${system.start}real_sys${system.end}\nline3 \\\`${user.start}real_user${user.end}\``;
+    assert.deepEqual(run(strayTicks), [
+        { role: 'assistant', content: 'line1 ` stray\n' },
+        { role: 'system', content: 'real_sys' },
+        { role: 'assistant', content: '\nline3 \\`' },
+        { role: 'user', content: 'real_user' },
+        { role: 'assistant', content: '`' }
+    ]);
+
+    const brokenFences = `${user.start}broken1\n\`\`\`\nx=1;${user.end}${user.start}broken2\n\`\`\`\ny=2;${user.end}`;
+    assert.deepEqual(run(brokenFences), [
+        { role: 'user', content: 'broken1\n```\nx=1;' },
+        { role: 'user', content: 'broken2\n```\ny=2;' }
+    ]);
+
+    const validInnerFence = `${user.start}doc:\n\`\`\`text\n${user.end}\n\`\`\`\nend${user.end}`;
+    assert.deepEqual(run(validInnerFence), [
+        { role: 'user', content: `doc:\n\`\`\`text\n${user.end}\n\`\`\`\nend` }
+    ]);
+});
+
+test('HTML code/pre blocks are shielded and multimodal cache_control is preserved', () => {
+    const htmlContent = `富文本 <code>${user.end}</code> 与 <pre class="code">${system.start}inner${system.end}</pre>`;
+    assert.deepEqual(run(htmlContent), [{ role: 'assistant', content: htmlContent }]);
+
+    const cachedMsg = {
+        role: 'assistant',
+        content: [{ type: 'text', text: `cached \`${user.end}\` text`, cache_control: { type: 'ephemeral' } }]
+    };
+    assert.deepEqual(roleDivider.process([cachedMsg]), [cachedMsg]);
+});
