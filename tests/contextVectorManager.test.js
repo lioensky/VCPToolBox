@@ -110,3 +110,43 @@ for (const includeLastAssistant of [false, true]) {
         assert.equal(segments[0].text, includeLastAssistant ? 'repeat question\nrepeat answer' : 'repeat question');
     });
 }
+
+test("R5 excludes virtual system user messages ([系统...]) from updateContext and segmentContext", async () => {
+    const embeddings = new Map([
+        ["real question", new Float32Array([1, 0])],
+        ["real answer", new Float32Array([1, 0])],
+        ["current question", new Float32Array([1, 0])],
+        ["current answer", new Float32Array([1, 0])]
+    ]);
+    const manager = new ContextVectorManager(createPlugin(embeddings));
+
+    // Case 1: 虚拟系统 User 消息位于历史上下文中
+    const history = [
+        message("user", "real question"),
+        message("user", "[系统提示:VCP协议规范] tool_name必须填写"),
+        message("assistant", "real answer")
+    ];
+    await manager.updateContext([...history, ...lastTurn()]);
+    // 虚拟系统 User 消息应当被排除在历史用户向量之外
+    assert.equal(manager.getHistoryUserVectors().length, 1);
+    assert.equal(manager.getHistoryAssistantVectors().length, 1);
+
+    const segments = manager.segmentContext([...history, ...lastTurn()]);
+    // 话题分段中也不应包含虚拟系统 User 消息
+    assert.equal(segments.length, 1);
+    assert.equal(segments[0].text, "real question\nreal answer");
+
+    // Case 2: 虚拟系统 User 消息位于会话最末尾（尾部注入场景），确保倒数第二条真实 User 输入仍被正确识别为 lastTurn 排除
+    const trailingContext = [
+        message("user", "real question"),
+        message("assistant", "real answer"),
+        message("user", "current question"),
+        message("user", "[系统提示:单药纠偏] 请调用规范工具")
+    ];
+    await manager.updateContext(trailingContext);
+    assert.equal(manager.getHistoryUserVectors().length, 1);
+
+    const trailingSegments = manager.segmentContext(trailingContext);
+    assert.equal(trailingSegments.length, 1);
+    assert.equal(trailingSegments[0].text, "real question");
+});
