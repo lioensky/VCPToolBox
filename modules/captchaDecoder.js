@@ -1,4 +1,5 @@
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 
 /**
@@ -33,13 +34,35 @@ function decodeFromBrackets(bracketSequence) {
 }
 
 /**
- * 从 code.bin 文件中读取并解码验证码
+ * 从 code.bin 文件中读取并解码验证码（若文件丢失具备自动生成自愈能力）
  * @param {string} filePath - code.bin 文件路径（可选）
  * @returns {Promise<string>} 解码后的验证码
  */
 async function getAuthCode(filePath = null) {
     try {
-        const codePath = filePath || path.join(__dirname, 'code.bin');
+        const codePath = filePath || path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
+        
+        // 自愈检测：如果物理文件不存在，即时调用 UserAuth 生成
+        if (!fsSync.existsSync(codePath)) {
+            const authDir = path.resolve(path.dirname(codePath));
+            const authScript = path.join(authDir, 'auth.js');
+            if (fsSync.existsSync(authScript)) {
+                try {
+                    const authModule = require(authScript);
+                    if (typeof authModule.generateAndSaveAuthCode === 'function') {
+                        await authModule.generateAndSaveAuthCode(authDir);
+                    } else {
+                        require('child_process').execFileSync(process.execPath, [authScript], {
+                            cwd: authDir,
+                            windowsHide: true,
+                            timeout: 5000
+                        });
+                    }
+                } catch (genErr) {
+                    console.error('自愈生成 code.bin 失败:', genErr.message);
+                }
+            }
+        }
         
         // 读取base64编码的内容
         const base64Encoded = await fs.readFile(codePath, 'utf-8');

@@ -50,16 +50,21 @@ function encodeToBrackets(realCode) {
     return allBrackets.join('');
 }
 
+async function generateAndSaveAuthCode(targetDir = __dirname) {
+    const realCode = generateRealAuthCode();
+    const bracketSequence = encodeToBrackets(realCode);
+    
+    // 将括号序列转换为base64编码后存入 code.bin（供后端 captchaDecoder 解码 + 注入 DECRYPTED_AUTH_CODE 环境变量给管理员插件比对）
+    // 落盘加编码是为了防止 code.bin 被简单读取就拿到明文。
+    const base64Encoded = Buffer.from(bracketSequence, 'utf-8').toString('base64');
+    const filePath = path.join(targetDir, 'code.bin');
+    await fs.writeFile(filePath, base64Encoded, 'utf-8');
+    return realCode;
+}
+
 async function main() {
     try {
-        const realCode = generateRealAuthCode();
-        const bracketSequence = encodeToBrackets(realCode);
-        
-        // 将括号序列转换为base64编码后存入 code.bin（供后端 captchaDecoder 解码 + 注入 DECRYPTED_AUTH_CODE 环境变量给管理员插件比对）
-        // 落盘加编码是为了防止 code.bin 被简单读取就拿到明文。
-        const base64Encoded = Buffer.from(bracketSequence, 'utf-8').toString('base64');
-        const filePath = path.join(__dirname, 'code.bin');
-        await fs.writeFile(filePath, base64Encoded, 'utf-8');
+        const realCode = await generateAndSaveAuthCode(__dirname);
         
         // ⚠️ static 插件协议：stdout 内容会被 PluginManager 作为 {{USER_AUTH_CODE}} 占位符的值注入到 system prompt。
         // 这里输出明文 6 位验证码，让被授权的 Agent（即 system prompt 中包含此占位符的 Agent）可以直接将其
@@ -76,4 +81,12 @@ async function main() {
     }
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    generateRealAuthCode,
+    encodeToBrackets,
+    generateAndSaveAuthCode
+};
