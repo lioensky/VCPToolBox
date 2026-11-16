@@ -19,6 +19,28 @@ def valid_vector(blob, dimension=None):
     return all(math.isfinite(v) for v in values) and sum(v * v for v in values) > 0
 
 
+def inbound_log_quantiles(entries):
+    """Tie-aware midrank ECDF over a frozen, explicitly covered population."""
+    entries = list(entries)
+    if len({key for key, _ in entries}) != len(entries):
+        raise ValueError("duplicate inbound ID")
+    if any(not math.isfinite(value) or value < 0 for _, value in entries):
+        raise ValueError("invalid inbound rank input")
+    ranked = sorted((math.log1p(value), key) for key, value in entries)
+    result = {}
+    start = 0
+    while start < len(ranked):
+        end = start + 1
+        while end < len(ranked) and ranked[end][0] == ranked[start][0]:
+            end += 1
+        quantile = ((start + end - 1) / (2 * (len(ranked) - 1))
+                    if len(ranked) > 1 else 0.5)
+        for _, key in ranked[start:end]:
+            result[key] = quantile
+        start = end
+    return result
+
+
 def export(source, destination, limit, queries, allow_stale=False):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or destination.exists():
@@ -100,6 +122,7 @@ def export(source, destination, limit, queries, allow_stale=False):
         count = min(limit, len(candidates))
         if count < 512:
             raise ValueError("not enough valid jointly covered tags")
+        quantiles = inbound_log_quantiles((r[0], r[2]) for r in candidates)
         selected = [candidates[i * (len(candidates) - 1) // (count - 1)] for i in range(count)]
         query_ids = [r[0] for r in connection.execute(
             "SELECT id FROM chunks WHERE length(vector)=? ORDER BY id", (dimension * 4,)
@@ -120,6 +143,9 @@ def export(source, destination, limit, queries, allow_stale=False):
             valid_joint_tags=len(candidates),
             skipped_tags=rejected, exported_tags=count, dimension=dimension,
             max_inbound=maximum, queries=queries,
+            inbound_quantile_schema="log1p-midrank-v1",
+            inbound_quantile_population=len(candidates),
+            inbound_quantile_definition="ascending log1p(inbound) tied mean zero-based rank / (N-1); N=1 -> .5",
             sampling="ID-sorted evenly spaced; independent of queries; truth limited to exported scope",
             query_source="real chunks.vector; no text exported; not user-authored query embeddings",
         )
@@ -131,14 +157,14 @@ def export(source, destination, limit, queries, allow_stale=False):
         try:
             output.executescript(
                 "CREATE TABLE tags(slot INTEGER PRIMARY KEY,id INTEGER UNIQUE,name TEXT,"
-                "vector BLOB,inbound REAL,raw_residual_ratio REAL);"
+                "vector BLOB,inbound REAL,raw_residual_ratio REAL,inbound_log_quantile REAL);"
                 "CREATE TABLE queries(id INTEGER PRIMARY KEY,source_chunk_id INTEGER,vector BLOB);"
                 "CREATE TABLE metadata(value TEXT NOT NULL);"
             )
             for slot, (tag_id, name, mass, residual) in enumerate(selected):
                 vector = connection.execute("SELECT vector FROM tags WHERE id=?", (tag_id,)).fetchone()[0]
-                output.execute("INSERT INTO tags VALUES(?,?,?,?,?,?)",
-                               (slot, tag_id, name, vector, mass, residual))
+                output.execute("INSERT INTO tags VALUES(?,?,?,?,?,?,?)",
+                               (slot, tag_id, name, vector, mass, residual, quantiles[tag_id]))
             for number, chunk_id in enumerate(chosen_queries):
                 vector = connection.execute("SELECT vector FROM chunks WHERE id=?", (chunk_id,)).fetchone()[0]
                 if not valid_vector(vector, dimension):

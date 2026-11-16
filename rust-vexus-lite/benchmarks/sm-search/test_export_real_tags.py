@@ -9,7 +9,35 @@ import struct
 import tempfile
 import unittest
 
-from export_real_tags import export
+from export_real_tags import export, inbound_log_quantiles
+
+
+class QuantileTests(unittest.TestCase):
+    def test_extreme_magnitude_does_not_move_other_ranks(self):
+        original = inbound_log_quantiles(enumerate([0.0, 1.0, 2.0, 134.7]))
+        extreme = inbound_log_quantiles(enumerate([0.0, 1.0, 2.0, 1e300]))
+        self.assertEqual(original, extreme)
+        self.assertEqual(original, {0: 0.0, 1: 1/3, 2: 2/3, 3: 1.0})
+
+    def test_ties_do_not_use_id_to_invent_specificity(self):
+        self.assertEqual(inbound_log_quantiles([(9, 0.0), (1, 0.0), (5, 2.0)]),
+                         {9: 0.25, 1: 0.25, 5: 1.0})
+        self.assertEqual(inbound_log_quantiles([(8, 1.0), (2, 1.0)]),
+                         {8: 0.5, 2: 0.5})
+
+    def test_empty_singleton_and_permutations(self):
+        self.assertEqual(inbound_log_quantiles([]), {})
+        self.assertEqual(inbound_log_quantiles([(99, 3.0)]), {99: 0.5})
+        pairs = [(i, i % 4) for i in range(20)]
+        self.assertEqual(inbound_log_quantiles(pairs),
+                         inbound_log_quantiles(reversed(pairs)))
+
+    def test_invalid_rank_inputs_fail(self):
+        for value in [-1.0, float("inf"), float("nan")]:
+            with self.assertRaisesRegex(ValueError, "rank input"):
+                inbound_log_quantiles([(1, value)])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            inbound_log_quantiles([(1, 1.0), (1, 2.0)])
 
 
 class ExportTests(unittest.TestCase):
@@ -66,6 +94,10 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(meta["transport_residual_missing"], 0)
         self.assertEqual(meta["exported_tags"], 512)
         self.assertEqual(before, hashlib.sha256(self.source.read_bytes()).digest())
+        self.assertEqual(meta["inbound_quantile_population"], 512)
+        with closing(sqlite3.connect(self.output)) as c:
+            values = c.execute("SELECT DISTINCT inbound_log_quantile FROM tags").fetchall()
+            self.assertEqual(values, [(0.5,)])
         output_before = self.output.read_bytes()
         with self.assertRaisesRegex(ValueError, "new file"):
             export(self.source, self.output, 512, 1)
