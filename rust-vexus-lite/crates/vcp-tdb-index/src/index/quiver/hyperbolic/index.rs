@@ -40,10 +40,13 @@ pub struct HyperbolicSearchStats {
     pub radial_rejections: usize,
     pub seeds: usize,
     pub converged: bool,
+    pub semantic_cone: Option<SemanticCone>,
+    pub direction_rejections: usize,
 }
 #[derive(Debug)]
 pub struct HyperbolicOutput {
-    /// True geodesic distances, ascending; NOT cosine scores.
+    /// Ascending geodesic distances in raw mode; calibrated score-transforms
+    /// in semantic mode (NOT a metric). Never cosine scores.
     pub neighbors: Vec<(u64, f64)>,
     pub stats: HyperbolicSearchStats,
 }
@@ -58,9 +61,36 @@ pub struct HyperbolicIndex {
     router: PolarRouter,
     graph: Vec<Vec<u32>>,
     config: HyperbolicConfig,
+    mean_direction: Vec<f64>,
+    reverse_prunes: usize,
+    reverse_prune_nanos: u128,
 }
 impl HyperbolicIndex {
     pub fn directory_sizes(&self) -> (usize, usize) { self.router.directory_sizes() }
+    pub fn mean_direction(&self) -> &[f64] { &self.mean_direction }
+    pub fn reverse_prune_stats(&self) -> (usize, u128) {
+        (self.reverse_prunes, self.reverse_prune_nanos)
+    }
+    pub fn semantic_cone(&self, query: &[f32], config: SemanticConeConfig) -> io::Result<SemanticCone> {
+        config.validate()?;
+        if query.len() != self.dim { return Err(invalid("semantic query dimension")); }
+        let norm = checked_norm(query)?;
+        let alignment = query.iter().zip(&self.mean_direction)
+            .map(|(&q, &m)| q as f64 / norm * m).sum::<f64>().max(0.0);
+        let (baseline, evals) = match config.background {
+            SemanticBackground::Mean => (alignment, 0),
+            SemanticBackground::LandmarkMedian => {
+                let (meta, signature) = PolarNodeMeta::encode(query, PolarPoint::new(0.0, self.config.curvature)?)?;
+                let mut scores: Vec<_> = self.router.landmarks.iter().map(|&node|
+                    query_cosine(&self.store, &self.router.meta, node as usize,
+                        &signature, meta.sm(), self.dim)).collect();
+                scores.sort_by(f64::total_cmp);
+                let median = if scores.is_empty() {0.0} else {scores[scores.len() / 2]};
+                (median.max(0.0), scores.len())
+            }
+        };
+        config.resolve(self.dim, alignment, baseline, evals)
+    }
 
     pub fn connectivity(&self) -> (usize, usize) {
         let n = self.ids.len();
@@ -110,19 +140,28 @@ impl HyperbolicIndex {
         store.reserve(ids.len());
         let mut meta = Vec::with_capacity(ids.len());
         let mut buffer = Vec::with_capacity(dim);
+        let mut mean_direction = vec![0.0_f64; dim];
         for (&slot, point) in slots.iter().zip(points) {
             buffer.clear();
             if !fill(slot, &mut buffer) || buffer.len() != dim {
                 return Err(invalid("cannot read original direction during build"));
+            }
+            let norm = checked_norm(&buffer)?;
+            for (mean, &v) in mean_direction.iter_mut().zip(&buffer) {
+                *mean += v as f64 / norm;
             }
             let (header, signature) = PolarNodeMeta::encode(&buffer, point)?;
             store.push_sig(&signature);
             meta.push(header);
         }
         drop(buffer);
+        if !ids.is_empty() {
+            for mean in &mut mean_direction { *mean /= ids.len() as f64; }
+        }
         let router = PolarRouter::build_with_landmarks(&store, meta, dim, config.landmarks);
         let mut index = Self { dim, ids: ids.to_vec(), slots: slots.to_vec(), store, router,
-            graph: vec![Vec::new(); ids.len()], config };
+            graph: vec![Vec::new(); ids.len()], config, mean_direction,
+            reverse_prunes: 0, reverse_prune_nanos: 0 };
         let mut order: Vec<u32> = (0..ids.len() as u32).collect();
         order.sort_unstable_by(|&a, &b| depths[a as usize].total_cmp(&depths[b as usize]).then(a.cmp(&b)));
         for &node in &order {
@@ -149,9 +188,12 @@ impl HyperbolicIndex {
             index.graph[node as usize] = index.prune(node, pool);
             let selected = index.graph[node as usize].clone();
             for neighbor in selected {
+                let start = std::time::Instant::now();
                 let mut reverse = index.graph[neighbor as usize].clone();
                 reverse.push(node);
                 index.graph[neighbor as usize] = index.prune(neighbor, reverse);
+                index.reverse_prunes += 1;
+                index.reverse_prune_nanos += start.elapsed().as_nanos();
             }
         }
         if let Some(&entry) = index.router.hubs.first() {
@@ -181,7 +223,7 @@ impl HyperbolicIndex {
     }
 
     pub fn hot_bytes(&self) -> usize {
-        self.store.hot_bytes() + self.router.meta.len() * 32
+        self.store.hot_bytes() + self.router.meta.len() * 32 + self.mean_direction.capacity() * 8
             + self.ids.len() * 8 + self.slots.len() * std::mem::size_of::<usize>()
             + self.graph.iter().map(|row| row.capacity() * 4 + std::mem::size_of::<Vec<u32>>()).sum::<usize>()
             + self.router.hot_bytes_without_meta()
@@ -189,12 +231,25 @@ impl HyperbolicIndex {
 
     pub fn search<F, E>(
         &self, query: &[f32], depth: f32, config: HyperbolicSearchConfig,
-        exclude: E, mut fill: F,
+        exclude: E, fill: F,
+    ) -> io::Result<HyperbolicOutput>
+    where F: FnMut(usize, &mut Vec<f32>) -> bool, E: Fn(u64) -> bool {
+        self.search_with_semantic(query, depth, config, None, exclude, fill)
+    }
+
+    pub fn search_with_semantic<F, E>(
+        &self, query: &[f32], depth: f32, config: HyperbolicSearchConfig,
+        semantic: Option<SemanticConeConfig>, exclude: E, mut fill: F,
     ) -> io::Result<HyperbolicOutput>
     where F: FnMut(usize, &mut Vec<f32>) -> bool, E: Fn(u64) -> bool {
         if query.len() != self.dim || config.width == 0 || config.rerank_limit < config.top_k {
             return Err(invalid("invalid hyperbolic query controls"));
         }
+        if semantic.is_some() && config.rerank_limit > 64 {
+            return Err(invalid("semantic rerank_limit must not exceed 64 unique cold reads"));
+        }
+        let cone = semantic.map(|s| self.semantic_cone(query, s)).transpose()?;
+        let effective = |cosine| cone.map_or(cosine, |c| c.effective(cosine));
         let point = PolarPoint::new(depth as f64, self.config.curvature)?;
         let (qmeta, sig) = PolarNodeMeta::encode(query, point)?;
         if config.top_k == 0 || self.ids.is_empty() {
@@ -209,6 +264,7 @@ impl HyperbolicIndex {
                 let m = self.router.meta[node as usize];
                 let cos = query_cosine(&self.store, &self.router.meta, node as usize, &sig, qmeta.sm(), self.dim);
                 let p = PolarPoint { radius: m.radius as f64, factor: m.boundary_factor as f64, depth: m.depth as f64 };
+                let cos = effective(cos);
                 (point.proxy(p, cos), 1.0 - cos + 0.20 * (point.depth - p.depth).abs())
             },
             |node| !exclude(self.ids[node as usize]));
@@ -218,6 +274,7 @@ impl HyperbolicIndex {
             visit_limit_reached: beam.stats.visit_limit_reached,
             expansion_limit_reached: beam.stats.expansion_limit_reached,
             valid_candidates: beam.candidates.len(), seeds: seeds.len(), converged: beam.stats.converged,
+            semantic_cone: cone,
             ..Default::default()
         };
         let asym = AsymQuerySm::encode(query)?;
@@ -226,7 +283,7 @@ impl HyperbolicIndex {
             let meta = self.router.meta[node as usize];
             let cosine = asym.calibrated_cosine(p, h, meta.sm(), AsymKernel::Auto);
             let p = PolarPoint { radius: meta.radius as f64, factor: meta.boundary_factor as f64, depth: meta.depth as f64 };
-            (point.proxy(p, cosine), node)
+            (point.proxy(p, effective(cosine)), node)
         }).collect();
         stats.asymmetric_evals = pool.len();
         pool.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(self.ids[a.1 as usize].cmp(&self.ids[b.1 as usize])));
@@ -244,7 +301,19 @@ impl HyperbolicIndex {
             row.clear();
             stats.cold_reads += 1;
             if !fill(self.slots[node as usize], &mut row) { continue; }
-            let proxy = exact_proxy(query, point, &row, meta.exact_point(self.config.curvature)?)?;
+            let proxy = if let Some(cone) = cone {
+                if row.len() != self.dim { return Err(invalid("semantic original dimension")); }
+                let (qn, vn) = (checked_norm(query)?, checked_norm(&row)?);
+                let cosine = query.iter().zip(&row)
+                    .map(|(&q, &v)| q as f64 * v as f64).sum::<f64>() / qn / vn;
+                if !cone.admits(cosine) {
+                    stats.direction_rejections += 1;
+                    continue;
+                }
+                point.proxy(meta.exact_point(self.config.curvature)?, cone.effective(cosine))
+            } else {
+                exact_proxy(query, point, &row, meta.exact_point(self.config.curvature)?)?
+            };
             exact.push((self.ids[node as usize], proxy));
             exact.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             exact.truncate(config.top_k);

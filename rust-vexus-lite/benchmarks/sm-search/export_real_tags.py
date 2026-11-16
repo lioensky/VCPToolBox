@@ -41,7 +41,21 @@ def inbound_log_quantiles(entries):
     return result
 
 
-def export(source, destination, limit, queries, allow_stale=False):
+def query_partition(query_ids, queries, holdout_queries=0, seed=20261116):
+    if queries < 1 or holdout_queries < 0 or len(set(query_ids)) != len(query_ids):
+        raise ValueError("invalid query partition")
+    if len(query_ids) < queries + holdout_queries:
+        raise ValueError("not enough disjoint real chunk query vectors")
+    development = [query_ids[i * (len(query_ids) - 1) // max(queries - 1, 1)]
+                   for i in range(queries)]
+    reserved = set(development)
+    pool = [qid for qid in query_ids if qid not in reserved]
+    pool.sort(key=lambda qid: (hashlib.sha256(("%d:%d" % (seed, qid)).encode()).digest(), qid))
+    return development, pool[:holdout_queries]
+
+
+def export(source, destination, limit, queries, allow_stale=False,
+           holdout_queries=0, seed=20261116):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or destination.exists():
         raise ValueError("destination must be a new file, separate from source")
@@ -127,9 +141,9 @@ def export(source, destination, limit, queries, allow_stale=False):
         query_ids = [r[0] for r in connection.execute(
             "SELECT id FROM chunks WHERE length(vector)=? ORDER BY id", (dimension * 4,)
         )]
-        if len(query_ids) < queries:
-            raise ValueError("not enough real chunk query vectors")
-        chosen_queries = [query_ids[i * (len(query_ids) - 1) // max(queries - 1, 1)] for i in range(queries)]
+        chosen_queries, holdout = query_partition(query_ids, queries, holdout_queries, seed)
+        query_groups = ["development"] * len(chosen_queries) + ["holdout"] * len(holdout)
+        chosen_queries += holdout
         metadata = dict(
             schema="pelorus-real-tags-v2", source=str(source), source_size=source.stat().st_size,
             source_artifact=signature, model_sig=model, database_generation=database_generation,
@@ -142,7 +156,10 @@ def export(source, destination, limit, queries, allow_stale=False):
             diagnostic_only=stale or bool(mismatched) or bool(missing_snapshot_residuals),
             valid_joint_tags=len(candidates),
             skipped_tags=rejected, exported_tags=count, dimension=dimension,
-            max_inbound=maximum, queries=queries,
+            max_inbound=maximum, queries=queries + holdout_queries,
+            development_queries=queries, holdout_queries=holdout_queries,
+            query_partition_seed=seed,
+            query_partition="development original ID-spacing; holdout SHA256(seed:ID) without replacement; ID-disjoint NOT document-disjoint",
             inbound_quantile_schema="log1p-midrank-v1",
             inbound_quantile_population=len(candidates),
             inbound_quantile_definition="ascending log1p(inbound) tied mean zero-based rank / (N-1); N=1 -> .5",
@@ -159,6 +176,7 @@ def export(source, destination, limit, queries, allow_stale=False):
                 "CREATE TABLE tags(slot INTEGER PRIMARY KEY,id INTEGER UNIQUE,name TEXT,"
                 "vector BLOB,inbound REAL,raw_residual_ratio REAL,inbound_log_quantile REAL);"
                 "CREATE TABLE queries(id INTEGER PRIMARY KEY,source_chunk_id INTEGER,vector BLOB);"
+                "CREATE TABLE query_sets(query_id INTEGER PRIMARY KEY,split TEXT NOT NULL);"
                 "CREATE TABLE metadata(value TEXT NOT NULL);"
             )
             for slot, (tag_id, name, mass, residual) in enumerate(selected):
@@ -170,6 +188,7 @@ def export(source, destination, limit, queries, allow_stale=False):
                 if not valid_vector(vector, dimension):
                     raise ValueError("invalid chunk query vector")
                 output.execute("INSERT INTO queries VALUES(?,?,?)", (number, chunk_id, vector))
+                output.execute("INSERT INTO query_sets VALUES(?,?)", (number, query_groups[number]))
             output.execute("INSERT INTO metadata VALUES(?)", (json.dumps(metadata),))
             output.commit()
         finally:
@@ -186,6 +205,9 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=4096)
     parser.add_argument("--queries", type=int, default=12)
     parser.add_argument("--allow-stale-snapshot", action="store_true")
+    parser.add_argument("--holdout-queries", type=int, default=0)
+    parser.add_argument("--query-seed", type=int, default=20261116)
     args = parser.parse_args()
-    result = export(args.source, args.output, args.limit, args.queries, args.allow_stale_snapshot)
+    result = export(args.source, args.output, args.limit, args.queries, args.allow_stale_snapshot,
+                    args.holdout_queries, args.query_seed)
     print(json.dumps(result, ensure_ascii=True, indent=2))

@@ -9,7 +9,21 @@ import struct
 import tempfile
 import unittest
 
-from export_real_tags import export, inbound_log_quantiles
+from export_real_tags import export, inbound_log_quantiles, query_partition
+
+
+class PartitionTests(unittest.TestCase):
+    def test_holdout_is_deterministic_and_disjoint(self):
+        ids = list(range(1, 1001))
+        development, holdout = query_partition(ids, 12, 32, 20261116)
+        self.assertEqual(development, query_partition(ids, 12)[0])
+        self.assertEqual(len(holdout), 32)
+        self.assertEqual(len(set(holdout)), 32)
+        self.assertFalse(set(development).intersection(holdout))
+        self.assertEqual((development, holdout), query_partition(ids, 12, 32, 20261116))
+        self.assertNotEqual(holdout, query_partition(ids, 12, 32, 20261117)[1])
+        with self.assertRaises(ValueError):
+            query_partition([1, 2], 2, 1)
 
 
 class QuantileTests(unittest.TestCase):
@@ -104,6 +118,21 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(output_before, self.output.read_bytes())
         with self.assertRaisesRegex(ValueError, "new file"):
             export(self.source, self.source, 512, 1)
+
+    def test_exported_holdout_split_is_explicit(self):
+        with closing(sqlite3.connect(self.source)) as c, c:
+            vector = c.execute("SELECT vector FROM chunks LIMIT 1").fetchone()[0]
+            c.executemany("INSERT INTO chunks VALUES(?,?)", [(i, vector) for i in range(2, 50)])
+        meta = export(self.source, self.output, 512, 12, holdout_queries=32)
+        self.assertEqual(meta["holdout_queries"], 32)
+        with closing(sqlite3.connect(self.output)) as c:
+            groups = {}
+            for split, chunk_id in c.execute(
+                    "SELECT s.split,q.source_chunk_id FROM query_sets s JOIN queries q ON q.id=s.query_id"):
+                groups.setdefault(split, set()).add(chunk_id)
+            self.assertEqual(len(groups["development"]), 12)
+            self.assertEqual(len(groups["holdout"]), 32)
+            self.assertFalse(groups["development"] & groups["holdout"])
 
     def test_stale_facts_rejected_without_creating_output(self):
         self.execute("UPDATE kbm_runtime_meta SET value='101'")

@@ -5,6 +5,10 @@ mod beam;
 mod routing;
 mod construction;
 mod index;
+mod semantic;
+#[cfg(test)]
+mod semantic_tests;
+pub use semantic::{SemanticBackground, SemanticCone, SemanticConeConfig};
 pub use index::{HyperbolicConfig, HyperbolicIndex, HyperbolicOutput, HyperbolicSearchConfig, HyperbolicSearchStats};
 use super::asymmetric::SmCodeParams;
 use crate::index::bq::Bq2Signature;
