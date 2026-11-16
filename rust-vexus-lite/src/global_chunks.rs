@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use vcp_tdb_index::index::quiver::corrected_sm::CorrectedSmIndex;
+use vcp_tdb_index::index::quiver::corrected_sm::{
+    CorrectedSmIndex, FlatSearchConfig, FlatSearchStats,
+};
 
 const MAGIC: &[u8; 8] = b"VCPGCH01";
 
@@ -156,6 +158,21 @@ impl GlobalChunks {
         self.routing.search_flat_filtered(query, limit, |slot, id| {
             self.rows.get(&(id as i64)).is_some_and(|row| row.slot == slot && admits(row))
         }).map(|hits| hits.into_iter().map(|hit| hit.0 as i64).collect())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Request-local Route 2 selection; cache contains only derived hot metadata.
+    /// Admission still runs once per live row, before any statistical rejection.
+    pub fn search_with_config<P>(
+        &mut self, query: &[f32], limit: usize, config: &FlatSearchConfig, mut admits: P,
+    ) -> Result<(Vec<i64>, FlatSearchStats), String>
+    where P: FnMut(&ChunkHeader) -> bool {
+        if config.enabled {
+            self.routing.prepare_flat_headers().map_err(|e| e.to_string())?;
+        }
+        self.routing.search_flat_filtered_with_config(query, limit, config, |slot, id| {
+            self.rows.get(&(id as i64)).is_some_and(|row| row.slot == slot && admits(row))
+        }).map(|(hits, stats)| (hits.into_iter().map(|hit| hit.0 as i64).collect(), stats))
             .map_err(|e| e.to_string())
     }
 

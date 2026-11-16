@@ -24,6 +24,10 @@ mod build;
 mod dynamic;
 use dynamic::DynamicSm;
 
+#[path = "corrected_sm/flat.rs"]
+mod flat;
+pub use flat::{FlatSearchConfig, FlatSearchStats};
+
 #[path = "corrected_sm/production.rs"]
 mod production;
 
@@ -233,6 +237,9 @@ pub struct CorrectedSmIndex {
     exact_scales: Vec<f32>,
     scoring: SmScoring,
     dynamic: Option<DynamicSm>,
+    // Derived header-only cache, populated explicitly for experimental flat scans.
+    // Reconstructible from persisted bitcodes; never a second FP32 vector store.
+    flat_headers: Option<Vec<flat::FlatHeader>>,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -495,6 +502,7 @@ impl CorrectedSmIndex {
             + self.ids.capacity() * 8
             + self.graph.data.capacity() * 4
             + self.exact_scales.capacity() * 4
+            + self.flat_headers.as_ref().map_or(0, |rows| rows.capacity() * std::mem::size_of::<flat::FlatHeader>())
     }
 
     fn inline_reconstructed_norms_bytes(&self) -> usize {
@@ -602,6 +610,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: None,
+            flat_headers: None,
         })
     }
 
@@ -670,6 +679,7 @@ impl CorrectedSmIndex {
             "logical_rerank_fp32_bytes": self.len() * self.dimension() * 4,
             "visited_bytes_per_thread": self.len().div_ceil(64) * 8,
             "row_stride_bytes": self.dynamic.as_ref().map_or(std::mem::size_of::<SmRow>(), DynamicSm::row_bytes),
+            "derived_flat_header_bytes": self.flat_headers.as_ref().map_or(0, |rows| rows.capacity() * std::mem::size_of::<flat::FlatHeader>()),
             "runtime_note": "线程堆和候选容量、分配器及外部向量驻留另计",
             "dimension": self.dimension(), "nodes": self.len(), "entry": self.entry, "anchor": self.anchor,
             "simd_available": simd_available(),
@@ -1268,6 +1278,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: None,
+            flat_headers: None,
         })
     }
 }
@@ -2079,5 +2090,42 @@ mod tests {
         raw.save_to_file(&path).unwrap();
         drop(raw);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+
+/// Explicit benchmark-only access; never selected by production configuration.
+#[cfg(feature = "ablation")]
+pub mod kernel_probe {
+    use super::*;
+
+    pub fn counts(a: &[u64], sa: &[u64], b: &[u64], sb: &[u64], dim: usize, optimized: bool) -> [u32; 5] {
+        let words = dim.div_ceil(64);
+        assert!(a.len() >= words && sa.len() >= words && b.len() >= words && sb.len() >= words);
+        if optimized { crate::index::bq::sm_counts::counts(a, sa, b, sb, dim) }
+        else { crate::index::bq::sm_counts::scalar(a, sa, b, sb, dim) }
+    }
+
+    pub fn dot(q: &[f32], x: &[f32], optimized: bool) -> f32 {
+        assert_eq!(q.len(), x.len());
+        #[cfg(target_arch = "x86_64")]
+        if optimized && avx2_dot_available() {
+            return unsafe { exact_avx2::<false>(q, [x; 4], false)[0] };
+        }
+        let mut sums = [0f32; 16];
+        for (i, (&a, &b)) in q.iter().zip(x).enumerate() {
+            sums[i % 16] = a.mul_add(b, sums[i % 16]);
+        }
+        for i in 0..8 { sums[i] += sums[i + 8]; }
+        for i in 0..4 { sums[i] += sums[i + 4]; }
+        (sums[0] + sums[2]) + (sums[1] + sums[3])
+    }
+
+    pub fn selected() -> (String, &'static str) {
+        #[cfg(target_arch = "x86_64")]
+        let bits = format!("{:?}", *crate::index::bq::X86_BIT_KERNEL);
+        #[cfg(not(target_arch = "x86_64"))]
+        let bits = "Scalar".to_string();
+        (bits, if avx2_dot_available() { "Avx2Fma" } else { "Scalar" })
     }
 }

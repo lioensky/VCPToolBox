@@ -712,6 +712,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring,
             dynamic: Some(dynamic),
+            flat_headers: None,
         })
     }
     pub(super) fn dynamic_slice_search(
@@ -1031,6 +1032,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: if dim == DIM { None } else { Some(model) },
+            flat_headers: None,
         };
         if mode == 1 {
             result.use_reconstructed_l2();

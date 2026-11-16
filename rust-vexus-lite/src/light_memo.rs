@@ -7,6 +7,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use vcp_tdb_index::index::quiver::asymmetric::AsymKernel;
+use vcp_tdb_index::index::quiver::corrected_sm::FlatSearchConfig;
 
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -41,6 +43,14 @@ pub(crate) struct Plan {
     artifact_sig: String,
     #[serde(default)]
     river_input: Value,
+    /// Experimental request-local route; absent means byte-compatible legacy recall.
+    #[serde(default)]
+    pelorus_route2: bool,
+    /// Statistical (not guaranteed) pruning; absent means no sketch rejections.
+    #[serde(default)]
+    pelorus_sketch_margin: Option<f64>,
+    #[serde(default)]
+    pelorus_asym_lut: bool,
 }
 
 fn default_pool() -> usize { 256 }
@@ -128,6 +138,10 @@ impl Task for LightMemoTask {
             Some(format!("field=candidateK actual={} min=1 max=2000", plan.candidate_k))
         } else if plan.model_sig.trim().is_empty() {
             Some("field=modelSig reason=empty".into())
+        } else if plan.pelorus_sketch_margin.is_some_and(|v| !v.is_finite() || !(0.0..=2.0).contains(&v)) {
+            Some("field=pelorusSketchMargin reason=expected_finite_0_to_2".into())
+        } else if !plan.pelorus_route2 && (plan.pelorus_sketch_margin.is_some() || plan.pelorus_asym_lut) {
+            Some("field=pelorusRoute2 reason=required_for_experimental_controls".into())
         } else if !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo") {
             Some("field=engineMode reason=unsupported".into())
         } else if self.query.len() != self.dimension {
@@ -160,11 +174,18 @@ impl Task for LightMemoTask {
                 let diaries = plan.scope.diaries(connection)?;
                 // Count admitted rows during the scan instead of materializing a scope set.
                 let mut scope_chunks = 0usize;
-                let ids = table.search(&self.query, plan.candidate_k.max(plan.k), |row| {
-                    let admitted = plan.scope.admits(row, &diaries);
-                    scope_chunks += usize::from(admitted);
-                    admitted
-                })?;
+                let routing_config = FlatSearchConfig {
+                    enabled: plan.pelorus_route2,
+                    sketch_margin: plan.pelorus_sketch_margin,
+                    kernel: if plan.pelorus_asym_lut { AsymKernel::Avx2Lut } else { AsymKernel::Auto },
+                };
+                let (ids, routing_stats) = table.search_with_config(
+                    &self.query, plan.candidate_k.max(plan.k), &routing_config, |row| {
+                        let admitted = plan.scope.admits(row, &diaries);
+                        scope_chunks += usize::from(admitted);
+                        admitted
+                    },
+                )?;
                 let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &ids, self.dimension)?;
                 let mut candidates = ids.into_iter().filter_map(|id| {
                     vectors.get(&id).map(|vector| json!({
@@ -292,7 +313,15 @@ impl Task for LightMemoTask {
                     "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
                     "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
-                        "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1}
+                        "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1,
+                        "routingMode":if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
+                        "routing":{"admitted":routing_stats.admitted,
+                            "symmetricScored":routing_stats.symmetric_scored,
+                            "asymmetricScored":routing_stats.asymmetric_scored,
+                            "sketchTested":routing_stats.sketch_tested,
+                            "sketchRejected":routing_stats.sketch_rejected,
+                            "peakPool":routing_stats.peak_pool,
+                            "statisticalSketchFilter":plan.pelorus_sketch_margin.is_some()}}
                 }))
             },
         ).map_err(Error::from_reason)?;
@@ -501,6 +530,31 @@ mod tests {
         assert_eq!(signature["diagnostics"]["scopeChunks"],1);
         assert_eq!(folder["diagnostics"]["scopeChunks"],1);
         assert_eq!(excluded["diagnostics"]["scopeChunks"],2);
+        // Request-local Route 2 keeps scope and original-SQL exact score contracts.
+        for (scope, expected) in [
+            (json!({"maid":"Alice","excludedFolders":["MusicDiary"]}), &signature),
+            (json!({"folders":["Alice"],"timeRange":{"start":20250101,"end":20250131}}), &folder),
+            (json!({"searchAll":true,"excludedFolders":["MusicDiary"]}), &excluded),
+        ] {
+            task.plan_json = json!({"scope":scope,"modelSig":"test","engineMode":"knn",
+                "k":10,"candidateK":20,"pelorusRoute2":true}).to_string();
+            let routed: Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
+            assert_eq!(routed["results"], expected["results"]);
+            assert_eq!(routed["diagnostics"]["scopeChunks"], expected["diagnostics"]["scopeChunks"]);
+            assert_eq!(routed["diagnostics"]["routingMode"], "pelorus-route2");
+            assert_eq!(routed["diagnostics"]["routing"]["sketchRejected"], 0);
+        }
+        for extra in [
+            json!({"pelorusSketchMargin":0.2}),
+            json!({"pelorusRoute2":true,"pelorusSketchMargin":-0.1}),
+            json!({"pelorusAsymLut":true}),
+        ] {
+            let mut plan = json!({"scope":{"searchAll":true},"modelSig":"test",
+                "engineMode":"knn","k":10,"candidateK":20});
+            plan.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            task.plan_json = plan.to_string();
+            assert!(task.compute().unwrap_err().reason.contains("LIGHTMEMO_INVALID_PLAN"));
+        }
         // knn with k below the pool returns the same leading rows, fully hydrated.
         task.plan_json=json!({"scope":{"searchAll":true,"excludedFolders":["MusicDiary"]},
             "modelSig":"test","engineMode":"knn","k":1,"candidateK":20}).to_string();

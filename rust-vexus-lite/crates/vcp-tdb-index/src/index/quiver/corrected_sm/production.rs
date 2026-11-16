@@ -15,6 +15,7 @@ impl CorrectedSmIndex {
             base_crc: 0,
             exact_scales: Vec::new(),
             scoring: SmScoring::ReconstructedL2,
+            flat_headers: None,
             dynamic: if dim == DIM {
                 None
             } else {
@@ -98,6 +99,11 @@ impl CorrectedSmIndex {
         }
         self.ids.push(id);
         self.exact_scales.push(scale);
+        if self.flat_headers.is_some() {
+            let mut header = self.make_flat_header(self.len() - 1);
+            header.sketch = crate::index::quiver::sketch::pack_strided_sketch256(x);
+            self.flat_headers.as_mut().unwrap().push(header);
+        }
         Ok(())
     }
 

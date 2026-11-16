@@ -32,7 +32,7 @@ pub(crate) fn counts(a: &[u64], sa: &[u64], b: &[u64], sb: &[u64], dim: usize) -
 }
 
 #[inline]
-fn scalar(a: &[u64], sa: &[u64], b: &[u64], sb: &[u64], dim: usize) -> [u32; 5] {
+pub(crate) fn scalar(a: &[u64], sa: &[u64], b: &[u64], sb: &[u64], dim: usize) -> [u32; 5] {
     let mut sums = [0; 5];
     for i in 0..dim.div_ceil(64) {
         let mask = if i == dim / 64 && dim % 64 != 0 { (1u64 << (dim % 64)) - 1 } else { u64::MAX };
