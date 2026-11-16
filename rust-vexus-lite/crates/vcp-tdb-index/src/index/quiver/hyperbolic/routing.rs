@@ -46,7 +46,12 @@ impl PolarRouter {
         self.edges.partition_point(|edge| depth >= *edge)
     }
 
+    #[cfg(test)]
     pub fn build(store: &Bq2Store, meta: Vec<PolarNodeMeta>, dim: usize) -> Self {
+        Self::build_with_landmarks(store, meta, dim, None)
+    }
+
+    pub fn build_with_landmarks(store: &Bq2Store, meta: Vec<PolarNodeMeta>, dim: usize, requested: Option<usize>) -> Self {
         let n = meta.len();
         let mut order: Vec<u32> = (0..n as u32).collect();
         order.sort_unstable_by(|&a, &b| meta[a as usize].depth.total_cmp(&meta[b as usize].depth).then(a.cmp(&b)));
@@ -58,7 +63,7 @@ impl PolarRouter {
             *edge = if n == 0 { 0.0 } else { meta[order[(n - 1) * (i + 1) / 8] as usize].depth };
         }
         let hubs = order.iter().take(16).copied().collect();
-        let target = (n / 100).clamp(64, 2048).min(n);
+        let target = requested.unwrap_or((n / 100).clamp(64, 2048)).clamp(1, 2048).min(n);
         let sample_count = (target * 5).clamp(512, 6144).min(n);
         let samples: Vec<usize> = (0..sample_count)
             .map(|i| i * n.saturating_sub(1) / sample_count.saturating_sub(1).max(1)).collect();
@@ -112,10 +117,25 @@ impl PolarRouter {
         router
     }
 
+    pub fn directory_sizes(&self) -> (usize, usize) {
+        (self.landmarks.len(), self.coarse.len())
+    }
+
+    #[cfg(test)]
     pub fn query_seeds(
         &self, store: &Bq2Store, signature: &Bq2Signature,
         sm: SmCodeParams, depth: f64, dim: usize, width: usize,
     ) -> Vec<u32> {
+        self.query_seeds_budgeted(store, signature, sm, depth, dim, width, usize::MAX, 1.0)
+    }
+
+    pub fn query_seeds_budgeted(
+        &self, store: &Bq2Store, signature: &Bq2Signature,
+        sm: SmCodeParams, depth: f64, dim: usize, width: usize,
+        max_visits: usize, curvature: f64,
+    ) -> Vec<u32> {
+        let seed_cap = (width / 2).min(max_visits / 4);
+        if seed_cap == 0 { return Vec::new(); }
         let mut considered = vec![false; self.landmarks.len()];
         let mut cones = Vec::new();
         let mut evaluate = |cone: usize| {
@@ -137,7 +157,6 @@ impl PolarRouter {
         }
         cones.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         let mut seeds = self.hubs.clone();
-        let seed_cap = width.saturating_mul(4).clamp(64, 560);
         for &(cosine, cone) in cones.iter().take((width / 2).clamp(8, 80)) {
             let apex = (depth.tanh() * cosine.max(0.0)).clamp(0.0, 1.0 - f64::EPSILON)
                 .atanh().clamp(self.min_depth as f64, self.max_depth as f64);
@@ -146,11 +165,18 @@ impl PolarRouter {
             for band in 0usize..8 {
                 if band.abs_diff(apex_band) > 1 && band.abs_diff(query_band) > 1 { continue; }
                 for &node in &self.cells[cone * 8 + band] {
-                    if seeds.len() >= seed_cap { break; }
                     if !seeds.contains(&node) { seeds.push(node); }
                 }
             }
         }
-        seeds
+        let query = PolarPoint::new(depth, curvature).expect("validated query geometry");
+        let mut ranked: Vec<_> = seeds.into_iter().map(|node| {
+            let meta = self.meta[node as usize];
+            let point = PolarPoint { radius: meta.radius as f64, factor: meta.boundary_factor as f64, depth: meta.depth as f64 };
+            let cosine = query_cosine(store, &self.meta, node as usize, signature, sm, dim);
+            (query.proxy(point, cosine), node)
+        }).collect();
+        ranked.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        ranked.into_iter().take(seed_cap).map(|(_, node)| node).collect()
     }
 }

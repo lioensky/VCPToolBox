@@ -55,7 +55,7 @@ fn recall(found: &[u64], truth: &[u64]) -> f64 {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(std::env::var("TRIVIUM_NO_AVX512").as_deref(), Ok("1"));
-    let n = std::env::var("HYPER_N").ok().map(|v| v.parse()).transpose()?.unwrap_or(1024usize);
+    let n = std::env::var("HYPER_N").ok().map(|v| v.parse()).transpose()?.unwrap_or(4096usize);
     assert!(n >= 128 && n % 64 == 0);
     let max_visits = std::env::var("HYPER_VISITS").ok().map(|v| v.parse()).transpose()?.unwrap_or(n);
     let max_expansions = std::env::var("HYPER_EXPANSIONS").ok().map(|v| v.parse()).transpose()?.unwrap_or(512usize);
@@ -76,10 +76,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for upper in [1.80f32, 2.50, 3.20] {
             let depths: Vec<f32> = (0..n).map(|node| 0.35 + (upper-0.35)*specificity(node)).collect();
             let start = Instant::now();
-            let index = HyperbolicIndex::build(dim,&ids,&slots,&depths,HyperbolicConfig::default(),
+            let index = HyperbolicIndex::build(dim,&ids,&slots,&depths,
+                HyperbolicConfig { landmarks: Some(512), ..Default::default() },
                 |s,o| read(&conn,s,o))?;
             let build_ms = start.elapsed().as_secs_f64()*1000.;
             assert_eq!(index.connectivity(), (n,0));
+            assert!(index.directory_sizes().0 > 256, "must actually cover two-level routing");
+            assert_eq!(index.directory_sizes().1, 64);
             let mut layers = vec![Vec::new(),Vec::new(),Vec::new()];
             let mut angular_errors = Vec::new();
             for qi in 0..16 {
@@ -115,6 +118,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let hyper_us = start.elapsed().as_secs_f64()*1e6;
                     assert!(cold.len()<=64);
                     assert_eq!(cold.len(),found.stats.cold_reads);
+                    assert!(found.stats.seeds <= (128 / 2).min(max_visits / 4));
+                    let mut radial_cold = HashSet::new();
+                    let radial_start = Instant::now();
+                    let radial = index.search(&query,qdepth,HyperbolicSearchConfig {
+                        top_k:10,width:128,rerank_limit:64,max_visits,max_expansions,radial_bound:true,
+                    }, |id| excluded.contains(&id), |s,o| {
+                        assert!(!excluded.contains(&ids[s]));
+                        assert!(radial_cold.insert(s));
+                        read(&conn,s,o)
+                    })?;
+                    let radial_us = radial_start.elapsed().as_secs_f64()*1e6;
+                    assert_eq!(found.neighbors,radial.neighbors,"radial filter must preserve exact result bits");
+                    assert!(radial_cold.is_subset(&cold));
                     let mut cosine_cold = HashSet::new();
                     let start = Instant::now();
                     let baseline = legacy.search_with_options(&query,|s,o| {
@@ -137,6 +153,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "hyper_us":hyper_us,"cosine_us":cosine_us,
                         "visited":found.stats.visited,"expanded":found.stats.expanded,
                         "excluded_expanded":found.stats.excluded_expanded,
+                        "seeds":found.stats.seeds,"converged":found.stats.converged,
+                        "visit_limit_reached":found.stats.visit_limit_reached,
+                        "radial_cold_unique":radial_cold.len(),"radial_us":radial_us,
+                        "radial_rejections":radial.stats.radial_rejections,
                         "expansion_limit_reached":found.stats.expansion_limit_reached
                     }));
                     excluded.extend(found_ids);
@@ -147,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("dim={dim} upper={upper} build_ms={build_ms:.1}");
             reports.push(json!({"dim":dim,"n":n,"depth":[0.35,upper],"curvature":1.,
                 "build_ms":build_ms,"hot_bytes":index.hot_bytes(),"cosine_build_ms":cosine_build_ms,
+                "directory":index.directory_sizes(),
                 "cosine_hot_bytes":legacy.stats().hot_bytes,
                 "reachable":n,"zero_indegree":0,"outer_abs_cosine_error_p50":quantile(0.5),
                 "outer_abs_cosine_error_p90":quantile(0.9),"outer_abs_cosine_error_p99":quantile(0.99),

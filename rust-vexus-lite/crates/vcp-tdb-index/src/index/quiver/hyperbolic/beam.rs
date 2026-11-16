@@ -18,6 +18,7 @@ pub(crate) struct BeamStats {
     pub excluded_expanded: usize,
     pub visit_limit_reached: bool,
     pub expansion_limit_reached: bool,
+    pub converged: bool,
 }
 
 #[derive(Debug)]
@@ -81,6 +82,18 @@ impl State {
         }
     }
 
+    // Remove only already-expanded heads. A head worse than the retained
+    // threshold is an ANN proxy stopping condition, not an exact metric bound.
+    fn can_improve(&mut self, channel: usize, budget: BeamBudget) -> bool {
+        while self.queues[channel].peek().is_some_and(|Reverse(item)| self.expanded[item.1 as usize]) {
+            self.queues[channel].pop();
+        }
+        self.queues[channel].peek().is_some_and(|Reverse(item)| {
+            self.retained[channel].len() < budget.width
+                || self.retained[channel].peek().is_some_and(|worst| item <= worst)
+        })
+    }
+
     fn pop_valid(&mut self, channel: usize, budget: BeamBudget) -> Option<u32> {
         while let Some(Reverse(item)) = self.queues[channel].pop() {
             if self.expanded[item.1 as usize] { continue; }
@@ -126,6 +139,14 @@ where
     }
     let mut turn = 0usize;
     loop {
+        let apex_ready = state.can_improve(0, budget);
+        let horizontal_ready = state.can_improve(1, budget);
+        // Conservatively keep ALL discovered excluded bridges, including ones
+        // with poor proxy scores: they may be the only route to a valid tail.
+        if !apex_ready && !horizontal_ready && state.bridges.is_empty() {
+            state.stats.converged = true;
+            break;
+        }
         // Alternate bridge and scored work to avoid starvation on either side.
         let bridge_turn = turn % 3 == 0;
         let current = if bridge_turn { state.bridges.pop_front() } else { None }

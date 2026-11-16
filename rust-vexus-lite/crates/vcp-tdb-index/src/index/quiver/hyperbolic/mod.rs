@@ -197,7 +197,18 @@ mod tests {
         let sig = store.get_sig(100);
         let seeds = first.query_seeds(&store, &sig, first.meta[100].sm(), 2.5, dim, 32);
         assert!(!seeds.is_empty());
-        assert!(seeds.len() <= 128);
+        assert!(seeds.len() <= 16);
+        for width in [0usize, 1, 2, 7, 32, 128, 512] {
+            for visits in [0usize, 1, 2, 3, 4, 7, 128, 256, usize::MAX] {
+                let capped = first.query_seeds_budgeted(&store, &sig,
+                    first.meta[100].sm(), 2.5, dim, width, visits, 1.0);
+                let limit = (width / 2).min(visits / 4);
+                assert!(capped.len() <= limit);
+                assert_eq!(capped.is_empty(), limit == 0);
+                let unique: std::collections::HashSet<_> = capped.iter().copied().collect();
+                assert_eq!(unique.len(), capped.len());
+            }
+        }
         let unique: std::collections::HashSet<_> = seeds.iter().copied().collect();
         assert_eq!(seeds.len(), unique.len());
         assert!(seeds.iter().all(|&node| node < 128));
@@ -219,6 +230,29 @@ mod tests {
                 let (meta, _) = PolarNodeMeta::encode(&a, p).unwrap();
                 assert!(meta.sm().sigma > 0.0);
                 assert_eq!(meta.radial_lower_bound(p), 0.0);
+            }
+        }
+    }
+    #[test]
+    fn radial_bound_is_conservative_across_depths_and_curvatures() {
+        for dim in [65usize, 384, 768, 1536, 3072] {
+            let a = vec![1.0; dim];
+            let mut b = a.clone();
+            b[dim - 1] = 1.01;
+            for curvature in [1e-12, 0.25, 1.0, 4.0, 1e12] {
+                for depth in [0.0_f32, 0.35, 1.4, 1.8, 2.4, 3.2, 8.0, 16.0] {
+                    let point = PolarPoint::new(depth as f64, curvature).unwrap();
+                    let (meta, _) = PolarNodeMeta::encode(&a, point).unwrap();
+                    for qdepth in [0.0_f32, 0.35, 1.4, 2.4, 3.2, 8.0, 16.0] {
+                        let query = PolarPoint::new(qdepth as f64, curvature).unwrap();
+                        let lower = meta.radial_lower_bound(query);
+                        for direction in [&a, &b] {
+                            let exact = exact_proxy(direction, query, &a, point).unwrap();
+                            assert!(lower >= 0.0 && lower <= exact,
+                                "dim={dim} c={curvature} d={depth} qd={qdepth} lower={lower} exact={exact}");
+                        }
+                    }
+                }
             }
         }
     }

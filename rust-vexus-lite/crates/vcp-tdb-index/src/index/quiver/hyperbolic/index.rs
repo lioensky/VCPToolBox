@@ -11,10 +11,11 @@ pub struct HyperbolicConfig {
     pub degree: usize,
     pub construction_width: usize,
     pub alpha: f64,
+    pub landmarks: Option<usize>,
 }
 impl Default for HyperbolicConfig {
     fn default() -> Self {
-        Self { curvature: 1.0, degree: 32, construction_width: 128, alpha: 1.2 }
+        Self { curvature: 1.0, degree: 32, construction_width: 128, alpha: 1.2, landmarks: None }
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +38,8 @@ pub struct HyperbolicSearchStats {
     pub asymmetric_evals: usize,
     pub cold_reads: usize,
     pub radial_rejections: usize,
+    pub seeds: usize,
+    pub converged: bool,
 }
 #[derive(Debug)]
 pub struct HyperbolicOutput {
@@ -57,6 +60,8 @@ pub struct HyperbolicIndex {
     config: HyperbolicConfig,
 }
 impl HyperbolicIndex {
+    pub fn directory_sizes(&self) -> (usize, usize) { self.router.directory_sizes() }
+
     pub fn connectivity(&self) -> (usize, usize) {
         let n = self.ids.len();
         if n == 0 { return (0, 0); }
@@ -115,7 +120,7 @@ impl HyperbolicIndex {
             meta.push(header);
         }
         drop(buffer);
-        let router = PolarRouter::build(&store, meta, dim);
+        let router = PolarRouter::build_with_landmarks(&store, meta, dim, config.landmarks);
         let mut index = Self { dim, ids: ids.to_vec(), slots: slots.to_vec(), store, router,
             graph: vec![Vec::new(); ids.len()], config };
         let mut order: Vec<u32> = (0..ids.len() as u32).collect();
@@ -124,7 +129,8 @@ impl HyperbolicIndex {
             let sig = index.store.get_sig(node as usize);
             let sm = index.router.meta[node as usize].sm();
             let depth = depths[node as usize] as f64;
-            let seeds = index.router.query_seeds(&index.store, &sig, sm, depth, dim, config.construction_width);
+            let seeds = index.router.query_seeds_budgeted(&index.store, &sig, sm, depth, dim,
+                config.construction_width, config.construction_width.saturating_mul(32).min(ids.len()), config.curvature);
             let beam = bounded_beam(ids.len(), &seeds,
                 BeamBudget { width: config.construction_width,
                     max_visits: config.construction_width.saturating_mul(32).min(ids.len()),
@@ -194,7 +200,8 @@ impl HyperbolicIndex {
         if config.top_k == 0 || self.ids.is_empty() {
             return Ok(HyperbolicOutput { neighbors: Vec::new(), stats: HyperbolicSearchStats::default() });
         }
-        let seeds = self.router.query_seeds(&self.store, &sig, qmeta.sm(), depth as f64, self.dim, config.width);
+        let seeds = self.router.query_seeds_budgeted(&self.store, &sig, qmeta.sm(), depth as f64,
+            self.dim, config.width, config.max_visits, self.config.curvature);
         let beam = bounded_beam(self.ids.len(), &seeds,
             BeamBudget { width: config.width, max_visits: config.max_visits, max_expansions: config.max_expansions },
             |node| &self.graph[node as usize],
@@ -210,7 +217,8 @@ impl HyperbolicIndex {
             excluded_expanded: beam.stats.excluded_expanded,
             visit_limit_reached: beam.stats.visit_limit_reached,
             expansion_limit_reached: beam.stats.expansion_limit_reached,
-            valid_candidates: beam.candidates.len(), ..Default::default()
+            valid_candidates: beam.candidates.len(), seeds: seeds.len(), converged: beam.stats.converged,
+            ..Default::default()
         };
         let asym = AsymQuerySm::encode(query)?;
         let mut pool: Vec<_> = beam.candidates.into_iter().map(|node| {

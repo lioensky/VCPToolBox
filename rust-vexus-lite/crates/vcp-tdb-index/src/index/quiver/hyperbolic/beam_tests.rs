@@ -88,3 +88,30 @@ fn high_indegree_excluded_bridge_is_scored_and_expanded_only_once() {
     assert!(out.candidates.contains(&11));
     assert!(!out.candidates.contains(&10));
 }
+
+#[test]
+fn both_stale_heads_stop_before_expansion_cap() {
+    let graph = vec![vec![1, 2], vec![], vec![]];
+    let out = bounded_beam(3, &[0],
+        BeamBudget { width: 1, max_visits: 100, max_expansions: 100 },
+        |n| &graph[n as usize],
+        |n| if n == 0 { (10.0, 10.0) } else if n == 1 { (5.0, 5.0) } else { (1.0, 1.0) },
+        |_| true);
+    assert_eq!(out.candidates, vec![2]);
+    assert_eq!(out.stats.expanded, 2);
+    assert!(out.stats.converged);
+    assert!(!out.stats.expansion_limit_reached);
+}
+
+#[test]
+fn horizontal_frontier_survives_apex_threshold() {
+    let graph = vec![vec![1, 2], vec![], vec![3], vec![]];
+    let out = bounded_beam(4, &[0],
+        BeamBudget { width: 1, max_visits: 100, max_expansions: 100 },
+        |n| &graph[n as usize],
+        |n| match n { 0 => (10.,10.), 1 => (0.,9.), 2 => (9.,0.), _ => (-1.,-1.) },
+        |_| true);
+    assert_eq!(out.candidates, vec![3]);
+    assert_eq!(out.stats.visited, 4);
+    assert!(out.stats.converged);
+}

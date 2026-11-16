@@ -12,5 +12,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 rayon = "1"
+nalgebra = "0.32"
 
 [workspace]
