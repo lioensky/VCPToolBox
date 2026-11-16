@@ -30,6 +30,9 @@ use std::time::Instant;
 pub mod asymmetric;
 #[path = "quiver/sketch.rs"]
 mod sketch;
+/// Explicit experimental warped-product geometry; default cosine is unchanged.
+#[path = "quiver/hyperbolic/mod.rs"]
+pub mod hyperbolic;
 
 /// 默认SM-L2查询内核，以及可显式选择的校正与原生欧氏模式。
 #[path = "quiver/corrected_sm.rs"]
