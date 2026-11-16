@@ -13,7 +13,7 @@ const path = require('path');
 const contextManager = require(path.join(__dirname, '..', 'modules', 'contextManager.js'));
 
 const ENV_KEYS = [
-    'JevContextPrune', 'JevContextPruneChunk', 'JevContextPruneMaxChunks',
+    'ContextPruneEnabled', 'JevContextPrune', 'JevContextPruneChunk', 'JevContextPruneMaxChunks',
     'JevContextPruneChars', 'JevContextPruneTimeoutMs'
 ];
 
@@ -23,6 +23,8 @@ function setEnv(vars) {
         saved[k] = process.env[k];
         delete process.env[k];
     }
+    // 原有策略用例显式开启总开关；关闭行为由独立用例验证。
+    process.env.ContextPruneEnabled = 'true';
     for (const [k, v] of Object.entries(vars)) process.env[k] = String(v);
     return saved;
 }
@@ -87,7 +89,30 @@ const PROB_BY_TEXT = {
     '哈哈': 0.10
 };
 
-test('默认关闭：与位置规则完全一致（会删掉最老的关键消息）', async () => {
+for (const enabled of [undefined, 'false', '', 'invalid']) {
+    test(`服务端总开关 ${String(enabled)}：超预算也原样返回，且不调用 Jev`, async () => {
+        const saved = setEnv({ JevContextPrune: 'true' });
+        try {
+            if (enabled === undefined) delete process.env.ContextPruneEnabled;
+            else process.env.ContextPruneEnabled = enabled;
+            const msgs = makeMessages();
+            msgs[3].content = [
+                { type: 'text', text: '今天天气不错啊' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,test' } }
+            ];
+            const before = JSON.stringify(msgs);
+            const client = makeClient(PROB_BY_TEXT);
+            assert.strictEqual(contextManager.pruneMessages(msgs, 1), msgs);
+            assert.strictEqual(await contextManager.pruneMessagesSmart(msgs, 1, false, { client }), msgs);
+            assert.equal(JSON.stringify(msgs), before);
+            assert.equal(client.calls.length, 0);
+        } finally {
+            restoreEnv(saved);
+        }
+    });
+}
+
+test('总开关开启、Jev 默认关闭：与位置规则完全一致（会删掉最老的关键消息）', async () => {
     const saved = setEnv({});
     try {
         const msgs = makeMessages();

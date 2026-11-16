@@ -3,6 +3,12 @@
  */
 
 const jevContextPruner = require('./jevContextPruner.js');
+const { readBool } = require('./jevScorer');
+
+// 服务端总开关，默认关闭；客户端 contextTokenLimit 不能绕过此开关。
+function isPruningEnabled() {
+    return readBool('ContextPruneEnabled', false);
+}
 
 /**
  * 估算消息的 Token 数量 (仅计算文本内容，排除 Base64 等多媒体数据)
@@ -65,7 +71,7 @@ function computeMustKeepIndices(messages) {
  * @returns {Array} 修剪后的消息数组
  */
 function pruneMessages(messages, limit, debugMode = false) {
-    if (!limit || !Array.isArray(messages) || messages.length <= 2) {
+    if (!isPruningEnabled() || !limit || !Array.isArray(messages) || messages.length <= 2) {
         return messages;
     }
 
@@ -140,6 +146,10 @@ function findLastUserText(messages) {
  * @returns {Promise<Array>}
  */
 async function pruneMessagesSmart(messages, limit, debugMode = false, options = {}) {
+    // 必须先检查总开关，关闭时不估算、不打分、不删除，原样返回。
+    if (!isPruningEnabled()) {
+        return messages;
+    }
     if (!jevContextPruner.isEnabled()) {
         return pruneMessages(messages, limit, debugMode);
     }
