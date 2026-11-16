@@ -1,5 +1,6 @@
 // Plugin.js
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const EventEmitter = require('events');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -195,6 +196,14 @@ class PluginManager extends EventEmitter {
     async _getDecryptedAuthCode() {
         try {
             const authCodePath = path.join(__dirname, 'Plugin', 'UserAuth', 'code.bin');
+            // 物理文件缺失自愈：通知 UserAuth 插件更新以同步内存占位符与磁盘文件
+            if (!fsSync.existsSync(authCodePath)) {
+                console.warn('[PluginManager] Plugin/UserAuth/code.bin 缺失，正在触发自愈生成...');
+                const userAuthPlugin = this.plugins.get('UserAuth');
+                if (userAuthPlugin) {
+                    await this._updateStaticPluginValue(userAuthPlugin);
+                }
+            }
             // 使用正确的 getAuthCode 函数，并传递文件路径
             return await getAuthCode(authCodePath);
         } catch (error) {
@@ -561,7 +570,9 @@ class PluginManager extends EventEmitter {
             const missingPlaceholder = Array.from(placeholderKeys).some(
                 key => !this.staticPlaceholderValues.has(key)
             );
-            const needsRefresh = !wasInitialized || previousSignature !== signature || missingPlaceholder;
+            // 物理产物缺失检测（例如切分支导致动态生成的 code.bin 被清理）
+            const isMissingPhysicalArtifact = (plugin.name === 'UserAuth' && !fsSync.existsSync(path.join(__dirname, 'Plugin', 'UserAuth', 'code.bin')));
+            const needsRefresh = !wasInitialized || previousSignature !== signature || missingPlaceholder || isMissingPhysicalArtifact;
 
             if (needsRefresh) {
                 placeholderKeys.forEach(placeholderKey => {
