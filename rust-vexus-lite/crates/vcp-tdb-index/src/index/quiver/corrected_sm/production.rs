@@ -40,7 +40,7 @@ impl CorrectedSmIndex {
         if vector.len() != dim || vector.iter().any(|x| !x.is_finite()) {
             return Err(invalid("默认SM向量维度或数值无效"));
         }
-        let norm = vector.iter().map(|&x| (x as f64).powi(2)).sum::<f64>();
+        let norm = crate::metric_math::norm_squared_f64(vector);
         let scale = if norm == 0. || (norm - 1.).abs() <= 1e-5 {
             1.
         } else {
@@ -119,11 +119,7 @@ pub(super) fn extreme_scale(scale: f32) -> bool {
 
 pub(super) fn prepare_exact_buffer(buffer: &mut [f32], scale: f32) {
     if extreme_scale(scale) {
-        let norm = buffer
-            .iter()
-            .map(|&x| (x as f64).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let norm = crate::metric_math::norm_squared_f64(buffer).sqrt();
         if norm > 0. {
             for value in buffer {
                 *value = (*value as f64 / norm) as f32;

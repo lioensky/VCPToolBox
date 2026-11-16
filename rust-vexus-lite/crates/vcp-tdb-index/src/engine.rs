@@ -428,10 +428,5 @@ impl Ord for RankedRow {
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
-    let (mut dot, mut a, mut b) = (0.0_f64, 0.0_f64, 0.0_f64);
-    for (&x, &y) in left.iter().zip(right) {
-        let (x, y) = (x as f64, y as f64);
-        dot += x * y; a += x * x; b += y * y;
-    }
-    if a == 0.0 || b == 0.0 { 0.0 } else { (dot / (a.sqrt() * b.sqrt())).clamp(-1.0, 1.0) as f32 }
+    crate::metric_math::cosine(left, right)
 }

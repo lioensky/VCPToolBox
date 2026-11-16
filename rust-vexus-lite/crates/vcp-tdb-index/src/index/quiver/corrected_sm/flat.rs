@@ -100,7 +100,7 @@ impl CorrectedSmIndex {
         if limit == 0 || self.is_empty() { return Ok((Vec::new(), stats)); }
         let heads = self.flat_headers.as_ref().filter(|h| h.len() == self.len())
             .ok_or_else(|| invalid("Route 2 flat heads not prepared"))?;
-        let norm = query.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+        let norm = crate::metric_math::norm_squared_f64(query).sqrt();
         let normalized: Vec<f32> = query.iter().map(|&v| if norm > 0. { (v as f64 / norm) as f32 } else { 0. }).collect();
         let code = Bq2Signature::from_vector(&normalized);
         let mut sums = [0f64; 2];

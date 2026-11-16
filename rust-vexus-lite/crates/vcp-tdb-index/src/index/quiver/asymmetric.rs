@@ -52,7 +52,7 @@ impl AsymQuerySm {
         if query.is_empty() || query.iter().any(|v| !v.is_finite()) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid asymmetric query"));
         }
-        let norm = query.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+        let norm = crate::metric_math::norm_squared_f64(query).sqrt();
         let mut values = vec![0i16; query.len().div_ceil(64) * 64];
         let mut sum = 0;
         if norm > 0. {

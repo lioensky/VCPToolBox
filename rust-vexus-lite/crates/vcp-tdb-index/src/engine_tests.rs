@@ -1,5 +1,52 @@
 use super::*;
 
+fn legacy_cosine(left: &[f32], right: &[f32]) -> f32 {
+    let (mut dot, mut a, mut b) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (&x, &y) in left.iter().zip(right) {
+        let (x, y) = (x as f64, y as f64);
+        dot += x * y; a += x * x; b += y * y;
+    }
+    if a == 0.0 || b == 0.0 { 0.0 }
+    else { (dot / (a.sqrt() * b.sqrt())).clamp(-1.0, 1.0) as f32 }
+}
+
+#[test]
+fn ordered_f64_public_flat_source_preserves_bits_filters_and_read_count() {
+    for dim in [65usize, 384, 768, 1536, 3072] {
+        let ids: Vec<u64> = (1..=80).collect();
+        let rows: Vec<Vec<f32>> = ids.iter().map(|id| {
+            (0..dim).map(|j| ((*id as usize * 37 + j * 13) as f32).sin()).collect()
+        }).collect();
+        let index = TdbIndex::routing_from_source(dim, &ids, |_, _| {
+            panic!("flat identity construction must not fetch vectors")
+        }).unwrap();
+        let query = &rows[17];
+        let mut expected: Vec<_> = ids.iter().filter(|id| **id % 3 != 0)
+            .map(|id| (*id, legacy_cosine(query, &rows[*id as usize - 1]))).collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        expected.truncate(10);
+        let expected: Vec<_> = expected.iter().map(|(id, s)| (*id, s.to_bits())).collect();
+        let run = || {
+            let mut reads = 0;
+            let output = index.search_with_source_options(query, 10, &SearchOptions::default(),
+                &|id| id % 3 == 0, |id, row| {
+                    reads += 1;
+                    assert_ne!(id % 3, 0);
+                    row.extend_from_slice(&rows[id as usize - 1]);
+                    true
+                }).unwrap();
+            assert_eq!(reads, 54);
+            assert_eq!(output.iter().map(|(id, s)| (*id, s.to_bits())).collect::<Vec<_>>(), expected);
+        };
+        run();
+        std::thread::scope(|scope| {
+            for _ in 0..4 { scope.spawn(&run); }
+        });
+        assert_eq!(index.mapped_bytes(), 0);
+        assert_eq!(index.delta_bytes(), 0);
+    }
+}
+
 struct Root(std::path::PathBuf);
 impl Root {
     fn new() -> Self {
@@ -308,7 +355,7 @@ fn graph_search_scores_rerank_reads_without_a_second_top_k_read() {
         }, &config, &|_| false);
         let mut expected: Vec<(u64, f32)> = candidates.into_iter()
             .filter(|(id, _)| index.contains(*id))
-            .map(|(id, _)| (id, cosine(&query, &row_of(id)))).collect();
+            .map(|(id, _)| (id, legacy_cosine(&query, &row_of(id)))).collect();
         expected.retain(|(_, score)| score.is_finite());
         expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         expected.truncate(k);
