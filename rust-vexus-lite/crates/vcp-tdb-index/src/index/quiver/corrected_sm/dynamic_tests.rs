@@ -435,3 +435,78 @@ fn generic_corrected_mode_preserves_anchor_and_unique_exact_budget() {
         );
     }
 }
+
+
+/// Deterministic single-thread baseline; no SQLite or resident production vectors.
+/// Run explicitly with --ignored --nocapture --test-threads=1.
+#[test]
+#[ignore = "explicit release-mode experiment benchmark"]
+fn stage2a_flat_baseline() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    for dim in [65usize, 384, 768, 1536, 3072] {
+        let base = vectors(2048, dim);
+        let mut index = CorrectedSmIndex::empty_flat(dim).unwrap();
+        for (slot, row) in base.chunks_exact(dim).enumerate() {
+            index.push_flat_vector(row, slot as u64 + 1).unwrap();
+        }
+        let query = &base[17 * dim..18 * dim];
+        let expected = index.search_flat_filtered(query, 64, |_, _| true).unwrap();
+        for _ in 0..8 {
+            black_box(index.search_flat_filtered(black_box(query), 64, |_, _| true).unwrap());
+        }
+        let start = Instant::now();
+        for _ in 0..100 {
+            let found = index.search_flat_filtered(black_box(query), 64, |_, _| true).unwrap();
+            assert_eq!(found, expected);
+            black_box(found);
+        }
+        let elapsed = start.elapsed();
+        let fingerprint = expected.iter().fold(0u64, |sum, &(id, score)| {
+            sum.rotate_left(7) ^ id ^ u64::from(score.to_bits())
+        });
+        println!("STAGE2A_FLAT dim={dim} rows=2048 iterations=100 ns_per_query={} fingerprint={fingerprint:016x}",
+            elapsed.as_nanos() / 100);
+    }
+}
+
+
+#[test]
+fn stage2a_exact_avx2_preserves_legacy_fma_bits() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !avx2_dot_available() { return; }
+        for dim in [1usize, 7, 15, 16, 17, 65, 384, 768, 1536, 3072] {
+            let base = vectors(8, dim);
+            for q in base.chunks_exact(dim).take(4) {
+                let rows = std::array::from_fn(|k| &base[k * dim..(k + 1) * dim]);
+                for l2 in [false, true] {
+                    let actual = unsafe {
+                        if l2 { exact_avx2::<true>(q, rows, true) }
+                        else { exact_avx2::<false>(q, rows, true) }
+                    };
+                    for k in 0..4 {
+                        // Independent legacy scalar recurrence, not dispatched.
+                        let mut sums = [0f32; 16];
+                        for j in 0..dim {
+                            let left = if l2 { q[j] - rows[k][j] } else { q[j] };
+                            let right = if l2 { left } else { rows[k][j] };
+                            sums[j % 16] = left.mul_add(right, sums[j % 16]);
+                        }
+                        for j in 0..8 { sums[j] += sums[j + 8]; }
+                        for j in 0..4 { sums[j] += sums[j + 4]; }
+                        let value = (sums[0] + sums[2]) + (sums[1] + sums[3]);
+                        let expected = if l2 { -value } else { value };
+                        assert_eq!(actual[k].to_bits(), expected.to_bits(), "dim={dim} l2={l2}");
+                        let single = unsafe {
+                            if l2 { exact_avx2::<true>(q, [rows[k]; 4], false)[0] }
+                            else { exact_avx2::<false>(q, [rows[k]; 4], false)[0] }
+                        };
+                        assert_eq!(single.to_bits(), expected.to_bits());
+                    }
+                }
+            }
+        }
+        eprintln!("SM_EXACT_KERNEL=Avx2Fma legacy_bits=equal");
+    }
+}

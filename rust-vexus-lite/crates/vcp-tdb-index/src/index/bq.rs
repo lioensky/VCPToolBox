@@ -9,7 +9,48 @@ use bytemuck::{Pod, Zeroable};
 /// 环境变量 `TRIVIUM_NO_AVX512=1` 时强制禁用 AVX-512 路径（用于消融实验）
 #[cfg(all(target_arch = "x86_64", not(coverage)))]
 pub(crate) static FORCE_NO_AVX512: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("TRIVIUM_NO_AVX512").is_ok_and(|v| v == "1"));
+    std::sync::LazyLock::new(|| {
+        ["TRIVIUM_NO_AVX512", "QUIVER_DISABLE_AVX512"]
+            .iter()
+            .any(|name| std::env::var(name).is_ok_and(|value| value == "1"))
+    });
+
+/// Immutable hardware capability cache, not mutable instance/search configuration.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum X86BitKernel {
+    Scalar,
+    Popcnt,
+    Avx2Only,
+    Avx2Popcnt,
+    #[cfg(not(coverage))]
+    Avx512Vpopcnt,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) static X86_BIT_KERNEL: std::sync::LazyLock<X86BitKernel> =
+    std::sync::LazyLock::new(|| {
+        #[cfg(not(coverage))]
+        if !*FORCE_NO_AVX512
+            && is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512vpopcntdq")
+            && is_x86_feature_detected!("popcnt")
+        {
+            return X86BitKernel::Avx512Vpopcnt;
+        }
+        match (
+            is_x86_feature_detected!("avx2"),
+            is_x86_feature_detected!("popcnt"),
+        ) {
+            (true, true) => X86BitKernel::Avx2Popcnt,
+            (true, false) => X86BitKernel::Avx2Only,
+            (false, true) => X86BitKernel::Popcnt,
+            (false, false) => X86BitKernel::Scalar,
+        }
+    });
+
+#[path = "sm_counts.rs"]
+pub(crate) mod sm_counts;
 pub(crate) static FORCE_NO_384_KERNEL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TRIVIUM_DISABLE_384_KERNEL").is_ok_and(|value| value == "1")
 });
@@ -155,13 +196,11 @@ impl Bq2Signature {
         #[cfg(target_arch = "x86_64")]
         {
             #[cfg(not(coverage))]
-            if !*FORCE_NO_AVX512
-                && is_x86_feature_detected!("avx512vpopcntdq")
-                && is_x86_feature_detected!("avx512f")
+            if *X86_BIT_KERNEL == X86BitKernel::Avx512Vpopcnt
             {
                 return unsafe { self.distance_avx512(other, dim) };
             }
-            if is_x86_feature_detected!("avx2") {
+            if matches!(*X86_BIT_KERNEL, X86BitKernel::Avx2Popcnt | X86BitKernel::Avx2Only) {
                 return unsafe {
                     bq2_distance_raw_avx2(
                         self.pos.as_ptr(),
@@ -372,13 +411,11 @@ fn bq2_distance_raw(
     #[cfg(target_arch = "x86_64")]
     {
         #[cfg(not(coverage))]
-        if !*FORCE_NO_AVX512
-            && is_x86_feature_detected!("avx512vpopcntdq")
-            && is_x86_feature_detected!("avx512f")
+        if *X86_BIT_KERNEL == X86BitKernel::Avx512Vpopcnt
         {
             return unsafe { bq2_distance_raw_avx512(pos_a, strong_a, pos_b, strong_b, dim) };
         }
-        if is_x86_feature_detected!("avx2") {
+        if matches!(*X86_BIT_KERNEL, X86BitKernel::Avx2Popcnt | X86BitKernel::Avx2Only) {
             return unsafe { bq2_distance_raw_avx2(pos_a, strong_a, pos_b, strong_b, dim) };
         }
     }
@@ -1048,9 +1085,7 @@ impl Bq2Store {
         let off = idx * self.chunks;
         #[cfg(all(target_arch = "x86_64", not(coverage)))]
         {
-            if !*FORCE_NO_AVX512
-                && is_x86_feature_detected!("avx512vpopcntdq")
-                && is_x86_feature_detected!("avx512f")
+            if *X86_BIT_KERNEL == X86BitKernel::Avx512Vpopcnt
             {
                 return unsafe {
                     if dim == 768 {
