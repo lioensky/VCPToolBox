@@ -45,6 +45,10 @@
             "include_raw_content": "markdown"
           }
         },
+        "keenable": {
+          "plugin": "KeenableSearch",
+          "aliases": ["Keenable", "KeenableSearch"]
+        },
         "anysearch": {
           "plugin": "AnySearch",
           "aliases": ["anysearch", "any search"],

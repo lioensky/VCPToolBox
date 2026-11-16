@@ -140,6 +140,30 @@ test('可在一个联网请求中显式选择 VSearch 与 AnySearch', async () =
     assert.equal(decisions.length, 0);
 });
 
+test('Keenable 官方搜索支持别名、约束和多工具选择，无需 Jev 裁决', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    for (const expression of [
+        "{联网搜索} 'Keenable' 【AI智能体新闻】[最近一周]",
+        "{联网搜索} 'KeenableSearch' 【AI智能体新闻】[最近一周]",
+        '{联网搜索} 使用 Keenable 搜索【AI智能体新闻】[最近一周]'
+    ]) {
+        const calls = await planner.plan(expression);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'KeenableSearch');
+        assert.deepEqual(calls[0].args, { query: 'AI智能体新闻 最近一周' });
+        assert.equal(calls[0].jev.category, 'web_search');
+        assert.equal(calls[0].jev.toolKey, 'keenable');
+        assert.equal(calls[0].jev.thirdParty, undefined);
+    }
+
+    const calls = await planner.plan(
+        "{联网搜索} 'VSearch' 'KeenableSearch' 【AI智能体新闻】"
+    );
+    assert.deepEqual(calls.map(call => call.name), ['VSearch', 'KeenableSearch']);
+    assert.deepEqual(calls[1].args, { query: 'AI智能体新闻' });
+    assert.equal(decisions.length, 0);
+});
+
 test('谷歌搜索使用 SerpSearch 固定命令并确定性映射地区', async () => {
     const { planner } = makePlanner();
     const [call] = await planner.plan(

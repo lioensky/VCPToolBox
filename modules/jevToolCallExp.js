@@ -663,6 +663,11 @@ class JevToolCallExp {
             return args;
         }
 
+        if (toolKey === 'keenable') {
+            args.query = [main, ...constraints].join(' ');
+            return args;
+        }
+
         if (toolKey === 'anysearch') {
             args.query = main;
             const anySearchArgs = await this._resolveAnySearchConstraints(main, constraints, tool);
