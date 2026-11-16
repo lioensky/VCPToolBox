@@ -5,7 +5,8 @@ use rayon::prelude::*;
 
 /// 球对称翘曲乘积流形径向缩放剖面 φ(R)。
 ///
-/// 满足 φ(0) = 0, φ'(0) = 1, φ(R) > 0 且严格凸（φ''(R) > 0 => K_rad(R) = -φ''(R)/φ(R) < 0）。
+/// Original profiles have a regular collapsed origin. ThroatSoftening instead
+/// defines a manifold with boundary when phi0>0, or a metric cone when kappa!=1.
 #[derive(Clone, Copy, Debug)]
 pub enum WarpedProfile {
     /// 常负曲率特例 φ(R) = sinh(sqrt(c)*R)/sqrt(c)，专用于验证 Clairaut 数值求积与闭式解一致。
@@ -14,6 +15,9 @@ pub enum WarpedProfile {
     Softening { alpha: f64 },
     /// 外层曲率逐渐变陡（双曲喇叭型）：φ(R) = R exp(α R^2)，K_rad(R) = -(6α + 4α^2 R^2)
     Steepening { alpha: f64 },
+    /// Intrinsic length metric on [0,infinity) x S^(D-1), including boundary
+    /// arcs at R=0 when phi0>0. If phi0=0 the boundary sphere collapses.
+    ThroatSoftening { alpha: f64, phi0: f64, kappa: f64 },
 }
 
 impl WarpedProfile {
@@ -26,6 +30,8 @@ impl WarpedProfile {
             }
             Self::Softening { alpha } => r + alpha * r * r * r,
             Self::Steepening { alpha } => r * (alpha * r * r).exp(),
+            Self::ThroatSoftening { alpha, phi0, kappa } =>
+                kappa * (phi0 + r + alpha*r*r*r),
         }
     }
 
@@ -35,6 +41,9 @@ impl WarpedProfile {
             Self::ConstantHyperbolic { curvature } => -curvature,
             Self::Softening { alpha } => -6.0 * alpha / (1.0 + alpha * r * r),
             Self::Steepening { alpha } => -(6.0 * alpha + 4.0 * alpha * alpha * r * r),
+            Self::ThroatSoftening { alpha, phi0, .. } =>
+                if r == 0.0 && phi0 == 0.0 { -6.0*alpha }
+                else { -6.0*alpha*r/(phi0+r+alpha*r*r*r) },
         }
     }
 }
@@ -120,6 +129,8 @@ where
                 delta * (1.0 + alpha * (r*r + r*a + a*a)),
             WarpedProfile::Steepening { alpha } =>
                 (alpha*a*a).exp() * (delta + r * (alpha*delta*(r+a)).exp_m1()),
+            WarpedProfile::ThroatSoftening { alpha, kappa, .. } =>
+                kappa * delta * (1.0 + alpha*(r*r+r*a+a*a)),
         };
         let root = ((increment + (pa - ang_mom)).max(0.0) * (p + ang_mom)).max(1e-30).sqrt();
         sum += wu2_tbl[i] * integrand(p, root);
@@ -179,7 +190,7 @@ where
             fb = fc;
             fc = fa;
         }
-        // 由变分费马原理 ∂L/∂r_* = 0，角动量/折返半径误差 2e-12 在测地弧长上保证 < 1e-11 严格一致性
+        // Root tolerance; not a global quadrature-error guarantee.
         let tol = 2.0 * 1e-12 * b.abs().max(1.0);
         let m = 0.5 * (c - b);
         if m.abs() <= tol || fb == 0.0 {
@@ -223,6 +234,9 @@ where
 
 /// 利用 Clairaut 守恒积分计算径向变曲率翘曲乘积流形的精确黎曼测地距离。
 pub fn clairaut_distance(profile: WarpedProfile, rq: f64, rv: f64, cos_theta: f64) -> f64 {
+    if matches!(profile, WarpedProfile::ThroatSoftening { .. }) {
+        return throat_distance(profile, rq, rv, cos_theta);
+    }
     if rq <= 1e-12 {
         return rv.max(0.0);
     }
@@ -279,6 +293,44 @@ pub fn clairaut_distance(profile: WarpedProfile, rq: f64, rv: f64, cos_theta: f6
     let l = profile.phi(r_star);
     clairaut_length(profile, r_star, r_lo, l)
         + clairaut_length(profile, r_star, r_hi, l)
+}
+
+/// Numerical length metric with an explicit reflecting obstacle boundary.
+/// Positive throat: tangent legs may be joined by a nonzero boundary arc.
+/// Zero throat and kappa!=1: a metric cone, NOT a smooth Euclidean origin.
+fn throat_distance(profile: WarpedProfile, rq: f64, rv: f64, cosine: f64) -> f64 {
+    let theta = cosine.clamp(-1.0, 1.0).acos();
+    if theta == 0.0 { return (rq-rv).abs(); }
+    let (lo, hi) = (rq.min(rv), rq.max(rv));
+    let base = profile.phi(0.0);
+    if base == 0.0 && lo == 0.0 { return hi; }
+    let lmax = profile.phi(lo);
+    let critical = clairaut_theta(profile, lo, hi, lmax);
+    if theta <= critical && hi > lo {
+        let l = solve_monotone(0.0,lmax,0.0,critical,theta,
+            |l|clairaut_theta(profile,lo,hi,l));
+        return clairaut_length(profile,lo,hi,l);
+    }
+    let maximum = if base > 0.0 {
+        clairaut_theta(profile,0.0,lo,base)+clairaut_theta(profile,0.0,hi,base)
+    } else {
+        match profile {
+            WarpedProfile::ThroatSoftening { kappa, .. } => std::f64::consts::PI/kappa,
+            _ => unreachable!(),
+        }
+    };
+    if theta >= maximum {
+        if base == 0.0 { return rq+rv; }
+        return clairaut_length(profile,0.0,lo,base)
+            +clairaut_length(profile,0.0,hi,base)+base*(theta-maximum);
+    }
+    let turn = solve_monotone(0.0,lo,maximum,critical,theta,|r| {
+        if r == 0.0 { return maximum; }
+        let l=profile.phi(r);
+        clairaut_theta(profile,r,lo,l)+clairaut_theta(profile,r,hi,l)
+    });
+    let l=profile.phi(turn);
+    clairaut_length(profile,turn,lo,l)+clairaut_length(profile,turn,hi,l)
 }
 
 /// 离线为特定 φ(R) 预校准的二维/三维径向-半正矢角表结构（驻留 L2/L1，彻底消除束搜索内的积分）。
@@ -440,6 +492,10 @@ impl WarpedProfile {
                 && curvature.sqrt() * max_radius <= 16.0,
             Self::Softening { alpha } | Self::Steepening { alpha } =>
                 alpha.is_finite() && alpha >= 0.0 && alpha * max_radius * max_radius <= 32.0,
+            Self::ThroatSoftening { alpha, phi0, kappa } =>
+                alpha.is_finite() && alpha >= 0.0 && alpha*max_radius*max_radius <= 32.0
+                && phi0.is_finite() && (0.0..=16.0).contains(&phi0)
+                && kappa.is_finite() && kappa > 0.0 && kappa <= 2.0,
         };
         if !valid || !max_radius.is_finite() || max_radius <= 0.0 || max_radius > 16.0 {
             return Err(super::invalid("invalid warped profile or radius support"));
@@ -468,6 +524,34 @@ impl WarpedProxyTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn throat_matches_independent_exterior_disk_and_scaled_cone() {
+        for phi0 in [0.0_f64,0.8,1.5] {
+            for kappa in [0.5_f64,0.75,1.0,1.5,2.0] {
+                let profile=WarpedProfile::ThroatSoftening {alpha:0.0,phi0,kappa};
+                for a in [0.0_f64,0.01,0.35,0.65,1.2] {
+                    for b in [0.0_f64,0.02,0.35,0.9,1.2] {
+                        for i in 0..=32 {
+                            let theta=std::f64::consts::PI*i as f64/32.0;
+                            let angle=kappa*theta;
+                            let (x,y)=(a+phi0,b+phi0);
+                            let critical=if phi0==0.0 {std::f64::consts::PI}
+                                else {(phi0/x).acos()+(phi0/y).acos()};
+                            let expected=if angle<=critical {
+                                ((x-y).powi(2)+4.0*x*y*(angle*0.5).sin().powi(2)).sqrt()
+                            } else {
+                                (x*x-phi0*phi0).max(0.0).sqrt()
+                                    +(y*y-phi0*phi0).max(0.0).sqrt()+phi0*(angle-critical)
+                            };
+                            let got=clairaut_distance(profile,a,b,theta.cos());
+                            assert!((got-expected).abs()<2e-8,
+                                "phi0={phi0} k={kappa} a={a} b={b} theta={theta} got={got} expected={expected}");
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn numerical_clairaut_matches_independent_constant_curvature_closed_form() {
         let mut worst = 0.0_f64;
@@ -510,5 +594,47 @@ mod tests {
         assert!(table.checked_slice(f64::NAN).is_err());
         let slice = table.checked_slice(1.0).unwrap();
         assert!((slice.eval(1.8,0.5)-table.eval(1.0,1.8,0.5)).abs()<1e-5);
+    }
+}
+
+
+#[cfg(test)]
+mod throat_metric_tests {
+    use super::*;
+    #[test]
+    fn throat_symmetry_boundary_arcs_triangle_and_zero_throat_limit() {
+        for alpha in [0.15,0.35] {
+            for phi0 in [0.0,0.8,1.5] {
+                for kappa in [0.5,1.0,2.0] {
+                    let p=WarpedProfile::ThroatSoftening {alpha,phi0,kappa};
+                    p.validate(1.2).unwrap();
+                    if phi0>0.0 {
+                        let theta=1.2_f64;
+                        let d=clairaut_distance(p,0.0,0.0,theta.cos());
+                        assert!((d-kappa*phi0*theta).abs()<1e-10);
+                        assert!(clairaut_distance(p,0.0,0.0,-1.0)>0.0);
+                    }
+                    for case in 0..64 {
+                        // Three genuine directions on one great circle, not arbitrary
+                        // pairwise cosines which need not form a valid Gram matrix.
+                        let angles=[0.013*case as f64,0.47+0.019*case as f64,1.2+0.023*case as f64];
+                        let radii=[0.35+0.007*case as f64,0.9-0.006*case as f64,0.4+0.009*case as f64];
+                        let distance=|a:usize,b:usize|clairaut_distance(p,radii[a],radii[b],(angles[a]-angles[b]).cos());
+                        let (ab,bc,ac)=(distance(0,1),distance(1,2),distance(0,2));
+                        assert!((ab-distance(1,0)).abs()<1e-12);
+                        assert!(ab.is_finite() && ab>=(radii[0]-radii[1]).abs()-1e-9);
+                        assert!(ac<=ab+bc+1e-8,"triangle alpha={alpha} phi0={phi0} k={kappa}");
+                    }
+                }
+            }
+            for c in [-1.0,-0.8,0.0,0.55,0.99,1.0] {
+                let old=clairaut_distance(WarpedProfile::Softening {alpha},0.4,0.9,c);
+                let new=clairaut_distance(WarpedProfile::ThroatSoftening {alpha,phi0:0.0,kappa:1.0},0.4,0.9,c);
+                assert!((old-new).abs()<1e-9);
+            }
+        }
+        for (phi0,kappa) in [(-1.0,1.0),(f64::NAN,1.0),(0.8,0.0),(0.8,2.1)] {
+            assert!(WarpedProfile::ThroatSoftening {alpha:0.15,phi0,kappa}.validate(1.2).is_err());
+        }
     }
 }

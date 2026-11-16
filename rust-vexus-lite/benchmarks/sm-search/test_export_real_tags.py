@@ -152,6 +152,23 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(groups["fresh_holdout"] & (groups["development"] | groups["holdout"]))
         self.assertEqual(groups["holdout"], set(query_partition(list(range(1, 101)), 12, 32)[1]))
 
+    def test_v3_excludes_all_previous_queries(self):
+        with closing(sqlite3.connect(self.source)) as c, c:
+            vector = c.execute("SELECT vector FROM chunks LIMIT 1").fetchone()[0]
+            c.executemany("INSERT INTO chunks VALUES(?,?)", [(i, vector) for i in range(2, 201)])
+        meta = export(self.source, self.output, 512, 12, holdout_queries=32,
+                      fresh_queries=32, validation_queries=32)
+        self.assertEqual(meta["validation_seed"], 20261118)
+        with closing(sqlite3.connect(self.output)) as c:
+            groups = {}
+            for split, chunk in c.execute(
+                    "SELECT s.split,q.source_chunk_id FROM query_sets s JOIN queries q ON s.query_id=q.id"):
+                groups.setdefault(split, set()).add(chunk)
+        self.assertEqual(sum(map(len, groups.values())), 108)
+        self.assertEqual(len(set.union(*groups.values())), 108)
+        self.assertEqual(len(groups["holdout_v3"]), 32)
+        self.assertEqual(groups["holdout"], set(query_partition(list(range(1, 201)), 12, 32)[1]))
+
     def test_stale_facts_rejected_without_creating_output(self):
         self.execute("UPDATE kbm_runtime_meta SET value='101'")
         with self.assertRaisesRegex(ValueError, "geometry stale"):

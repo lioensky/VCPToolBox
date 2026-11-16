@@ -25,6 +25,7 @@ pub(crate) struct BeamStats {
 pub(crate) struct BeamOutput {
     pub candidates: Vec<u32>,
     pub stats: BeamStats,
+    pub visited_nodes: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -132,7 +133,7 @@ where
         stats: BeamStats::default(),
     };
     if budget.width == 0 {
-        return BeamOutput { candidates: Vec::new(), stats: state.stats };
+        return BeamOutput { candidates: Vec::new(), stats: state.stats, visited_nodes: Vec::new() };
     }
     for &seed in seeds {
         state.discover(seed, budget, &mut score, &mut admits);
@@ -171,7 +172,9 @@ where
         .map(|item| item.1).collect::<Vec<_>>();
     pool.sort_unstable();
     pool.dedup();
-    BeamOutput { candidates: pool, stats: state.stats }
+    let visited_nodes = state.seen.iter().enumerate()
+        .filter_map(|(node,&seen)| seen.then_some(node as u32)).collect();
+    BeamOutput { candidates: pool, stats: state.stats, visited_nodes }
 }
 
 #[cfg(test)]

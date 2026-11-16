@@ -13,6 +13,8 @@ pub struct WarpedFieldConfig {
     pub profile: WarpedProfile,
     pub radius_max: f64,
     pub mean_subtract_beta: f64,
+    pub throat_phi0: f64,
+    pub angular_scale_kappa: f64,
     pub angular_tau: f64,
     pub angular_eta: f64,
     pub degree: usize,
@@ -22,13 +24,14 @@ pub struct WarpedFieldConfig {
 impl Default for WarpedFieldConfig {
     fn default() -> Self {
         Self { profile: WarpedProfile::Softening { alpha: 0.35 }, radius_max: 1.8,
-            mean_subtract_beta: 0.7, angular_tau: 0.0, angular_eta: 1.0,
+            mean_subtract_beta: 0.7, throat_phi0: 0.0, angular_scale_kappa: 1.0,
+            angular_tau: 0.0, angular_eta: 1.0,
             degree: 32, construction_width: 128, alpha: 1.2 }
     }
 }
 impl WarpedFieldConfig {
     fn validate(self) -> io::Result<()> {
-        self.profile.validate(self.radius_max)?;
+        self.geometry_profile()?.validate(self.radius_max)?;
         if !self.mean_subtract_beta.is_finite() || !(0.0..=1.0).contains(&self.mean_subtract_beta)
             || !self.angular_tau.is_finite() || !(0.0..=0.2).contains(&self.angular_tau)
             || !self.angular_eta.is_finite() || !(0.5..=1.0).contains(&self.angular_eta)
@@ -36,6 +39,21 @@ impl WarpedFieldConfig {
             || !self.alpha.is_finite() || self.alpha < 1.0
         { return Err(invalid("invalid warped field configuration")); }
         Ok(())
+    }
+    fn geometry_profile(self) -> io::Result<WarpedProfile> {
+        if !self.throat_phi0.is_finite() || self.throat_phi0 < 0.0
+            || !self.angular_scale_kappa.is_finite()
+            || self.angular_scale_kappa <= 0.0 || self.angular_scale_kappa > 2.0 {
+            return Err(invalid("invalid throat or angular metric scale"));
+        }
+        if self.throat_phi0 == 0.0 && self.angular_scale_kappa == 1.0 {
+            return Ok(self.profile);
+        }
+        match self.profile {
+            WarpedProfile::Softening {alpha} => Ok(WarpedProfile::ThroatSoftening {
+                alpha, phi0:self.throat_phi0, kappa:self.angular_scale_kappa}),
+            _ => Err(invalid("throat controls require base Softening profile")),
+        }
     }
     /// Endpoint-preserving strictly monotone calibration; nonidentity is an
     /// experimental pair score, NOT automatically an embeddable angular metric.
@@ -45,6 +63,21 @@ impl WarpedFieldConfig {
         if self.angular_eta == 1.0 { shifted }
         else { shifted.signum() * shifted.abs().powf(self.angular_eta) }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WarpedSeedMode {
+    #[default]
+    LegacySample,
+    InnerOnly,
+    DirectionLandmarks,
+}
+#[derive(Default, Debug)]
+pub struct WarpedSearchTrace {
+    pub seeds: Vec<u64>,
+    pub visited: Vec<u64>,
+    pub retained: Vec<u64>,
+    pub stage05_top64: Vec<u64>,
 }
 
 pub struct WarpedFieldIndex {
@@ -59,6 +92,7 @@ pub struct WarpedFieldIndex {
     offsets: Vec<usize>,
     entries: Vec<u32>,
     config: WarpedFieldConfig,
+    direction_landmarks: Vec<u32>,
 }
 impl WarpedFieldIndex {
     fn transform(raw: &[f32], axis: &[f64], beta: f64) -> io::Result<Vec<f32>> {
@@ -108,7 +142,7 @@ impl WarpedFieldIndex {
             store.push_sig(&sig);
             meta.push(header);
         }
-        let table = WarpedProxyTable::try_build(config.profile,config.radius_max,64,65)?;
+        let table = WarpedProxyTable::try_build(config.geometry_profile()?,config.radius_max,64,65)?;
         let mut order: Vec<u32> = (0..ids.len() as u32).collect();
         order.sort_unstable_by(|&a,&b| radii[a as usize].total_cmp(&radii[b as usize]).then(a.cmp(&b)));
         let entries: Vec<u32> = order.iter().take(8).copied().collect();
@@ -133,8 +167,25 @@ impl WarpedFieldIndex {
         let mut graph = Vec::new();
         offsets.push(0);
         for neighbors in built.neighbors { graph.extend(neighbors); offsets.push(graph.len()); }
+        // Farthest-direction selection over a bounded all-shell candidate sample.
+        // No cold reads and no original landmark vectors retained.
+        let count=ids.len().min(512);
+        let candidates:Vec<u32>=(0..count).map(|i|(i*ids.len()/count) as u32).collect();
+        let mut direction_landmarks=Vec::new();
+        let mut max_cos=vec![-1.0_f64;count];
+        if let Some(&first)=candidates.first() { direction_landmarks.push(first); }
+        while direction_landmarks.len()<64.min(count) {
+            let last=*direction_landmarks.last().unwrap() as usize;
+            for (i,&node) in candidates.iter().enumerate() {
+                max_cos[i]=max_cos[i].max(pair_cosine(&store,&meta,last,node as usize,dim));
+            }
+            let next=(0..count).filter(|&i|!direction_landmarks.contains(&candidates[i]))
+                .min_by(|&a,&b|max_cos[a].total_cmp(&max_cos[b]).then(a.cmp(&b)));
+            let Some(next)=next else {break;};
+            direction_landmarks.push(candidates[next]);
+        }
         Ok(Self {dim,ids:ids.to_vec(),slots:slots.to_vec(),meta,store,mean_axis,table,
-            graph,offsets,entries,config})
+            graph,offsets,entries,config,direction_landmarks})
     }
     pub fn exact_distance(&self, query: &[f32], radius: f32, row: &[f32], node: usize) -> io::Result<f64> {
         if node >= self.ids.len() || !radius.is_finite() || radius < 0.0 || radius as f64 > self.config.radius_max {
@@ -144,7 +195,7 @@ impl WarpedFieldIndex {
         let v = Self::transform(row,&self.mean_axis,self.config.mean_subtract_beta)?;
         let (qn,vn) = (checked_norm(&q)?,checked_norm(&v)?);
         let cosine = q.iter().zip(&v).map(|(&a,&b)| a as f64*b as f64).sum::<f64>()/qn/vn;
-        Ok(clairaut_distance(self.config.profile,radius as f64,self.meta[node].depth as f64,
+        Ok(clairaut_distance(self.config.geometry_profile()?,radius as f64,self.meta[node].depth as f64,
             self.config.effective_cosine(cosine)))
     }
     pub fn hot_bytes(&self) -> usize {
@@ -152,6 +203,7 @@ impl WarpedFieldIndex {
             +self.mean_axis.capacity()*8+self.table.hot_bytes()+self.ids.capacity()*8
             +self.slots.capacity()*std::mem::size_of::<usize>()+self.graph.capacity()*4
             +self.offsets.capacity()*std::mem::size_of::<usize>()+self.entries.capacity()*4
+            +self.direction_landmarks.capacity()*4
     }
     pub fn connectivity(&self) -> (usize,usize) {
         let n = self.ids.len();
@@ -169,8 +221,15 @@ impl WarpedFieldIndex {
         (seen.iter().filter(|&&x|x).count(),incoming.iter().filter(|&&x|x==0).count())
     }
     pub fn search<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_diagnosed(query,radius,config,WarpedSeedMode::LegacySample,None,exclude,fill)
+    }
+    pub fn search_diagnosed<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, mut trace:Option<&mut WarpedSearchTrace>,
         exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        if let Some(t)=trace.as_deref_mut() {*t=WarpedSearchTrace::default();}
         if config.width==0 || config.rerank_limit>64 || config.rerank_limit<config.top_k {
             return Err(invalid("warped query requires top_k <= cold budget <= 64"));
         }
@@ -189,8 +248,12 @@ impl WarpedFieldIndex {
         let seed_cap=(config.width/2).min(config.max_visits/4);
         let mut seeds=self.entries.clone();
         // Bounded deterministic all-shell coverage, scored under the SAME table.
-        for i in 0..64.min(self.ids.len()) {
-            seeds.push((i*self.ids.len()/64.min(self.ids.len())) as u32);
+        match seed_mode {
+            WarpedSeedMode::LegacySample => for i in 0..64.min(self.ids.len()) {
+                seeds.push((i*self.ids.len()/64.min(self.ids.len())) as u32);
+            },
+            WarpedSeedMode::InnerOnly => {},
+            WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(&self.direction_landmarks),
         }
         seeds.sort_unstable();seeds.dedup();
         seeds.sort_unstable_by(|&a,&b|evaluate(a).0.total_cmp(&evaluate(b).0).then(a.cmp(&b)));
@@ -199,6 +262,11 @@ impl WarpedFieldIndex {
             width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions},
             |n| &self.graph[self.offsets[n as usize]..self.offsets[n as usize+1]],
             evaluate,|n|!exclude(self.ids[n as usize]));
+        if let Some(t)=trace.as_deref_mut() {
+            t.seeds=seeds.iter().map(|&n|self.ids[n as usize]).collect();
+            t.visited=beam.visited_nodes.iter().map(|&n|self.ids[n as usize]).collect();
+            t.retained=beam.candidates.iter().map(|&n|self.ids[n as usize]).collect();
+        }
         let asym=AsymQuerySm::encode(&unit)?;
         let mut pool:Vec<_>=beam.candidates.iter().map(|&node| {
             let (p,h)=planes(&self.store,node as usize);
@@ -206,6 +274,9 @@ impl WarpedFieldIndex {
             (slice.eval(self.meta[node as usize].depth,self.config.effective_cosine(c)),node)
         }).collect();
         pool.sort_unstable_by(|a,b|a.0.total_cmp(&b.0).then(self.ids[a.1 as usize].cmp(&self.ids[b.1 as usize])));
+        if let Some(t)=trace {
+            t.stage05_top64=pool.iter().take(config.rerank_limit).map(|p|self.ids[p.1 as usize]).collect();
+        }
         let mut stats=HyperbolicSearchStats {
             visited:beam.stats.visited,expanded:beam.stats.expanded,excluded_expanded:beam.stats.excluded_expanded,
             visit_limit_reached:beam.stats.visit_limit_reached,expansion_limit_reached:beam.stats.expansion_limit_reached,
@@ -265,6 +336,20 @@ mod tests {
             truth.sort_unstable_by(|a,b|a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             truth.truncate(10);
             assert_eq!(out.neighbors,truth);
+            let mut trace=WarpedSearchTrace::default();
+            let diagnosed=index.search_diagnosed(&q,radii[33],config,WarpedSeedMode::LegacySample,
+                Some(&mut trace),|id|id<=10,|s,o|{*o=row((s-10)/3,dim);true}).unwrap();
+            assert_eq!(diagnosed.neighbors,out.neighbors);
+            assert_eq!(trace.visited.len(),diagnosed.stats.visited);
+            assert!(trace.retained.iter().all(|id|trace.visited.contains(id) && *id>10));
+            assert!(trace.stage05_top64.iter().all(|id|trace.retained.contains(id)));
+            assert!(trace.seeds.iter().all(|id|trace.visited.contains(id)));
+            for mode in [WarpedSeedMode::InnerOnly,WarpedSeedMode::DirectionLandmarks] {
+                let checked=index.search_diagnosed(&q,radii[33],config,mode,Some(&mut trace),
+                    |_|false,|s,o|{*o=row((s-10)/3,dim);true}).unwrap();
+                assert!(checked.stats.cold_reads<=64);
+                assert!(trace.seeds.len()<=config.max_visits/4);
+            }
             let filtered=index.search(&q,radii[33],
                 HyperbolicSearchConfig {radial_bound:true,..config},|id|id<=10,
                 |s,o|{*o=row((s-10)/3,dim);true}).unwrap();

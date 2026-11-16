@@ -55,7 +55,8 @@ def query_partition(query_ids, queries, holdout_queries=0, seed=20261116):
 
 
 def export(source, destination, limit, queries, allow_stale=False,
-           holdout_queries=0, seed=20261116, fresh_queries=0, fresh_seed=20261117):
+           holdout_queries=0, seed=20261116, fresh_queries=0, fresh_seed=20261117,
+           validation_queries=0, validation_seed=20261118):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or destination.exists():
         raise ValueError("destination must be a new file, separate from source")
@@ -156,9 +157,16 @@ def export(source, destination, limit, queries, allow_stale=False,
         fresh.sort(key=lambda qid: (hashlib.sha256(
             ("%d:%d" % (fresh_seed, qid)).encode()).digest(), qid))
         fresh = fresh[:fresh_queries]
+        reserved.update(fresh)
+        if validation_queries < 0 or len(query_ids) - len(reserved) < validation_queries:
+            raise ValueError("not enough disjoint holdout_v3 query vectors")
+        validation = [qid for qid in query_ids if qid not in reserved]
+        validation.sort(key=lambda qid: (hashlib.sha256(
+            ("%d:%d" % (validation_seed, qid)).encode()).digest(), qid))
+        validation = validation[:validation_queries]
         query_groups = (["development"] * len(chosen_queries) + ["holdout"] * len(holdout)
-                        + ["fresh_holdout"] * len(fresh))
-        chosen_queries += holdout + fresh
+                        + ["fresh_holdout"] * len(fresh) + ["holdout_v3"] * len(validation))
+        chosen_queries += holdout + fresh + validation
         metadata = dict(
             schema="pelorus-real-tags-v2", source=str(source), source_size=source.stat().st_size,
             source_artifact=signature, model_sig=model, database_generation=database_generation,
@@ -171,7 +179,9 @@ def export(source, destination, limit, queries, allow_stale=False,
             diagnostic_only=stale or bool(mismatched) or bool(missing_snapshot_residuals),
             valid_joint_tags=len(candidates),
             skipped_tags=rejected, exported_tags=count, dimension=dimension,
-            max_inbound=maximum, queries=queries + holdout_queries + fresh_queries,
+            max_inbound=maximum, queries=queries + holdout_queries + fresh_queries + validation_queries,
+            validation_queries=validation_queries, validation_seed=validation_seed,
+            validation_partition="SHA256(seed:ID); excludes development, holdout AND fresh_holdout; ID-disjoint only",
             fresh_queries=fresh_queries, fresh_seed=fresh_seed,
             fresh_partition="SHA256(fresh_seed:ID); explicitly excludes development AND prior holdout; ID-disjoint only",
             development_queries=queries, holdout_queries=holdout_queries,
@@ -229,7 +239,10 @@ if __name__ == "__main__":
     parser.add_argument("--query-seed", type=int, default=20261116)
     parser.add_argument("--fresh-queries", type=int, default=0)
     parser.add_argument("--fresh-seed", type=int, default=20261117)
+    parser.add_argument("--validation-queries", type=int, default=0)
+    parser.add_argument("--validation-seed", type=int, default=20261118)
     args = parser.parse_args()
     result = export(args.source, args.output, args.limit, args.queries, args.allow_stale_snapshot,
-                    args.holdout_queries, args.query_seed, args.fresh_queries, args.fresh_seed)
+                    args.holdout_queries, args.query_seed, args.fresh_queries, args.fresh_seed,
+                    args.validation_queries, args.validation_seed)
     print(json.dumps(result, ensure_ascii=True, indent=2))
