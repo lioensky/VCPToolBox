@@ -55,7 +55,7 @@ def query_partition(query_ids, queries, holdout_queries=0, seed=20261116):
 
 
 def export(source, destination, limit, queries, allow_stale=False,
-           holdout_queries=0, seed=20261116):
+           holdout_queries=0, seed=20261116, fresh_queries=0, fresh_seed=20261117):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or destination.exists():
         raise ValueError("destination must be a new file, separate from source")
@@ -108,6 +108,7 @@ def export(source, destination, limit, queries, allow_stale=False,
         mismatched = 0
         missing_snapshot_residuals = 0
         dimension = None
+        mean_sum = None
         for tag_id, name, vector, residual, residual_sig in connection.execute(
             "SELECT t.id,t.name,t.vector,r.raw_residual_ratio,r.artifact_sig "
             "FROM tags t JOIN tag_intrinsic_residuals r ON r.tag_id=t.id "
@@ -127,7 +128,13 @@ def export(source, destination, limit, queries, allow_stale=False,
             elif (not math.isfinite(snapshot_raw[tag_id])
                     or abs(snapshot_raw[tag_id] - residual) > 1e-10):
                 mismatched += 1
-            # Scalar metadata only; fetch original blobs after selecting IDs.
+            values = struct.unpack("<%df" % dimension, vector)
+            length = math.sqrt(sum(v * v for v in values))
+            if mean_sum is None:
+                mean_sum = [0.0] * dimension
+            for j, value in enumerate(values):
+                mean_sum[j] += value / length
+            # Only one row and O(D) mean scratch; no original matrix retained.
             candidates.append((tag_id, name, inbound[tag_id], residual))
         if (mismatched or missing_snapshot_residuals) and not allow_stale:
             raise ValueError("transport/SQL residual coverage: missing=%d mismatched=%d"
@@ -142,8 +149,16 @@ def export(source, destination, limit, queries, allow_stale=False,
             "SELECT id FROM chunks WHERE length(vector)=? ORDER BY id", (dimension * 4,)
         )]
         chosen_queries, holdout = query_partition(query_ids, queries, holdout_queries, seed)
-        query_groups = ["development"] * len(chosen_queries) + ["holdout"] * len(holdout)
-        chosen_queries += holdout
+        reserved = set(chosen_queries) | set(holdout)
+        if fresh_queries < 0 or len(query_ids) - len(reserved) < fresh_queries:
+            raise ValueError("not enough disjoint fresh query vectors")
+        fresh = [qid for qid in query_ids if qid not in reserved]
+        fresh.sort(key=lambda qid: (hashlib.sha256(
+            ("%d:%d" % (fresh_seed, qid)).encode()).digest(), qid))
+        fresh = fresh[:fresh_queries]
+        query_groups = (["development"] * len(chosen_queries) + ["holdout"] * len(holdout)
+                        + ["fresh_holdout"] * len(fresh))
+        chosen_queries += holdout + fresh
         metadata = dict(
             schema="pelorus-real-tags-v2", source=str(source), source_size=source.stat().st_size,
             source_artifact=signature, model_sig=model, database_generation=database_generation,
@@ -156,13 +171,18 @@ def export(source, destination, limit, queries, allow_stale=False,
             diagnostic_only=stale or bool(mismatched) or bool(missing_snapshot_residuals),
             valid_joint_tags=len(candidates),
             skipped_tags=rejected, exported_tags=count, dimension=dimension,
-            max_inbound=maximum, queries=queries + holdout_queries,
+            max_inbound=maximum, queries=queries + holdout_queries + fresh_queries,
+            fresh_queries=fresh_queries, fresh_seed=fresh_seed,
+            fresh_partition="SHA256(fresh_seed:ID); explicitly excludes development AND prior holdout; ID-disjoint only",
             development_queries=queries, holdout_queries=holdout_queries,
             query_partition_seed=seed,
             query_partition="development original ID-spacing; holdout SHA256(seed:ID) without replacement; ID-disjoint NOT document-disjoint",
             inbound_quantile_schema="log1p-midrank-v1",
             inbound_quantile_population=len(candidates),
             inbound_quantile_definition="ascending log1p(inbound) tied mean zero-based rank / (N-1); N=1 -> .5",
+            mean_direction=[value / len(candidates) for value in mean_sum],
+            mean_population=len(candidates),
+            mean_source="streamed unit directions over joint coverage, NOT a claimed same-generation AGS payload",
             sampling="ID-sorted evenly spaced; independent of queries; truth limited to exported scope",
             query_source="real chunks.vector; no text exported; not user-authored query embeddings",
         )
@@ -207,7 +227,9 @@ if __name__ == "__main__":
     parser.add_argument("--allow-stale-snapshot", action="store_true")
     parser.add_argument("--holdout-queries", type=int, default=0)
     parser.add_argument("--query-seed", type=int, default=20261116)
+    parser.add_argument("--fresh-queries", type=int, default=0)
+    parser.add_argument("--fresh-seed", type=int, default=20261117)
     args = parser.parse_args()
     result = export(args.source, args.output, args.limit, args.queries, args.allow_stale_snapshot,
-                    args.holdout_queries, args.query_seed)
+                    args.holdout_queries, args.query_seed, args.fresh_queries, args.fresh_seed)
     print(json.dumps(result, ensure_ascii=True, indent=2))

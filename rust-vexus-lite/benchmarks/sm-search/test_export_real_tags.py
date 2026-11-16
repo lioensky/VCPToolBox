@@ -134,6 +134,24 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(len(groups["holdout"]), 32)
             self.assertFalse(groups["development"] & groups["holdout"])
 
+    def test_fresh_holdout_excludes_both_observed_groups_and_exports_global_mean(self):
+        with closing(sqlite3.connect(self.source)) as c, c:
+            vector = c.execute("SELECT vector FROM chunks LIMIT 1").fetchone()[0]
+            c.executemany("INSERT INTO chunks VALUES(?,?)", [(i, vector) for i in range(2, 101)])
+        meta = export(self.source, self.output, 512, 12, holdout_queries=32, fresh_queries=32)
+        self.assertEqual(meta["fresh_queries"], 32)
+        self.assertEqual(meta["mean_population"], 512)
+        self.assertEqual(len(meta["mean_direction"]), 65)
+        self.assertTrue(all(abs(x - 1 / (65 ** 0.5)) < 1e-12 for x in meta["mean_direction"]))
+        with closing(sqlite3.connect(self.output)) as c:
+            groups = {}
+            for split, chunk in c.execute(
+                    "SELECT s.split,q.source_chunk_id FROM query_sets s JOIN queries q ON s.query_id=q.id"):
+                groups.setdefault(split, set()).add(chunk)
+        self.assertEqual(len(groups["fresh_holdout"]), 32)
+        self.assertFalse(groups["fresh_holdout"] & (groups["development"] | groups["holdout"]))
+        self.assertEqual(groups["holdout"], set(query_partition(list(range(1, 101)), 12, 32)[1]))
+
     def test_stale_facts_rejected_without_creating_output(self):
         self.execute("UPDATE kbm_runtime_meta SET value='101'")
         with self.assertRaisesRegex(ValueError, "geometry stale"):
