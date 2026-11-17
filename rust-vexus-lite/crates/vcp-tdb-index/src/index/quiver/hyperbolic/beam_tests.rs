@@ -132,3 +132,64 @@ fn discovery_cap_records_first_rejection_and_later_expansions() {
     assert_eq!(wide.stats.rejected_discoveries,0);
     assert_eq!(wide.stats.expansions_after_visit_limit,0);
 }
+
+#[test]
+fn reusable_marks_match_dense_across_sizes_exclusions_and_wrap() {
+    for nodes in [0,1,17,4096,40602] {
+        let graph:Vec<Vec<u32>>=(0..nodes).map(|n|vec![
+            ((n+1)%nodes) as u32,((n+7)%nodes) as u32,n as u32,u32::MAX]).collect();
+        for excluded in [0,3,nodes+1] {
+            for visits in [0,1,32,2048] {
+                let budget=BeamBudget {width:16,max_visits:visits,max_expansions:128};
+                let seeds=[0,0,u32::MAX];
+                let score=|n:u32| ((n%13) as f64, -(n as f64));
+                let admits=|n:u32|(n as usize)>=excluded;
+                let old=bounded_beam(nodes,&seeds,budget,|n|graph[n as usize].as_slice(),score,admits);
+                let fast=reusable_beam(nodes,&seeds,budget,|n|graph[n as usize].as_slice(),score,admits,true);
+                assert_eq!(old.candidates,fast.candidates);
+                assert_eq!(old.visited_nodes,fast.visited_nodes);
+                assert_eq!(format!("{:?}",old.stats),format!("{:?}",fast.stats));
+                assert_eq!(fast.candidate_scores,
+                    fast.candidates.iter().map(|&n|score(n).0).collect::<Vec<_>>());
+                let no_trace=reusable_beam(nodes,&seeds,budget,|n|graph[n as usize].as_slice(),score,admits,false);
+                assert_eq!(fast.candidates,no_trace.candidates);
+                assert!(no_trace.visited_nodes.is_empty());
+            }
+        }
+    }
+    WORKSPACE.with(|slot|slot.borrow_mut().as_mut().unwrap().epoch=u32::MAX);
+    let graph=vec![vec![1],vec![]];
+    let fast=reusable_beam(2,&[0],BeamBudget {width:2,max_visits:2,max_expansions:2},
+        |n|graph[n as usize].as_slice(),|n|(n as f64,n as f64),|_|true,true);
+    assert_eq!(fast.visited_nodes,vec![0,1]);
+    WORKSPACE.with(|slot|assert_eq!(slot.borrow().as_ref().unwrap().epoch,1));
+}
+
+#[test]
+fn reusable_workspace_is_reentrant_thread_local_and_unwind_safe() {
+    let run=|| {
+        let graph=vec![vec![1],vec![2],vec![]];
+        let budget=BeamBudget {width:3,max_visits:3,max_expansions:3};
+        let mut nested=false;
+        let outer=reusable_beam(3,&[0],budget,|n|graph[n as usize].as_slice(),|n| {
+            if !nested {
+                nested=true;
+                let inner=reusable_beam(1,&[0],budget,|_|&[],|_|(1.,1.),|_|true,false);
+                assert_eq!(inner.candidates,vec![0]);
+            }
+            (n as f64,n as f64)
+        },|_|true,true);
+        assert_eq!(outer.candidates,vec![0,1,2]);
+        assert_eq!(outer.visited_nodes,vec![0,1,2]);
+        let failed=std::panic::catch_unwind(||reusable_beam(3,&[0],budget,|_|&[],
+            |_|panic!("injected score panic"),|_|true,false));
+        assert!(failed.is_err());
+        let after=reusable_beam(3,&[0],budget,|n|graph[n as usize].as_slice(),
+            |n|(n as f64,n as f64),|_|true,true);
+        assert_eq!(outer.candidates,after.candidates);
+    };
+    std::thread::scope(|s| {
+        let threads:Vec<_>=(0..4).map(|_|s.spawn(&run)).collect();
+        for thread in threads {thread.join().unwrap();}
+    });
+}

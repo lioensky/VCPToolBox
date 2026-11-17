@@ -375,3 +375,7 @@ fn real_pipeline_file_disjoint() {
     assert_eq!(before,snapshot_hash(&work));
     write_row(&mut out,json!({"type":"complete","queries":queries.len(),"snapshotSha256":before}));
 }
+
+
+#[path = "phase5c_navigation_experiment.rs"]
+mod phase5c_navigation_experiment;

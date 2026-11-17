@@ -1,7 +1,7 @@
 //! Immutable streamed Tier-3 experiment. No original-vector ownership.
 //! Geometry/graph adapted from Pelorus, Apache-2.0, Copyright 2024 TriviumDB Authors.
 use super::*;
-use super::beam::{bounded_beam, BeamBudget};
+use super::beam::{bounded_beam, reusable_beam, BeamBudget};
 use super::routing::{planes, pair_cosine, query_cosine};
 use super::super::asymmetric::{AsymQuerySm, AsymKernel};
 use super::warped_geometry::{clairaut_distance, WarpedProfile, WarpedProxyTable};
@@ -98,6 +98,11 @@ pub struct WarpedSearchTrace {
     pub first_visit_rejection_expansion: Option<usize>,
     pub rejected_discoveries: usize,
     pub expansions_after_visit_limit: usize,
+    pub workspace_bytes: usize,
+    pub stage05_evaluations: usize,
+    pub seed_ms: f64,
+    pub beam_ms: f64,
+    pub stage05_ms: f64,
     pub seeds: Vec<u64>,
     pub visited: Vec<u64>,
     pub retained: Vec<u64>,
@@ -117,6 +122,7 @@ pub struct WarpedFieldIndex {
     entries: Vec<u32>,
     config: WarpedFieldConfig,
     direction_landmarks: Vec<u32>,
+    shell_landmarks: Vec<u32>,
 }
 impl WarpedFieldIndex {
     fn transform(raw: &[f32], axis: &[f64], beta: f64) -> io::Result<Vec<f32>> {
@@ -254,7 +260,7 @@ impl WarpedFieldIndex {
             Vec::new()
         } else { slots.to_vec() };
         Ok(Self {dim,ids:ids.to_vec(),slots,meta,store,mean_axis,table,
-            graph,offsets,entries,config,direction_landmarks})
+            graph,offsets,entries,config,direction_landmarks,shell_landmarks:Vec::new()})
     }
     pub fn exact_distance(&self, query: &[f32], radius: f32, row: &[f32], node: usize) -> io::Result<f64> {
         if node >= self.ids.len() || !radius.is_finite() || radius < 0.0 || radius as f64 > self.config.radius_max {
@@ -267,6 +273,39 @@ impl WarpedFieldIndex {
         Ok(clairaut_distance(self.config.geometry_profile()?,radius as f64,self.meta[node].depth as f64,
             self.config.effective_cosine(cosine)))
     }
+    /// Optional experiment directory. Does not rebuild or mutate graph edges.
+    /// Eight equal-count radial bands; farthest-direction hot-code selection per band.
+    pub fn build_shell_landmarks(&mut self) {
+        let mut order:Vec<u32>=(0..self.ids.len() as u32).collect();
+        order.sort_unstable_by(|&a,&b|self.meta[a as usize].depth
+            .total_cmp(&self.meta[b as usize].depth).then(a.cmp(&b)));
+        let mut landmarks=Vec::new();
+        for band in 0..8 {
+            let lo=band*order.len()/8;
+            let hi=(band+1)*order.len()/8;
+            let count=(hi-lo).min(512);
+            if count==0 {continue;}
+            let candidates:Vec<_>=(0..count).map(|i|order[lo+i*(hi-lo)/count]).collect();
+            let mut selected=vec![false;count];
+            let mut max_cos=vec![-1.0_f64;count];
+            let mut next=0;
+            for _ in 0..64.min(count) {
+                selected[next]=true;
+                let last=candidates[next];
+                landmarks.push(last);
+                for (i,&node) in candidates.iter().enumerate() {
+                    max_cos[i]=max_cos[i].max(pair_cosine(&self.store,&self.meta,
+                        last as usize,node as usize,self.dim));
+                }
+                let Some(pick)=(0..count).filter(|&i|!selected[i])
+                    .min_by(|&a,&b|max_cos[a].total_cmp(&max_cos[b]).then(a.cmp(&b))) else {break;};
+                next=pick;
+            }
+        }
+        landmarks.shrink_to_fit();
+        self.shell_landmarks=landmarks;
+    }
+    pub fn shell_landmark_count(&self)->usize {self.shell_landmarks.len()}
     pub fn ids(&self) -> &[u64] { &self.ids }
 
     fn cold_slot(&self, node: usize) -> usize {
@@ -278,7 +317,7 @@ impl WarpedFieldIndex {
             +self.mean_axis.capacity()*8+self.table.hot_bytes()+self.ids.capacity()*8
             +self.slots.capacity()*std::mem::size_of::<usize>()+self.graph.capacity()*4
             +self.offsets.capacity()*std::mem::size_of::<u32>()+self.entries.capacity()*4
-            +self.direction_landmarks.capacity()*4
+            +self.direction_landmarks.capacity()*4+self.shell_landmarks.capacity()*4
     }
     pub fn connectivity(&self) -> (usize,usize) {
         let n = self.ids.len();
@@ -316,8 +355,20 @@ impl WarpedFieldIndex {
     }
     pub fn search_with_rerank<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
         seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
+        trace:Option<&mut WarpedSearchTrace>, exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_experiment(query,radius,config,seed_mode,navigation,rerank,
+            false,false,trace,exclude,fill)
+    }
+    /// Opt-in Phase 5C controls. Existing APIs retain the reference path.
+    pub fn search_experiment<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
+        shell_directory:bool,reuse_beam:bool,
         mut trace:Option<&mut WarpedSearchTrace>, exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        if shell_directory && self.shell_landmarks.is_empty() {
+            return Err(invalid("shell landmark directory is not built"));
+        }
         if rerank.envelope_bound && !rerank.reuse_transform {
             return Err(invalid("envelope requires prepared exact cosine"));
         }
@@ -345,6 +396,7 @@ impl WarpedFieldIndex {
             let r=self.meta[node as usize].depth;
             (slice.eval(r,c),1.0-c+0.20*(radius as f64-r as f64).abs())
         };
+        let seed_started=std::time::Instant::now();
         let seed_cap=(config.width/2).min(config.max_visits/4);
         let mut seeds=self.entries.clone();
         // Bounded deterministic all-shell coverage, scored under the SAME table.
@@ -353,7 +405,8 @@ impl WarpedFieldIndex {
                 seeds.push((i*self.ids.len()/64.min(self.ids.len())) as u32);
             },
             WarpedSeedMode::InnerOnly => {},
-            WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(&self.direction_landmarks),
+            WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(
+                if shell_directory {&self.shell_landmarks} else {&self.direction_landmarks}),
         }
         seeds.sort_unstable();seeds.dedup();
         // Score each directory candidate once, not once per sort comparison.
@@ -370,13 +423,23 @@ impl WarpedFieldIndex {
             seeds=scored.into_iter().take(seed_cap).map(|p|p.1).collect();
         }
         let seed_evaluations=evaluations.get();
-        let beam=bounded_beam(self.ids.len(),&seeds,BeamBudget {
-            width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions},
-            |n| &self.graph[self.offsets[n as usize] as usize..self.offsets[n as usize+1] as usize],
-            evaluate,|n|!exclude(self.ids[n as usize]));
+        let seed_ms=seed_started.elapsed().as_secs_f64()*1000.0;
+        let beam_started=std::time::Instant::now();
+        let budget=BeamBudget {
+            width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions};
+        let neighbors=|n:u32| &self.graph[self.offsets[n as usize] as usize..self.offsets[n as usize+1] as usize];
+        let admits=|n:u32|!exclude(self.ids[n as usize]);
+        let beam=if reuse_beam {
+            reusable_beam(self.ids.len(),&seeds,budget,neighbors,evaluate,admits,trace.is_some())
+        } else {
+            bounded_beam(self.ids.len(),&seeds,budget,neighbors,evaluate,admits)
+        };
+        let beam_ms=beam_started.elapsed().as_secs_f64()*1000.0;
         if let Some(t)=trace.as_deref_mut() {
             t.seed_evaluations=seed_evaluations;
             t.navigation_evaluations=evaluations.get()-seed_evaluations;
+            t.workspace_bytes=beam.workspace_bytes;
+            t.seed_ms=seed_ms;t.beam_ms=beam_ms;
             t.first_visit_rejection_expansion=beam.stats.first_visit_rejection_expansion;
             t.rejected_discoveries=beam.stats.rejected_discoveries;
             t.expansions_after_visit_limit=beam.stats.expansions_after_visit_limit;
@@ -384,20 +447,27 @@ impl WarpedFieldIndex {
             t.visited=beam.visited_nodes.iter().map(|&n|self.ids[n as usize]).collect();
             t.retained=beam.candidates.iter().map(|&n|self.ids[n as usize]).collect();
         }
-        let mut pool:Vec<_>=beam.candidates.iter().map(|&node| {
-            let (p,h)=planes(&self.store,node as usize);
-            let c=asym.calibrated_cosine(p,h,self.meta[node as usize].sm(),AsymKernel::Auto);
-            (slice.eval(self.meta[node as usize].depth,self.config.effective_cosine(c)),node)
+        let stage05_started=std::time::Instant::now();
+        let reuse_scores=reuse_beam && navigation.asymmetric;
+        let mut pool:Vec<_>=beam.candidates.iter().enumerate().map(|(i,&node)| {
+            let distance=if reuse_scores {beam.candidate_scores[i]} else {
+                let (p,h)=planes(&self.store,node as usize);
+                let c=asym.calibrated_cosine(p,h,self.meta[node as usize].sm(),AsymKernel::Auto);
+                slice.eval(self.meta[node as usize].depth,self.config.effective_cosine(c))
+            };
+            (distance,node)
         }).collect();
         pool.sort_unstable_by(|a,b|a.0.total_cmp(&b.0).then(self.ids[a.1 as usize].cmp(&self.ids[b.1 as usize])));
         if let Some(t)=trace {
             t.stage05_top64=pool.iter().take(config.rerank_limit).map(|p|self.ids[p.1 as usize]).collect();
+            t.stage05_evaluations=if reuse_scores {0} else {pool.len()};
+            t.stage05_ms=stage05_started.elapsed().as_secs_f64()*1000.0;
         }
         let mut stats=HyperbolicSearchStats {
             visited:beam.stats.visited,expanded:beam.stats.expanded,excluded_expanded:beam.stats.excluded_expanded,
             visit_limit_reached:beam.stats.visit_limit_reached,expansion_limit_reached:beam.stats.expansion_limit_reached,
             converged:beam.stats.converged,seeds:seeds.len(),valid_candidates:pool.len(),
-            asymmetric_evals:pool.len(),..Default::default()
+            asymmetric_evals:if reuse_scores {0} else {pool.len()},..Default::default()
         };
         let profile=self.config.geometry_profile()?;
         let query_norm=if rerank.reuse_transform {checked_norm(&unit)?} else {1.0};
@@ -676,5 +746,60 @@ mod phase4d_tests {
             }
         }
         assert!(total_skips>0);
+    }
+}
+
+#[cfg(test)]
+mod phase5c_tests {
+    use super::*;
+    #[test]
+    fn shell_directory_and_reused_scores_preserve_exact_reference_per_directory() {
+        for dim in [65,384,768,1536,3072] {
+            let n=88;
+            let row=|i:usize|(0..dim).map(|j|
+                ((i*71+j*17+1) as f64*0.37).sin() as f32).collect::<Vec<_>>();
+            let ids:Vec<_>=(1..=n as u64).collect();
+            let slots:Vec<_>=(0..n).map(|i|i*3+11).collect();
+            let radii:Vec<_>=(0..n).map(|i|0.35+0.29*i as f32/n as f32).collect();
+            let mut index=WarpedFieldIndex::build(dim,&ids,&slots,&radii,&vec![0.01;dim],
+                WarpedFieldConfig {radius_max:0.65,throat_phi0:1.5,
+                    angular_scale_kappa:2.0,adaptive_compass:true,..Default::default()},
+                |s,o|{*o=row((s-11)/3);true}).unwrap();
+            let bytes=index.hot_bytes();
+            let graph=index.graph.clone();
+            index.build_shell_landmarks();
+            assert_eq!(index.graph,graph);
+            assert_eq!(index.shell_landmark_count(),n);
+            assert_eq!(index.hot_bytes()-bytes,n*4);
+            let initial=index.shell_landmarks.clone();
+            index.build_shell_landmarks();
+            assert_eq!(index.shell_landmarks,initial);
+            let cfg=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
+                max_visits:2048,max_expansions:512,radial_bound:true};
+            let rerank=WarpedRerankOptions {reuse_transform:true,envelope_bound:true};
+            for asymmetric in [false,true] {
+                for shell in [false,true] {
+                    for excluded in [0,8,n] {
+                        let mut reference=None;
+                        for fast in [false,true] {
+                            let mut reads=Vec::new();
+                            let mut trace=WarpedSearchTrace::default();
+                            let out=index.search_experiment(&row(37),0.425,cfg,
+                                WarpedSeedMode::DirectionLandmarks,
+                                WarpedNavigationOptions {asymmetric,compact_seeds:true},
+                                rerank,shell,fast,Some(&mut trace),|id|id<=excluded as u64,
+                                |s,o|{reads.push(s);*o=row((s-11)/3);true}).unwrap();
+                            let bits:Vec<_>=out.neighbors.iter().map(|&(id,d)|(id,d.to_bits())).collect();
+                            let key=(bits,reads,trace.seeds,trace.visited,trace.retained,
+                                trace.stage05_top64,out.stats.visited,out.stats.expanded,
+                                out.stats.converged,out.stats.exact_quad_skips);
+                            if let Some(r)=&reference {assert_eq!(r,&key);} else {reference=Some(key);}
+                            assert!(out.stats.cold_reads<=64);
+                            if fast && asymmetric {assert_eq!(trace.stage05_evaluations,0);}
+                        }
+                    }
+                }
+            }
+        }
     }
 }

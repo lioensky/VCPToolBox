@@ -139,6 +139,8 @@ struct PipelineConfig {
     warped_preset: crate::warped_tag_field::Preset,
     warped_radius_strategy: crate::warped_tag_field::RadiusStrategy,
     warped_legacy_budget: bool,
+    warped_shell_directory: bool,
+    warped_reuse_beam: bool,
     #[serde(default)]
     spike_routing: SenseConfig,
 }
@@ -179,6 +181,8 @@ impl Default for PipelineConfig {
             warped_preset: Default::default(),
             warped_radius_strategy: Default::default(),
             warped_legacy_budget: false,
+            warped_shell_directory: false,
+            warped_reuse_beam: false,
             spike_routing: SenseConfig::default(),
         }
     }
@@ -812,13 +816,17 @@ fn analyze_pyramid_routed(
             let radius = crate::warped_tag_field::query_radius(
                 config.warped_radius_strategy, level, config.max_levels.clamp(1,8),
                 epa.in_domain_gate, epa.logic_depth, epa.entropy, epa.cache_available);
-            let (ids, stats, sql_reads, cache_hits) = field.search_budget(connection, &residual, radius,
-                config.pyramid_top_k.clamp(1,64), &excluded, tag_vectors, config.warped_legacy_budget)?;
+            let (ids, stats, sql_reads, cache_hits) = field.search_controls(connection, &residual, radius,
+                config.pyramid_top_k.clamp(1,64), &excluded, tag_vectors, config.warped_legacy_budget,
+                config.warped_shell_directory, config.warped_reuse_beam)?;
             routing.push(serde_json::json!({
                 "level":level,"radius":radius,"ids":ids,"excluded":excluded.len(),
                 "visited":stats.visited,"expanded":stats.expanded,
                 "rerankFetches":stats.cold_reads,"sqlReads":sql_reads,"cacheHits":cache_hits,
                 "quadSkips":stats.exact_quad_skips,"distanceEvals":stats.exact_distance_evals,
+                "converged":stats.converged,"visitLimitReached":stats.visit_limit_reached,
+                "expansionLimitReached":stats.expansion_limit_reached,
+                "stage05Evaluations":stats.asymmetric_evals,
                 "epaAvailable":epa.cache_available,
                 "meanInboundQuantile":if ids.is_empty() {0.0} else {
                     ids.iter().filter_map(|&id|field.inbound_quantile(id)).sum::<f64>()/ids.len() as f64
@@ -2514,6 +2522,8 @@ fn run_pipeline_with_connection(
                 "preset":format!("{:?}",input.config.warped_preset),
                 "radiusStrategy":format!("{:?}",input.config.warped_radius_strategy),
                 "legacyBudget":input.config.warped_legacy_budget,
+                "shellDirectory":input.config.warped_shell_directory,
+                "reuseBeam":input.config.warped_reuse_beam,
                 "attempts":routing_attempts,
             })),
         },
