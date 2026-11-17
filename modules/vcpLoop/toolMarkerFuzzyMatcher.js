@@ -96,7 +96,7 @@ class ToolMarkerFuzzyMatcher {
       return null;
     }
 
-    const fuzzyMatch = /^[「{]始(?!ESCAPE)(?:[^\r\n「{]*?[」}])/.exec(slice);
+    const fuzzyMatch = /^[「{]始(?!ESCAPE)(?:[^\r\n「{]*?[」}])/i.exec(slice);
     if (!fuzzyMatch) {
       return null;
     }
@@ -131,7 +131,7 @@ class ToolMarkerFuzzyMatcher {
     }
 
     if (this.enabled) {
-      const fuzzyEndRegex = /[「{]末(?!ESCAPE)(?:[^\r\n「{]*?[」}])/g;
+      const fuzzyEndRegex = /[「{]末(?!ESCAPE)(?:[^\r\n「{]*?[」}])/gi;
       fuzzyEndRegex.lastIndex = cursor;
       const fuzzyMatch = fuzzyEndRegex.exec(content);
       if (fuzzyMatch && (!bestMatch || fuzzyMatch.index < bestMatch.index)) {
