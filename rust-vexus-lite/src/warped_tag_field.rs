@@ -46,16 +46,30 @@ struct Identity {
     model: String,
 }
 
-fn identity(connection: &Connection, artifact: &str) -> Result<(Identity, Vec<f64>), String> {
+fn metadata_identity(connection: &Connection, artifact: &str) -> Result<Identity, String> {
     if connection.is_autocommit() { return Err("warped field requires a read transaction".into()); }
     let generation = crate::storage::read_generation(connection)?;
     let database: String = connection.query_row("PRAGMA database_list", [], |r| r.get(2))
         .map_err(|e| e.to_string())?;
     // Historical artifacts may remain valid for cosine, but never silently feed this field.
-    let (model, source_generation): (String,String) = connection.query_row(
-        "SELECT model_sig,database_generation FROM rivermemo_artifacts
-         WHERE artifact_sig=?1 AND status='ready'
-         AND schema_version='rivermemo-persisted-artifact-v2'",
+    // Status follows a potentially huge payload in the table record. Read it
+    // through the covering index rather than walking payload overflow pages.
+    let status_sql="SELECT status,schema_version FROM rivermemo_artifacts
+        INDEXED BY idx_rivermemo_validation WHERE artifact_sig=?1";
+    let status:rusqlite::Result<(String,String)>=match connection.prepare_cached(status_sql) {
+        Ok(mut statement)=>statement.query_row([artifact],|r|Ok((r.get(0)?,r.get(1)?))),
+        Err(rusqlite::Error::SqliteFailure(_,Some(message))) if message.starts_with("no such index")=>
+            connection.query_row("SELECT status,schema_version FROM rivermemo_artifacts WHERE artifact_sig=?1",
+                [artifact],|r|Ok((r.get(0)?,r.get(1)?))),
+        Err(error)=>Err(error),
+    };
+    let (status,schema)=status.map_err(|e|e.to_string())?;
+    if status!="ready" || schema!="rivermemo-persisted-artifact-v2" {
+        return Err("warped artifact format/status mismatch".into());
+    }
+    let (model, source_generation): (String,String) = connection.prepare_cached(
+        "SELECT model_sig,database_generation FROM rivermemo_artifacts WHERE artifact_sig=?1")
+        .map_err(|e|e.to_string())?.query_row(
         [artifact], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|e| e.to_string())?;
     if source_generation.parse::<u64>().ok() != Some(generation) {
         return Err("warped artifact database generation is stale".into());
@@ -79,11 +93,17 @@ fn identity(connection: &Connection, artifact: &str) -> Result<(Identity, Vec<f6
          ORDER BY updated_at DESC,artifact_sig LIMIT 1",
         [&model], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|e| e.to_string())?;
     if facts != format!("facts:{}",expected[0]) { return Err("warped geometry facts are stale".into()); }
+    Ok(Identity { database,generation,dependencies,artifact:artifact.into(),geometry,
+        mean_hash:String::new(),model })
+}
+
+fn identity(connection: &Connection, artifact: &str) -> Result<(Identity, Vec<f64>), String> {
+    let mut identity=metadata_identity(connection,artifact)?;
     let raw: String = connection.query_row(
         "SELECT value FROM kv_store WHERE key='epa_basis_cache'",[],|r| r.get(0))
         .map_err(|e| e.to_string())?;
     let cache: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    if cache["artifactSig"].as_str() != Some(&geometry) {
+    if cache["artifactSig"].as_str() != Some(&identity.geometry) {
         return Err("warped EPA/geometry signature mismatch".into());
     }
     let bytes = base64::engine::general_purpose::STANDARD.decode(
@@ -92,15 +112,14 @@ fn identity(connection: &Connection, artifact: &str) -> Result<(Identity, Vec<f6
     let mean: Vec<f64> = bytes.chunks_exact(4)
         .map(|b| f32::from_le_bytes(b.try_into().unwrap()) as f64).collect();
     if mean.iter().any(|v| !v.is_finite()) { return Err("warped EPA mean nonfinite".into()); }
-    Ok((Identity { database,generation,dependencies,artifact:artifact.into(),geometry,
-        mean_hash:format!("{:x}",Sha256::digest(raw.as_bytes())),model },mean))
+    identity.mean_hash=format!("{:x}",Sha256::digest(raw.as_bytes()));
+    Ok((identity,mean))
 }
 
 pub(crate) struct WarpedTagField {
     identity: Identity,
     pub(crate) preset: Preset,
-    pub(crate) ids: Vec<i64>,
-    pub(crate) inbound_quantiles: HashMap<i64,f64>,
+    inbound_quantiles: Vec<f32>,
     pub(crate) active_tags: usize,
     pub(crate) ranked_tags: usize,
     pub(crate) index: WarpedFieldIndex,
@@ -111,12 +130,19 @@ pub(crate) struct WarpedTagField {
 impl WarpedTagField {
     /// Managed payload estimate, not allocator overhead or RSS.
     pub(crate) fn hot_bytes(&self) -> usize {
-        self.index.hot_bytes() + self.ids.capacity()*8
-            + self.inbound_quantiles.capacity()*(std::mem::size_of::<(i64,f64)>()+1)
+        self.index.hot_bytes()
+            + self.inbound_quantiles.capacity()*std::mem::size_of::<f32>()
             + self.identity.database.capacity()+self.identity.artifact.capacity()
             + self.identity.geometry.capacity()+self.identity.mean_hash.capacity()
             + self.identity.model.capacity()
     }
+    pub(crate) fn ids(&self) -> &[u64] { self.index.ids() }
+
+    pub(crate) fn inbound_quantile(&self, id: i64) -> Option<f64> {
+        let id=u64::try_from(id).ok()?;
+        self.ids().binary_search(&id).ok().map(|node|self.inbound_quantiles[node] as f64)
+    }
+
     pub(crate) fn build(connection: &Connection, artifact_sig: &str,
         artifact: &crate::rivermemo_topology_v3::NativeArtifact, dimension: usize,
         preset: Preset) -> Result<Self,String> {
@@ -182,19 +208,40 @@ impl WarpedTagField {
             }
         }).map_err(|e|source_error.take().unwrap_or_else(||e.to_string()))?;
         if index.connectivity()!=(ids.len(),0) { return Err("warped graph connectivity failure".into()); }
-        Ok(Self {identity,preset,ids,inbound_quantiles,active_tags:active.len(),
+        let inbound_quantiles:Vec<f32>=ids.iter().map(|id|inbound_quantiles[id] as f32).collect();
+        Ok(Self {identity,preset,inbound_quantiles,active_tags:active.len(),
             ranked_tags:ranked.len(),index,dimension,build_ms:started.elapsed().as_secs_f64()*1000.0})
     }
 
+    pub(crate) fn generation(&self) -> u64 { self.identity.generation }
+
     pub(crate) fn current(&self, connection:&Connection, signature:&str) -> bool {
-        identity(connection,signature).is_ok_and(|(id,_)|id==self.identity)
+        crate::memo_pipeline::epa_cache_digest(connection).is_ok_and(|digest|
+            self.current_with_epa_digest(connection,signature,&digest))
+    }
+
+    /// Digest must come from EPA analysis on this same transaction.
+    pub(crate) fn current_with_epa_digest(&self, connection:&Connection, signature:&str,
+        digest:&str) -> bool {
+        metadata_identity(connection,signature).is_ok_and(|mut id| {
+            id.mean_hash=digest.into();
+            id==self.identity
+        })
     }
 
     pub(crate) fn search(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
         excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool)
         -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
+        self.search_budget(connection,query,radius,k,excluded,pool,false)
+    }
+
+    pub(crate) fn search_budget(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
+        excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool, legacy_budget:bool)
+        -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
         if k==0 || k>64 { return Err("warped pyramid top_k must be 1..64".into()); }
-        let (max_visits,max_expansions)=warped_size_budget(self.ids.len());
+        let (max_visits,max_expansions)=if legacy_budget && self.ids().len()>4096 {
+            (1536,384)
+        } else { warped_size_budget(self.ids().len()) };
         let mut read=connection.prepare_cached("SELECT vector FROM tags WHERE id=?1").map_err(|e|e.to_string())?;
         let mut error=None;
         let mut sql_reads=0;
@@ -208,7 +255,7 @@ impl WarpedTagField {
             asymmetric:true,compact_seeds:true,
         },WarpedRerankOptions {reuse_transform:true,envelope_bound:true},None,
         |id|excluded.contains(&(id as i64)),|slot,out| {
-            let id=self.ids[slot];
+            let id=self.ids()[slot] as i64;
             if let Some(v)=pool.get(&id) {
                 cache_hits+=1;
                 if !valid_original(v) {
@@ -217,6 +264,8 @@ impl WarpedTagField {
                 out.extend_from_slice(v);return true;
             }
             sql_reads+=1;
+            #[cfg(test)]
+            crate::storage::tag_read_audit::record("warped_rerank",id);
             match read.query_row([id],|row|crate::index_source::decode_column_into(row,0,self.dimension,out)).optional() {
                 Ok(Some(true)) if valid_original(out)=>{
                     pool.insert(id,std::sync::Arc::from(out.clone()));true
@@ -274,7 +323,10 @@ mod tests {
         assert!(field.current(&db,"a"));
         assert!(!field.current(&db,"other"));
         assert_eq!(field.index.connectivity(),(80,0));
-        assert_eq!(field.inbound_quantiles[&4],field.inbound_quantiles[&5]);
+        assert_eq!(field.inbound_quantile(4),field.inbound_quantile(5));
+        assert!(field.inbound_quantile(-1).is_none());
+        assert!(field.inbound_quantile(999).is_none());
+        assert_eq!(field.inbound_quantiles.len(),field.ids().len());
         let mut pool=crate::storage::TagVectorPool::new();
         let q=[0.3,0.8,0.4];
         let (a,stats,reads,hits)=field.search(&db,&q,0.425,10,&HashSet::new(),&mut pool).unwrap();
@@ -288,7 +340,7 @@ mod tests {
         for (id,v) in original { assert!(std::sync::Arc::ptr_eq(&v,&pool[&id])); }
         let ids=pool.keys().copied().collect::<Vec<_>>();
         assert_eq!(crate::storage::ensure_tag_vectors_loaded(&db,&mut pool,&ids,3).unwrap().fetched_nodes,0);
-        let all=field.ids.iter().copied().collect();
+        let all=field.ids().iter().map(|&id|id as i64).collect();
         let (ids,stats,reads,_)=field.search(&db,&q,0.425,10,&all,&mut pool).unwrap();
         assert!(ids.is_empty());
         assert_eq!((stats.cold_reads,reads),(0,0));
@@ -372,6 +424,50 @@ mod tests {
             assert!(field.search(&db,&[0.3,0.8,0.4],0.425,10,&HashSet::new(),&mut pool).is_err());
             assert!(pool.is_empty());
         }
+    }
+
+    #[test]
+    fn concurrent_invalidation_rejects_old_build_tickets_and_preserves_pinned_queries() {
+        let (db,artifact)=fixture();
+        let field=std::sync::Arc::new(WarpedTagField::build(&db,"a",&artifact,3,Preset::Locked2).unwrap());
+        let runtime=crate::rivermemo_topology_v3::MemoRuntime::new();
+        runtime.publish("a",std::sync::Arc::new(artifact)).unwrap();
+        let old=runtime.warped_build_ticket();
+        runtime.publish_warped_field(old,"a",field.clone()).unwrap();
+        let barrier=std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let worker=scope.spawn(|| {
+                barrier.wait();
+                for _ in 0..100 { runtime.invalidate_warped_fields().unwrap(); }
+            });
+            barrier.wait();
+            for _ in 0..100 {
+                let pinned=runtime.warped_fields.read().unwrap().get(&Preset::Locked2).cloned();
+                if let Some(pinned)=pinned { assert!(std::sync::Arc::ptr_eq(&pinned,&field)); }
+            }
+            worker.join().unwrap();
+        });
+        assert!(runtime.warped_fields.read().unwrap().is_empty());
+        assert!(runtime.publish_warped_field(old,"a",field.clone()).is_err());
+        assert_eq!(field.search(&db,&[0.3,0.8,0.4],0.425,10,&HashSet::new(),
+            &mut crate::storage::TagVectorPool::new()).unwrap().0.len(),10);
+        let fresh=runtime.warped_build_ticket();
+        runtime.publish_warped_field(fresh,"a",field.clone()).unwrap();
+        runtime.clear().unwrap();
+        assert!(runtime.publish_warped_field(fresh,"a",field).is_err());
+    }
+
+    #[test]
+    fn same_metadata_epa_replacement_is_rejected_without_version_trigger() {
+        let (db,artifact)=fixture();
+        let field=WarpedTagField::build(&db,"a",&artifact,3,Preset::Locked2).unwrap();
+        assert!(field.current(&db,"a"));
+        // Keep signatures and counters unchanged; full cache identity must still change.
+        db.execute("UPDATE kv_store SET value=json_set(value,'$.extra',1)
+            WHERE key='epa_basis_cache'",[]).unwrap();
+        assert!(!field.current(&db,"a"));
+        db.execute("DELETE FROM kv_store WHERE key='epa_basis_cache'",[]).unwrap();
+        assert!(!field.current(&db,"a"));
     }
 
     #[test]

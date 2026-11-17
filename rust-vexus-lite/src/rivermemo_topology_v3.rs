@@ -526,6 +526,9 @@ pub(crate) struct MemoQueryObservation {
     pub(crate) local_domain_ids: Arc<Vec<i64>>,
     pub(crate) transfer_domain_ids: Arc<Vec<i64>>,
     pub(crate) tag_vectors: Arc<TagVectorPool>,
+    // Readout heads serialize only their SQL loading phase and retain additions
+    // in the same request. Computing scores remains parallel and lock-free.
+    readout_vectors: Mutex<TagVectorPool>,
     pub(crate) database_generation: u64,
 }
 
@@ -556,6 +559,9 @@ impl MemoQueryObservation {
                 .map(|vector| vector.capacity() * size_of::<f32>()).sum::<usize>()
             + (self.local_field.capacity() + self.transfer_field.capacity())
                 * size_of::<(i64, f64)>()
+            + self.readout_vectors.lock().map(|pool|
+                pool.values().map(|v|v.len()*size_of::<f32>()).sum::<usize>()
+                +pool.capacity()*size_of::<(i64,Arc<[f32]>)>()).unwrap_or(0)
             + self.tag_vectors.values().map(|v| v.len() * size_of::<f32>()).sum::<usize>()
             + self.tag_vectors.capacity() * size_of::<(i64, Arc<[f32]>)>()
             + (self.local_domain_ids.capacity() + self.transfer_domain_ids.capacity())
@@ -576,6 +582,8 @@ struct MemoQueryCacheEntry {
 pub(crate) struct MemoRuntime {
     active_artifact: RwLock<Option<(String, u64, Arc<NativeArtifact>)>>,
     pub(crate) warped_fields: RwLock<HashMap<crate::warped_tag_field::Preset, Arc<crate::warped_tag_field::WarpedTagField>>>,
+    warped_epoch: AtomicU64,
+    routing_publication: Mutex<()>,
     generation: AtomicU64,
     query_sequence: AtomicU64,
     query_cache: Mutex<HashMap<String, MemoQueryCacheEntry>>,
@@ -591,6 +599,8 @@ impl MemoRuntime {
         Self {
             active_artifact: RwLock::new(None),
             warped_fields: RwLock::new(HashMap::new()),
+            warped_epoch: AtomicU64::new(0),
+            routing_publication: Mutex::new(()),
             generation: AtomicU64::new(0),
             query_sequence: AtomicU64::new(0),
             query_cache: Mutex::new(HashMap::new()),
@@ -617,6 +627,7 @@ impl MemoRuntime {
         artifact_sig: &str,
         artifact: Arc<NativeArtifact>,
     ) -> std::result::Result<u64, String> {
+        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
         let mut guard = self
             .active_artifact
             .write()
@@ -634,6 +645,8 @@ impl MemoRuntime {
             }
         }
 
+        self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
+        self.warped_fields.write().map_err(|e|e.to_string())?.clear();
         let generation = self.generation.fetch_add(1, AtomicOrdering::AcqRel) + 1;
         *guard = Some((artifact_sig.to_string(), generation, artifact));
         drop(guard);
@@ -699,6 +712,7 @@ impl MemoRuntime {
             local_domain_ids: Arc::new(local_domain_ids),
             transfer_domain_ids: Arc::new(transfer_domain_ids),
             tag_vectors,
+            readout_vectors: Mutex::new(TagVectorPool::new()),
             database_generation,
         });
 
@@ -757,7 +771,41 @@ impl MemoRuntime {
         Ok(removed)
     }
 
+    pub(crate) fn evict_warped_field(&self,
+        expected:&Arc<crate::warped_tag_field::WarpedTagField>) -> std::result::Result<(),String> {
+        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
+        let mut fields=self.warped_fields.write().map_err(|e|e.to_string())?;
+        if fields.get(&expected.preset).is_some_and(|current|Arc::ptr_eq(current,expected)) {
+            fields.remove(&expected.preset);
+            self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn warped_build_ticket(&self) -> u64 {
+        self.warped_epoch.load(AtomicOrdering::Acquire)
+    }
+
+    pub(crate) fn invalidate_warped_fields(&self) -> std::result::Result<(),String> {
+        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
+        self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
+        self.warped_fields.write().map_err(|e|e.to_string())?.clear();
+        Ok(())
+    }
+
+    pub(crate) fn publish_warped_field(&self, ticket:u64, signature:&str,
+        field:Arc<crate::warped_tag_field::WarpedTagField>) -> std::result::Result<(),String> {
+        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
+        if ticket!=self.warped_build_ticket() || self.get(signature)?.is_none() {
+            return Err("warped construction invalidated before publication".into());
+        }
+        self.warped_fields.write().map_err(|e|e.to_string())?.insert(field.preset,field);
+        Ok(())
+    }
+
     pub(crate) fn clear(&self) -> std::result::Result<(), String> {
+        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
+        self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
         let mut guard = self
             .active_artifact
             .write()
@@ -2727,6 +2775,7 @@ pub(crate) fn run_native_with_observation(
         .map_err(|error| format!("invalid RiverMemo native input JSON: {}", error))?;
     let mut tag_vectors = TagVectorPool::new();
     let mut pinned_artifact = None;
+    let mut pinned_observation = None;
     if let Some(handle) = input.observation_handle.as_deref() {
         let cached = match observation {
             Some(value) if value.artifact_sig == artifact_sig => value.clone(),
@@ -2786,6 +2835,13 @@ pub(crate) fn run_native_with_observation(
         if input.query_state.query_id.is_none() {
             input.query_state.query_id = cached.observation.query_id.clone();
         }
+        pinned_observation=Some(cached);
+    }
+    // Keep the Arc owner alive before taking its request-local load lock.
+    let mut readout_vectors=pinned_observation.as_ref().map(|cached|
+        cached.readout_vectors.lock().map_err(|e|e.to_string())).transpose()?;
+    if let Some(pool)=readout_vectors.as_ref() {
+        tag_vectors.extend(pool.iter().map(|(&id,v)|(id,v.clone())));
     }
     let dimension = input.dimension;
     if input.query.vector.len() != dimension
@@ -2927,6 +2983,12 @@ pub(crate) fn run_native_with_observation(
         .filter(|edge| edge.wormhole).map(|edge| edge.target_id));
     let query_stats = ensure_tag_vectors_loaded(
         connection, &mut tag_vectors, &requested_tag_ids, dimension)?;
+    if let Some(pool)=readout_vectors.as_mut() {
+        let initial=&pinned_observation.as_ref().unwrap().tag_vectors;
+        pool.extend(tag_vectors.iter().filter(|(id,_)|!initial.contains_key(id))
+            .map(|(&id,v)|(id,v.clone())));
+    }
+    drop(readout_vectors);
     let query_tag_sql_batches = query_stats.sql_batches;
     let query_and_seed_tag_vectors = tag_vectors;
     let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);

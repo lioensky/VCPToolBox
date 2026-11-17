@@ -1155,6 +1155,17 @@ impl Bq2Store {
         (self.pos.len() + self.strong.len()) * 8
     }
 
+    /// Managed allocation capacity, unlike the legacy logical payload counter.
+    pub fn allocated_hot_bytes(&self) -> usize {
+        (self.pos.capacity()+self.strong.capacity())*std::mem::size_of::<u64>()
+    }
+
+    /// Freeze a streamed immutable store without retaining growth slack.
+    pub fn shrink_to_fit(&mut self) {
+        self.pos.shrink_to_fit();
+        self.strong.shrink_to_fit();
+    }
+
     /// 底层数据访问（序列化用）
     pub fn pos_data(&self) -> &[u64] {
         &self.pos

@@ -1017,6 +1017,8 @@ pub(crate) fn load_vectors_by_ids(
         let sql = format!("SELECT id, vector FROM {table} WHERE id IN ({placeholders}) AND vector IS NOT NULL");
         let mut statement = connection.prepare(&sql)
             .map_err(|error| format!("prepare authoritative vectors failed: {error}"))?;
+        #[cfg(test)]
+        if table=="tags" { for &id in batch {tag_read_audit::record("bulk",id);} }
         let mut rows = statement.query(rusqlite::params_from_iter(batch.iter()))
             .map_err(|error| format!("query authoritative vectors failed: {error}"))?;
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
@@ -1068,6 +1070,43 @@ pub(crate) fn ensure_tag_vectors_loaded(
     };
     pool.extend(rows.into_iter().map(|(id, vector)| (id, std::sync::Arc::from(vector))));
     Ok(stats)
+}
+
+/// Test-only request ledger. No production state or experimental global controls.
+#[cfg(test)]
+pub(crate) mod tag_read_audit {
+    use std::cell::RefCell;
+    thread_local! {
+        static EVENTS:RefCell<Option<Vec<(String,i64)>>>=const {RefCell::new(None)};
+        static STAGE:RefCell<String>=const {RefCell::new(String::new())};
+    }
+    pub(crate) struct Session;
+    impl Session {
+        pub(crate) fn begin() -> Self {
+            EVENTS.with(|e|assert!(e.borrow_mut().replace(Vec::new()).is_none(),"nested audit"));
+            Self
+        }
+        pub(crate) fn events(&self) -> Vec<(String,i64)> {
+            EVENTS.with(|e|e.borrow().as_ref().unwrap().clone())
+        }
+    }
+    impl Drop for Session {
+        fn drop(&mut self) { EVENTS.with(|e|{e.borrow_mut().take();}); }
+    }
+    pub(crate) struct Stage(String);
+    impl Stage {
+        pub(crate) fn enter(name:&str) -> Self {
+            Self(STAGE.with(|s|s.replace(name.into())))
+        }
+    }
+    impl Drop for Stage {
+        fn drop(&mut self) { STAGE.with(|s|{s.replace(std::mem::take(&mut self.0));}); }
+    }
+    pub(crate) fn record(source:&str,id:i64) {
+        EVENTS.with(|events|if let Some(events)=events.borrow_mut().as_mut() {
+            STAGE.with(|stage|events.push((format!("{}:{source}",stage.borrow()),id)));
+        });
+    }
 }
 
 #[cfg(test)]

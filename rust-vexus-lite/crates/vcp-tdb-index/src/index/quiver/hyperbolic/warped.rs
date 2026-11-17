@@ -86,7 +86,9 @@ pub struct WarpedRerankOptions {
 
 /// Experimental size policy; never silently overrides caller search controls.
 pub fn warped_size_budget(nodes: usize) -> (usize, usize) {
-    if nodes <= 4096 { (1024,256) } else { (1536,384) }
+    if nodes <= 4096 { (1024,256) }
+    else if nodes <= 16384 { (1536,384) }
+    else { (2048,512) }
 }
 
 #[derive(Default, Debug)]
@@ -111,7 +113,7 @@ pub struct WarpedFieldIndex {
     mean_axis: Vec<f64>,
     table: WarpedProxyTable,
     graph: Vec<u32>,
-    offsets: Vec<usize>,
+    offsets: Vec<u32>,
     entries: Vec<u32>,
     config: WarpedFieldConfig,
     direction_landmarks: Vec<u32>,
@@ -220,7 +222,14 @@ impl WarpedFieldIndex {
         let mut offsets = Vec::with_capacity(ids.len()+1);
         let mut graph = Vec::new();
         offsets.push(0);
-        for neighbors in built.neighbors { graph.extend(neighbors); offsets.push(graph.len()); }
+        for neighbors in built.neighbors {
+            graph.extend(neighbors);
+            offsets.push(u32::try_from(graph.len())
+                .map_err(|_|invalid("warped graph exceeds u32 offset capacity"))?);
+        }
+        graph.shrink_to_fit();
+        offsets.shrink_to_fit();
+        meta.shrink_to_fit();
         // Farthest-direction selection over a bounded all-shell candidate sample.
         // No cold reads and no original landmark vectors retained.
         let count=ids.len().min(512);
@@ -238,7 +247,13 @@ impl WarpedFieldIndex {
             let Some(next)=next else {break;};
             direction_landmarks.push(candidates[next]);
         }
-        Ok(Self {dim,ids:ids.to_vec(),slots:slots.to_vec(),meta,store,mean_axis,table,
+        store.shrink_to_fit();
+        direction_landmarks.shrink_to_fit();
+        // Empty means identity mapping; sparse external slots retain their exact values.
+        let slots=if slots.iter().enumerate().all(|(i,&slot)|i==slot) {
+            Vec::new()
+        } else { slots.to_vec() };
+        Ok(Self {dim,ids:ids.to_vec(),slots,meta,store,mean_axis,table,
             graph,offsets,entries,config,direction_landmarks})
     }
     pub fn exact_distance(&self, query: &[f32], radius: f32, row: &[f32], node: usize) -> io::Result<f64> {
@@ -252,11 +267,17 @@ impl WarpedFieldIndex {
         Ok(clairaut_distance(self.config.geometry_profile()?,radius as f64,self.meta[node].depth as f64,
             self.config.effective_cosine(cosine)))
     }
+    pub fn ids(&self) -> &[u64] { &self.ids }
+
+    fn cold_slot(&self, node: usize) -> usize {
+        if self.slots.is_empty() { node } else { self.slots[node] }
+    }
+
     pub fn hot_bytes(&self) -> usize {
-        self.store.hot_bytes()+self.meta.capacity()*std::mem::size_of::<PolarNodeMeta>()
+        self.store.allocated_hot_bytes()+self.meta.capacity()*std::mem::size_of::<PolarNodeMeta>()
             +self.mean_axis.capacity()*8+self.table.hot_bytes()+self.ids.capacity()*8
             +self.slots.capacity()*std::mem::size_of::<usize>()+self.graph.capacity()*4
-            +self.offsets.capacity()*std::mem::size_of::<usize>()+self.entries.capacity()*4
+            +self.offsets.capacity()*std::mem::size_of::<u32>()+self.entries.capacity()*4
             +self.direction_landmarks.capacity()*4
     }
     pub fn connectivity(&self) -> (usize,usize) {
@@ -268,7 +289,7 @@ impl WarpedFieldIndex {
         let mut queue = std::collections::VecDeque::from([self.entries[0]]);
         seen[self.entries[0] as usize]=true;
         while let Some(u)=queue.pop_front() {
-            for &v in &self.graph[self.offsets[u as usize]..self.offsets[u as usize+1]] {
+            for &v in &self.graph[self.offsets[u as usize] as usize..self.offsets[u as usize+1] as usize] {
                 if !seen[v as usize] {seen[v as usize]=true;queue.push_back(v);}
             }
         }
@@ -351,7 +372,7 @@ impl WarpedFieldIndex {
         let seed_evaluations=evaluations.get();
         let beam=bounded_beam(self.ids.len(),&seeds,BeamBudget {
             width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions},
-            |n| &self.graph[self.offsets[n as usize]..self.offsets[n as usize+1]],
+            |n| &self.graph[self.offsets[n as usize] as usize..self.offsets[n as usize+1] as usize],
             evaluate,|n|!exclude(self.ids[n as usize]));
         if let Some(t)=trace.as_deref_mut() {
             t.seed_evaluations=seed_evaluations;
@@ -390,7 +411,7 @@ impl WarpedFieldIndex {
                 stats.radial_rejections+=1;continue;
             }
             row.clear();stats.cold_reads+=1;
-            if !fill(self.slots[node as usize],&mut row) {continue;}
+            if !fill(self.cold_slot(node as usize),&mut row) {continue;}
             let d=if rerank.reuse_transform {
                 let cosine=self.prepared_cosine(&unit,query_norm,&row,&mut scratch,&mut candidate)?;
                 let c=self.config.effective_cosine(cosine);
@@ -615,6 +636,9 @@ mod phase4d_tests {
     fn rerank_envelope_preserves_distance_bits_and_unique_cold_reads() {
         assert_eq!(warped_size_budget(4096),(1024,256));
         assert_eq!(warped_size_budget(8192),(1536,384));
+        assert_eq!(warped_size_budget(16384),(1536,384));
+        assert_eq!(warped_size_budget(16385),(2048,512));
+        assert_eq!(warped_size_budget(40602),(2048,512));
         let mut total_skips=0;
         for dim in [65,384,768,1536,3072] {
             let n=80;
@@ -624,6 +648,9 @@ mod phase4d_tests {
             let index=WarpedFieldIndex::build(dim,&ids,&slots,&radii,&vec![0.01;dim],
                 WarpedFieldConfig {radius_max:0.65,throat_phi0:1.5,angular_scale_kappa:2.0,
                     adaptive_compass:true,..Default::default()},|s,o|{*o=row(s,dim);true}).unwrap();
+            assert!(index.slots.is_empty());
+            assert_eq!(index.ids(),ids.as_slice());
+            assert_eq!(index.graph.capacity(),index.graph.len());
             let cfg=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
                 max_visits:1024,max_expansions:256,radial_bound:false};
             let nav=WarpedNavigationOptions {asymmetric:true,compact_seeds:true};

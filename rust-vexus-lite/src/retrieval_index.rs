@@ -202,6 +202,8 @@ impl RetrievalIndex {
             use rusqlite::OptionalExtension;
             output.clear();
             // Borrow the BLOB instead of copying each 12 KiB row into a new Vec.
+            #[cfg(test)]
+            if diary.is_none() { crate::storage::tag_read_audit::record("cosine_rerank",id as i64); }
             let read = statement.query_row(
                 rusqlite::params![id as i64, diary],
                 |row| match row.get_ref(0)? {

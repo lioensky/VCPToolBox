@@ -1030,19 +1030,23 @@ fn run_build(
         dependencies.ensure_current(connection)
     })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
+    let warped_ticket=runtime.warped_build_ticket();
+    drop(_publication_guard);
+    // Optional fields are built outside the exclusive publication gate.
+    // The persisted cosine artifact is already published; a field failure is
+    // explicitly partial success, not a rollback of that durable publication.
     for preset in input.warped_presets {
         let field = with_registered_read_transaction(db_path, |connection| {
             crate::warped_tag_field::WarpedTagField::build(
                 connection, &artifact_sig, &native, dimension, preset)
-        })?;
-        // The publication gate remains held: facts cannot change between validation and swap.
+        }).map_err(|error|format!(
+            "MEMO_OPTIONAL_FIELD_FAILED: artifact {artifact_sig} already published; {error}"))?;
+        let _field_gate=crate::publication_gate::acquire_read(db_path,&["*".into()])?;
         with_registered_read_transaction(db_path, |connection| {
             if !field.current(connection, &artifact_sig) {
                 return Err("warped field changed during construction".into());
             }
-            runtime.warped_fields.write().map_err(|e|e.to_string())?
-                .insert(preset, Arc::new(field));
-            Ok(())
+            runtime.publish_warped_field(warped_ticket,&artifact_sig,Arc::new(field))
         })?;
     }
     Ok(NativeMemoArtifactBuildResult {
@@ -1792,7 +1796,7 @@ mod phase5_copy_experiment {
         }).to_string()).unwrap();
         let fields=vexus.memo_runtime.warped_fields.read().unwrap();
         let field_stats:Vec<Value>=fields.values().map(|f|json!({
-            "preset":format!("{:?}",f.preset),"nodes":f.ids.len(),
+            "preset":format!("{:?}",f.preset),"nodes":f.ids().len(),
             "activeTags":f.active_tags,"rankedTags":f.ranked_tags,
             "hotBytes":f.index.hot_bytes(),"connectivity":f.index.connectivity(),
         })).collect();
