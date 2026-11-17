@@ -19,6 +19,9 @@ pub(crate) struct BeamStats {
     pub visit_limit_reached: bool,
     pub expansion_limit_reached: bool,
     pub converged: bool,
+    pub first_visit_rejection_expansion: Option<usize>,
+    pub rejected_discoveries: usize,
+    pub expansions_after_visit_limit: usize,
 }
 
 #[derive(Debug)]
@@ -60,6 +63,8 @@ impl State {
         if idx >= self.seen.len() || self.seen[idx] { return; }
         if self.stats.visited >= budget.max_visits {
             self.stats.visit_limit_reached = true;
+            self.stats.first_visit_rejection_expansion.get_or_insert(self.stats.expanded);
+            self.stats.rejected_discoveries += 1;
             return;
         }
         self.seen[idx] = true;
@@ -161,6 +166,9 @@ where
         }
         if state.expanded[node as usize] { continue; }
         state.expanded[node as usize] = true;
+        if state.stats.visit_limit_reached {
+            state.stats.expansions_after_visit_limit += 1;
+        }
         state.stats.expanded += 1;
         if !state.eligible[node as usize] { state.stats.excluded_expanded += 1; }
         for &neighbor in neighbors(node) {

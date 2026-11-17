@@ -11,13 +11,20 @@ use vcp_tdb_index::index::quiver::hyperbolic::*;
 use vcp_tdb_index::index::quiver::hyperbolic::warped_geometry::WarpedProfile;
 use sha2::{Digest,Sha256};
 
-#[derive(Clone,Debug,Serialize,Deserialize)]
-struct Params { upper:f64, phi0:f64, alpha:f64, beta:f64, kappa:f64 }
+#[derive(Clone,Debug,Default,Serialize,Deserialize)]
+struct Params {
+    upper:f64, phi0:f64, alpha:f64, beta:f64, kappa:f64,
+    #[serde(default)] adaptive_compass:bool,
+    #[serde(default)] asymmetric:bool,
+    #[serde(default)] compact_seeds:bool,
+    #[serde(default)] max_visits:usize,
+    #[serde(default)] max_expansions:usize,
+}
 impl Params {
     fn config(&self)->WarpedFieldConfig {
         WarpedFieldConfig {profile:WarpedProfile::Softening {alpha:self.alpha},
             radius_max:self.upper,throat_phi0:self.phi0,angular_scale_kappa:self.kappa,
-            mean_subtract_beta:self.beta,..Default::default()}
+            mean_subtract_beta:self.beta,adaptive_compass:self.adaptive_compass,..Default::default()}
     }
 }
 fn decode(b:&[u8])->Vec<f32> {
@@ -43,12 +50,17 @@ fn stages(trace:&WarpedSearchTrace,truth:&[(usize,f64)],ids:&[u64])->Value {
     assert!(trace.stage05_top64.iter().all(|id|trace.retained.contains(id)));
     json!({"seed_hit_rate":hit(&trace.seeds),"visited_hit_rate":hit(&trace.visited),
         "beam_retained_hit_rate":hit(&trace.retained),"stage05_top64_hit_rate":hit(&trace.stage05_top64),
+        "seed_evaluations":trace.seed_evaluations,"navigation_evaluations":trace.navigation_evaluations,
+        "first_visit_rejection_expansion":trace.first_visit_rejection_expansion,
+        "rejected_discoveries":trace.rejected_discoveries,
+        "expansions_after_visit_limit":trace.expansions_after_visit_limit,
         "seed_ids":trace.seeds,"visited_ids":trace.visited,"retained_ids":trace.retained,
         "stage05_ids":trace.stage05_top64})
 }
 fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!(std::env::var("TRIVIUM_NO_AVX512").as_deref(),Ok("1"));
     let mode=std::env::var("PHASE4B_MODE")?;
+    let phase4c=std::env::var("PHASE4C").as_deref()==Ok("1");
     assert!(["development","smoke","validation"].contains(&mode.as_str()));
     let c=Connection::open_with_flags(std::env::var("REAL_TAGS_DB")?,OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     c.execute_batch("PRAGMA query_only=ON;BEGIN")?;
@@ -81,31 +93,70 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
         let bytes=fs::read(std::env::var("PHASE4B_LOCK")?)?;
         let lock:Value=serde_json::from_slice(&bytes)?;
         assert_eq!(lock["schema"],"phase4b-lock-v1");
+        if phase4c {
+            assert_eq!(lock["protocol"],"phase4c-v1");
+            assert_eq!(lock["development_gate_passed"],true);
+        }
         let configs:Vec<Params>=serde_json::from_value(lock["configs"].clone())?;
+        if phase4c {
+            for p in &configs {
+                assert!(p.adaptive_compass && p.asymmetric && p.compact_seeds);
+                assert_eq!((p.max_visits,p.max_expansions),(1024,256));
+            }
+            matrix.push(("phase4a_reference".to_owned(),Some(Params {
+                upper:1.8,phi0:0.0,alpha:0.35,beta:0.7,kappa:1.0,..Default::default()})));
+        }
         assert!((2..=3).contains(&configs.len()));
         lock_hash=Some(format!("{:x}",Sha256::digest(&bytes)));
         for (i,p) in configs.into_iter().enumerate() {matrix.push((format!("locked_{i}"),Some(p)));}
     } else {
-        matrix.push(("phase4a_reference".to_owned(),Some(Params {upper:1.8,phi0:0.0,alpha:0.35,beta:0.7,kappa:1.0})));
+        matrix.push(("phase4a_reference".to_owned(),Some(Params {upper:1.8,phi0:0.0,alpha:0.35,beta:0.7,kappa:1.0,..Default::default()})));
         for upper in if mode=="smoke" {vec![0.9]} else {vec![0.65,0.9,1.2]} {
             for phi0 in if mode=="smoke" {vec![0.8]} else {vec![0.0,0.8,1.5]} {
                 for alpha in if mode=="smoke" {vec![0.15]} else {vec![0.15,0.35]} {
                     for beta in if mode=="smoke" {vec![0.7]} else {vec![0.5,0.7,1.0]} {
                         for kappa in if mode=="smoke" {vec![1.0]} else {vec![0.5,1.0,2.0]} {
                             matrix.push((format!("u{upper}_p{phi0}_a{alpha}_b{beta}_k{kappa}"),
-                                Some(Params {upper,phi0,alpha,beta,kappa})));
+                                Some(Params {upper,phi0,alpha,beta,kappa,..Default::default()})));
                         }
                     }
                 }
             }
         }
     }
+    if phase4c && mode!="validation" {
+        matrix.truncate(2);
+        let representative=Params {upper:0.65,phi0:1.5,alpha:0.15,beta:1.0,kappa:2.0,..Default::default()};
+        for adaptive_compass in [false,true] {
+            for asymmetric in [false,true] {
+                for compact_seeds in [false,true] {
+                    for (max_visits,max_expansions) in [(256,128),(512,192),(1024,256)] {
+                        let p=Params {adaptive_compass,asymmetric,compact_seeds,
+                            max_visits,max_expansions,..representative.clone()};
+                        matrix.push((format!("ablation_c{}_a{}_s{}_v{}",u8::from(adaptive_compass),
+                            u8::from(asymmetric),u8::from(compact_seeds),max_visits),Some(p)));
+                    }
+                }
+            }
+        }
+        for upper in [0.65,0.90] { for phi0 in [0.8,1.5] { for alpha in [0.15,0.35] {
+            for beta in [0.7,1.0] { for kappa in [1.0,2.0] {
+                if (upper,phi0,alpha,beta,kappa)==(0.65,1.5,0.15,1.0,2.0) {continue;}
+                matrix.push((format!("fixed_u{upper}_p{phi0}_a{alpha}_b{beta}_k{kappa}"),
+                    Some(Params {upper,phi0,alpha,beta,kappa,adaptive_compass:true,
+                        asymmetric:true,compact_seeds:true,max_visits:1024,max_expansions:256})));
+            }}
+        }}}
+        assert_eq!(matrix.len(),57);
+        if mode=="smoke" {matrix=vec![matrix[0].clone(),matrix[1].clone(),matrix[25].clone()];}
+    }
     let mut output=OpenOptions::new().write(true).create_new(true).open(std::env::var("PHASE4B_OUT")?)?;
     serde_json::to_writer(&mut output,&json!({"schema":"phase4b-header-v1","mode":mode,
+        "experiment":if phase4c {"phase4c-v1"} else {"phase4b-v1"},
         "metadata":metadata,"n":ids.len(),"dimension":dim,"config_count":matrix.len(),"lock_sha256":lock_hash,
         "query_ids":queries.iter().map(|q|q.0).collect::<Vec<_>>(),
         "geometry":"half-line with boundary arcs; kappa absorbed in phi; identity angular calibration",
-        "protocol":"64 unique reranks; 256 visits; 128 expansions; NNLS .03 accept-before-update; conditional per-route trajectories"}))?;
+        "protocol":"64 unique reranks; width128; per-route hot limits (zero means legacy 256/128); NNLS .03 accept-before-update; conditional per-route trajectories"}))?;
     output.write_all(b"\n")?;output.flush()?;
     let run_start=Instant::now();
     let count=matrix.len();
@@ -124,7 +175,11 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
         let build_ms=start.elapsed().as_secs_f64()*1000.0;
         if let Some(f)=&field {assert_eq!(f.connectivity(),(ids.len(),0));}
         let controls=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
-            max_visits:256,max_expansions:128,radial_bound:true};
+            max_visits:params.as_ref().map_or(256,|p|if p.max_visits==0 {256} else {p.max_visits}),
+            max_expansions:params.as_ref().map_or(128,|p|if p.max_expansions==0 {128} else {p.max_expansions}),
+            radial_bound:true};
+        let navigation=params.as_ref().map_or(WarpedNavigationOptions::default(),|p|
+            WarpedNavigationOptions {asymmetric:p.asymmetric,compact_seeds:p.compact_seeds});
         let mut samples=Vec::new();
         let mut terminals=Vec::new();
         for (qi,(_,split,query)) in queries.iter().enumerate() {
@@ -144,10 +199,13 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 let mut trace=WarpedSearchTrace::default();
                 let start=Instant::now();
                 let (neighbors,stats)=if let Some(f)=&field {
-                    let out=f.search_diagnosed(&residual,radius,controls,WarpedSeedMode::DirectionLandmarks,
-                        Some(&mut trace),|id|excluded.contains(&id),&mut fill)?;
+                    let out=f.search_with_navigation(&residual,radius,controls,WarpedSeedMode::DirectionLandmarks,
+                        navigation,Some(&mut trace),|id|excluded.contains(&id),&mut fill)?;
                     assert_eq!(cache.len(),out.stats.cold_reads);
                     (out.neighbors,json!({"visited":out.stats.visited,"expanded":out.stats.expanded,
+                        "visit_limit_reached":out.stats.visit_limit_reached,
+                        "expansion_limit_reached":out.stats.expansion_limit_reached,
+                        "converged":out.stats.converged,"asymmetric_evals":out.stats.asymmetric_evals,
                         "excluded_expanded":out.stats.excluded_expanded,"radial_rejections":out.stats.radial_rejections}))
                 } else {
                     (legacy.search_with_options(&residual,&mut fill,&QuIVerSearchConfig {
@@ -193,8 +251,8 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 // Same graph/query/exclusions control; never feeds the actual trajectory.
                 let mut control_trace=WarpedSearchTrace::default();let mut control_reads=0;
                 let control=if let Some(f)=&field {
-                    let out=f.search_diagnosed(&residual,radius,controls,WarpedSeedMode::InnerOnly,
-                        Some(&mut control_trace),|id|excluded.contains(&id),|s,o| {
+                    let out=f.search_with_navigation(&residual,radius,controls,WarpedSeedMode::InnerOnly,
+                        navigation,Some(&mut control_trace),|id|excluded.contains(&id),|s,o| {
                             control_reads+=1;read(&c,s,o)
                         })?;
                     assert_eq!(control_reads,out.stats.cold_reads);

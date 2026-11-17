@@ -115,3 +115,20 @@ fn horizontal_frontier_survives_apex_threshold() {
     assert_eq!(out.stats.visited, 4);
     assert!(out.stats.converged);
 }
+
+#[test]
+fn discovery_cap_records_first_rejection_and_later_expansions() {
+    // The first expansion attempts seven fresh neighbors with only three slots.
+    let graph = vec![vec![1,2,3,4,5,6,7],vec![],vec![],vec![],
+        vec![],vec![],vec![],vec![]];
+    let small = run(&graph, &[0], &[], 8, 4, 8);
+    assert_eq!(small.stats.visited,4);
+    assert_eq!(small.stats.first_visit_rejection_expansion,Some(1));
+    assert_eq!(small.stats.rejected_discoveries,4);
+    assert_eq!(small.stats.expansions_after_visit_limit,3);
+    let wide = run(&graph, &[0], &[], 8, 8, 8);
+    assert_eq!(wide.stats.visited,8);
+    assert_eq!(wide.stats.first_visit_rejection_expansion,None);
+    assert_eq!(wide.stats.rejected_discoveries,0);
+    assert_eq!(wide.stats.expansions_after_visit_limit,0);
+}

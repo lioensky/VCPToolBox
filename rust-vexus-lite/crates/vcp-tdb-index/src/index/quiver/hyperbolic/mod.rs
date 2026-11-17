@@ -9,7 +9,8 @@ mod semantic;
 pub mod warped_geometry;
 mod warped_graph;
 mod warped;
-pub use warped::{WarpedFieldConfig, WarpedFieldIndex, WarpedSearchTrace, WarpedSeedMode};
+pub use warped::{WarpedFieldConfig, WarpedFieldIndex, WarpedSearchTrace, WarpedSeedMode,
+    WarpedNavigationOptions};
 #[cfg(test)]
 mod semantic_tests;
 pub use semantic::{SemanticBackground, SemanticCone, SemanticConeConfig};

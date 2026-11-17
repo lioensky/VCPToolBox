@@ -7,7 +7,11 @@ from pathlib import Path
 from statistics import mean
 
 
-def audit_route(route, n, query_count):
+def audit_route(route, n, query_count, allowed_splits=("development", "holdout")):
+    params = route.get("params") or {}
+    visits = params.get("max_visits", 0) or 256
+    expansions = params.get("max_expansions", 0) or 128
+    seed_cap = min(64, visits // 4, 16 if params.get("compact_seeds") else 64)
     samples = route["samples"]
     terminals = route["terminals"]
     assert len(terminals) == query_count
@@ -22,7 +26,7 @@ def audit_route(route, n, query_count):
         excluded = set()
         explained = 0.0
         for i, s in enumerate(rows):
-            assert s["split"] in ("development", "holdout")
+            assert s["split"] in allowed_splits
             assert abs(s["query_energy"] - (1 - explained)) < 2e-6
             result = s["result_ids"]
             truth = s["truth_ids"]
@@ -37,12 +41,23 @@ def audit_route(route, n, query_count):
             recall = len(set(result).intersection(truth)) / len(truth)
             assert abs(recall - s["own_recall"]) < 1e-12
             if s["stages"] is not None:
-                assert s["stats"]["visited"] <= 256
-                assert s["stats"]["expanded"] <= 128
+                assert s["stats"]["visited"] <= visits
+                assert s["stats"]["expanded"] <= expansions
                 for stage in (s["stages"], s["inner_control"]):
                     sets = [set(stage[k]) for k in
                             ("seed_ids", "visited_ids", "retained_ids", "stage05_ids")]
-                    assert len(sets[0]) <= 64 and len(sets[1]) <= 256
+                    assert len(sets[0]) <= seed_cap and len(sets[1]) <= visits
+                    assert len(sets[2]) <= 256 and len(sets[3]) <= 64
+                    if "first_visit_rejection_expansion" in stage:
+                        first = stage["first_visit_rejection_expansion"]
+                        assert stage["rejected_discoveries"] >= 0
+                        if first is None:
+                            assert stage["rejected_discoveries"] == 0
+                            assert stage["expansions_after_visit_limit"] == 0
+                        else:
+                            assert 0 <= first <= expansions
+                            assert stage["rejected_discoveries"] > 0
+                        assert stage["expansions_after_visit_limit"] <= expansions
                     assert sets[0] <= sets[1] and sets[3] <= sets[2] <= sets[1]
                     assert not excluded.intersection(sets[3])
                     for ids, key in zip(sets, ("seed_hit_rate", "visited_hit_rate",

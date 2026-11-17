@@ -20,13 +20,14 @@ pub struct WarpedFieldConfig {
     pub degree: usize,
     pub construction_width: usize,
     pub alpha: f64,
+    pub adaptive_compass: bool,
 }
 impl Default for WarpedFieldConfig {
     fn default() -> Self {
         Self { profile: WarpedProfile::Softening { alpha: 0.35 }, radius_max: 1.8,
             mean_subtract_beta: 0.7, throat_phi0: 0.0, angular_scale_kappa: 1.0,
             angular_tau: 0.0, angular_eta: 1.0,
-            degree: 32, construction_width: 128, alpha: 1.2 }
+            degree: 32, construction_width: 128, alpha: 1.2, adaptive_compass: false }
     }
 }
 impl WarpedFieldConfig {
@@ -72,8 +73,18 @@ pub enum WarpedSeedMode {
     InnerOnly,
     DirectionLandmarks,
 }
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarpedNavigationOptions {
+    pub asymmetric: bool,
+    pub compact_seeds: bool,
+}
 #[derive(Default, Debug)]
 pub struct WarpedSearchTrace {
+    pub seed_evaluations: usize,
+    pub navigation_evaluations: usize,
+    pub first_visit_rejection_expansion: Option<usize>,
+    pub rejected_discoveries: usize,
+    pub expansions_after_visit_limit: usize,
     pub seeds: Vec<u64>,
     pub visited: Vec<u64>,
     pub retained: Vec<u64>,
@@ -155,9 +166,13 @@ impl WarpedFieldIndex {
         let radial = |a: usize,b: usize| (radii[a] as f64-radii[b] as f64).abs();
         let angular = |a: usize,b: usize| 1.0-config.effective_cosine(cosine(a,b));
         let depths: Vec<_> = radii.iter().map(|&r| r as f64).collect();
+        let span = (config.radius_max - 0.35).max(0.10);
+        let (iso_tol,elev_min,elev_step) = if config.adaptive_compass {
+            (0.35*span,0.12*span,0.42*span)
+        } else { (0.60,0.18,0.65) };
         let compass = QuadriPruneSpec {
             depths: &depths, radial_dist_fn: &radial, angular_loss_fn: &angular,
-            iso_tol:0.60, elev_min:0.18, elev_step:0.65, geo_fraction:0.375,
+            iso_tol,elev_min,elev_step, geo_fraction:0.375,
             ang_guard_delta:0.45, elev_ang_delta:0.50,
             iso_score_uses_geodesic:false, bridge_cap:0,
         };
@@ -226,8 +241,15 @@ impl WarpedFieldIndex {
         self.search_diagnosed(query,radius,config,WarpedSeedMode::LegacySample,None,exclude,fill)
     }
     pub fn search_diagnosed<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
-        seed_mode:WarpedSeedMode, mut trace:Option<&mut WarpedSearchTrace>,
-        exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
+        seed_mode:WarpedSeedMode, trace:Option<&mut WarpedSearchTrace>,
+        exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_with_navigation(query,radius,config,seed_mode,
+            WarpedNavigationOptions::default(),trace,exclude,fill)
+    }
+    pub fn search_with_navigation<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions,
+        mut trace:Option<&mut WarpedSearchTrace>, exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
         if let Some(t)=trace.as_deref_mut() {*t=WarpedSearchTrace::default();}
         if config.width==0 || config.rerank_limit>64 || config.rerank_limit<config.top_k {
@@ -239,8 +261,16 @@ impl WarpedFieldIndex {
         if config.top_k==0 || self.ids.is_empty() {
             return Ok(HyperbolicOutput {neighbors:Vec::new(),stats:Default::default()});
         }
+        let asym=AsymQuerySm::encode(&unit)?;
+        let evaluations=std::cell::Cell::new(0usize);
         let evaluate=|node:u32| {
-            let cosine=query_cosine(&self.store,&self.meta,node as usize,&sig,qmeta.sm(),self.dim);
+            evaluations.set(evaluations.get()+1);
+            let cosine=if navigation.asymmetric {
+                let (p,h)=planes(&self.store,node as usize);
+                asym.calibrated_cosine(p,h,self.meta[node as usize].sm(),AsymKernel::Auto)
+            } else {
+                query_cosine(&self.store,&self.meta,node as usize,&sig,qmeta.sm(),self.dim)
+            };
             let c=self.config.effective_cosine(cosine);
             let r=self.meta[node as usize].depth;
             (slice.eval(r,c),1.0-c+0.20*(radius as f64-r as f64).abs())
@@ -256,18 +286,34 @@ impl WarpedFieldIndex {
             WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(&self.direction_landmarks),
         }
         seeds.sort_unstable();seeds.dedup();
-        seeds.sort_unstable_by(|&a,&b|evaluate(a).0.total_cmp(&evaluate(b).0).then(a.cmp(&b)));
-        seeds.truncate(seed_cap);
+        // Score each directory candidate once, not once per sort comparison.
+        let mut scored:Vec<_>=seeds.iter().map(|&n|(evaluate(n).0,n)).collect();
+        scored.sort_unstable_by(|a,b|a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        if navigation.compact_seeds {
+            let cap=seed_cap.min(16);
+            seeds=self.entries.iter().copied().take(cap.min(8)).collect();
+            for (_,n) in scored {
+                if seeds.len()>=cap {break;}
+                if !seeds.contains(&n) {seeds.push(n);}
+            }
+        } else {
+            seeds=scored.into_iter().take(seed_cap).map(|p|p.1).collect();
+        }
+        let seed_evaluations=evaluations.get();
         let beam=bounded_beam(self.ids.len(),&seeds,BeamBudget {
             width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions},
             |n| &self.graph[self.offsets[n as usize]..self.offsets[n as usize+1]],
             evaluate,|n|!exclude(self.ids[n as usize]));
         if let Some(t)=trace.as_deref_mut() {
+            t.seed_evaluations=seed_evaluations;
+            t.navigation_evaluations=evaluations.get()-seed_evaluations;
+            t.first_visit_rejection_expansion=beam.stats.first_visit_rejection_expansion;
+            t.rejected_discoveries=beam.stats.rejected_discoveries;
+            t.expansions_after_visit_limit=beam.stats.expansions_after_visit_limit;
             t.seeds=seeds.iter().map(|&n|self.ids[n as usize]).collect();
             t.visited=beam.visited_nodes.iter().map(|&n|self.ids[n as usize]).collect();
             t.retained=beam.candidates.iter().map(|&n|self.ids[n as usize]).collect();
         }
-        let asym=AsymQuerySm::encode(&unit)?;
         let mut pool:Vec<_>=beam.candidates.iter().map(|&node| {
             let (p,h)=planes(&self.store,node as usize);
             let c=asym.calibrated_cosine(p,h,self.meta[node as usize].sm(),AsymKernel::Auto);
@@ -376,6 +422,49 @@ mod tests {
                 let values:Vec<_>=(0..=1000).map(|i|cfg.effective_cosine(-1.0+i as f64/500.0)).collect();
                 assert_eq!(values[0],-1.0);assert_eq!(values[1000],1.0);
                 assert!(values.windows(2).all(|p|p[0]<p[1]));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase4c_tests {
+    use super::*;
+    #[test]
+    fn compact_asymmetric_navigation_preserves_budget_and_excluded_bridges() {
+        for dim in [65,384,768,1536,3072] {
+            let n=48;
+            let ids:Vec<_>=(1..=n as u64).collect();
+            let slots:Vec<_>=(0..n).collect();
+            let radii:Vec<_>=(0..n).map(|i|0.35+0.29*i as f32/(n-1) as f32).collect();
+            let row=|i:usize| (0..dim).map(|j|((i*71+j*17+1) as f64*0.37).sin() as f32).collect::<Vec<_>>();
+            let index=WarpedFieldIndex::build(dim,&ids,&slots,&radii,&vec![0.01;dim],
+                WarpedFieldConfig {radius_max:0.65,throat_phi0:1.5,
+                    adaptive_compass:true,degree:12,..Default::default()},
+                |s,o|{*o=row(s);true}).unwrap();
+            assert_eq!(index.connectivity(),(n,0));
+            let options=WarpedNavigationOptions {asymmetric:true,compact_seeds:true};
+            for visits in [0,1,3,4,16,48,1024] {
+                let cfg=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
+                    max_visits:visits,max_expansions:256,radial_bound:true};
+                let mut trace=WarpedSearchTrace::default();
+                let mut reads=std::collections::HashSet::new();
+                let out=index.search_with_navigation(&row(37),0.5,cfg,
+                    WarpedSeedMode::DirectionLandmarks,options,Some(&mut trace),
+                    |id|id<=8,|s,o|{
+                        assert!(s>=8);
+                        assert!(reads.insert(s));*o=row(s);true
+                    }).unwrap();
+                assert!(trace.seeds.len()<=16.min(visits/4));
+                assert!(out.stats.visited<=visits);
+                assert_eq!(out.stats.cold_reads,reads.len());
+                assert!(reads.len()<=64);
+                assert!(out.neighbors.iter().all(|p|p.0>8));
+                let empty=index.search_with_navigation(&row(37),0.5,cfg,
+                    WarpedSeedMode::DirectionLandmarks,options,None,
+                    |_|true,|_,_|panic!("excluded cold read")).unwrap();
+                assert!(empty.neighbors.is_empty());
+                assert_eq!(empty.stats.cold_reads,0);
             }
         }
     }
