@@ -19,6 +19,8 @@ struct Params {
     #[serde(default)] compact_seeds:bool,
     #[serde(default)] max_visits:usize,
     #[serde(default)] max_expansions:usize,
+    #[serde(default)] reuse_transform:bool,
+    #[serde(default)] envelope_bound:bool,
 }
 impl Params {
     fn config(&self)->WarpedFieldConfig {
@@ -60,7 +62,9 @@ fn stages(trace:&WarpedSearchTrace,truth:&[(usize,f64)],ids:&[u64])->Value {
 fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!(std::env::var("TRIVIUM_NO_AVX512").as_deref(),Ok("1"));
     let mode=std::env::var("PHASE4B_MODE")?;
-    let phase4c=std::env::var("PHASE4C").as_deref()==Ok("1");
+    let phase4d=std::env::var("PHASE4D").as_deref()==Ok("1");
+    let phase4c=phase4d || std::env::var("PHASE4C").as_deref()==Ok("1");
+    if phase4d {assert_eq!(mode,"validation");}
     assert!(["development","smoke","validation"].contains(&mode.as_str()));
     let c=Connection::open_with_flags(std::env::var("REAL_TAGS_DB")?,OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     c.execute_batch("PRAGMA query_only=ON;BEGIN")?;
@@ -144,15 +148,31 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 if (upper,phi0,alpha,beta,kappa)==(0.65,1.5,0.15,1.0,2.0) {continue;}
                 matrix.push((format!("fixed_u{upper}_p{phi0}_a{alpha}_b{beta}_k{kappa}"),
                     Some(Params {upper,phi0,alpha,beta,kappa,adaptive_compass:true,
-                        asymmetric:true,compact_seeds:true,max_visits:1024,max_expansions:256})));
+                        asymmetric:true,compact_seeds:true,max_visits:1024,max_expansions:256,
+                        ..Default::default()})));
             }}
         }}}
         assert_eq!(matrix.len(),57);
         if mode=="smoke" {matrix=vec![matrix[0].clone(),matrix[1].clone(),matrix[25].clone()];}
     }
+    if phase4d {
+        let locked=matrix[2..].to_vec();
+        for (name,p) in locked {
+            let p=p.unwrap();
+            matrix.push((format!("{name}_reuse"),Some(Params {
+                reuse_transform:true,..p.clone()})));
+            matrix.push((format!("{name}_envelope"),Some(Params {
+                reuse_transform:true,envelope_bound:true,..p.clone()})));
+            if ids.len()>4096 {
+                let (max_visits,max_expansions)=warped_size_budget(ids.len());
+                matrix.push((format!("{name}_scaled"),Some(Params {
+                    reuse_transform:true,envelope_bound:true,max_visits,max_expansions,..p})));
+            }
+        }
+    }
     let mut output=OpenOptions::new().write(true).create_new(true).open(std::env::var("PHASE4B_OUT")?)?;
     serde_json::to_writer(&mut output,&json!({"schema":"phase4b-header-v1","mode":mode,
-        "experiment":if phase4c {"phase4c-v1"} else {"phase4b-v1"},
+        "experiment":if phase4d {"phase4d-v1"} else if phase4c {"phase4c-v1"} else {"phase4b-v1"},
         "metadata":metadata,"n":ids.len(),"dimension":dim,"config_count":matrix.len(),"lock_sha256":lock_hash,
         "query_ids":queries.iter().map(|q|q.0).collect::<Vec<_>>(),
         "geometry":"half-line with boundary arcs; kappa absorbed in phi; identity angular calibration",
@@ -180,6 +200,8 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
             radial_bound:true};
         let navigation=params.as_ref().map_or(WarpedNavigationOptions::default(),|p|
             WarpedNavigationOptions {asymmetric:p.asymmetric,compact_seeds:p.compact_seeds});
+        let rerank=params.as_ref().map_or(WarpedRerankOptions::default(),|p|
+            WarpedRerankOptions {reuse_transform:p.reuse_transform,envelope_bound:p.envelope_bound});
         let mut samples=Vec::new();
         let mut terminals=Vec::new();
         for (qi,(_,split,query)) in queries.iter().enumerate() {
@@ -199,13 +221,15 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 let mut trace=WarpedSearchTrace::default();
                 let start=Instant::now();
                 let (neighbors,stats)=if let Some(f)=&field {
-                    let out=f.search_with_navigation(&residual,radius,controls,WarpedSeedMode::DirectionLandmarks,
-                        navigation,Some(&mut trace),|id|excluded.contains(&id),&mut fill)?;
+                    let out=f.search_with_rerank(&residual,radius,controls,WarpedSeedMode::DirectionLandmarks,
+                        navigation,rerank,Some(&mut trace),|id|excluded.contains(&id),&mut fill)?;
                     assert_eq!(cache.len(),out.stats.cold_reads);
                     (out.neighbors,json!({"visited":out.stats.visited,"expanded":out.stats.expanded,
                         "visit_limit_reached":out.stats.visit_limit_reached,
                         "expansion_limit_reached":out.stats.expansion_limit_reached,
                         "converged":out.stats.converged,"asymmetric_evals":out.stats.asymmetric_evals,
+                        "exact_quad_skips":out.stats.exact_quad_skips,
+                        "exact_distance_evals":out.stats.exact_distance_evals,
                         "excluded_expanded":out.stats.excluded_expanded,"radial_rejections":out.stats.radial_rejections}))
                 } else {
                     (legacy.search_with_options(&residual,&mut fill,&QuIVerSearchConfig {
@@ -214,6 +238,22 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 };
                 let search_us=start.elapsed().as_secs_f64()*1e6;
                 assert!(cache.len()<=64);
+                let mut compatibility_reads=0;
+                if phase4d && rerank.reuse_transform {
+                    let f=field.as_ref().unwrap();
+                    let mut reference_slots=HashSet::new();
+                    let old=f.search_with_navigation(&residual,radius,controls,
+                        WarpedSeedMode::DirectionLandmarks,navigation,None,
+                        |id|excluded.contains(&id),|s,o|{
+                            assert!(reference_slots.insert(s));
+                            compatibility_reads+=1;read(&c,s,o)
+                        })?;
+                    assert_eq!(old.neighbors.iter().map(|&(id,d)|(id,d.to_bits())).collect::<Vec<_>>(),
+                        neighbors.iter().map(|&(id,d)|(id,d.to_bits())).collect::<Vec<_>>(),
+                        "Phase4D changed exact output bits");
+                    assert_eq!(reference_slots,cache.keys().copied().collect::<HashSet<_>>(),
+                        "Phase4D changed cold read set");
+                }
                 let rows:Vec<_>=neighbors.iter().map(|&(id,d)|(ids.binary_search(&id).unwrap(),d)).collect();
                 let start=Instant::now();
                 let solution=fit(&residual,&rows,&ids,&cache)?;
@@ -251,8 +291,8 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                 // Same graph/query/exclusions control; never feeds the actual trajectory.
                 let mut control_trace=WarpedSearchTrace::default();let mut control_reads=0;
                 let control=if let Some(f)=&field {
-                    let out=f.search_with_navigation(&residual,radius,controls,WarpedSeedMode::InnerOnly,
-                        navigation,Some(&mut control_trace),|id|excluded.contains(&id),|s,o| {
+                    let out=f.search_with_rerank(&residual,radius,controls,WarpedSeedMode::InnerOnly,
+                        navigation,rerank,Some(&mut control_trace),|id|excluded.contains(&id),|s,o| {
                             control_reads+=1;read(&c,s,o)
                         })?;
                     assert_eq!(control_reads,out.stats.cold_reads);
@@ -267,6 +307,10 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
                     "avg_inbQ":mean_attr(&rows,0),"avg_R":mean_attr(&rows,1),"avg_cos":mean_attr(&rows,2),
                     "exact_avg_inbQ":mean_attr(&truth,0),"exact_avg_R":mean_attr(&truth,1),
                     "cold_reads":cache.len(),"nnls_additional_reads":0,"oracle_reads":oracle_reads,
+                    "compatibility_reads":compatibility_reads,
+                    "compatibility_checked":phase4d && rerank.reuse_transform,
+                    "distance_bits":neighbors.iter().map(|p|p.1.to_bits()).collect::<Vec<_>>(),
+                    "ann_explained_bits":explained.to_bits(),
                     "oracle_fit_reads":oracle_cache.len(),"control_reads":control_reads,
                     "search_us":search_us,"nnls_us":nnls_us,"stages":stage,"inner_control":control,
                     "stats":stats,"result_ids":rows.iter().map(|p|ids[p.0]).collect::<Vec<_>>(),

@@ -38,6 +38,8 @@ pub struct HyperbolicSearchStats {
     pub asymmetric_evals: usize,
     pub cold_reads: usize,
     pub radial_rejections: usize,
+    pub exact_quad_skips: usize,
+    pub exact_distance_evals: usize,
     pub seeds: usize,
     pub converged: bool,
     pub semantic_cone: Option<SemanticCone>,

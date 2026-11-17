@@ -333,6 +333,66 @@ fn throat_distance(profile: WarpedProfile, rq: f64, rv: f64, cosine: f64) -> f64
     clairaut_length(profile,turn,lo,l)+clairaut_length(profile,turn,hi,l)
 }
 
+/// Metric comparison: nonnegative cubic softening dominates the linear throat.
+/// This is not an interpolated-table envelope. The floating-point retreat is
+/// conservative engineering protection, not certified quadrature error analysis.
+pub fn clairaut_lower_bound(profile: WarpedProfile, rq:f64, rv:f64, cosine:f64) -> f64 {
+    if !rq.is_finite() || !rv.is_finite() || rq<0.0 || rv<0.0 || !cosine.is_finite() {
+        return 0.0;
+    }
+    // Legacy Brent endpoint tolerance can collapse extremely near-aligned
+    // equal-radius distances to zero. Disable pruning in that unresolved region
+    // rather than changing the historical numerical target.
+    if cosine>=1.0-1e-8 { return 0.0; }
+    let radial=(rq-rv).abs();
+    let raw=match profile {
+        WarpedProfile::ThroatSoftening {alpha,phi0,kappa}
+            if alpha>=0.0 && phi0>=0.0 && kappa>0.0 => {
+            let theta=cosine.clamp(-1.0,1.0).acos();
+            let angle=kappa*theta;
+            let (x,y)=(rq+phi0,rv+phi0);
+            let critical=if phi0==0.0 {std::f64::consts::PI} else {
+                (phi0/x).clamp(0.0,1.0).acos()+(phi0/y).clamp(0.0,1.0).acos()
+            };
+            let linear=if angle<=critical {
+                (radial*radial+4.0*x*y*(angle*0.5).sin().powi(2)).sqrt()
+            } else {
+                ((x-phi0)*(x+phi0)).max(0.0).sqrt()
+                    +((y-phi0)*(y+phi0)).max(0.0).sqrt()
+                    +phi0*(angle-critical)
+            };
+            let cylinder=(radial*radial+(kappa*phi0*theta).powi(2)).sqrt();
+            linear.max(cylinder)
+        },
+        _ => radial,
+    };
+    if raw.is_finite() { (raw-1e-7*(1.0+raw+rq+rv)).max(0.0) } else {0.0}
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    #[test]
+    fn analytic_comparison_never_exceeds_numerical_reference_on_boundary_grid() {
+        for alpha in [0.0,0.15,0.35,2.0] {
+            for phi0 in [0.0,0.8,1.5] {
+                for kappa in [0.5,1.0,2.0] {
+                    let p=WarpedProfile::ThroatSoftening {alpha,phi0,kappa};
+                    for a in [0.0,1e-10,0.35,0.425,0.65,1.2] {
+                        for b in [0.0,0.35,0.5,0.65,1.2] {
+                            for c in [-1.0,-0.8,0.0,0.6,0.99,1.0-1e-14,1.0] {
+                                let lb=clairaut_lower_bound(p,a,b,c);
+                                let exact=clairaut_distance(p,a,b,c);
+                                assert!(lb>=0.0 && lb<=exact,
+                                    "a={a} b={b} c={c} lb={lb} exact={exact} p={p:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 /// 离线为特定 φ(R) 预校准的二维/三维径向-半正矢角表结构（驻留 L2/L1，彻底消除束搜索内的积分）。
 ///
 /// 在横轴 `u = (1 - cos_theta) * 0.5 = sin^2(theta/2)` 上采样（近角区呈线性行为且热路径零开方）。

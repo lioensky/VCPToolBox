@@ -78,6 +78,17 @@ pub struct WarpedNavigationOptions {
     pub asymmetric: bool,
     pub compact_seeds: bool,
 }
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarpedRerankOptions {
+    pub reuse_transform: bool,
+    pub envelope_bound: bool,
+}
+
+/// Experimental size policy; never silently overrides caller search controls.
+pub fn warped_size_budget(nodes: usize) -> (usize, usize) {
+    if nodes <= 4096 { (1024,256) } else { (1536,384) }
+}
+
 #[derive(Default, Debug)]
 pub struct WarpedSearchTrace {
     pub seed_evaluations: usize,
@@ -118,6 +129,34 @@ impl WarpedFieldIndex {
         }
         for x in &mut unit { *x /= length; }
         Ok(unit.into_iter().map(|x| x as f32).collect())
+    }
+    /// Identical operation order and f32 rounding to transform(), but buffers
+    /// are allocated once per query, not per cold candidate.
+    fn transform_into(raw: &[f32], axis: &[f64], beta: f64,
+        scratch: &mut [f64], output: &mut [f32]) -> io::Result<()> {
+        if raw.len()!=axis.len() || scratch.len()!=raw.len() || output.len()!=raw.len() {
+            return Err(invalid("warped scratch dimension"));
+        }
+        let norm=checked_norm(raw)?;
+        let alignment=raw.iter().zip(axis).map(|(&x,&m)|x as f64/norm*m).sum::<f64>();
+        for ((s,&x),&m) in scratch.iter_mut().zip(raw).zip(axis) {
+            *s=x as f64/norm-beta*alignment*m;
+        }
+        let length=scratch.iter().map(|x|x*x).sum::<f64>().sqrt();
+        if !length.is_finite() || length<=1e-12 {
+            return Err(invalid("mean subtraction annihilates direction"));
+        }
+        for (s,o) in scratch.iter_mut().zip(output) {
+            *s/=length; *o=*s as f32;
+        }
+        Ok(())
+    }
+    fn prepared_cosine(&self, unit:&[f32], query_norm:f64, row:&[f32],
+        scratch:&mut [f64], candidate:&mut [f32]) -> io::Result<f64> {
+        Self::transform_into(row,&self.mean_axis,self.config.mean_subtract_beta,scratch,candidate)?;
+        let vn=checked_norm(candidate)?;
+        Ok(unit.iter().zip(candidate.iter())
+            .map(|(&a,&b)|a as f64*b as f64).sum::<f64>()/query_norm/vn)
     }
     /// Mean is supplied from a frozen AGS generation or an explicitly separate
     /// streaming mean pass. Each indexed original is read exactly once here.
@@ -249,8 +288,18 @@ impl WarpedFieldIndex {
     }
     pub fn search_with_navigation<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
         seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions,
+        trace:Option<&mut WarpedSearchTrace>, exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_with_rerank(query,radius,config,seed_mode,navigation,
+            WarpedRerankOptions::default(),trace,exclude,fill)
+    }
+    pub fn search_with_rerank<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
         mut trace:Option<&mut WarpedSearchTrace>, exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        if rerank.envelope_bound && !rerank.reuse_transform {
+            return Err(invalid("envelope requires prepared exact cosine"));
+        }
         if let Some(t)=trace.as_deref_mut() {*t=WarpedSearchTrace::default();}
         if config.width==0 || config.rerank_limit>64 || config.rerank_limit<config.top_k {
             return Err(invalid("warped query requires top_k <= cold budget <= 64"));
@@ -329,8 +378,12 @@ impl WarpedFieldIndex {
             converged:beam.stats.converged,seeds:seeds.len(),valid_candidates:pool.len(),
             asymmetric_evals:pool.len(),..Default::default()
         };
+        let profile=self.config.geometry_profile()?;
+        let query_norm=if rerank.reuse_transform {checked_norm(&unit)?} else {1.0};
+        let mut scratch=if rerank.reuse_transform {vec![0.0_f64;self.dim]} else {Vec::new()};
+        let mut candidate=if rerank.reuse_transform {vec![0.0_f32;self.dim]} else {Vec::new()};
         let mut row=Vec::with_capacity(self.dim);
-        let mut exact:Vec<(u64,f64)>=Vec::new();
+        let mut exact:Vec<(u64,f64)>=Vec::with_capacity(config.top_k+1);
         for (_,node) in pool.into_iter().take(config.rerank_limit) {
             if config.radial_bound && exact.len()>=config.top_k
                 && (radius as f64-self.meta[node as usize].depth as f64).abs()-1e-10>exact.last().unwrap().1 {
@@ -338,7 +391,23 @@ impl WarpedFieldIndex {
             }
             row.clear();stats.cold_reads+=1;
             if !fill(self.slots[node as usize],&mut row) {continue;}
-            let d=self.exact_distance(query,radius,&row,node as usize)?;
+            let d=if rerank.reuse_transform {
+                let cosine=self.prepared_cosine(&unit,query_norm,&row,&mut scratch,&mut candidate)?;
+                let c=self.config.effective_cosine(cosine);
+                if rerank.envelope_bound && exact.len()>=config.top_k {
+                    let bound=super::warped_geometry::clairaut_lower_bound(
+                        profile,radius as f64,self.meta[node as usize].depth as f64,c);
+                    if bound>exact.last().unwrap().1 {
+                        stats.exact_quad_skips+=1;
+                        continue;
+                    }
+                }
+                stats.exact_distance_evals+=1;
+                clairaut_distance(profile,radius as f64,self.meta[node as usize].depth as f64,c)
+            } else {
+                stats.exact_distance_evals+=1;
+                self.exact_distance(query,radius,&row,node as usize)?
+            };
             exact.push((self.ids[node as usize],d));
             exact.sort_unstable_by(|a,b|a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             exact.truncate(config.top_k);
@@ -467,5 +536,118 @@ mod phase4c_tests {
                 assert_eq!(empty.stats.cold_reads,0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod phase4d_tests {
+    use super::*;
+    use std::alloc::{GlobalAlloc,Layout,System};
+    std::thread_local! {
+        static ALLOCS:std::cell::Cell<Option<usize>>=const {std::cell::Cell::new(None)};
+    }
+    struct CountedAllocator;
+    fn count_alloc() {
+        let _=ALLOCS.try_with(|c|if let Some(n)=c.get() {c.set(Some(n+1));});
+    }
+    unsafe impl GlobalAlloc for CountedAllocator {
+        unsafe fn alloc(&self,layout:Layout)->*mut u8 {
+            count_alloc(); unsafe {System.alloc(layout)}
+        }
+        unsafe fn alloc_zeroed(&self,layout:Layout)->*mut u8 {
+            count_alloc(); unsafe {System.alloc_zeroed(layout)}
+        }
+        unsafe fn realloc(&self,p:*mut u8,layout:Layout,size:usize)->*mut u8 {
+            count_alloc(); unsafe {System.realloc(p,layout,size)}
+        }
+        unsafe fn dealloc(&self,p:*mut u8,layout:Layout) {
+            unsafe {System.dealloc(p,layout)}
+        }
+    }
+    #[global_allocator]
+    static TEST_ALLOCATOR:CountedAllocator=CountedAllocator;
+    fn row(i:usize,dim:usize)->Vec<f32> {
+        (0..dim).map(|j|((i*71+j*17+1) as f64*0.37).sin() as f32).collect()
+    }
+    #[test]
+    fn reused_transform_is_bit_exact_and_adjoint_rounding_is_measured() {
+        let mut adjoint_worst=0.0_f64;
+        for dim in [65,384,768,1536,3072] {
+            let a:Vec<_>=(0..dim).map(|i|((i+1) as f64).sin()).collect();
+            let an=a.iter().map(|x|x*x).sum::<f64>().sqrt();
+            let axis:Vec<_>=a.iter().map(|x|x/an).collect();
+            for beta in [0.0,0.7,1.0] {
+                let q=WarpedFieldIndex::transform(&row(3,dim),&axis,beta).unwrap();
+                let qn=checked_norm(&q).unwrap();
+                let align=q.iter().zip(&axis).map(|(&x,&m)|x as f64/qn*m).sum::<f64>();
+                let adjoint:Vec<_>=q.iter().zip(&axis).map(|(&x,&m)|x as f64/qn-beta*align*m).collect();
+                let mut scratch=vec![0.0;dim];
+                let mut candidate=vec![0.0;dim];
+                for i in 0..24 {
+                    let raw=row(i,dim);
+                    let old=WarpedFieldIndex::transform(&raw,&axis,beta).unwrap();
+                    ALLOCS.with(|c|c.set(Some(0)));
+                    WarpedFieldIndex::transform_into(&raw,&axis,beta,&mut scratch,&mut candidate).unwrap();
+                    let measured_norm=checked_norm(&candidate).unwrap();
+                    let measured_cos=q.iter().zip(&candidate)
+                        .map(|(&x,&y)|x as f64*y as f64).sum::<f64>()/qn/measured_norm;
+                    std::hint::black_box(measured_cos);
+                    let allocations=ALLOCS.with(|c|c.replace(None)).unwrap();
+                    assert_eq!(allocations,0,"candidate direction computation allocated");
+                    assert_eq!(old.iter().map(|x|x.to_bits()).collect::<Vec<_>>(),
+                        candidate.iter().map(|x|x.to_bits()).collect::<Vec<_>>());
+                    let vn=checked_norm(&old).unwrap();
+                    let expected=q.iter().zip(&old).map(|(&x,&y)|x as f64*y as f64).sum::<f64>()/qn/vn;
+                    let got=q.iter().zip(&candidate).map(|(&x,&y)|x as f64*y as f64).sum::<f64>()/qn/checked_norm(&candidate).unwrap();
+                    assert_eq!(expected.to_bits(),got.to_bits());
+                    let norm=checked_norm(&raw).unwrap();
+                    let a=raw.iter().zip(&axis).map(|(&x,&m)|x as f64/norm*m).sum::<f64>();
+                    let rho=(1.0-beta*(2.0-beta)*a*a).sqrt();
+                    let c=raw.iter().zip(&adjoint).map(|(&x,&y)|x as f64*y).sum::<f64>()/norm/rho;
+                    adjoint_worst=adjoint_worst.max((expected-c).abs());
+                }
+            }
+        }
+        eprintln!("pure adjoint vs legacy rounded cosine max_abs_error={adjoint_worst:e}");
+        assert!(adjoint_worst.is_finite());
+    }
+    #[test]
+    fn rerank_envelope_preserves_distance_bits_and_unique_cold_reads() {
+        assert_eq!(warped_size_budget(4096),(1024,256));
+        assert_eq!(warped_size_budget(8192),(1536,384));
+        let mut total_skips=0;
+        for dim in [65,384,768,1536,3072] {
+            let n=80;
+            let ids:Vec<_>=(1..=n as u64).collect();
+            let slots:Vec<_>=(0..n).collect();
+            let radii:Vec<_>=(0..n).map(|i|0.35+0.29*i as f32/n as f32).collect();
+            let index=WarpedFieldIndex::build(dim,&ids,&slots,&radii,&vec![0.01;dim],
+                WarpedFieldConfig {radius_max:0.65,throat_phi0:1.5,angular_scale_kappa:2.0,
+                    adaptive_compass:true,..Default::default()},|s,o|{*o=row(s,dim);true}).unwrap();
+            let cfg=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
+                max_visits:1024,max_expansions:256,radial_bound:false};
+            let nav=WarpedNavigationOptions {asymmetric:true,compact_seeds:true};
+            for excluded in [0,8,80] {
+                let query=row(37,dim);
+                let mut reference=None;
+                let mut reference_reads=None;
+                for opts in [WarpedRerankOptions::default(),
+                    WarpedRerankOptions {reuse_transform:true,envelope_bound:false},
+                    WarpedRerankOptions {reuse_transform:true,envelope_bound:true}] {
+                    let mut reads=std::collections::BTreeSet::new();
+                    let out=index.search_with_rerank(&query,0.425,cfg,
+                        WarpedSeedMode::DirectionLandmarks,nav,opts,None,
+                        |id|id<=excluded,|s,o|{
+                            assert!(reads.insert(s));*o=row(s,dim);true
+                        }).unwrap();
+                    let bits:Vec<_>=out.neighbors.iter().map(|&(id,d)|(id,d.to_bits())).collect();
+                    if let Some(r)=&reference {assert_eq!(&bits,r);} else {reference=Some(bits);}
+                    if let Some(r)=&reference_reads {assert_eq!(&reads,r);} else {reference_reads=Some(reads);}
+                    assert_eq!(out.stats.exact_distance_evals+out.stats.exact_quad_skips,out.stats.cold_reads);
+                    total_skips+=out.stats.exact_quad_skips;
+                }
+            }
+        }
+        assert!(total_skips>0);
     }
 }
