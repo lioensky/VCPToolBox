@@ -379,3 +379,7 @@ fn real_pipeline_file_disjoint() {
 
 #[path = "phase5c_navigation_experiment.rs"]
 mod phase5c_navigation_experiment;
+
+
+#[path = "phase5d_seed_experiment.rs"]
+mod phase5d_seed_experiment;

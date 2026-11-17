@@ -245,6 +245,14 @@ impl WarpedTagField {
         excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool, legacy_budget:bool,
         shell_directory:bool,reuse_beam:bool)
         -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
+        self.search_policy(connection,query,radius,k,excluded,pool,legacy_budget,
+            shell_directory,reuse_beam,0)
+    }
+
+    pub(crate) fn search_policy(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
+        excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool, legacy_budget:bool,
+        shell_directory:bool,reuse_beam:bool,seed_policy:u8)
+        -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
         if k==0 || k>64 { return Err("warped pyramid top_k must be 1..64".into()); }
         let (max_visits,max_expansions)=if legacy_budget && self.ids().len()>4096 {
             (1536,384)
@@ -256,12 +264,12 @@ impl WarpedTagField {
         let valid_original=|v:&[f32]| v.len()==self.dimension
             && v.iter().all(|x|x.is_finite())
             && v.iter().map(|&x|(x as f64)*(x as f64)).sum::<f64>()>1e-24;
-        let output=self.index.search_experiment(query,radius,HyperbolicSearchConfig {
+        let output=self.index.search_seed_policy(query,radius,HyperbolicSearchConfig {
             top_k:k,width:128,rerank_limit:64,max_visits,max_expansions,radial_bound:true,
         },WarpedSeedMode::DirectionLandmarks,WarpedNavigationOptions {
             asymmetric:true,compact_seeds:true,
         },WarpedRerankOptions {reuse_transform:true,envelope_bound:true},
-        shell_directory,reuse_beam,None,
+        shell_directory,reuse_beam,seed_policy,None,
         |id|excluded.contains(&(id as i64)),|slot,out| {
             let id=self.ids()[slot] as i64;
             if let Some(v)=pool.get(&id) {

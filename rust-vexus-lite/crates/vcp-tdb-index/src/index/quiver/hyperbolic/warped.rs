@@ -103,10 +103,42 @@ pub struct WarpedSearchTrace {
     pub seed_ms: f64,
     pub beam_ms: f64,
     pub stage05_ms: f64,
+    pub directory_candidates: usize,
+    pub nms_comparisons: usize,
+    pub nms_rejections: usize,
+    pub nms_fills: usize,
+    pub direction_seeds: Vec<u64>,
+    pub direction_pairs: Vec<(u64,u64,f64)>,
     pub seeds: Vec<u64>,
     pub visited: Vec<u64>,
     pub retained: Vec<u64>,
     pub stage05_top64: Vec<u64>,
+}
+
+fn select_direction_seeds<P>(entries:&[u32],scored:&[(f64,u32)],cap:usize,
+    inner:usize,threshold:Option<f64>,mut pair:P)
+    -> (Vec<u32>,Vec<u32>,usize,usize,usize)
+where P:FnMut(u32,u32)->f64 {
+    let mut seeds:Vec<_>=entries.iter().copied().take(cap.min(inner)).collect();
+    let mut directions=Vec::new();
+    let (mut comparisons,mut rejections,mut fills)=(0,0,0);
+    for &(_,node) in scored {
+        if seeds.len()>=cap {break;}
+        if seeds.contains(&node) {continue;}
+        let accept=threshold.is_none_or(|limit|directions.iter().all(|&other| {
+            comparisons+=1;
+            pair(node,other)<limit
+        }));
+        if accept {seeds.push(node);directions.push(node);}
+        else {rejections+=1;}
+    }
+    for &(_,node) in scored {
+        if seeds.len()>=cap {break;}
+        if !seeds.contains(&node) {
+            seeds.push(node);directions.push(node);fills+=1;
+        }
+    }
+    (seeds,directions,comparisons,rejections,fills)
 }
 
 pub struct WarpedFieldIndex {
@@ -364,8 +396,21 @@ impl WarpedFieldIndex {
     pub fn search_experiment<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
         seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
         shell_directory:bool,reuse_beam:bool,
+        trace:Option<&mut WarpedSearchTrace>, exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_seed_policy(query,radius,config,seed_mode,navigation,rerank,
+            shell_directory,reuse_beam,0,trace,exclude,fill)
+    }
+    /// Phase5D: 0=legacy; 1=union with 4 inner/16 total; 2=union plus cosine NMS .60.
+    pub fn search_seed_policy<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
+        shell_directory:bool,reuse_beam:bool,seed_policy:u8,
         mut trace:Option<&mut WarpedSearchTrace>, exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        if seed_policy>2 || (seed_policy!=0 &&
+            (!shell_directory || !navigation.compact_seeds || seed_mode!=WarpedSeedMode::DirectionLandmarks)) {
+            return Err(invalid("invalid angular seed policy"));
+        }
         if shell_directory && self.shell_landmarks.is_empty() {
             return Err(invalid("shell landmark directory is not built"));
         }
@@ -408,19 +453,35 @@ impl WarpedFieldIndex {
             WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(
                 if shell_directory {&self.shell_landmarks} else {&self.direction_landmarks}),
         }
+        if seed_policy!=0 {seeds.extend_from_slice(&self.direction_landmarks);}
         seeds.sort_unstable();seeds.dedup();
         // Score each directory candidate once, not once per sort comparison.
         let mut scored:Vec<_>=seeds.iter().map(|&n|(evaluate(n).0,n)).collect();
         scored.sort_unstable_by(|a,b|a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let directory_candidates=scored.iter().filter(|(_,n)|!self.entries.contains(n)).count();
+        let (directions,nms_comparisons,nms_rejections,nms_fills);
         if navigation.compact_seeds {
-            let cap=seed_cap.min(16);
-            seeds=self.entries.iter().copied().take(cap.min(8)).collect();
-            for (_,n) in scored {
-                if seeds.len()>=cap {break;}
-                if !seeds.contains(&n) {seeds.push(n);}
-            }
+            let selected=select_direction_seeds(&self.entries,&scored,seed_cap.min(16),
+                if seed_policy==0 {8} else {4},
+                (seed_policy==2).then_some(0.60),
+                |a,b|pair_cosine(&self.store,&self.meta,a as usize,b as usize,self.dim));
+            seeds=selected.0;
+            (directions,nms_comparisons,nms_rejections,nms_fills)=
+                (selected.1,selected.2,selected.3,selected.4);
         } else {
             seeds=scored.into_iter().take(seed_cap).map(|p|p.1).collect();
+            (directions,nms_comparisons,nms_rejections,nms_fills)=(Vec::new(),0,0,0);
+        }
+        if let Some(t)=trace.as_deref_mut() {
+            t.directory_candidates=directory_candidates;
+            t.nms_comparisons=nms_comparisons;t.nms_rejections=nms_rejections;t.nms_fills=nms_fills;
+            t.direction_seeds=directions.iter().map(|&n|self.ids[n as usize]).collect();
+            for (i,&a) in directions.iter().enumerate() {
+                for &b in &directions[i+1..] {
+                    t.direction_pairs.push((self.ids[a as usize],self.ids[b as usize],
+                        pair_cosine(&self.store,&self.meta,a as usize,b as usize,self.dim)));
+                }
+            }
         }
         let seed_evaluations=evaluations.get();
         let seed_ms=seed_started.elapsed().as_secs_f64()*1000.0;
@@ -796,6 +857,82 @@ mod phase5c_tests {
                             if let Some(r)=&reference {assert_eq!(r,&key);} else {reference=Some(key);}
                             assert!(out.stats.cold_reads<=64);
                             if fast && asymmetric {assert_eq!(trace.stage05_evaluations,0);}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase5d_tests {
+    use super::*;
+    #[test]
+    fn angular_nms_rejects_clumps_then_fills_without_duplicates() {
+        let scored=vec![(0.,0),(1.,4),(2.,5),(3.,6),(4.,7),(5.,8)];
+        let pair=|a:u32,b:u32|if a/2==b/2 {0.60} else {0.1};
+        let (seeds,directions,compared,rejected,fills)=
+            select_direction_seeds(&[0,1,2,3],&scored,7,4,Some(0.60),pair);
+        assert_eq!(seeds,vec![0,1,2,3,4,6,8]);
+        assert_eq!(directions,vec![4,6,8]);
+        assert!(compared>0 && rejected==2);
+        assert_eq!(fills,0);
+        let (seeds,_,_,rejected,fills)=
+            select_direction_seeds(&[0,1,2,3],&scored,9,4,Some(0.60),pair);
+        assert_eq!(seeds,vec![0,1,2,3,4,6,8,5,7]);
+        assert_eq!((rejected,fills),(2,2));
+        for cap in 0..=4 {
+            let (seeds,directions,_,_,_)=
+                select_direction_seeds(&[0,1,2,3],&scored,cap,4,Some(0.60),pair);
+            assert_eq!(seeds.len(),cap);
+            assert!(directions.is_empty());
+        }
+        let (old,_,_,_,_)=select_direction_seeds(&[0,1,2,3],&scored,7,4,None,pair);
+        assert_eq!(old,vec![0,1,2,3,4,5,6]);
+    }
+}
+
+#[cfg(test)]
+mod phase5d_budget_tests {
+    use super::*;
+    #[test]
+    fn nms_query_budgets_exclusions_and_reused_distance_bits() {
+        for dim in [65,384,768,1536,3072] {
+            let n=40;
+            let row=|i:usize|(0..dim).map(|j|
+                ((i*71+j*17+1) as f64*0.37).sin() as f32).collect::<Vec<_>>();
+            let ids:Vec<_>=(1..=n as u64).collect();
+            let slots:Vec<_>=(0..n).collect();
+            let radii:Vec<_>=(0..n).map(|i|0.35+0.29*i as f32/n as f32).collect();
+            let mut index=WarpedFieldIndex::build(dim,&ids,&slots,&radii,&vec![0.01;dim],
+                WarpedFieldConfig {radius_max:0.65,throat_phi0:1.5,
+                    angular_scale_kappa:2.0,adaptive_compass:true,..Default::default()},
+                |s,o|{*o=row(s);true}).unwrap();
+            index.build_shell_landmarks();
+            for policy in [1,2] {
+                for visits in [0,1,3,4,16,40] {
+                    for excluded in [0,4,n] {
+                        let mut reference=None;
+                        for reuse in [false,true] {
+                            let cfg=HyperbolicSearchConfig {top_k:10,width:128,rerank_limit:64,
+                                max_visits:visits,max_expansions:512,radial_bound:true};
+                            let mut trace=WarpedSearchTrace::default();
+                            let mut reads=Vec::new();
+                            let out=index.search_seed_policy(&row(31),0.425,cfg,
+                                WarpedSeedMode::DirectionLandmarks,
+                                WarpedNavigationOptions {asymmetric:true,compact_seeds:true},
+                                WarpedRerankOptions {reuse_transform:true,envelope_bound:true},
+                                true,reuse,policy,Some(&mut trace),|id|id<=excluded as u64,
+                                |s,o|{reads.push(s);*o=row(s);true}).unwrap();
+                            assert!(out.stats.visited<=visits);
+                            assert!(trace.seeds.len()<=16.min(visits/4));
+                            assert!(out.stats.cold_reads<=64);
+                            assert!(out.neighbors.iter().all(|p|p.0>excluded as u64));
+                            let bits:Vec<_>=out.neighbors.iter().map(|p|(p.0,p.1.to_bits())).collect();
+                            let key=(bits,reads,trace.seeds,trace.visited,trace.retained);
+                            if let Some(r)=&reference {assert_eq!(r,&key);} else {reference=Some(key);}
+                            if excluded==n {assert_eq!(out.stats.cold_reads,0);}
                         }
                     }
                 }
