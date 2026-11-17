@@ -7,7 +7,7 @@ use rayon::prelude::*;
 ///
 /// Original profiles have a regular collapsed origin. ThroatSoftening instead
 /// defines a manifold with boundary when phi0>0, or a metric cone when kappa!=1.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WarpedProfile {
     /// 常负曲率特例 φ(R) = sinh(sqrt(c)*R)/sqrt(c)，专用于验证 Clairaut 数值求积与闭式解一致。
     ConstantHyperbolic { curvature: f64 },
@@ -366,12 +366,63 @@ pub fn clairaut_lower_bound(profile: WarpedProfile, rq:f64, rv:f64, cosine:f64) 
         },
         _ => radial,
     };
-    if raw.is_finite() { (raw-1e-7*(1.0+raw+rq+rv)).max(0.0) } else {0.0}
+    let path_scale=1.0+raw.abs()+rq+rv
+        +profile.phi(rq).abs()+profile.phi(rv).abs();
+    let machine_guard=128.0*f64::EPSILON*path_scale;
+    // Keep the historical quadrature retreat as well as the scale-aware
+    // arithmetic guard: machine epsilon alone does not bound Brent/quadrature.
+    let numerical_guard=1e-7*(1.0+raw+rq+rv);
+    if raw.is_finite() && machine_guard.is_finite() {
+        (raw-numerical_guard-machine_guard).max(0.0)
+    } else {0.0}
 }
 
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
+    #[test]
+    fn hundred_thousand_full_dimension_boundary_pairs_have_zero_false_negatives() {
+        let mut pairs=0usize;
+        for dim in [65,384,768,1536,3072] {
+            let q:Vec<f64>=(0..dim).map(|j|((j*17+3) as f64*0.013).sin()).collect();
+            let axis:Vec<f64>=(0..dim).map(|j|((j*7+11) as f64*0.031).cos()).collect();
+            let qn=q.iter().map(|x|x*x).sum::<f64>().sqrt();
+            let dot=q.iter().zip(&axis).map(|(a,b)|a*b).sum::<f64>()/(qn*qn);
+            let mut ortho:Vec<_>=axis.iter().zip(&q).map(|(a,b)|a-dot*b).collect();
+            let on=ortho.iter().map(|x|x*x).sum::<f64>().sqrt();
+            for x in &mut ortho {*x/=on;}
+            for i in 0..20_000 {
+                let theta=match i%5 {
+                    0=>1e-12*(1+i%17) as f64,
+                    1=>std::f64::consts::PI-1e-10*(1+i%13) as f64,
+                    _=>std::f64::consts::PI*((i*7919%20000) as f64)/20000.,
+                };
+                let (s,c)=theta.sin_cos();
+                let mut dp=0.;let mut vv=0.;
+                for j in 0..dim {
+                    let a=q[j]/qn;
+                    let b=c*a+s*ortho[j];
+                    dp+=a*b;vv+=b*b;
+                }
+                let cosine=dp/vv.sqrt();
+                let rq=match i%7 {0=>0.,1=>1e-10,_=>0.35+(i%301) as f64*0.001};
+                let rv=if i%11==0 {rq} else {0.35+(i*37%301) as f64*0.001};
+                let profile=WarpedProfile::ThroatSoftening {
+                    alpha:[0.,0.15,2.,32.][i%4],
+                    phi0:[0.,0.8,1.5,16.][i/4%4],
+                    kappa:[0.01,0.5,1.,2.][i/16%4],
+                };
+                profile.validate(0.65).unwrap();
+                let lower=clairaut_lower_bound(profile,rq,rv,cosine);
+                let exact=clairaut_distance(profile,rq,rv,cosine);
+                assert!(lower.is_finite() && exact.is_finite() && lower<=exact,
+                    "dim={dim} i={i} lower={lower} exact={exact} p={profile:?} rq={rq} rv={rv} c={cosine}");
+                pairs+=1;
+            }
+        }
+        assert_eq!(pairs,100_000);
+    }
+
     #[test]
     fn analytic_comparison_never_exceeds_numerical_reference_on_boundary_grid() {
         for alpha in [0.0,0.15,0.35,2.0] {
@@ -571,6 +622,15 @@ impl WarpedProxyTable {
             return Err(super::invalid("invalid warped table resolution"));
         }
         Ok(Self::build(profile, r_max, nr, ns))
+    }
+    pub(super) fn snapshot_data(&self) -> &[f32] { &self.data }
+    pub(super) fn from_snapshot(r_max: f64, data: Vec<f32>) -> std::io::Result<Self> {
+        if !r_max.is_finite() || r_max <= 0.0 || r_max > 16.0
+            || data.len() != 64 * 64 * 65
+            || data.iter().any(|x| !x.is_finite() || *x < 0.0) {
+            return Err(super::invalid("invalid warped table snapshot"));
+        }
+        Ok(Self { nr:64, ns:65, r_max, inv_dr:63.0/r_max, data })
     }
     pub fn hot_bytes(&self) -> usize { self.data.capacity() * std::mem::size_of::<f32>() }
     pub fn checked_slice(&self, radius: f64) -> std::io::Result<QueryWarpedSlice> {

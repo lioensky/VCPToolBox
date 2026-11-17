@@ -378,6 +378,8 @@ export declare class NativeKnowledgeRuntime {
 }
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {
+  warmupWarpedTagField(dbPath: string, artifactSig: string, preset?: string | undefined | null): Promise<unknown>
+  warpedRuntimeStats(): string
   /** 创建新的空索引 */
   constructor(dim: number, capacity: number)
   /**

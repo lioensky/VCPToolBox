@@ -583,6 +583,7 @@ pub(crate) struct MemoRuntime {
     active_artifact: RwLock<Option<(String, u64, Arc<NativeArtifact>)>>,
     pub(crate) warped_fields: RwLock<HashMap<crate::warped_tag_field::Preset, Arc<crate::warped_tag_field::WarpedTagField>>>,
     warped_epoch: AtomicU64,
+    pub(crate) warped_cold_load: Mutex<()>,
     routing_publication: Mutex<()>,
     generation: AtomicU64,
     query_sequence: AtomicU64,
@@ -600,6 +601,7 @@ impl MemoRuntime {
             active_artifact: RwLock::new(None),
             warped_fields: RwLock::new(HashMap::new()),
             warped_epoch: AtomicU64::new(0),
+            warped_cold_load: Mutex::new(()),
             routing_publication: Mutex::new(()),
             generation: AtomicU64::new(0),
             query_sequence: AtomicU64::new(0),
@@ -771,21 +773,11 @@ impl MemoRuntime {
         Ok(removed)
     }
 
-    pub(crate) fn evict_warped_field(&self,
-        expected:&Arc<crate::warped_tag_field::WarpedTagField>) -> std::result::Result<(),String> {
-        let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
-        let mut fields=self.warped_fields.write().map_err(|e|e.to_string())?;
-        if fields.get(&expected.preset).is_some_and(|current|Arc::ptr_eq(current,expected)) {
-            fields.remove(&expected.preset);
-            self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
-        }
-        Ok(())
-    }
-
     pub(crate) fn warped_build_ticket(&self) -> u64 {
         self.warped_epoch.load(AtomicOrdering::Acquire)
     }
 
+    #[cfg(test)]
     pub(crate) fn invalidate_warped_fields(&self) -> std::result::Result<(),String> {
         let _publication=self.routing_publication.lock().map_err(|e|e.to_string())?;
         self.warped_epoch.fetch_add(1,AtomicOrdering::AcqRel);
@@ -1124,14 +1116,14 @@ fn decode_artifact(
     }.prepared()))
 }
 
-fn validate_artifact_with_connection(
+pub(crate) fn validate_artifact_with_connection(
     connection: &Connection,
     artifact_sig: &str,
 ) -> std::result::Result<(), String> {
     let dependency_keys = serde_json::to_string(crate::storage::MEMO_ARTIFACT_DEPENDENCIES)
         .map_err(|e| e.to_string())?;
     let dependency_count = crate::storage::MEMO_ARTIFACT_DEPENDENCIES.len() as i64;
-    let validate = |index_hint: &str| -> rusqlite::Result<bool> { connection.query_row(
+    let validate = |index_hint: &str| -> rusqlite::Result<bool> { connection.prepare_cached(
         &format!("SELECT EXISTS(
            SELECT 1 FROM rivermemo_artifacts a{index_hint}
            WHERE a.artifact_sig=?1 AND a.status='ready'
@@ -1148,8 +1140,8 @@ fn validate_artifact_with_connection(
                  AND (m.value IS NULL
                       OR CAST(m.value AS INTEGER) < CAST(d.dependency_version AS INTEGER))
              )
-         )"), rusqlite::params![artifact_sig, dependency_keys, dependency_count], |row| row.get(0),
-    ) };
+         )"))?.query_row(rusqlite::params![artifact_sig, dependency_keys, dependency_count], |row| row.get(0))
+   };
     // 覆盖索引让校验只读索引页，不必越过行里的大 payload 去读排在它后面的列；
     // SQLite 默认会选主键索引，所以显式指定。还没建这个索引的库退回原查询，条件不变。
     let compatible = match validate(" INDEXED BY idx_rivermemo_validation") {

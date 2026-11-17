@@ -182,9 +182,9 @@ impl Default for PipelineConfig {
             warped_preset: Default::default(),
             warped_radius_strategy: Default::default(),
             warped_legacy_budget: false,
-            warped_shell_directory: false,
-            warped_reuse_beam: false,
-            warped_seed_policy: 0,
+            warped_shell_directory: true,
+            warped_reuse_beam: true,
+            warped_seed_policy: 1,
             spike_routing: SenseConfig::default(),
         }
     }
@@ -320,20 +320,7 @@ fn decode_epa_basis(raw: String, dimension: usize) -> Option<EpaBasis> {
     })
 }
 
-/// Full transaction-visible content comparison; never a prefix/length endorsement.
-/// Cold/mismatched rows are hashed, but do not replace the decoded EPA cache.
-pub(crate) fn epa_cache_digest(connection: &Connection) -> std::result::Result<String,String> {
-    let raw:String=connection.query_row(
-        "SELECT value FROM kv_store WHERE key='epa_basis_cache'",[],|r|r.get(0))
-        .map_err(|e|e.to_string())?;
-    if let Some(digest)=EPA_BASIS.lock().ok().and_then(|slot|
-        slot.as_ref().filter(|basis|basis.raw==raw).map(|basis|basis.digest.clone())) {
-        return Ok(digest);
-    }
-    use sha2::{Digest,Sha256};
-    Ok(format!("{:x}",Sha256::digest(raw.as_bytes())))
-}
-
+#[cfg(test)]
 fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
     analyze_epa_with_digest(connection,query,dimension,mode,&mut None)
 }
@@ -771,6 +758,7 @@ fn analyze_pyramid(
         .map(|(output, tags, _)| (output, tags))
 }
 
+#[cfg(test)]
 fn analyze_pyramid_with_pool(
     index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
@@ -2300,20 +2288,16 @@ fn run_pipeline_with_connection(
         return Err("Invalid tagRoutingMode".into());
     }
     let routing_check_started = Instant::now();
+    let mut fallback_reason=None;
+    let mut field_source=None;
     let warped = if input.config.tag_routing_mode == "warped_ags" {
-        let candidate=runtime.warped_fields.read().map_err(|e|e.to_string())?
-            .get(&input.config.warped_preset).cloned();
-        match candidate {
-            Some(field) if epa_digest.as_deref().is_some_and(|digest|
-                field.current_with_epa_digest(connection,artifact_sig,digest)) => Some(field),
-            Some(field) => {
-                // An older WAL reader must not evict a newer field.
-                if crate::storage::read_generation(connection)? >= field.generation() {
-                    runtime.evict_warped_field(&field)?;
-                }
-                None
+        match crate::warped_tag_field::load_or_build(runtime,connection,artifact_sig,
+            artifact,dimensions,input.config.warped_preset) {
+            Ok((field,source))=>{field_source=Some(source);Some(field)},
+            Err(error) if error.starts_with("WARPED_NOT_INITIALIZED:")=>{
+                fallback_reason=Some(error);None
             },
-            None => None,
+            Err(error)=>return Err(error),
         }
     } else { None };
     let tag_routing_check_ms = routing_check_started.elapsed().as_secs_f64()*1000.0;
@@ -2521,7 +2505,9 @@ fn run_pipeline_with_connection(
             tag_routing: (input.config.tag_routing_mode == "warped_ags").then(||serde_json::json!({
                 "used":if warped.is_some() {"warped_ags"} else {"cosine"},
                 "fallback":warped.is_none(),
-                "preset":format!("{:?}",input.config.warped_preset),
+                "preset":input.config.warped_preset.name(),
+                "source":field_source,
+                "fallbackReason":fallback_reason,
                 "radiusStrategy":format!("{:?}",input.config.warped_radius_strategy),
                 "legacyBudget":input.config.warped_legacy_budget,
                 "shellDirectory":input.config.warped_shell_directory,
@@ -3618,3 +3604,33 @@ mod experiment_c_tests {
 #[cfg(test)]
 #[path = "phase5_pipeline_experiment.rs"]
 mod phase5_pipeline_experiment;
+
+
+#[cfg(test)]
+mod production_warped_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_and_camel_case_aliases_are_production_canonical() {
+        use crate::warped_tag_field::{Preset,RadiusStrategy};
+        let c:PipelineConfig=serde_json::from_str("{}").unwrap();
+        assert_eq!(c.tag_routing_mode,"cosine");
+        assert_eq!(c.warped_preset,Preset::Locked2);
+        assert_eq!(c.warped_radius_strategy,RadiusStrategy::EpaGuided);
+        assert!(c.warped_shell_directory && c.warped_reuse_beam);
+        assert!(!c.warped_legacy_budget);
+        assert_eq!(c.warped_seed_policy,1);
+        for (name,expected) in [("epa_guided",RadiusStrategy::EpaGuided),
+            ("EpaGuided",RadiusStrategy::EpaGuided),("layer_schedule",RadiusStrategy::LayerSchedule),
+            ("LayerSchedule",RadiusStrategy::LayerSchedule)] {
+            let c:PipelineConfig=serde_json::from_value(serde_json::json!({
+                "tagRoutingMode":"warped_ags","warpedPreset":"locked_0","warpedRadiusStrategy":name
+            })).unwrap();
+            assert_eq!(c.warped_preset,Preset::Locked0);
+            assert_eq!(c.warped_radius_strategy,expected);
+        }
+        assert!(serde_json::from_str::<PipelineConfig>(
+            r#"{"warpedPreset":"unknown"}"#).is_err());
+        assert!(serde_json::from_str::<PipelineConfig>(
+            r#"{"warpedRadiusStrategy":"unknown"}"#).is_err());
+    }
+}

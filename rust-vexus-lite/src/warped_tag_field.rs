@@ -9,21 +9,41 @@ use vcp_tdb_index::index::quiver::hyperbolic::{
 };
 use vcp_tdb_index::index::quiver::hyperbolic::warped_geometry::WarpedProfile;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+#[path = "warped_field_snapshot.rs"]
+mod snapshot;
+pub(crate) use snapshot::{load_or_build,prune_snapshots};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub(crate) enum Preset {
     #[serde(rename = "locked_0")]
     Locked0,
     #[serde(rename = "locked_2")]
     Locked2,
 }
-impl Default for Preset { fn default() -> Self { Self::Locked0 } }
+impl Default for Preset { fn default() -> Self { Self::Locked2 } }
+
+impl Preset {
+    fn configuration(self) -> WarpedFieldConfig {
+        WarpedFieldConfig {
+            profile:WarpedProfile::Softening {alpha:0.15},radius_max:0.65,
+            mean_subtract_beta:if self==Self::Locked0 {1.0} else {0.7},
+            throat_phi0:1.5,angular_scale_kappa:2.0,adaptive_compass:true,..Default::default()
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self { Self::Locked0 => "locked_0", Self::Locked2 => "locked_2" }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) enum RadiusStrategy {
+    #[serde(alias = "layer_schedule")]
     LayerSchedule,
+    #[serde(alias = "epa_guided")]
     EpaGuided,
 }
-impl Default for RadiusStrategy { fn default() -> Self { Self::LayerSchedule } }
+impl Default for RadiusStrategy { fn default() -> Self { Self::EpaGuided } }
 
 pub(crate) fn query_radius(strategy: RadiusStrategy, level: usize, levels: usize,
     gate: f64, logic: f64, entropy: f64, available: bool) -> f32 {
@@ -35,11 +55,10 @@ pub(crate) fn query_radius(strategy: RadiusStrategy, level: usize, levels: usize
     (0.35+0.30*position.clamp(0.0,1.0)) as f32
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Identity {
     database: String,
     generation: u64,
-    dependencies: crate::storage::DerivedDependencies,
     artifact: String,
     geometry: String,
     mean_hash: String,
@@ -48,52 +67,23 @@ struct Identity {
 
 fn metadata_identity(connection: &Connection, artifact: &str) -> Result<Identity, String> {
     if connection.is_autocommit() { return Err("warped field requires a read transaction".into()); }
-    let generation = crate::storage::read_generation(connection)?;
+    crate::rivermemo_topology_v3::validate_artifact_with_connection(connection, artifact)?;
     let database: String = connection.query_row("PRAGMA database_list", [], |r| r.get(2))
         .map_err(|e| e.to_string())?;
-    // Historical artifacts may remain valid for cosine, but never silently feed this field.
-    // Status follows a potentially huge payload in the table record. Read it
-    // through the covering index rather than walking payload overflow pages.
-    let status_sql="SELECT status,schema_version FROM rivermemo_artifacts
-        INDEXED BY idx_rivermemo_validation WHERE artifact_sig=?1";
-    let status:rusqlite::Result<(String,String)>=match connection.prepare_cached(status_sql) {
-        Ok(mut statement)=>statement.query_row([artifact],|r|Ok((r.get(0)?,r.get(1)?))),
-        Err(rusqlite::Error::SqliteFailure(_,Some(message))) if message.starts_with("no such index")=>
-            connection.query_row("SELECT status,schema_version FROM rivermemo_artifacts WHERE artifact_sig=?1",
-                [artifact],|r|Ok((r.get(0)?,r.get(1)?))),
-        Err(error)=>Err(error),
-    };
-    let (status,schema)=status.map_err(|e|e.to_string())?;
-    if status!="ready" || schema!="rivermemo-persisted-artifact-v2" {
-        return Err("warped artifact format/status mismatch".into());
-    }
     let (model, source_generation): (String,String) = connection.prepare_cached(
         "SELECT model_sig,database_generation FROM rivermemo_artifacts WHERE artifact_sig=?1")
         .map_err(|e|e.to_string())?.query_row(
         [artifact], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|e| e.to_string())?;
-    if source_generation.parse::<u64>().ok() != Some(generation) {
-        return Err("warped artifact database generation is stale".into());
-    }
-    let dependencies = crate::storage::DerivedDependencies::capture(
-        connection, crate::storage::MEMO_ARTIFACT_DEPENDENCIES)?;
-    let mut expected = Vec::new();
-    for key in crate::storage::MEMO_ARTIFACT_DEPENDENCIES {
-        let (current,published): (String,String) = connection.query_row(
-            "SELECT m.value,d.dependency_version FROM kbm_runtime_meta m
-             JOIN kbm_artifact_dependencies d ON d.dependency_key=m.key
-             WHERE m.key=?1 AND d.artifact_sig=?2",
-            rusqlite::params![key,artifact], |r| Ok((r.get(0)?,r.get(1)?)))
-            .map_err(|e| e.to_string())?;
-        if current != published { return Err(format!("warped dependency {key} is stale")); }
-        expected.push(current);
-    }
-    let (geometry,facts): (String,String) = connection.query_row(
-        "SELECT artifact_sig,graph_generation FROM tagmemo_artifacts
+    let generation=source_generation.parse::<u64>().map_err(|e|e.to_string())?;
+    // Geometry is published only at the training boundary, not on every fact write.
+    // The latest ready geometry of this model remains a valid construction source
+    // throughout the cumulative-change window.
+    let geometry: String = connection.query_row(
+        "SELECT artifact_sig FROM tagmemo_artifacts
          WHERE asset_type='unified_geometry' AND status='ready' AND model_sig=?1
          ORDER BY updated_at DESC,artifact_sig LIMIT 1",
-        [&model], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|e| e.to_string())?;
-    if facts != format!("facts:{}",expected[0]) { return Err("warped geometry facts are stale".into()); }
-    Ok(Identity { database,generation,dependencies,artifact:artifact.into(),geometry,
+        [&model], |r| r.get(0)).map_err(|e| e.to_string())?;
+    Ok(Identity { database,generation,artifact:artifact.into(),geometry,
         mean_hash:String::new(),model })
 }
 
@@ -190,17 +180,13 @@ impl WarpedTagField {
             }
         }
         if ids.len()<2 { return Err("warped insufficient joint coverage".into()); }
-        let config=WarpedFieldConfig {
-            profile:WarpedProfile::Softening {alpha:0.15},radius_max:0.65,
-            mean_subtract_beta:if preset==Preset::Locked0 {1.0} else {0.7},
-            throat_phi0:1.5,angular_scale_kappa:2.0,adaptive_compass:true,..Default::default()
-        };
+        let config=preset.configuration();
         let kernel_ids:Vec<u64>=ids.iter().map(|&id|id as u64).collect();
         let slots:Vec<usize>=(0..ids.len()).collect();
         let mut source_error=None;
         let mut read=connection.prepare_cached("SELECT vector FROM tags WHERE id=?1")
             .map_err(|e|e.to_string())?;
-        let index=WarpedFieldIndex::build(dimension,&kernel_ids,&slots,&radii,&mean,config,|slot,out| {
+        let mut index=WarpedFieldIndex::build(dimension,&kernel_ids,&slots,&radii,&mean,config,|slot,out| {
             let result=read.query_row([ids[slot]],|row|crate::index_source::decode_column_into(row,0,dimension,out));
             match result {
                 Ok(valid)=>valid,
@@ -208,39 +194,36 @@ impl WarpedTagField {
             }
         }).map_err(|e|source_error.take().unwrap_or_else(||e.to_string()))?;
         if index.connectivity()!=(ids.len(),0) { return Err("warped graph connectivity failure".into()); }
+        index.build_shell_landmarks();
         let inbound_quantiles:Vec<f32>=ids.iter().map(|id|inbound_quantiles[id] as f32).collect();
         Ok(Self {identity,preset,inbound_quantiles,active_tags:active.len(),
             ranked_tags:ranked.len(),index,dimension,build_ms:started.elapsed().as_secs_f64()*1000.0})
     }
 
-    pub(crate) fn generation(&self) -> u64 { self.identity.generation }
-
     pub(crate) fn current(&self, connection:&Connection, signature:&str) -> bool {
-        crate::memo_pipeline::epa_cache_digest(connection).is_ok_and(|digest|
-            self.current_with_epa_digest(connection,signature,&digest))
+        if connection.is_autocommit() || signature != self.identity.artifact { return false; }
+        let database: rusqlite::Result<String> =
+            connection.query_row("PRAGMA database_list", [], |r|r.get(2));
+        database.is_ok_and(|database| database == self.identity.database)
+            && crate::rivermemo_topology_v3::validate_artifact_with_connection(
+                connection, signature).is_ok()
     }
 
-    /// Digest must come from EPA analysis on this same transaction.
-    pub(crate) fn current_with_epa_digest(&self, connection:&Connection, signature:&str,
-        digest:&str) -> bool {
-        metadata_identity(connection,signature).is_ok_and(|mut id| {
-            id.mean_hash=digest.into();
-            id==self.identity
-        })
-    }
-
+    #[cfg(test)]
     pub(crate) fn search(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
         excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool)
         -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
         self.search_budget(connection,query,radius,k,excluded,pool,false)
     }
 
+    #[cfg(test)]
     pub(crate) fn search_budget(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
         excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool, legacy_budget:bool)
         -> Result<(Vec<i64>,HyperbolicSearchStats,usize,usize),String> {
         self.search_controls(connection,query,radius,k,excluded,pool,legacy_budget,false,false)
     }
 
+    #[cfg(test)]
     pub(crate) fn search_controls(&self, connection:&Connection, query:&[f32], radius:f32, k:usize,
         excluded:&HashSet<i64>, pool:&mut crate::storage::TagVectorPool, legacy_budget:bool,
         shell_directory:bool,reuse_beam:bool)
@@ -286,7 +269,8 @@ impl WarpedTagField {
                 Ok(Some(true)) if valid_original(out)=>{
                     pool.insert(id,std::sync::Arc::from(out.clone()));true
                 },
-                Ok(_)=>{error=Some(format!("warped original missing/invalid: {id}"));false},
+                Ok(None)=>false,
+                Ok(Some(_))=>{error=Some(format!("warped original invalid: {id}"));false},
                 Err(e)=>{error=Some(e.to_string());false},
             }
         }).map_err(|e|e.to_string())?;
@@ -298,7 +282,7 @@ impl WarpedTagField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> (Connection,crate::rivermemo_topology_v3::NativeArtifact) {
+    pub(super) fn fixture() -> (Connection,crate::rivermemo_topology_v3::NativeArtifact) {
         let db=Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);
@@ -306,8 +290,8 @@ mod tests {
              INSERT INTO kbm_runtime_meta VALUES ('database_generation','7'),('memo_tag_facts','9'),('derived_geometry','11');
              CREATE TABLE kbm_artifact_dependencies(artifact_sig TEXT,dependency_key TEXT,dependency_version TEXT);
              INSERT INTO kbm_artifact_dependencies VALUES ('a','memo_tag_facts','9'),('a','derived_geometry','11');
-             CREATE TABLE rivermemo_artifacts(artifact_sig TEXT,model_sig TEXT,database_generation TEXT,status TEXT,schema_version TEXT);
-             INSERT INTO rivermemo_artifacts VALUES ('a','m','7','ready','rivermemo-persisted-artifact-v2');
+             CREATE TABLE rivermemo_artifacts(artifact_sig TEXT,model_sig TEXT,database_generation TEXT,status TEXT,schema_version TEXT,algorithm_version TEXT);
+             INSERT INTO rivermemo_artifacts VALUES ('a','m','7','ready','rivermemo-persisted-artifact-v2','memo.native-artifact-v2-binary');
              CREATE TABLE tagmemo_artifacts(artifact_sig TEXT,graph_generation TEXT,asset_type TEXT,status TEXT,model_sig TEXT,updated_at INTEGER);
              INSERT INTO tagmemo_artifacts VALUES ('g','facts:9','unified_geometry','ready','m',1);
              CREATE TABLE kv_store(key TEXT,value TEXT);
@@ -333,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_reuses_every_rerank_row_and_identity_rejects_generation_and_dependencies() {
+    fn pool_reuses_rows_and_artifact_survives_advances_but_rejects_rollback() {
         let (db,artifact)=fixture();
         let field=WarpedTagField::build(&db,"a",&artifact,3,Preset::Locked2).unwrap();
         assert!(field.current(&db,"a"));
@@ -361,9 +345,12 @@ mod tests {
         assert!(ids.is_empty());
         assert_eq!((stats.cold_reads,reads),(0,0));
         db.execute("UPDATE kbm_runtime_meta SET value='8' WHERE key='database_generation'",[]).unwrap();
-        assert!(!field.current(&db,"a"));
-        db.execute("UPDATE kbm_runtime_meta SET value='7' WHERE key='database_generation'",[]).unwrap();
+        assert!(field.current(&db,"a"));
+        db.execute("UPDATE kbm_runtime_meta SET value='10' WHERE key='memo_tag_facts'",[]).unwrap();
         db.execute("UPDATE kbm_runtime_meta SET value='12' WHERE key='derived_geometry'",[]).unwrap();
+        assert!(field.current(&db,"a"));
+        assert!(WarpedTagField::build(&db,"a",&artifact,3,Preset::Locked2).is_ok());
+        db.execute("UPDATE kbm_runtime_meta SET value='8' WHERE key='memo_tag_facts'",[]).unwrap();
         assert!(!field.current(&db,"a"));
     }
 
@@ -422,9 +409,9 @@ mod tests {
         assert!(field.current(&reader,"a"),"old WAL snapshot must retain its identity");
         let fresh=Connection::open(&path).unwrap();
         fresh.execute_batch("BEGIN").unwrap();
-        assert!(!field.current(&fresh,"a"),"new generation must reject old field");
+        assert!(field.current(&fresh,"a"),"fact generations may advance before retraining");
         reader.execute_batch("ROLLBACK; BEGIN").unwrap();
-        assert!(!field.current(&reader,"a"));
+        assert!(field.current(&reader,"a"));
         drop(fresh); drop(separate); drop(reader); drop(writer); drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -474,16 +461,16 @@ mod tests {
     }
 
     #[test]
-    fn same_metadata_epa_replacement_is_rejected_without_version_trigger() {
+    fn epa_is_construction_input_not_a_live_asset_gate() {
         let (db,artifact)=fixture();
         let field=WarpedTagField::build(&db,"a",&artifact,3,Preset::Locked2).unwrap();
         assert!(field.current(&db,"a"));
         // Keep signatures and counters unchanged; full cache identity must still change.
         db.execute("UPDATE kv_store SET value=json_set(value,'$.extra',1)
             WHERE key='epa_basis_cache'",[]).unwrap();
-        assert!(!field.current(&db,"a"));
+        assert!(field.current(&db,"a"));
         db.execute("DELETE FROM kv_store WHERE key='epa_basis_cache'",[]).unwrap();
-        assert!(!field.current(&db,"a"));
+        assert!(field.current(&db,"a"));
     }
 
     #[test]
@@ -496,5 +483,62 @@ mod tests {
                 assert!(r>=0.35_f32 && r<=0.65_f32);
             }
         }
+    }
+}
+
+pub struct WarpedWarmupTask {
+    runtime: std::sync::Arc<crate::rivermemo_topology_v3::MemoRuntime>,
+    db_path: String,
+    signature: String,
+    dimension: usize,
+    preset: Option<String>,
+}
+impl napi::Task for WarpedWarmupTask {
+    type Output=String;
+    type JsValue=String;
+    fn compute(&mut self)->napi::Result<String> {
+        let started=std::time::Instant::now();
+        let preset=match self.preset.as_deref().unwrap_or("locked_2") {
+            "locked_2"=>Preset::Locked2,"locked_0"=>Preset::Locked0,
+            _=>return Err(napi::Error::from_reason("Invalid warpedPreset")),
+        };
+        let _gate=crate::publication_gate::acquire_read(&self.db_path,&["*".into()])
+            .map_err(napi::Error::from_reason)?;
+        crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
+            let artifact=crate::rivermemo_topology_v3::load_artifact_with_connection(
+                &self.runtime,connection,&self.signature)?;
+            let (field,source)=load_or_build(&self.runtime,connection,&self.signature,
+                &artifact,self.dimension,preset)?;
+            Ok(serde_json::json!({
+                "artifactSig":self.signature,"preset":preset.name(),"source":source,
+                "nodes":field.ids().len(),"hotBytes":field.hot_bytes(),"buildMs":field.build_ms,
+                "elapsedMs":started.elapsed().as_secs_f64()*1000.0,
+            }).to_string())
+        }).map_err(napi::Error::from_reason)
+    }
+    fn resolve(&mut self,_env:napi::Env,output:String)->napi::Result<String> {Ok(output)}
+}
+
+use crate::VexusIndex;
+#[napi_derive::napi]
+impl VexusIndex {
+    #[napi]
+    pub fn warmup_warped_tag_field(&self,db_path:String,artifact_sig:String,preset:Option<String>)
+        ->napi::bindgen_prelude::AsyncTask<crate::task_lifecycle::TrackedTask<WarpedWarmupTask>> {
+        self.tracked_task(WarpedWarmupTask {runtime:self.memo_runtime.clone(),
+            db_path,signature:artifact_sig,dimension:self.dimensions as usize,preset})
+    }
+
+    #[napi]
+    pub fn warped_runtime_stats(&self)->napi::Result<String> {
+        let fields=self.memo_runtime.warped_fields.read()
+            .map_err(|e|napi::Error::from_reason(e.to_string()))?;
+        let mut entries:Vec<_>=fields.values().map(|field|serde_json::json!({
+            "artifactSig":field.artifact_sig(),"preset":field.preset.name(),
+            "nodes":field.ids().len(),"hotBytes":field.hot_bytes(),"buildMs":field.build_ms,
+        })).collect();
+        entries.sort_by(|a,b|a["preset"].as_str().cmp(&b["preset"].as_str()));
+        Ok(serde_json::json!({"fields":entries,
+            "warpedEpoch":self.memo_runtime.warped_build_ticket()}).to_string())
     }
 }

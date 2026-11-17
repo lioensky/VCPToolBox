@@ -1030,24 +1030,17 @@ fn run_build(
         dependencies.ensure_current(connection)
     })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
-    let warped_ticket=runtime.warped_build_ticket();
     drop(_publication_guard);
     // Optional fields are built outside the exclusive publication gate.
     // The persisted cosine artifact is already published; a field failure is
     // explicitly partial success, not a rollback of that durable publication.
     for preset in input.warped_presets {
-        let field = with_registered_read_transaction(db_path, |connection| {
-            crate::warped_tag_field::WarpedTagField::build(
-                connection, &artifact_sig, &native, dimension, preset)
-        }).map_err(|error|format!(
-            "MEMO_OPTIONAL_FIELD_FAILED: artifact {artifact_sig} already published; {error}"))?;
         let _field_gate=crate::publication_gate::acquire_read(db_path,&["*".into()])?;
         with_registered_read_transaction(db_path, |connection| {
-            if !field.current(connection, &artifact_sig) {
-                return Err("warped field changed during construction".into());
-            }
-            runtime.publish_warped_field(warped_ticket,&artifact_sig,Arc::new(field))
-        })?;
+            crate::warped_tag_field::load_or_build(runtime,connection,&artifact_sig,
+                &native,dimension,preset).map(|_|())
+        }).map_err(|error|format!(
+            "MEMO_OPTIONAL_FIELD_FAILED: artifact {artifact_sig} already published; {error}"))?;
     }
     Ok(NativeMemoArtifactBuildResult {
         success: true,
@@ -1823,3 +1816,8 @@ mod phase5_copy_experiment {
         store.shutdown().unwrap();
     }
 }
+
+
+#[cfg(test)]
+#[path = "warped_lifecycle_tests.rs"]
+mod warped_lifecycle_tests;

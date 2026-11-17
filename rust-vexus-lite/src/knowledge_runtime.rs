@@ -2320,9 +2320,12 @@ impl Task for NativeMemoArtifactPruneTask {
             }
         }
 
+        let warped_snapshots_deleted=crate::storage::with_registered_read_transaction(&self.db_path,
+            crate::warped_tag_field::prune_snapshots).map_err(Error::from_reason)?;
         serde_json::to_string(&serde_json::json!({
             "retired": retired,
             "deleted": deleted,
+            "warpedSnapshotsDeleted": warped_snapshots_deleted,
             "retainedReadyArtifacts": retain
         }))
         .map_err(|error| {

@@ -27,7 +27,12 @@ fn default_and_unready_experiment_keep_cosine_pipeline_outputs() {
     c.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);
         CREATE TABLE kv_store(key TEXT,value TEXT);
         CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
-        INSERT INTO kbm_runtime_meta VALUES ('database_generation','1');").unwrap();
+        INSERT INTO kbm_runtime_meta VALUES ('database_generation','1'),('memo_tag_facts','1'),('derived_geometry','1');
+        CREATE TABLE rivermemo_artifacts(artifact_sig TEXT,model_sig TEXT,status TEXT,algorithm_version TEXT,schema_version TEXT);
+        INSERT INTO rivermemo_artifacts VALUES ('synthetic','model','ready','memo.native-artifact-v2-binary','rivermemo-persisted-artifact-v2');
+        CREATE TABLE kbm_artifact_dependencies(artifact_sig TEXT,dependency_key TEXT,dependency_version TEXT);
+        INSERT INTO kbm_artifact_dependencies VALUES ('synthetic','memo_tag_facts','1'),('synthetic','derived_geometry','1');
+        CREATE TABLE tagmemo_artifacts(artifact_sig TEXT,asset_type TEXT,status TEXT,model_sig TEXT);").unwrap();
     let vexus=crate::VexusIndex::new(3,16).unwrap();
     for (id,v) in [(1,[1.0_f32,0.0,0.0]),(2,[0.0,1.0,0.0])] {
         let bytes:Vec<_>=v.iter().flat_map(|x|x.to_le_bytes()).collect();
@@ -57,6 +62,8 @@ fn default_and_unready_experiment_keep_cosine_pipeline_outputs() {
     let fallback_meta:Value=serde_json::from_str(&fallback.metadata_json).unwrap();
     assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["used"],"cosine");
     assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["fallback"],true);
+    assert!(fallback_meta["diagnostics"]["tagRouting"]["fallbackReason"].as_str().unwrap()
+        .starts_with("WARPED_NOT_INITIALIZED:"));
     assert!(default_meta["diagnostics"].get("tagRouting").is_none());
     runtime.release_query_observation(default_meta["observationHandle"].as_str().unwrap()).unwrap();
 }

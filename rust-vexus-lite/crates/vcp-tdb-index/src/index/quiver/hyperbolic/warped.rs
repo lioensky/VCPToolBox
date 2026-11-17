@@ -8,7 +8,10 @@ use super::warped_geometry::{clairaut_distance, WarpedProfile, WarpedProxyTable}
 use super::warped_graph::{VarGraph, QuadriPruneSpec};
 use crate::index::bq::Bq2Store;
 
-#[derive(Clone, Copy, Debug)]
+#[path = "warped_snapshot.rs"]
+mod snapshot;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WarpedFieldConfig {
     pub profile: WarpedProfile,
     pub radius_max: f64,
@@ -339,6 +342,7 @@ impl WarpedFieldIndex {
     }
     pub fn shell_landmark_count(&self)->usize {self.shell_landmarks.len()}
     pub fn ids(&self) -> &[u64] { &self.ids }
+    pub fn configuration(&self) -> WarpedFieldConfig { self.config }
 
     fn cold_slot(&self, node: usize) -> usize {
         if self.slots.is_empty() { node } else { self.slots[node] }

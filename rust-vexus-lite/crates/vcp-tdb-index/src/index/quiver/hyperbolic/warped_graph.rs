@@ -66,36 +66,9 @@ pub(super) struct QuadriPruneSpec<'a> {
 /// 通用 L0 单层导航图。
 pub struct VarGraph {
     pub neighbors: Vec<Vec<u32>>,
-    pub entry_points: Vec<u32>,
-    pub m_max: usize,
 }
 
 impl VarGraph {
-    /// 增量波次 Vamana 构图 + Pass-2 全局 α-RNG 细化。
-    ///
-    /// 注：所有 `dist_fn` 均为平方距离/距离代理，因此剪枝判定采用 `alpha * alpha` 与距离空间 `alpha` 对齐。
-    pub fn build<F>(
-        n: usize,
-        m_max: usize,
-        ef_construction: usize,
-        alpha: f64,
-        entry_points: Vec<u32>,
-        dist_fn: F,
-    ) -> std::io::Result<Self>
-    where
-        F: Fn(usize, usize) -> f64 + Sync,
-    {
-        Self::build_with_quadri(
-            n,
-            m_max,
-            ef_construction,
-            alpha,
-            entry_points,
-            dist_fn,
-            None,
-        )
-    }
-
     pub(super) fn build_with_quadri<F>(
         n: usize,
         m_max: usize,
@@ -111,8 +84,6 @@ impl VarGraph {
         if n == 0 {
             return Ok(Self {
                 neighbors: Vec::new(),
-                entry_points: Vec::new(),
-                m_max,
             });
         }
 
@@ -282,8 +253,6 @@ impl VarGraph {
 
         Ok(Self {
             neighbors: adj,
-            entry_points: entries,
-            m_max,
         })
     }
 }
