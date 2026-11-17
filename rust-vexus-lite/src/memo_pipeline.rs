@@ -135,6 +135,9 @@ struct PipelineConfig {
     tech_tag_threshold: f64,
     normal_tag_threshold: f64,
     epa_gate_mode: String,
+    tag_routing_mode: String,
+    warped_preset: crate::warped_tag_field::Preset,
+    warped_radius_strategy: crate::warped_tag_field::RadiusStrategy,
     #[serde(default)]
     spike_routing: SenseConfig,
 }
@@ -171,6 +174,9 @@ impl Default for PipelineConfig {
             tech_tag_threshold: 0.08,
             normal_tag_threshold: 0.015,
             epa_gate_mode: "backgroundRelative".into(),
+            tag_routing_mode: "cosine".into(),
+            warped_preset: Default::default(),
+            warped_radius_strategy: Default::default(),
             spike_routing: SenseConfig::default(),
         }
     }
@@ -742,6 +748,16 @@ fn analyze_pyramid_with_pool(
     tag_vectors: &mut TagVectorPool,
     eligible: Option<&HashMap<i64, usize>>,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
+    analyze_pyramid_routed(index, connection, query, dimension, config, tag_vectors, eligible, None, &mut Vec::new())
+}
+
+fn analyze_pyramid_routed(
+    index: &Arc<crate::index_handle::IndexHandle>,
+    connection: &Connection, query: &[f32], dimension: usize, config: &PipelineConfig,
+    tag_vectors: &mut TagVectorPool, eligible: Option<&HashMap<i64, usize>>,
+    warped: Option<(&crate::warped_tag_field::WarpedTagField, &EpaOutput)>,
+    routing: &mut Vec<serde_json::Value>,
+) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
     let original_energy = magnitude(query).powi(2);
     if original_energy <= 1e-12 {
         return Ok((
@@ -764,11 +780,30 @@ fn analyze_pyramid_with_pool(
     let mut levels_work = Vec::new();
     let mut residuals = Vec::new();
     let mut total_explained = 0.0;
+    let mut excluded = HashSet::new();
     for level in 0..config.max_levels.clamp(1, 8) {
-        let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
-        let matches = guard
-            .search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
-            .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
+        let matches = if let Some((field, epa)) = warped {
+            let radius = crate::warped_tag_field::query_radius(
+                config.warped_radius_strategy, level, config.max_levels.clamp(1,8),
+                epa.in_domain_gate, epa.logic_depth, epa.entropy, epa.cache_available);
+            let (ids, stats, sql_reads, cache_hits) = field.search(connection, &residual, radius,
+                config.pyramid_top_k.clamp(1,64), &excluded, tag_vectors)?;
+            routing.push(serde_json::json!({
+                "level":level,"radius":radius,"ids":ids,"excluded":excluded.len(),
+                "visited":stats.visited,"expanded":stats.expanded,
+                "rerankFetches":stats.cold_reads,"sqlReads":sql_reads,"cacheHits":cache_hits,
+                "quadSkips":stats.exact_quad_skips,"distanceEvals":stats.exact_distance_evals,
+                "epaAvailable":epa.cache_available,
+                "meanInboundQuantile":if ids.is_empty() {0.0} else {
+                    ids.iter().filter_map(|id|field.inbound_quantiles.get(id)).sum::<f64>()/ids.len() as f64
+                }
+            }));
+            ids.into_iter().map(|id| (id as u64,0.0_f32)).collect::<Vec<_>>()
+        } else {
+            let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+            guard.search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
+                .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?
+        };
         if matches.is_empty() {
             break;
         }
@@ -776,7 +811,6 @@ fn analyze_pyramid_with_pool(
         // that no admitted propagation seed can carry. Do not require outdegree.
         let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64)
             .filter(|id| eligible.map_or(true, |nodes| nodes.contains_key(id))).collect();
-        drop(guard);
         ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
         let mut tags = Vec::new();
         for id in &ids {
@@ -842,6 +876,9 @@ fn analyze_pyramid_with_pool(
         });
         if config.spike_routing.dynamic_wormholes {
             residuals.push(residual.clone());
+        }
+        if warped.is_some() {
+            excluded.extend(tags.iter().map(|tag| tag.id));
         }
         levels_work.push(tags);
         residual = next_residual;
@@ -2132,6 +2169,8 @@ struct PipelineDiagnostics {
     dual_field: DualFieldDiagnostics,
     fusion: FusionDiagnostics,
     sensing: SenseDiagnostics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_routing: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -2212,9 +2251,18 @@ fn run_pipeline_with_connection(
     let epa = analyze_epa_with_mode(&connection, &input.query_vector, dimensions, &input.config.epa_gate_mode);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
+    if !["cosine","warped_ags"].contains(&input.config.tag_routing_mode.as_str()) {
+        return Err("Invalid tagRoutingMode".into());
+    }
+    let warped = if input.config.tag_routing_mode == "warped_ags" {
+        runtime.warped_fields.read().map_err(|e|e.to_string())?
+            .get(&input.config.warped_preset).cloned()
+            .filter(|field|field.current(connection,artifact_sig))
+    } else { None };
     let mut tag_vectors = TagVectorPool::new();
+    let mut routing_attempts = Vec::new();
     let pyramid_started = Instant::now();
-    let (pyramid, level_tags, residuals) = analyze_pyramid_with_pool(
+    let (pyramid, level_tags, residuals) = analyze_pyramid_routed(
         index,
         &connection,
         &input.query_vector,
@@ -2222,6 +2270,8 @@ fn run_pipeline_with_connection(
         &input.config,
         &mut tag_vectors,
         Some(&artifact.node_index),
+        warped.as_deref().map(|field| (field, &epa)),
+        &mut routing_attempts,
     )?;
     let pyramid_ms = pyramid_started.elapsed().as_secs_f64() * 1000.0;
 
@@ -2389,6 +2439,13 @@ fn run_pipeline_with_connection(
             dual_field: dual_field_diagnostics,
             fusion,
             sensing: sensing_diagnostics,
+            tag_routing: (input.config.tag_routing_mode == "warped_ags").then(||serde_json::json!({
+                "used":if warped.is_some() {"warped_ags"} else {"cosine"},
+                "fallback":warped.is_none(),
+                "preset":format!("{:?}",input.config.warped_preset),
+                "radiusStrategy":format!("{:?}",input.config.warped_radius_strategy),
+                "attempts":routing_attempts,
+            })),
         },
     })
     .map_err(|error| format!("encode unified Memo pipeline metadata failed: {}", error))?;
@@ -3473,3 +3530,8 @@ mod experiment_c_tests {
         assert!(direction.is_empty() && ids.is_empty());
     }
 }
+
+
+#[cfg(test)]
+#[path = "phase5_pipeline_experiment.rs"]
+mod phase5_pipeline_experiment;

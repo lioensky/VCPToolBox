@@ -26,6 +26,8 @@ struct BuildInput {
     model_sig: String,
     #[serde(default)]
     effective_config: Value,
+    #[serde(default)]
+    warped_presets: Vec<crate::warped_tag_field::Preset>,
 }
 
 #[derive(Clone)]
@@ -171,8 +173,11 @@ fn load_anchor_gains(
         signature
     } else { String::new() };
     for row in rows {
-        let (tag_id, gain, raw_residual, _artifact_sig) =
+        let (tag_id, gain, raw_residual, row_signature) =
             row.map_err(|error| format!("decode intrinsic residual row failed: {}", error))?;
+        if !signature.is_empty() && row_signature != signature {
+            return Err(format!("intrinsic residual Tag {tag_id} geometry signature mismatch"));
+        }
         if !gain.is_finite() || !raw_residual.is_finite() {
             return Err(format!(
                 "intrinsic residual row for Tag {} contains non-finite values",
@@ -742,6 +747,7 @@ struct ArtifactPayload<'a> {
     anchor_gain: Vec<(i64, f64)>,
     inbound: Vec<(i64, f64)>,
     wormholes: Vec<EdgeKey>,
+    raw_residuals: Vec<(i64, f64)>,
 }
 
 impl Serialize for ArtifactPayload<'_> {
@@ -754,7 +760,7 @@ impl Serialize for ArtifactPayload<'_> {
             generation: &self.metadata["provenanceGeneration"],
             edges: ProvenanceEdges(self.provenance),
         })?;
-        map.serialize_entry("rawResidualRatioView", &Value::Array(Vec::new()))?;
+        map.serialize_entry("rawResidualRatioView", &self.raw_residuals)?;
         map.serialize_entry("schema", PAYLOAD_SCHEMA)?;
         map.serialize_entry("sharedTransport", &SharedTransport {
             content_sig: &self.metadata["graphGeneration"],
@@ -786,6 +792,7 @@ fn artifact_payload<'a>(
         anchor_gain,
         inbound,
         wormholes: wormhole_ids.into_iter().map(|(source, target)| EdgeKey(source, target)).collect(),
+        raw_residuals: Vec::new(),
     }
 }
 
@@ -804,10 +811,10 @@ fn run_build(
     }
 
     let snapshot_gate = crate::publication_gate::acquire_read(db_path, &["*".into()])?;
-    let (rows, fact, anchor_gain, residual_sig, database_generation, dependencies) =
+    let (rows, fact, anchor_gain, raw_residuals, residual_sig, database_generation, dependencies) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
-            let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
+            let (anchor_gain, raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             // Each Tag vector is read and normalised once per snapshot into the
             // memory-mapped f64 workspace that geometry precompute also uses, instead
             // of once per file; no vector SQL when semantic gain is disabled.
@@ -833,6 +840,7 @@ fn run_build(
                 rows,
                 fact,
                 anchor_gain,
+                raw_residuals,
                 residual_sig,
                 database_generation,
                 dependencies,
@@ -887,15 +895,19 @@ fn run_build(
         ),
         24,
     );
+    let mut residual_view: Vec<(i64,f64)> = raw_residuals.into_iter().collect();
+    residual_view.sort_unstable_by_key(|entry|entry.0);
+    let residual_digest = sha256_hex(&serde_json::to_vec(&residual_view).map_err(|e|e.to_string())?);
     let artifact_sig = hash_text(
         &format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|residual-view-v1:{}",
             ALGORITHM_VERSION,
             source_artifact_sig,
             graph_digest,
             provenance_generation,
             database_generation,
-            config_hash
+            config_hash,
+            residual_digest
         ),
         48,
     );
@@ -919,7 +931,8 @@ fn run_build(
         "effectiveConfig": input.effective_config
     });
     let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
-    let payload = artifact_payload(&native, &provenance, &metadata);
+    let mut payload = artifact_payload(&native, &provenance, &metadata);
+    payload.raw_residuals = residual_view;
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
     drop(payload);
@@ -1017,6 +1030,21 @@ fn run_build(
         dependencies.ensure_current(connection)
     })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
+    for preset in input.warped_presets {
+        let field = with_registered_read_transaction(db_path, |connection| {
+            crate::warped_tag_field::WarpedTagField::build(
+                connection, &artifact_sig, &native, dimension, preset)
+        })?;
+        // The publication gate remains held: facts cannot change between validation and swap.
+        with_registered_read_transaction(db_path, |connection| {
+            if !field.current(connection, &artifact_sig) {
+                return Err("warped field changed during construction".into());
+            }
+            runtime.warped_fields.write().map_err(|e|e.to_string())?
+                .insert(preset, Arc::new(field));
+            Ok(())
+        })?;
+    }
     Ok(NativeMemoArtifactBuildResult {
         success: true,
         artifact_sig,
@@ -1715,3 +1743,79 @@ mod parallel_gain_tests {
 #[cfg(test)]
 #[path = "memo_workspace_build_tests.rs"]
 mod workspace_build_tests;
+
+
+#[cfg(test)]
+mod phase5_copy_experiment {
+    use super::*;
+
+    #[test]
+    #[ignore = "explicit private Phase 5 working-copy rebuild, never production"]
+    fn rebuild_private_work_copy() {
+        let db = std::path::PathBuf::from(std::env::var("PHASE5_WORK_DB").unwrap())
+            .canonicalize().unwrap();
+        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/pelorus-experiment").canonicalize().unwrap();
+        assert_eq!(db.parent(), Some(parent.as_path()));
+        assert_eq!(db.file_name().unwrap(), "phase5-work-v1.sqlite");
+        let output = parent.join("phase5-rebuild-v1.json");
+        let mut report = std::fs::OpenOptions::new().write(true).create_new(true).open(output).unwrap();
+        let db = db.to_string_lossy().into_owned();
+        let (store, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default()).unwrap();
+        let vexus = crate::VexusIndex::new(3072,16).unwrap();
+        let (model, geometry_config, effective): (String,String,Value) =
+            with_registered_read_transaction(&db, |c| {
+                let (model, cfg): (String,String) = c.query_row(
+                    "SELECT model_sig,effective_config FROM tagmemo_artifacts
+                     WHERE asset_type='unified_geometry' AND status='ready'
+                     ORDER BY updated_at DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?)))
+                    .map_err(|e|e.to_string())?;
+                let payload:Vec<u8> = c.query_row(
+                    "SELECT payload FROM rivermemo_artifacts WHERE status='ready'
+                     ORDER BY updated_at DESC LIMIT 1",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+                let mut decoder=flate2::read::GzDecoder::new(payload.as_slice());
+                let value:Value=serde_json::from_reader(&mut decoder).map_err(|e|e.to_string())?;
+                Ok((model,cfg,value["artifact"]["effectiveConfig"].clone()))
+            }).unwrap();
+        let mut cfg:Value=serde_json::from_str(&geometry_config).unwrap();
+        cfg["forceRecompute"]=json!(true);
+        eprintln!("Phase5 authority geometry rebuild started");
+        let mut task=crate::memo_geometry::GeometryTask {
+            index:vexus.index.clone(),content_revision:vexus.content_revision.clone(),
+            dimensions:3072,db_path:db.clone(),model_sig:model.clone(),config_json:cfg.to_string(),
+        };
+        let geometry=task.compute().unwrap();
+        eprintln!("Phase5 geometry complete computed={} elapsed_ms={}",geometry.computed_count,geometry.elapsed_ms);
+        let built=run_build(3072,&vexus.memo_runtime,&db,&json!({
+            "modelSig":model,"effectiveConfig":effective,"warpedPresets":["locked_0","locked_2"]
+        }).to_string()).unwrap();
+        let fields=vexus.memo_runtime.warped_fields.read().unwrap();
+        let field_stats:Vec<Value>=fields.values().map(|f|json!({
+            "preset":format!("{:?}",f.preset),"nodes":f.ids.len(),
+            "activeTags":f.active_tags,"rankedTags":f.ranked_tags,
+            "hotBytes":f.index.hot_bytes(),"connectivity":f.index.connectivity(),
+        })).collect();
+        let alignment=with_registered_read_transaction(&db,|c| {
+            let mut meta=serde_json::Map::new();
+            for key in ["database_generation","memo_tag_facts","derived_geometry"] {
+                let value:String=c.query_row("SELECT value FROM kbm_runtime_meta WHERE key=?1",
+                    [key],|r|r.get(0)).map_err(|e|e.to_string())?;
+                meta.insert(key.into(),json!(value));
+            }
+            let count:i64=c.query_row(
+                "SELECT count(*) FROM tag_intrinsic_residuals WHERE artifact_sig=?1",
+                [&geometry.artifact_sig],|r|r.get(0)).map_err(|e|e.to_string())?;
+            meta.insert("residualRows".into(),json!(count));
+            Ok(Value::Object(meta))
+        }).unwrap();
+        serde_json::to_writer_pretty(&mut report,&json!({
+            "schema":"phase5-rebuild-v1","geometrySig":geometry.artifact_sig,
+            "geometryMs":geometry.elapsed_ms,"computed":geometry.computed_count,
+            "artifactSig":built.artifact_sig,"artifactMs":built.elapsed_ms,
+            "alignment":alignment,"fields":field_stats
+        })).unwrap();
+        drop(fields);
+        store.shutdown().unwrap();
+    }
+}

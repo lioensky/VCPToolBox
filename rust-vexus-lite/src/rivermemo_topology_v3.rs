@@ -575,6 +575,7 @@ struct MemoQueryCacheEntry {
 /// 让 RiverMemo Topology V3 直接复用统一管线产物，避免河网经 JS JSON 往返。
 pub(crate) struct MemoRuntime {
     active_artifact: RwLock<Option<(String, u64, Arc<NativeArtifact>)>>,
+    pub(crate) warped_fields: RwLock<HashMap<crate::warped_tag_field::Preset, Arc<crate::warped_tag_field::WarpedTagField>>>,
     generation: AtomicU64,
     query_sequence: AtomicU64,
     query_cache: Mutex<HashMap<String, MemoQueryCacheEntry>>,
@@ -589,6 +590,7 @@ impl MemoRuntime {
     pub(crate) fn new() -> Self {
         Self {
             active_artifact: RwLock::new(None),
+            warped_fields: RwLock::new(HashMap::new()),
             generation: AtomicU64::new(0),
             query_sequence: AtomicU64::new(0),
             query_cache: Mutex::new(HashMap::new()),
@@ -762,6 +764,7 @@ impl MemoRuntime {
             .map_err(|error| format!("memo runtime clear lock failed: {}", error))?;
         *guard = None;
         drop(guard);
+        self.warped_fields.write().map_err(|e| e.to_string())?.clear();
         self.clear_query_cache()
     }
 
