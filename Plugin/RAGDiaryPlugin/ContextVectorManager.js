@@ -31,6 +31,25 @@ class ContextVectorManager {
     /**
      * 文本归一化处理
      */
+    /**
+     * 提取消息文本内容（兼容 string 与多模态文本块数组）
+     */
+    _extractContent(msg) {
+        if (!msg) return '';
+        if (typeof msg.content === 'string') return msg.content;
+        if (Array.isArray(msg.content)) {
+            return msg.content.find(p => p && p.type === 'text')?.text || '';
+        }
+        return '';
+    }
+
+    /**
+     * 判断是否为以 [系统...] 开头的虚拟系统用户消息
+     */
+    _isVirtualSystemUser(msg) {
+        return msg?.role === 'user' && /^\s*\[系统/.test(this._extractContent(msg));
+    }
+
     _normalize(text) {
         if (!text) return '';
         // 复用插件的清理逻辑
@@ -160,8 +179,8 @@ class ContextVectorManager {
             skippedEmptyMessages: 0
         };
 
-        // 识别最后的消息索引以进行排除
-        const lastUserIndex = messages.findLastIndex(m => m.role === 'user');
+        // 识别最后的消息索引以进行排除（排除最后一轮真实用户消息和最后 AI 消息）
+        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const tasks = messages.map(async (msg, index) => {
@@ -175,12 +194,16 @@ class ContextVectorManager {
                 return;
             }
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractContent(msg);
 
             if (!content || content.length < 2) {
                 stats.skippedEmptyMessages++;
+                return;
+            }
+
+            // 排除虚拟系统消息（以 [系统...] 开头的 user 消息，与全库 findLastRealUserMessage 规则保持一致）
+            if (this._isVirtualSystemUser(msg)) {
+                stats.skippedSystemMessages++;
                 return;
             }
 
@@ -447,7 +470,7 @@ class ContextVectorManager {
      */
     segmentContext(messages, similarityThreshold = 0.70) {
         // 1. 重新遍历消息，按原始顺序对齐向量并排除最后一轮
-        const lastUserIndex = messages.findLastIndex(m => m.role === 'user');
+        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const sequence = [];
@@ -456,11 +479,10 @@ class ContextVectorManager {
             if (msg.role === 'system') return;
             if (index === lastUserIndex || index === lastAiIndex) return;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractContent(msg);
 
             if (!content || content.length < 2) return;
+            if (this._isVirtualSystemUser(msg)) return;
 
             const { hash } = this._getNormalizedAndHash(content);
 
