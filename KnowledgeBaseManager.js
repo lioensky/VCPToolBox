@@ -1780,7 +1780,17 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         if (options.engineMode === 'rivermemo' || options.abMode === true) {
             prepared = await this.prepareUnifiedMemoObservation(query, options);
         }
+        let warpedPrepared = null;
         try {
+        if (options.abMode === true && options.warpedAb === true) {
+            warpedPrepared = await this.prepareUnifiedMemoObservation(query, {
+                ...options, tagRoutingMode: 'warped_ags',
+                warpedPreset: 'locked_2', warpedRadiusStrategy: 'epa_guided'
+            });
+            if (warpedPrepared.artifact.artifactSig !== prepared.artifact.artifactSig) {
+                throw new Error('LIGHTMEMO_AB_ARTIFACT_CHANGED: retry with one active artifact');
+            }
+        }
         const raw = await runtime.executeLightMemoQuery(JSON.stringify({
             ...options,
             modelSig: this.config.modelSig,
@@ -1790,6 +1800,13 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                 query: { text: String(query.text || '') },
                 queryState: { queryId: prepared.observation?.queryId || null },
                 config: this.riverMemoEngine._nativeConfig(prepared.artifact, options)
+            } : null,
+            warpedRiverInput: warpedPrepared ? {
+                observationHandle: warpedPrepared.observationHandle,
+                query: { text: String(query.text || '') },
+                queryState: { queryId: warpedPrepared.observation?.queryId || null },
+                tagRouting: warpedPrepared.sourceObservationResult?.diagnostics?.nativePipeline?.tagRouting,
+                config: this.riverMemoEngine._nativeConfig(warpedPrepared.artifact, options)
             } : null
         }), vector);
         const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -1806,6 +1823,28 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         result.tdbTopK = (result.tdbTopK || []).map(normalize);
         result.comparisonPool = (result.comparisonPool || []).map(normalize);
         if (Array.isArray(result.river?.results)) result.river.results = result.river.results.map(normalize);
+        result.warpedTopK = (result.warpedTopK || []).map(normalize);
+        if (Array.isArray(result.warpedRiver?.results)) {
+            result.warpedRiver.results = result.warpedRiver.results.map(normalize);
+        }
+        if (warpedPrepared) {
+            const source = warpedPrepared.sourceObservationResult;
+            result.warpedMemoObservation = {
+                artifactSig: warpedPrepared.artifact.artifactSig,
+                queryId: warpedPrepared.observation?.queryId ?? null,
+                queryTags: {
+                    requestedCoreTags: options.coreTags || [],
+                    matchedTags: source?.matchedTags,
+                    coreTagsMatched: source?.coreTagsMatched,
+                    sourceMode: source?.sourceMode
+                },
+                effectiveTagBoost: source?.effectiveTagBoost,
+                propagation: source?.propagation,
+                epa: source?.epa,
+                pyramid: source?.pyramid,
+                diagnostics: source?.diagnostics?.nativePipeline || null
+            };
+        }
         if (options.abMode === true && prepared) {
             const source = prepared.sourceObservationResult;
             result.memoObservation = {
@@ -1826,6 +1865,7 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
         }
         return result;
         } finally {
+            if (warpedPrepared) this.releaseMemoObservation?.(warpedPrepared);
             if (prepared) this.releaseMemoObservation?.(prepared);
         }
     }
@@ -2273,6 +2313,11 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                 coreTags: stringCoreTags,
                 ghostTags: ghostMetadata,
                 config: {
+                    ...(options.tagRoutingMode == null ? {} : {
+                        tagRoutingMode: options.tagRoutingMode,
+                        warpedPreset: options.warpedPreset ?? 'locked_2',
+                        warpedRadiusStrategy: options.warpedRadiusStrategy ?? 'epa_guided'
+                    }),
                     baseTagBoost: Math.max(
                         0,
                         Number(sourceObservationConfig.baseTagBoost ?? 0.6)

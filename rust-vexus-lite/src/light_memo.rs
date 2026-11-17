@@ -43,6 +43,10 @@ pub(crate) struct Plan {
     artifact_sig: String,
     #[serde(default)]
     river_input: Value,
+    #[serde(default)]
+    warped_ab: bool,
+    #[serde(default)]
+    warped_river_input: Value,
     /// Experimental request-local route; absent means byte-compatible legacy recall.
     #[serde(default)]
     pelorus_route2: bool,
@@ -63,6 +67,7 @@ pub struct LightMemoTask {
     pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
     pub(crate) runtime: Arc<MemoRuntime>,
     pub(crate) observation: Option<Arc<crate::rivermemo_topology_v3::MemoQueryObservation>>,
+    pub(crate) warped_observation: Option<Arc<crate::rivermemo_topology_v3::MemoQueryObservation>>,
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
@@ -186,7 +191,15 @@ impl Task for LightMemoTask {
                         admitted
                     },
                 )?;
-                let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &ids, self.dimension)?;
+                let (warped_hits, warped_diagnostics) = if plan.ab_mode && plan.warped_ab {
+                    table.search_warped(connection, &self.query, plan.candidate_k.max(plan.k),
+                        |row| plan.scope.admits(row, &diaries))?
+                } else { (Vec::new(), Value::Null) };
+                let warped_distances = warped_hits.iter().copied()
+                    .collect::<std::collections::HashMap<_,_>>();
+                let all_ids = ids.iter().copied().chain(warped_hits.iter().map(|hit|hit.0))
+                    .collect::<HashSet<_>>().into_iter().collect::<Vec<_>>();
+                let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &all_ids, self.dimension)?;
                 let mut candidates = ids.into_iter().filter_map(|id| {
                     vectors.get(&id).map(|vector| json!({
                         "id":id,"label":id,"chunkId":id,"vectorScore":cosine(&self.query, vector),
@@ -202,12 +215,18 @@ impl Task for LightMemoTask {
                     && !(plan.use_bm25 && !plan.query_tokens.is_empty()) {
                     candidates.truncate(plan.k);
                 }
+                let mut warped_candidates = warped_hits.iter().filter_map(|&(id,distance)| {
+                    vectors.get(&id).map(|vector| json!({
+                        "id":id,"label":id,"chunkId":id,"vectorScore":cosine(&self.query,vector),
+                        "warpedDistance":distance,"warpedScore":-distance,"bm25Score":0.0
+                    }))
+                }).collect::<Vec<_>>();
                 let mut hydrate = connection.prepare(
                     "SELECT c.content,f.path,f.diary_name,c.file_id FROM chunks c
                      JOIN files f ON f.id=c.file_id WHERE c.id=?1"
                 ).map_err(|e| e.to_string())?;
                 // Bounded candidate text only, never the full corpus.
-                for candidate in &mut candidates {
+                for candidate in candidates.iter_mut().chain(warped_candidates.iter_mut()) {
                     let id = candidate["id"].as_i64().unwrap();
                     let row: Option<(String,String,String,i64)> = hydrate.query_row([id],
                         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
@@ -220,16 +239,33 @@ impl Task for LightMemoTask {
                     }
                     candidate["score"] = candidate["vectorScore"].clone();
                     candidate["hybridScore"] = candidate["vectorScore"].clone();
-                    candidate["retrievalEngine"] = json!("tdb");
+                    candidate["retrievalEngine"] = json!(
+                        if candidate.get("warpedDistance").is_some() { "warped_chunks" } else { "tdb" });
                 }
                 if plan.use_bm25 && !plan.query_tokens.is_empty() {
                     score_keywords(&mut candidates, &plan.query_tokens);
+                    score_keywords(&mut warped_candidates, &plan.query_tokens);
                 }
-                // A/B uses exactly this bounded pool; baseline remains pure cosine.
+                // Each native readout keeps its own recall pool. External tracks use the union.
                 let tdb = candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
-                let mut river = Value::Null;
+                let warped_top_k = warped_candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
+                let mut baseline_river = Value::Null;
+                let mut warped_river = Value::Null;
+                for variant in 0..if plan.ab_mode && plan.warped_ab { 2 } else { 1 } {
+                if variant == 1 && plan.warped_river_input["tagRouting"]["used"].as_str() != Some("warped_ags") {
+                    warped_river = json!({
+                        "results":[], "pipelineVersion":"rivermemo-v5-warped-experimental",
+                        "diagnostics":{"available":false,"reason":"Tag warped route unavailable; no cosine result presented as V5",
+                            "tagRouting":plan.warped_river_input["tagRouting"]}
+                    });
+                    continue;
+                }
+                let candidates = if variant == 0 { &candidates } else { &warped_candidates };
+                let mut current_river = Value::Null;
+                let river = &mut current_river;
                 if (plan.engine_mode == "rivermemo" || plan.ab_mode) && !candidates.is_empty() {
-                    let mut input = plan.river_input.clone();
+                    let mut input = if variant == 0 { plan.river_input.clone() }
+                        else { plan.warped_river_input.clone() };
                     if !input.is_object() || plan.artifact_sig.is_empty()
                         || !input["observationHandle"].is_string() {
                         return Err("LIGHTMEMO_RIVER_OBSERVATION_UNAVAILABLE".into());
@@ -240,14 +276,14 @@ impl Task for LightMemoTask {
                     input["candidates"] = json!(candidates);
                     input["allowedFileIds"] = json!(candidates.iter()
                         .filter_map(|c| c["fileId"].as_i64()).collect::<HashSet<_>>());
-                    river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_observation(
+                    *river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_observation(
                         &self.runtime, connection, &plan.artifact_sig, &input.to_string(),
-                        self.observation.as_ref(),
+                        if variant == 0 { self.observation.as_ref() } else { self.warped_observation.as_ref() },
                     )?).map_err(|e| e.to_string())?;
                     if plan.ab_mode {
                         // Export a bounded read-only view of this exact observation, never
                         // truncate the graph used by propagation or topology scoring.
-                        let cached = match self.observation.as_ref() {
+                        let cached = match if variant == 0 { self.observation.as_ref() } else { self.warped_observation.as_ref() } {
                             Some(value) => value.clone(),
                             None => self.runtime.get_query_observation(
                                 input["observationHandle"].as_str().unwrap(), &plan.artifact_sig)?,
@@ -304,16 +340,38 @@ impl Task for LightMemoTask {
                             river["results"].as_array().map_or(0, Vec::len));
                     }
                 }
+                if variant == 0 { baseline_river = current_river; } else {
+                    if current_river.is_object() {
+                        current_river["pipelineVersion"] = json!("rivermemo-v5-warped-experimental");
+                        current_river["diagnostics"]["tagRouting"] = plan.warped_river_input["tagRouting"].clone();
+                        current_river["diagnostics"]["chunkRouting"] = warped_diagnostics.clone();
+                    }
+                    warped_river = current_river;
+                }
+                }
+                let river = baseline_river;
+                let mut comparison_pool = candidates.clone();
+                let mut seen = comparison_pool.iter().filter_map(|c|c["id"].as_i64()).collect::<HashSet<_>>();
+                for candidate in &warped_candidates {
+                    if seen.insert(candidate["id"].as_i64().unwrap()) { comparison_pool.push(candidate.clone()); }
+                }
                 let results = if plan.engine_mode == "rivermemo" {
                     river["results"].as_array().cloned().unwrap_or_default()
                 } else { tdb.clone() };
                 Ok(json!({
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
-                    "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
+                    "warpedTopK":warped_top_k,"warpedRiver":warped_river,
+                    "recallPools":if plan.warped_ab { json!({
+                        "tdb":candidates.iter().map(|c|c["id"].clone()).collect::<Vec<_>>(),
+                        "warped":warped_hits.iter().map(|h|h.0).collect::<Vec<_>>(),
+                        "overlap":candidates.iter().filter(|c|warped_distances.contains_key(&c["id"].as_i64().unwrap())).count()
+                    }) } else { Value::Null },
+                    "comparisonPool":if plan.ab_mode { comparison_pool } else { Vec::new() },
                     "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
                         "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1,
+                        "warpedChunks":warped_diagnostics,
                         "routingMode":if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
                         "routing":{"admitted":routing_stats.admitted,
                             "symmetricScored":routing_stats.symmetric_scored,
@@ -325,8 +383,8 @@ impl Task for LightMemoTask {
                 }))
             },
         ).map_err(Error::from_reason)?;
-        // Queries only synchronize memory routing. Snapshot publication belongs
-        // to the independently scheduled, policy-gated checkpoint task.
+        // TDB snapshot publication remains independently scheduled and policy-gated.
+        // Explicit warped AB may publish its separate rebuildable derived sidecar.
         resident.as_mut().unwrap().last_used = std::time::Instant::now();
         output["diagnostics"]["totalMs"] = json!(started.elapsed().as_secs_f64()*1000.);
         Ok(output.to_string())
@@ -420,6 +478,7 @@ mod tests {
             table: Arc::new(Mutex::new(None)),
             runtime: Arc::new(MemoRuntime::new()),
             observation: None,
+            warped_observation: None,
         };
         for count in [256, 257] {
             task.plan_json = json!({
@@ -509,6 +568,7 @@ mod tests {
             plan_json:String::new(),table:Arc::new(Mutex::new(None)),
             runtime:Arc::new(MemoRuntime::new()),
             observation:None,
+            warped_observation:None,
         };
         let run = |task:&mut LightMemoTask,scope:Value| {
             task.plan_json=json!({"scope":scope,"modelSig":"test","engineMode":"knn",

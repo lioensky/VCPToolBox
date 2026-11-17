@@ -9,6 +9,9 @@ use vcp_tdb_index::index::quiver::corrected_sm::{
     CorrectedSmIndex, FlatSearchConfig, FlatSearchStats,
 };
 
+#[path = "warped_chunks.rs"]
+mod warped_chunks;
+
 const MAGIC: &[u8; 8] = b"VCPGCH01";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -36,6 +39,7 @@ struct Snapshot {
 pub(crate) struct GlobalChunks {
     pub rows: HashMap<i64, ChunkHeader>,
     routing: CorrectedSmIndex,
+    warped: Option<warped_chunks::WarpedChunks>,
     dimension: usize,
     model: String,
     facts: String,
@@ -67,6 +71,7 @@ impl GlobalChunks {
         Ok(Self {
             rows: HashMap::new(),
             routing: CorrectedSmIndex::empty_flat(dimension).map_err(|e| e.to_string())?,
+            warped: None,
             dimension, model: model.into(), facts: String::new(),
             last_used: Instant::now(),
         })
@@ -91,6 +96,7 @@ impl GlobalChunks {
         self.last_used = Instant::now();
         let current = facts(connection)?;
         if current == self.facts { return Ok(0); }
+        self.warped = None;
         let mut statement = connection.prepare(
             "SELECT c.id,c.vector_version,c.metadata_version,f.metadata_version
              FROM chunks c JOIN files f ON f.id=c.file_id WHERE c.vector IS NOT NULL"
@@ -229,7 +235,7 @@ impl GlobalChunks {
             }
             Ok(Self {
                 rows: snapshot.rows.into_iter().map(|row| (row.id, row)).collect(),
-                routing, dimension, model: model.into(), facts: snapshot.facts,
+                routing, warped: None, dimension, model: model.into(), facts: snapshot.facts,
                 last_used: Instant::now(),
             })
         })();

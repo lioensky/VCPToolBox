@@ -409,6 +409,26 @@ impl WarpedFieldIndex {
     pub fn search_seed_policy<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
         seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
         shell_directory:bool,reuse_beam:bool,seed_policy:u8,
+        trace:Option<&mut WarpedSearchTrace>, exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_budgeted(query,radius,config,seed_mode,navigation,rerank,
+            shell_directory,reuse_beam,seed_policy,64,trace,exclude,fill)
+    }
+
+    /// Chunk-only bounded candidate export. Does not relax the Tag API's 64-row contract.
+    pub fn search_chunks<F,E>(&self, query:&[f32], radius:f32,
+        config:HyperbolicSearchConfig, trace:Option<&mut WarpedSearchTrace>,
+        exclude:E, fill:F) -> io::Result<HyperbolicOutput>
+    where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
+        self.search_budgeted(query,radius,config,WarpedSeedMode::DirectionLandmarks,
+            WarpedNavigationOptions {asymmetric:true,compact_seeds:true},
+            WarpedRerankOptions {reuse_transform:true,envelope_bound:true},
+            true,true,1,2000,trace,exclude,fill)
+    }
+
+    fn search_budgeted<F,E>(&self, query:&[f32], radius:f32, config:HyperbolicSearchConfig,
+        seed_mode:WarpedSeedMode, navigation:WarpedNavigationOptions, rerank:WarpedRerankOptions,
+        shell_directory:bool,reuse_beam:bool,seed_policy:u8,cold_cap:usize,
         mut trace:Option<&mut WarpedSearchTrace>, exclude:E, mut fill:F) -> io::Result<HyperbolicOutput>
     where F:FnMut(usize,&mut Vec<f32>)->bool,E:Fn(u64)->bool {
         if seed_policy>2 || (seed_policy!=0 &&
@@ -422,8 +442,8 @@ impl WarpedFieldIndex {
             return Err(invalid("envelope requires prepared exact cosine"));
         }
         if let Some(t)=trace.as_deref_mut() {*t=WarpedSearchTrace::default();}
-        if config.width==0 || config.rerank_limit>64 || config.rerank_limit<config.top_k {
-            return Err(invalid("warped query requires top_k <= cold budget <= 64"));
+        if config.width==0 || config.rerank_limit>cold_cap || config.rerank_limit<config.top_k {
+            return Err(invalid("warped query requires top_k <= cold budget <= endpoint cap"));
         }
         let slice=self.table.checked_slice(radius as f64)?;
         let unit=Self::transform(query,&self.mean_axis,self.config.mean_subtract_beta)?;

@@ -73,7 +73,10 @@ test('laboratory appends diagnostics but normal search keeps its original output
         _parseStringArray: value => value || [],
         _tokenize: () => [], _expandQueryTokens: () => [],
         getSingleEmbedding: async () => [1, 0],
-        vectorDBManager: { executeLightMemoQuery: async () => data },
+        vectorDBManager: { executeLightMemoQuery: async (_query, options) => {
+            assert.equal(options.warpedAb, options.abMode ? true : undefined);
+            return data;
+        } },
         _escapeMarkdownCell: cell,
         _detectColdKnowledgeRoute: () => null,
         _parseRerankOptions: () => ({ enabled: false }),
@@ -82,10 +85,21 @@ test('laboratory appends diagnostics but normal search keeps its original output
     };
     const args = { query: '查询', folder: '日记', core_tags: ['核心'] };
     const output = await laboratory.call(plugin, args);
-    assert.match(output, /四轨实验室/);
+    assert.match(output, /六轨实验室/);
+    assert.match(output, /双曲 Chunk 候选/);
+    assert.match(output, /不沿用 ANN 排名/);
+    assert.match(output, /V5 未执行或原生未返回/);
     assert.match(output, /RiverMemo 查询诊断/);
     assert.match(output, /confidence/);
     assert.equal(await search.call(plugin, args), 'ordinary search');
+    data.warpedTopK = [{ id: 22, text: '双曲独有', warpedScore: -0.125 }];
+    data.warpedRiver = { results: [{ id: 22, text: '双曲独有', score: 0.83 }],
+        diagnostics: { available: true }, algorithmVersion: 'real-native-readout' };
+    data.recallPools = { tdb: [11], warped: [22], overlap: 0 };
+    const warpedOutput = await laboratory.call(plugin, args);
+    assert.match(warpedOutput, /22 \| 双曲独有 \| — \| — \| — \| — \| #1 \/ -0.1250 \| #1 \/ 0.8300/);
+    assert.match(warpedOutput, /real-native-readout/);
+    assert.match(warpedOutput, /双召回对照/);
 });
 
 test('2.4 diagnostics exposes out-of-top-k candidates and intent route ledger', () => {

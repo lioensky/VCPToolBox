@@ -2965,8 +2965,15 @@ impl NativeKnowledgeRuntime {
             ).map_err(Error::from_reason)?),
             None => None,
         };
+        let warped_observation = match plan["warpedRiverInput"]["observationHandle"].as_str() {
+            Some(handle) => Some(self.memo_runtime.get_query_observation(
+                handle, plan["artifactSig"].as_str().unwrap_or("")
+            ).map_err(Error::from_reason)?),
+            None => None,
+        };
         Ok(self.tracked_task(crate::light_memo::LightMemoTask {
             observation,
+            warped_observation,
             db_path: storage.db_path().to_string_lossy().into_owned(),
             dimension: self.dimension as usize,
             query: query.to_vec(),
@@ -3008,7 +3015,8 @@ impl NativeKnowledgeRuntime {
                 Some(table) => serde_json::json!({
                     "resident": true, "chunks": table.rows.len(),
                     "idleMs": table.last_used.elapsed().as_millis() as u64,
-                    "storageMode": "rust-sm-flat", "f32Resident": false
+                    "storageMode": "rust-sm-flat", "f32Resident": false,
+                    "warpedChunks": table.warped_stats()
                 }),
                 None => serde_json::json!({
                     "resident": false, "chunks": 0, "f32Resident": false

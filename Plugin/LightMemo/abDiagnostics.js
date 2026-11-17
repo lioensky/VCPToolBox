@@ -16,6 +16,10 @@ function formatDiagnostics(plugin, request, response) {
     if (!river) {
         return output + '- RiverMemo 未执行（候选池为空或原生未返回），没有可用的传播图和读出诊断。\n';
     }
+    if (river.diagnostics?.available === false) {
+        return output + `- 实验轨不可用：${json(river.diagnostics)}；未用旧轨或余弦回退冒充。\n`;
+    }
+    output += `- 实验链路：${cell(river.pipelineVersion || '现有原生链路')}；底层读出版本独立列出。\n`;
     output += `- 资产：${cell(river.artifactSig || observation.artifactSig || '未返回')}；查询 ID：${cell(river.queryId || observation.queryId || '未返回')}\n`;
     output += `- 原生读出版本：${cell(river.algorithmVersion || '未返回')}\n`;
     output += `- Ω / 河网状态：${json(river.omega)}\n`;

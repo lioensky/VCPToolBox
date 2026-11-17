@@ -44,7 +44,7 @@ async function main() {
             ],
             tags: [1, 2, 3].map((id, slot) => ({ name: 'tag-' + id, position: id, vectorSlot: slot }))
         }), new Float32Array([1,0,0,0, 0.8,0.2,0,0]),
-        new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]));
+        new Float32Array([1,0,0,0, 0.8,0.2,0,0, 0.7,0,0.3,0]));
 
         const effectiveConfig = {
             zeta: {
@@ -87,7 +87,8 @@ async function main() {
         );
         nativeKnowledgeRuntime.registerDiaryIndex('test', diaryIndex);
 
-        await index.computeMemoGeometry(dbPath, 'manifest-test-model', '{}');
+        await index.computeMemoGeometry(dbPath, 'manifest-test-model',
+            JSON.stringify({ local: { minNeighbors: 1 } }));
         const result = await index.rebuildMemoArtifact(
             dbPath,
             JSON.stringify({
@@ -319,7 +320,56 @@ async function main() {
             assert(light.results.every(item => typeof item.text === 'string'));
             assert(light.comparisonPool.every(item => !Object.hasOwn(item, 'vector')));
         }
-        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, true);
+        const warpedPipeline = await index.runMemoPipeline(
+            dbPath, result.artifactSig,
+            JSON.stringify({ queryText: 'shared-file candidate', config: {
+                maxLevels: 1, pyramidTopK: 3, tagRoutingMode: 'warped_ags',
+                warpedPreset: 'locked_2', warpedRadiusStrategy: 'epa_guided'
+            } }), new Float32Array([1,0,0,0]), new Float32Array()
+        );
+        const warpedMetadata = JSON.parse(warpedPipeline.metadataJson);
+        assert.strictEqual(warpedMetadata.diagnostics.tagRouting.used, 'warped_ags',
+            'the successful fixture must exercise a real warped Tag observation');
+        assert.strictEqual(warpedMetadata.diagnostics.tagRouting.fallback, false);
+        const warpedPlan = { ...lightPlan, warpedAb: true,
+            warpedRiverInput: {
+                ...lightPlan.riverInput,
+                observationHandle: warpedMetadata.observationHandle,
+                tagRouting: warpedMetadata.diagnostics.tagRouting
+            }
+        };
+        const warpedResult = await lightQuery(warpedPlan);
+        assert.deepStrictEqual(warpedResult.tdbTopK, lightResults[0].tdbTopK,
+            'enabling warped experiments must not alter the TDB baseline');
+        assert.strictEqual(warpedResult.warpedTopK.length, 2);
+        assert(warpedResult.warpedTopK.every(item => Number.isFinite(item.warpedDistance)));
+        assert(warpedResult.warpedTopK.every(item => item.warpedScore === -item.warpedDistance));
+        assert.strictEqual(warpedResult.diagnostics.warpedChunks.used, 'warped_chunks');
+        assert.strictEqual(warpedResult.diagnostics.warpedChunks.fallback, false);
+        assert.strictEqual(warpedResult.recallPools.overlap, 2);
+        assert.strictEqual(warpedResult.comparisonPool.length, 2, 'union must deduplicate IDs');
+        if (warpedMetadata.diagnostics.tagRouting.used === 'warped_ags') {
+            assert.strictEqual(warpedResult.warpedRiver.results.length, 2);
+            assert.strictEqual(warpedResult.warpedRiver.algorithmVersion,
+                warpedResult.river.algorithmVersion, 'V5 must not forge a new readout algorithm');
+            assert.strictEqual(warpedResult.warpedRiver.pipelineVersion,
+                'rivermemo-v5-warped-experimental');
+            assert(warpedResult.warpedRiver.results.every(item =>
+                warpedResult.recallPools.warped.includes(item.chunkId)));
+        } else {
+            assert.strictEqual(warpedResult.warpedRiver.diagnostics.available, false);
+            assert.deepStrictEqual(warpedResult.warpedRiver.results, []);
+        }
+        const unavailable = await lightQuery({ ...warpedPlan,
+            warpedRiverInput: { ...warpedPlan.warpedRiverInput,
+                tagRouting: { used: 'cosine', fallback: true } } });
+        assert.strictEqual(unavailable.warpedRiver.diagnostics.available, false);
+        assert.deepStrictEqual(unavailable.warpedRiver.results, []);
+        index.releaseMemoObservation(warpedMetadata.observationHandle);
+        const residentStats = JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats());
+        assert.strictEqual(residentStats.resident, true);
+        assert.strictEqual(residentStats.warpedChunks.resident, true);
+        assert(residentStats.warpedChunks.hotBytes > 0);
         assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(600000), false);
         await new Promise(resolve => setTimeout(resolve, 15));
         assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
