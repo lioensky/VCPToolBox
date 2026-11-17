@@ -36,6 +36,11 @@ export interface TrainingTask {
   phase: string;
   error?: string | null;
   artifactSig?: string | null;
+  failedPhase?: string | null;
+  warped?: {
+    tag?: { nodes?: number; source?: string; forced?: boolean } | null;
+    chunks?: { nodes?: number; source?: string; ready?: boolean; forced?: boolean } | null;
+  } | null;
   startedAt?: number | null;
   finishedAt?: number | null;
 }

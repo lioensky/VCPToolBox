@@ -331,6 +331,11 @@ async function main() {
         assert.strictEqual(warpedMetadata.diagnostics.tagRouting.used, 'warped_ags',
             'the successful fixture must exercise a real warped Tag observation');
         assert.strictEqual(warpedMetadata.diagnostics.tagRouting.fallback, false);
+        const forcedTag = JSON.parse(await index.warmupWarpedTagField(
+            dbPath, result.artifactSig, 'locked_2', true));
+        assert.strictEqual(forcedTag.forced, true);
+        assert.strictEqual(forcedTag.source, 'built');
+        assert(forcedTag.nodes > 0);
         const warpedPlan = { ...lightPlan, warpedAb: true,
             warpedRiverInput: {
                 ...lightPlan.riverInput,
@@ -365,7 +370,21 @@ async function main() {
                 tagRouting: { used: 'cosine', fallback: true } } });
         assert.strictEqual(unavailable.warpedRiver.diagnostics.available, false);
         assert.deepStrictEqual(unavailable.warpedRiver.results, []);
+        const emptyV5 = await lightQuery({ ...warpedPlan, scope: { maid: 'test' } });
+        assert.strictEqual(emptyV5.warpedRiver.diagnostics.reason, 'empty_chunk_candidates');
+        assert.strictEqual(emptyV5.diagnostics.scope.emptyReason, 'maid_signature_filter_empty');
+        assert.strictEqual(emptyV5.diagnostics.scope.globalValidChunks, 2);
+        assert.deepStrictEqual(emptyV5.warpedRiver.results, []);
         index.releaseMemoObservation(warpedMetadata.observationHandle);
+        const forcedChunks = JSON.parse(await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex(
+            'manifest-test-model', true));
+        assert.strictEqual(forcedChunks.ready, true);
+        assert.strictEqual(forcedChunks.forced, true);
+        assert.strictEqual(forcedChunks.source, 'built');
+        assert.strictEqual(forcedChunks.nodes, 2);
+        const warmedChunks = JSON.parse(await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex(
+            'manifest-test-model'));
+        assert.strictEqual(warmedChunks.source, 'memory');
         const residentStats = JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats());
         assert.strictEqual(residentStats.resident, true);
         assert.strictEqual(residentStats.warpedChunks.resident, true);
@@ -404,6 +423,9 @@ async function main() {
         });
         assert.strictEqual(noSignature.results.length, 0,
             'diary-name match does not bypass first-line signature filtering');
+        assert.strictEqual(noSignature.diagnostics.scope.emptyReason, 'maid_signature_filter_empty');
+        assert.strictEqual(noSignature.diagnostics.scope.globalValidChunks, 2);
+        assert.strictEqual(noSignature.diagnostics.scope.diaryChunks, 2);
 
         // 并发冷加载回归：清空常驻 Arc 后，多条 Memo Pipeline 会同时从
         // SQLite 解码同一个 Artifact。后到的同签名发布不得清空先到查询

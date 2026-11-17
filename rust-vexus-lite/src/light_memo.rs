@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use vcp_tdb_index::index::quiver::asymmetric::AsymKernel;
 use vcp_tdb_index::index::quiver::corrected_sm::FlatSearchConfig;
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, serde::Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct Scope {
     search_all: bool,
@@ -21,7 +21,7 @@ pub(crate) struct Scope {
     time_range: Option<TimeRange>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct TimeRange { start: u32, end: u32 }
 
 #[derive(Deserialize)]
@@ -87,6 +87,45 @@ impl Scope {
                 row.date != 0 && row.date >= range.start && row.date <= range.end))
             && (self.search_all || !self.folders.is_empty() || self.maid.is_empty()
                 || row.first_line.contains(&self.maid))
+    }
+
+    fn diagnose(&self, connection: &rusqlite::Connection, table: &GlobalChunks,
+        diaries: &HashSet<String>) -> std::result::Result<Value,String> {
+        let mut in_diary = 0usize;
+        let mut after_time = 0usize;
+        let mut after_maid = 0usize;
+        for row in table.rows.values().filter(|row|diaries.contains(&row.diary)) {
+            in_diary += 1;
+            if self.time_range.as_ref().is_some_and(|range|
+                row.date == 0 || row.date < range.start || row.date > range.end) {continue;}
+            after_time += 1;
+            if self.search_all || !self.folders.is_empty() || self.maid.is_empty()
+                || row.first_line.contains(&self.maid) { after_maid += 1; }
+        }
+        let reason = if table.rows.is_empty() {Some("no_valid_global_chunks")}
+            else if diaries.is_empty() {Some("no_matching_diaries")}
+            else if in_diary == 0 {Some("matched_diaries_have_no_valid_chunks")}
+            else if after_time == 0 {Some("time_filter_empty")}
+            else if after_maid == 0 {Some("maid_signature_filter_empty")}
+            else {None};
+        let mut names:Vec<_> = diaries.iter().cloned().collect();
+        names.sort();
+        let mut value = json!({
+            "requested":self,"globalValidChunks":table.rows.len(),
+            "matchedDiaryCount":names.len(),"matchedDiaries":names.iter().take(32).collect::<Vec<_>>(),
+            "matchedDiariesTruncated":names.len()>32,"diaryChunks":in_diary,
+            "afterTimeChunks":after_time,"afterMaidChunks":after_maid,
+            "maidSignatureRequired":!self.search_all && self.folders.is_empty() && !self.maid.is_empty(),
+            "emptyReason":reason
+        });
+        if table.rows.is_empty() {
+            let (chunks,vectors):(i64,i64) = connection.query_row(
+                "SELECT COUNT(*),COUNT(vector) FROM chunks",[],|r|Ok((r.get(0)?,r.get(1)?)))
+                .map_err(|e|e.to_string())?;
+            value["sqlChunks"] = json!(chunks);
+            value["sqlVectorChunks"] = json!(vectors);
+        }
+        Ok(value)
     }
 
     fn diaries(&self, connection: &rusqlite::Connection) -> std::result::Result<HashSet<String>, String> {
@@ -191,6 +230,9 @@ impl Task for LightMemoTask {
                         admitted
                     },
                 )?;
+                let scope_diagnostics = if plan.ab_mode || ids.is_empty() {
+                    plan.scope.diagnose(connection,table,&diaries)?
+                } else { Value::Null };
                 let (warped_hits, warped_diagnostics) = if plan.ab_mode && plan.warped_ab {
                     table.search_warped(connection, &self.query, plan.candidate_k.max(plan.k),
                         |row| plan.scope.admits(row, &diaries))?
@@ -261,6 +303,14 @@ impl Task for LightMemoTask {
                     continue;
                 }
                 let candidates = if variant == 0 { &candidates } else { &warped_candidates };
+                if variant == 1 && candidates.is_empty() {
+                    warped_river = json!({
+                        "results":[],"pipelineVersion":"rivermemo-v5-warped-experimental",
+                        "diagnostics":{"available":false,"reason":"empty_chunk_candidates",
+                            "tagRouting":plan.warped_river_input["tagRouting"],"scope":scope_diagnostics}
+                    });
+                    continue;
+                }
                 let mut current_river = Value::Null;
                 let river = &mut current_river;
                 if (plan.engine_mode == "rivermemo" || plan.ab_mode) && !candidates.is_empty() {
@@ -371,6 +421,7 @@ impl Task for LightMemoTask {
                     "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
                         "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1,
+                        "scope":scope_diagnostics,
                         "warpedChunks":warped_diagnostics,
                         "routingMode":if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
                         "routing":{"admitted":routing_stats.admitted,
@@ -648,5 +699,97 @@ mod tests {
         drop(task);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Explicit maintenance only; no query embedding or scope is involved.
+pub struct WarpedChunkPreparationTask {
+    pub(crate) db_path: String,
+    pub(crate) dimension: usize,
+    pub(crate) model: String,
+    pub(crate) force: bool,
+    pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
+}
+impl Task for WarpedChunkPreparationTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        let _gate = crate::publication_gate::acquire_read(&self.db_path,&["*".into()])
+            .map_err(Error::from_reason)?;
+        let mut resident = self.table.lock()
+            .map_err(|_|Error::from_reason("Global Chunk table lock poisoned"))?;
+        let directory = std::path::Path::new(&self.db_path).parent().unwrap();
+        let result = crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
+            // Forced maintenance re-reads SQL instead of trusting a cached TDB snapshot.
+            // Publish the replacement in memory only after successful field preparation.
+            let mut replacement = if self.force {
+                Some(GlobalChunks::empty(self.dimension,&self.model)?)
+            } else if resident.as_ref().is_none_or(|table|
+                !table.matches_model(self.dimension,&self.model)) {
+                Some(GlobalChunks::load(connection,directory,self.dimension,&self.model)?)
+            } else { None };
+            let table = match replacement.as_mut() {
+                Some(table) => table,
+                None => resident.as_mut().unwrap(),
+            };
+            let synchronized = table.synchronize(connection)?;
+            let mut result = table.prepare_warped(connection,self.force)?;
+            result["synchronizedRows"] = json!(synchronized);
+            result["databaseGeneration"] = json!(crate::storage::read_generation(connection)?);
+            result["dimension"] = json!(self.dimension);
+            result["modelSig"] = json!(self.model);
+            if let Some(table) = replacement { *resident = Some(table); }
+            Ok(result)
+        }).map_err(Error::from_reason)?;
+        Ok(result.to_string())
+    }
+    fn resolve(&mut self,_env:Env,output:String)->Result<String> { Ok(output) }
+}
+
+#[cfg(test)]
+mod scope_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn maid_first_line_empty_is_distinct_from_missing_diary_and_empty_corpus() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES('global_chunk_facts','1');
+             CREATE TABLE files(id INTEGER PRIMARY KEY,diary_name TEXT,metadata_version INTEGER);
+             INSERT INTO files VALUES(1,'小克的消费研究',1),(2,'其他目录',1);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY,file_id INTEGER,content TEXT,vector BLOB,
+                 vector_version INTEGER,metadata_version INTEGER);
+             INSERT INTO chunks VALUES(1,1,'[2026-11-17] 手机研究
+正文署名小克',X'0000803f00000000',1,1);
+             INSERT INTO chunks VALUES(2,2,'[2026-11-17] 其他',X'0000803f00000000',1,1);
+             BEGIN;"
+        ).unwrap();
+        let mut table = GlobalChunks::empty(2,"test").unwrap();
+        table.synchronize(&db).unwrap();
+        let diagnose = |scope: Value| {
+            let scope:Scope = serde_json::from_value(scope).unwrap();
+            let diaries = scope.diaries(&db).unwrap();
+            scope.diagnose(&db,&table,&diaries).unwrap()
+        };
+        let maid = diagnose(json!({"maid":"小克"}));
+        assert_eq!(maid["globalValidChunks"],2);
+        assert_eq!(maid["matchedDiaryCount"],1);
+        assert_eq!(maid["diaryChunks"],1);
+        assert_eq!(maid["afterTimeChunks"],1);
+        assert_eq!(maid["afterMaidChunks"],0);
+        assert_eq!(maid["emptyReason"],"maid_signature_filter_empty");
+        assert_eq!(diagnose(json!({"maid":"不存在"}))["emptyReason"],"no_matching_diaries");
+        assert_eq!(diagnose(json!({"folders":["小克"]}))["afterMaidChunks"],1);
+        assert_eq!(diagnose(json!({"searchAll":true}))["afterMaidChunks"],2);
+        assert_eq!(diagnose(json!({"folders":["小克"],"timeRange":{"start":20250101,"end":20250131}}))
+            ["emptyReason"],"time_filter_empty");
+        let empty=GlobalChunks::empty(2,"test").unwrap();
+        let scope=Scope {search_all:true,..Default::default()};
+        let raw=scope.diagnose(&db,&empty,&scope.diaries(&db).unwrap()).unwrap();
+        assert_eq!(raw["emptyReason"],"no_valid_global_chunks");
+        assert_eq!(raw["sqlChunks"],2);
+        assert_eq!(raw["sqlVectorChunks"],2);
     }
 }

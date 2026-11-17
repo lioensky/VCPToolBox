@@ -3008,6 +3008,26 @@ impl NativeKnowledgeRuntime {
         }))
     }
 
+    /// Explicit global maintenance. force=true rebuilds from SQL and replaces the
+    /// derived warped sidecar; ordinary queries never enable this force path.
+    #[napi]
+    pub fn prepare_global_warped_chunk_index(&self, model_sig: String, force: Option<bool>)
+        -> Result<AsyncTask<TrackedTask<crate::light_memo::WarpedChunkPreparationTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        if model_sig.trim().is_empty() || model_sig.len() > 1024 {
+            return Err(Error::from_reason("Invalid global warped Chunk model signature"));
+        }
+        let storage = self.storage_snapshot()?
+            .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(crate::light_memo::WarpedChunkPreparationTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            dimension: self.dimension as usize,model:model_sig,force:force.unwrap_or(false),
+            table:self.global_chunks.clone(),
+        }))
+    }
+
     #[napi]
     pub fn light_memo_index_stats(&self) -> Result<String> {
         match self.global_chunks.try_lock() {

@@ -190,3 +190,23 @@ test('confidence RRF exposes baseline rank, explanation weight and separate fusi
     }
     assert.ok(!output.includes('虫洞辅助加权（保留原拓扑'));
 });
+
+test('empty Chunk diagnostics distinguishes maid filtering from missing global vectors', () => {
+    const { formatScopeDiagnostics } = require('../Plugin/LightMemo/abDiagnostics');
+    const data = { diagnostics: { scope: {
+        requested: { maid: '小克', searchAll: false, folders: [] },
+        globalValidChunks: 50, matchedDiaryCount: 1, matchedDiaries: ['小克的消费研究'],
+        diaryChunks: 10, afterTimeChunks: 10, afterMaidChunks: 0,
+        emptyReason: 'maid_signature_filter_empty'
+    } } };
+    let output = formatScopeDiagnostics({ _escapeMarkdownCell: cell }, {}, data);
+    assert.match(output, /全局有效 Chunk：50/);
+    assert.match(output, /女仆署名过滤后为空/);
+    assert.match(output, /Tag 全局命中不证明/);
+    assert.match(output, /不会自动扩大到全库/);
+    data.diagnostics.scope = { ...data.diagnostics.scope, globalValidChunks: 0,
+        sqlChunks: 100, sqlVectorChunks: 90, emptyReason: 'no_valid_global_chunks' };
+    output = formatScopeDiagnostics({ _escapeMarkdownCell: cell }, {}, data);
+    assert.match(output, /SQL 中 Chunk：100；含向量行：90/);
+    assert.match(output, /不是查询相关性不足/);
+});

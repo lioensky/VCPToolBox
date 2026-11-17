@@ -121,6 +121,11 @@ async function laboratory(args = {}) {
     if (request.k > 100) throw new RangeError('实验室 k 最大为 100。');
     const response = await execute(this, request, args, { ab: true, topK: request.k });
     const pool = response.comparisonPool;
+    if (!pool.length) {
+        console.warn('[LightMemo] Empty AB candidate pool:', JSON.stringify(
+            response.diagnostics?.scope || { requested: request.scope, reason: 'native_scope_diagnostics_unavailable' }
+        ));
+    }
     const compare = this._parseBoolean(args.compare_rerank ?? args.compareRerank, true);
     let external = [];
     if (compare && pool.length) {
@@ -172,6 +177,7 @@ async function laboratory(args = {}) {
         });
         output += `| ${id} | ${this._escapeMarkdownCell(String(item.text || '').replace(/\s+/g, ' ').slice(0, 100))} | ${cells.join(' | ')} |\n`;
     }
+    output += require('./abDiagnostics').formatScopeDiagnostics(this, request, response);
     output += require('./abDiagnostics').formatDiagnostics(this, request, response);
     if (response.recallPools) {
         output += `\n## 双召回对照\n\n- 候选 ID 与交集：${this._escapeMarkdownCell(JSON.stringify(response.recallPools))}\n`;

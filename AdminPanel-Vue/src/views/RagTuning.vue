@@ -257,7 +257,7 @@
               <div class="active-training-card">
                 <div class="active-training-card__copy">
                   <strong>RiverAGS全量重训练</strong>
-                  <p>由 Rust 重算 AGS 双尺度统一几何，再构建并发布 Memo/River 图资产。下方持续显示后台阶段、完成结果与错误；运行中重复请求不会追加训练。</p>
+                  <p>由 Rust 重算 AGS 双尺度统一几何、发布 Memo/River 图资产，再强制重建生产预设 Tag 双曲场与全局 Chunk 双曲场。下方显示分阶段结果；基础图已发布后若双曲失败，会明确报告未完成，不回滚已发布图。重复手动请求不会追加训练。</p>
                 </div>
                 <UiButton
                   variant="secondary"
@@ -1033,11 +1033,16 @@ const trainingMessage = computed(() => {
   const phases: Record<string, string> = {
     queued: "已排队", geometry: "正在计算 AGS 双尺度几何",
     artifact: "正在构建图资产", publishing: "正在发布资产",
+    "warped-tags": "正在强制重建 Tag 双曲场",
+    "warped-chunks": "正在强制重建全局 Chunk 双曲场",
     completed: "训练完成", failed: "训练失败", "retry-wait": "等待重试",
   };
   return `${phases[task.phase] || task.status} · ${task.taskId || ""}`
     + (task.error ? `：${task.error}` : "")
-    + (task.artifactSig ? ` · 资产 ${task.artifactSig}` : "");
+    + (task.failedPhase ? ` · 失败阶段 ${phases[task.failedPhase] || task.failedPhase}` : "")
+    + (task.artifactSig ? ` · 资产 ${task.artifactSig}` : "")
+    + (task.warped?.tag ? ` · Tag双曲 ${task.warped.tag.nodes ?? 0} 节点 / ${task.warped.tag.source || "未知"}` : "")
+    + (task.warped?.chunks ? ` · Chunk双曲 ${task.warped.chunks.nodes ?? 0} 节点 / ${task.warped.chunks.source || "未知"}` : "");
 });
 let trainingPollTimer: number | null = null;
 let trainingPollingStopped = false;

@@ -127,13 +127,13 @@ impl WarpedChunks {
         Ok(Some(Self { identity: header.identity, mean: header.mean, index }))
     }
 
-    fn load_or_build(connection: &Connection, identity: Identity, ids: &[u64])
+    fn load_or_build(connection: &Connection, identity: Identity, ids: &[u64], force: bool)
         -> Result<(Self, &'static str), String> {
         // Per-table lock is held by LightMemo. This also serializes sidecar publication
         // across independent runtime instances in this process (not across processes).
         let _io = SNAPSHOT_IO.lock().map_err(|e| e.to_string())?;
         let path = Self::path(&identity);
-        if let Some(path) = &path {
+        if let Some(path) = path.as_ref().filter(|_| !force) {
             match std::fs::File::open(path) {
                 Ok(file) => {
                     if file.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES as u64 {
@@ -196,18 +196,13 @@ impl GlobalChunks {
             .map(|row| row.id as u64).collect();
         if ids.is_empty() || allowed.is_empty() {
             return Ok((Vec::new(), serde_json::json!({
-                "used":"warped_chunks","source":"empty","scopeChunks":allowed.len(),"rule":RULE
+                "used":"warped_chunks","source":"empty","scopeChunks":allowed.len(),"rule":RULE,
+                "nodes":ids.len(),"executed":false,
+                "reason":if ids.is_empty() {"no_valid_global_chunks"} else {"scope_filter_empty"}
             })));
         }
-        let source = if self.warped.is_some() { "memory" } else {
-            let database = connection.query_row("PRAGMA database_list", [], |r| r.get(2))
-                .map_err(|e| e.to_string())?;
-            let identity = Identity { database, model: self.model.clone(), facts: self.facts.clone(),
-                dimension: self.dimension, rule: RULE.into() };
-            let (field, source) = WarpedChunks::load_or_build(connection, identity, &ids)?;
-            self.warped = Some(field);
-            source
-        };
+        let prepared = self.prepare_warped(connection, false)?;
+        let source = prepared["source"].as_str().unwrap_or("memory");
         let field = self.warped.as_ref().unwrap();
         let load_ms = started.elapsed().as_secs_f64() * 1000.0;
         let qr = radius(query, &field.mean)?;
@@ -355,6 +350,15 @@ mod tests {
         let (actual,stats)=run(&mut second);
         assert_eq!(stats["source"],"snapshot");
         assert_eq!(expected,actual);
+        assert_eq!(second.prepare_warped(&db,false).unwrap()["source"],"memory");
+        assert_eq!(second.prepare_warped(&db,true).unwrap()["source"],"built");
+        let sidecar = WarpedChunks::path(&second.warped.as_ref().unwrap().identity).unwrap();
+        std::fs::write(&sidecar,b"damaged-derived-file").unwrap();
+        let mut repair = GlobalChunks::empty(8,"test").unwrap();
+        repair.synchronize(&db).unwrap();
+        assert!(repair.prepare_warped(&db,false).is_err());
+        assert_eq!(repair.prepare_warped(&db,true).unwrap()["source"],"built");
+        assert_eq!(repair.search_warped(&db,&vector(3),10,|_|true).unwrap().0,expected);
         db.execute_batch(
             "UPDATE chunks SET metadata_version=2 WHERE id=3;
              UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
@@ -366,6 +370,34 @@ mod tests {
 }
 
 impl GlobalChunks {
+    pub(crate) fn prepare_warped(&mut self, connection: &Connection, force: bool)
+        -> Result<serde_json::Value, String> {
+        if connection.is_autocommit() { return Err("warped preparation requires a read transaction".into()); }
+        let started = Instant::now();
+        let mut ids: Vec<_> = self.rows.keys().map(|&id|id as u64).collect();
+        ids.sort_unstable();
+        if ids.is_empty() {
+            self.warped = None;
+            return Ok(serde_json::json!({
+                "ready":false,"source":"empty","nodes":0,"reason":"no_valid_global_chunks","forced":force
+            }));
+        }
+        let source = if self.warped.is_some() && !force { "memory" } else {
+            let database = connection.query_row("PRAGMA database_list", [], |r|r.get(2))
+                .map_err(|e|e.to_string())?;
+            let identity = Identity { database, model:self.model.clone(),facts:self.facts.clone(),
+                dimension:self.dimension,rule:RULE.into() };
+            let (field,source) = WarpedChunks::load_or_build(connection,identity,&ids,force)?;
+            self.warped = Some(field);
+            source
+        };
+        Ok(serde_json::json!({
+            "ready":true,"source":source,"nodes":ids.len(),"rule":RULE,"forced":force,
+            "facts":self.facts,"elapsedMs":started.elapsed().as_secs_f64()*1000.,
+            "hotBytes":self.warped.as_ref().unwrap().index.hot_bytes()
+        }))
+    }
+
     pub(crate) fn warped_stats(&self) -> serde_json::Value {
         match self.warped.as_ref() {
             Some(field) => serde_json::json!({

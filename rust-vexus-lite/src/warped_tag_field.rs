@@ -492,6 +492,7 @@ pub struct WarpedWarmupTask {
     signature: String,
     dimension: usize,
     preset: Option<String>,
+    force: bool,
 }
 impl napi::Task for WarpedWarmupTask {
     type Output=String;
@@ -507,10 +508,10 @@ impl napi::Task for WarpedWarmupTask {
         crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
             let artifact=crate::rivermemo_topology_v3::load_artifact_with_connection(
                 &self.runtime,connection,&self.signature)?;
-            let (field,source)=load_or_build(&self.runtime,connection,&self.signature,
-                &artifact,self.dimension,preset)?;
+            let (field,source)=snapshot::load_or_build_controlled(&self.runtime,connection,&self.signature,
+                &artifact,self.dimension,preset,self.force)?;
             Ok(serde_json::json!({
-                "artifactSig":self.signature,"preset":preset.name(),"source":source,
+                "artifactSig":self.signature,"preset":preset.name(),"source":source,"forced":self.force,
                 "nodes":field.ids().len(),"hotBytes":field.hot_bytes(),"buildMs":field.build_ms,
                 "elapsedMs":started.elapsed().as_secs_f64()*1000.0,
             }).to_string())
@@ -523,10 +524,12 @@ use crate::VexusIndex;
 #[napi_derive::napi]
 impl VexusIndex {
     #[napi]
-    pub fn warmup_warped_tag_field(&self,db_path:String,artifact_sig:String,preset:Option<String>)
+    pub fn warmup_warped_tag_field(&self,db_path:String,artifact_sig:String,preset:Option<String>,
+        force:Option<bool>)
         ->napi::bindgen_prelude::AsyncTask<crate::task_lifecycle::TrackedTask<WarpedWarmupTask>> {
         self.tracked_task(WarpedWarmupTask {runtime:self.memo_runtime.clone(),
-            db_path,signature:artifact_sig,dimension:self.dimensions as usize,preset})
+            db_path,signature:artifact_sig,dimension:self.dimensions as usize,preset,
+            force:force.unwrap_or(false)})
     }
 
     #[napi]

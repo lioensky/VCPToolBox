@@ -8,12 +8,29 @@ function fixture(overrides = {}) {
     const calls = [];
     const owner = {
         dbPath: 'fixture.sqlite',
+        config: { modelSig: 'chunk-model' },
+        nativeKnowledgeRuntime: {
+            async prepareGlobalWarpedChunkIndex(model, force) {
+                assert.equal(model, 'chunk-model');
+                assert.equal(force, true);
+                calls.push('warped-chunks');
+                return JSON.stringify({ ready: true, forced: true, source: 'built', nodes: 12 });
+            }
+        },
         async onNativeMemoArtifactPublished() { calls.push('published'); }
     };
     const index = {
         async computeMemoGeometry() {
             calls.push('geometry');
             return { success: true, artifactSig: 'geometry', algorithmVersion: 'ags', configHash: 'cfg' };
+        },
+        async warmupWarpedTagField(db, sig, preset, force) {
+            assert.equal(db, 'fixture.sqlite');
+            assert.equal(sig, 'runtime');
+            assert.equal(preset, 'locked_2');
+            assert.equal(force, true);
+            calls.push('warped-tags');
+            return JSON.stringify({ source: 'built', forced: true, nodes: 8 });
         },
         async rebuildMemoArtifact() {
             calls.push('artifact');
@@ -106,7 +123,9 @@ test('manual requests reuse queued and running training and expose completion', 
     await running;
     assert.equal(engine.getTrainingStatus().status, 'completed');
     assert.equal(engine.getTrainingStatus().artifactSig, 'runtime');
-    assert.deepEqual(calls, ['geometry', 'artifact', 'published']);
+    assert.deepEqual(calls, ['geometry', 'artifact', 'published', 'warped-tags', 'warped-chunks']);
+    assert.equal(engine.getTrainingStatus().warped.tag.nodes, 8);
+    assert.equal(engine.getTrainingStatus().warped.chunks.nodes, 12);
     await engine.shutdown();
 });
 
@@ -153,5 +172,44 @@ test('facts committed during a running training retain a follow-up task', async 
     assert.notEqual(next.taskId, 'running');
     assert.equal(engine._derivedTaskQueue.length, 2);
     engine._derivedTaskQueue = [];
+    await engine.shutdown();
+});
+
+test('warped maintenance failure reports partial publication and failed stage', async () => {
+    const { engine, calls, owner } = fixture();
+    owner.nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex = async () => {
+        calls.push('warped-chunks');
+        throw new Error('injected sidecar failure');
+    };
+    engine.requestActiveFullTraining();
+    clearTimeout(engine._derivedTaskTimer);
+    await engine._processDerivedTaskQueue();
+    const status = engine.getTrainingStatus();
+    assert.equal(status.status, 'failed');
+    assert.equal(status.failedPhase, 'warped-chunks');
+    assert.match(status.error, /already published.*injected sidecar failure/);
+    assert.equal(status.artifactSig, 'runtime');
+    assert.equal(status.warped.tag.source, 'built');
+    assert.equal(engine.getArtifactBundleSnapshot().runtimeArtifactSig, 'runtime');
+    await engine.shutdown();
+});
+
+test('manual full training is not silently satisfied by a threshold-only task', async () => {
+    const { engine } = fixture();
+    engine._derivedTaskQueue.push({ id: 'automatic', type: 'threshold-rebuild', status: 'running' });
+    const result = engine.requestActiveFullTraining();
+    assert.equal(result.queued, true);
+    assert.notEqual(result.taskId, 'automatic');
+    assert.equal(engine._derivedTaskQueue.length, 2);
+    engine._derivedTaskQueue = [];
+    await engine.shutdown();
+});
+
+test('missing native warped ABI fails before publishing any new base assets', async () => {
+    const { engine, calls, owner } = fixture();
+    owner.nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex = undefined;
+    await assert.rejects(engine.doMatrixRebuild({ includeWarped: true }), /matching native module/);
+    assert.deepEqual(calls, []);
+    assert.equal(engine._isMatrixRebuilding, false);
     await engine.shutdown();
 });

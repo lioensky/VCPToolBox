@@ -112,7 +112,14 @@ impl WarpedTagField {
 pub(crate) fn load_or_build(runtime:&MemoRuntime,connection:&Connection,signature:&str,
     artifact:&Arc<NativeArtifact>,dimension:usize,preset:Preset)
     ->Result<(Arc<WarpedTagField>,&'static str),String> {
+    load_or_build_controlled(runtime,connection,signature,artifact,dimension,preset,false)
+}
+
+pub(super) fn load_or_build_controlled(runtime:&MemoRuntime,connection:&Connection,signature:&str,
+    artifact:&Arc<NativeArtifact>,dimension:usize,preset:Preset,force:bool)
+    ->Result<(Arc<WarpedTagField>,&'static str),String> {
     let cached=||->Result<Option<Arc<WarpedTagField>>,String> {
+        if force {return Ok(None);}
         Ok(runtime.warped_fields.read().map_err(|e|e.to_string())?.get(&preset)
             .filter(|f|f.current(connection,signature)).cloned())
     };
@@ -123,7 +130,7 @@ pub(crate) fn load_or_build(runtime:&MemoRuntime,connection:&Connection,signatur
     let ticket=runtime.warped_build_ticket();
     let database:String=connection.query_row("PRAGMA database_list",[],|r|r.get(2))
         .map_err(|e|e.to_string())?;
-    let restored=path(&database,signature,preset).and_then(|path| {
+    let restored=path(&database,signature,preset).filter(|_|!force).and_then(|path| {
         let file=std::fs::File::open(path).ok()?;
         if file.metadata().ok()?.len()>MAX_BYTES {return None;}
         let mut bytes=Vec::new();
@@ -149,7 +156,7 @@ pub(crate) fn load_or_build(runtime:&MemoRuntime,connection:&Connection,signatur
     // overwrite a newer active artifact, and never need to fall back to cosine.
     match runtime.publish_warped_field(ticket,signature,field.clone()) {
         Ok(())=>{},
-        Err(e) if e=="warped construction invalidated before publication"=>{},
+        Err(e) if e=="warped construction invalidated before publication" && !force=>{},
         Err(e)=>return Err(e),
     }
     Ok((field,source))
@@ -255,6 +262,12 @@ mod tests {
             for (f,_) in &loaded {assert!(Arc::ptr_eq(f,&loaded[0].0));}
             assert_eq!(loaded[0].0.ids(),field.ids());
         });
+        let (forced,origin)=load_or_build_controlled(&runtime,&db,"a",&artifact,3,Preset::Locked2,true).unwrap();
+        assert_eq!(origin,"built");
+        assert!(!Arc::ptr_eq(&forced,&field));
+        let (active,origin)=load_or_build(&runtime,&db,"a",&artifact,3,Preset::Locked2).unwrap();
+        assert_eq!(origin,"memory");
+        assert!(Arc::ptr_eq(&active,&forced));
         let target=path(&field.identity.database,"a",Preset::Locked2).unwrap();
         let temporary=PathBuf::from(format!("{}.tmp",target.display()));
         std::fs::write(&temporary,b"interrupted-checkpoint").unwrap();
