@@ -55,6 +55,22 @@ pub(crate) fn query_radius(strategy: RadiusStrategy, level: usize, levels: usize
     (0.35+0.30*position.clamp(0.0,1.0)) as f32
 }
 
+/// EPA describes the original query. After cone stripping, use remaining energy
+/// to move outward, rather than reusing a tiny level offset as residual evidence.
+/// Keep LayerSchedule (including the missing-EPA fallback) unchanged.
+pub(crate) fn residual_query_radius(strategy: RadiusStrategy, level: usize, levels: usize,
+    gate: f64, logic: f64, entropy: f64, available: bool, residual_ratio: f64) -> f32 {
+    if level == 0 || strategy != RadiusStrategy::EpaGuided || !available {
+        return query_radius(strategy, level, levels, gate, logic, entropy, available);
+    }
+    let base = query_radius(strategy, 0, levels, gate, logic, entropy, available) as f64;
+    let p0 = ((base - 0.35) / 0.30).clamp(0.0, 1.0);
+    // Invalid energy must not masquerade as fully explained signal.
+    let rho = if residual_ratio.is_finite() { residual_ratio.clamp(0.0, 1.0) } else { 1.0 };
+    let position = p0 + (1.0 - p0) * (1.0 - rho.powf(0.35)) * 0.75;
+    (0.35 + 0.30 * position.clamp(0.0, 1.0)) as f32
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Identity {
     database: String,
@@ -471,6 +487,25 @@ mod tests {
         assert!(field.current(&db,"a"));
         db.execute("DELETE FROM kv_store WHERE key='epa_basis_cache'",[]).unwrap();
         assert!(field.current(&db,"a"));
+    }
+
+    #[test]
+    fn residual_radius_tracks_energy_not_layer_count() {
+        let radius = |level, rho| residual_query_radius(
+            RadiusStrategy::EpaGuided, level, 3, 0.5, 0.2, 0.0, true, rho);
+        assert_eq!(radius(0, 0.01), query_radius(
+            RadiusStrategy::EpaGuided, 0, 3, 0.5, 0.2, 0.0, true));
+        let values: Vec<_> = [1.0, 0.5, 0.149, 0.03, 0.0].map(|rho| radius(1, rho)).into();
+        assert!(values.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(radius(1, 0.149), radius(2, 0.149));
+        assert_eq!(radius(1, f64::NAN), radius(1, 1.0));
+        for level in 0..8 {
+            for strategy in [RadiusStrategy::EpaGuided, RadiusStrategy::LayerSchedule] {
+                assert_eq!(residual_query_radius(strategy, level, 3,
+                    0.5, 0.2, 0.0, false, 0.1),
+                    query_radius(strategy, level, 3, 0.5, 0.2, 0.0, false));
+            }
+        }
     }
 
     #[test]

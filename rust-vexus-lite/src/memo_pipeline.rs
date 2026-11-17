@@ -803,14 +803,17 @@ fn analyze_pyramid_routed(
     let mut excluded = HashSet::new();
     for level in 0..config.max_levels.clamp(1, 8) {
         let matches = if let Some((field, epa)) = warped {
-            let radius = crate::warped_tag_field::query_radius(
+            let residual_ratio = magnitude(&residual).powi(2) / original_energy;
+            let radius = crate::warped_tag_field::residual_query_radius(
                 config.warped_radius_strategy, level, config.max_levels.clamp(1,8),
-                epa.in_domain_gate, epa.logic_depth, epa.entropy, epa.cache_available);
+                epa.in_domain_gate, epa.logic_depth, epa.entropy, epa.cache_available,
+                residual_ratio);
             let (ids, stats, sql_reads, cache_hits) = field.search_policy(connection, &residual, radius,
                 config.pyramid_top_k.clamp(1,64), &excluded, tag_vectors, config.warped_legacy_budget,
                 config.warped_shell_directory, config.warped_reuse_beam,config.warped_seed_policy)?;
             routing.push(serde_json::json!({
                 "level":level,"radius":radius,"ids":ids,"excluded":excluded.len(),
+                "inputResidualEnergyRatio":residual_ratio,
                 "visited":stats.visited,"expanded":stats.expanded,
                 "rerankFetches":stats.cold_reads,"sqlReads":sql_reads,"cacheHits":cache_hits,
                 "quadSkips":stats.exact_quad_skips,"distanceEvals":stats.exact_distance_evals,

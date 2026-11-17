@@ -2014,6 +2014,10 @@ struct ObservableOutput {
     transfer_potential: f64,
     tail_only_ratio: f64,
     field_support: f64,
+    intent_coverage_factor: f64,
+    hit_seed_energy: f64,
+    total_seed_energy: f64,
+    semantic_field_contacts: usize,
 }
 
 fn scalar_field_support(coverage: f64, potential: f64) -> f64 {
@@ -2025,6 +2029,46 @@ fn scalar_field_support(coverage: f64, potential: f64) -> f64 {
     clamp01(domain.max(tail))
 }
 
+/// Seed energy is counted once, with exact contacts reserving endpoints before
+/// semantic contacts. No peer candidate or additional SQL contributes evidence.
+fn intent_coverage(curve: &Curve, input: &NativeInput, vectors: &TagVectorPool,
+    cosines: &CosineCache) -> (f64, f64, f64) {
+    let mut seeds = BTreeMap::<i64, f64>::new();
+    for node in input.query_state.river_nodes.iter().filter(|n| n.hop == 0) {
+        let energy = positive(node.energy);
+        if energy > 0.0 {
+            seeds.entry(node.id).and_modify(|e| *e = e.max(energy)).or_insert(energy);
+        }
+    }
+    let total: f64 = seeds.values().sum();
+    if total <= 1e-12 { return (1.0, 0.0, 0.0); }
+    let maximum = seeds.values().copied().fold(0.0, f64::max);
+    let mut contacts = Vec::new();
+    for (&id, &energy) in &seeds {
+        for tag in &curve.tags {
+            let exact = id == tag.id;
+            let similarity = if exact { 1.0 } else {
+                vectors.get(&id).map(|v| cosines.tag_pair(id, v, tag)).unwrap_or(0.0)
+            };
+            if exact || similarity >= 0.72 {
+                contacts.push((exact, similarity, id, tag.id, energy));
+            }
+        }
+    }
+    contacts.sort_by(|a,b| b.0.cmp(&a.0).then_with(|| b.1.total_cmp(&a.1))
+        .then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    let mut used_seeds = HashSet::new();
+    let mut used_tags = HashSet::new();
+    let mut hit = 0.0;
+    for (_, _, seed, tag, energy) in contacts {
+        if used_seeds.contains(&seed) || used_tags.contains(&tag) { continue; }
+        used_seeds.insert(seed);
+        used_tags.insert(tag);
+        hit += energy;
+    }
+    ((hit / (0.55 * total).max(maximum)).sqrt().clamp(0.35, 1.0), hit, total)
+}
+
 fn evaluate_observables(
     curve: &Curve,
     geometry: &GeometryOutput,
@@ -2032,37 +2076,63 @@ fn evaluate_observables(
     workspace: &FieldWorkspace,
     visible: bool,
     cosines: &CosineCache,
+    vectors: &TagVectorPool,
 ) -> ObservableOutput {
     let mut seen_ids = HashSet::new();
     let tags: Vec<&TagData> = curve.tags.iter().filter(|t| seen_ids.insert(t.id)).collect();
     let chain_size = tags.len().max(1) as f64;
     let mut exact_seed_hits = 0usize;
-    let mut local_contacts = 0usize;
-    let mut transfer_contacts = 0usize;
+    let mut local_contacts = 0.0;
+    let mut transfer_contacts = 0.0;
+    let mut semantic_field_contacts = 0usize;
     let mut local_potential = 0.0;
     let mut transfer_potential = 0.0;
     let mut tail_only = 0usize;
     let mut boundary: f64 = 0.0;
 
     for tag in &tags {
-        let local = workspace.local.get(&tag.id).copied().unwrap_or(0.0);
-        let transfer = workspace.transfer.get(&tag.id).copied().unwrap_or(0.0);
+        let mut local = workspace.local.get(&tag.id).copied().unwrap_or(0.0);
+        let mut transfer = workspace.transfer.get(&tag.id).copied().unwrap_or(0.0);
+        let exact_local = workspace.local.contains_key(&tag.id);
+        let exact_transfer = workspace.transfer.contains_key(&tag.id);
+        let mut local_contact = if workspace.local_domain.contains(&tag.id) { 1.0 } else { 0.0 };
+        let mut transfer_contact = if workspace.transfer_domain.contains(&tag.id) { 1.0 } else { 0.0 };
+        if !exact_local || !exact_transfer {
+            let best = input.query_state.river_nodes.iter().filter_map(|node| {
+                let vector = vectors.get(&node.id)?;
+                let similarity = cosines.tag_pair(node.id, vector, tag);
+                (similarity > 0.82).then_some((node.id, similarity))
+            }).max_by(|a,b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+            if let Some((id, similarity)) = best {
+                let discount = 0.75 * clamp01((similarity - 0.82) / 0.18);
+                if !exact_local {
+                    local = discount * workspace.local.get(&id).copied().unwrap_or(0.0);
+                    local_contact = if workspace.local_domain.contains(&id) { discount } else { 0.0 };
+                }
+                if !exact_transfer {
+                    transfer = discount * workspace.transfer.get(&id).copied().unwrap_or(0.0);
+                    transfer_contact = if workspace.transfer_domain.contains(&id) { discount } else { 0.0 };
+                }
+                semantic_field_contacts += usize::from(local > 0.0 || transfer > 0.0);
+            }
+        }
         exact_seed_hits += usize::from(workspace.source_ids.contains(&tag.id));
-        local_contacts += usize::from(workspace.local_domain.contains(&tag.id));
-        transfer_contacts += usize::from(workspace.transfer_domain.contains(&tag.id));
+        local_contacts += local_contact;
+        transfer_contacts += transfer_contact;
         local_potential += local;
         transfer_potential += transfer;
         tail_only += usize::from(
             (local > 0.0 || transfer > 0.0)
-                && !workspace.local_domain.contains(&tag.id)
-                && !workspace.transfer_domain.contains(&tag.id),
+                && local_contact == 0.0 && transfer_contact == 0.0,
         );
         boundary = boundary
             .max((clamp01(cosines.query_tag(&input.query.vector, tag)) * tag.chunk_cosine).sqrt());
     }
 
-    let local_coverage = local_contacts as f64 / chain_size;
-    let transfer_coverage = transfer_contacts as f64 / chain_size;
+    let (intent_factor, hit_seed_energy, total_seed_energy) =
+        intent_coverage(curve, input, vectors, cosines);
+    let local_coverage = local_contacts / chain_size;
+    let transfer_coverage = transfer_contacts / chain_size;
     let local_mean = local_potential / chain_size;
     let transfer_mean = transfer_potential / chain_size;
     let tail_ratio = tail_only as f64 / chain_size;
@@ -2096,7 +2166,11 @@ fn evaluate_observables(
         transfer_potential: transfer_mean,
         tail_only_ratio: tail_ratio,
         field_support: scalar_field_support(local_coverage, local_mean)
-            .max(scalar_field_support(transfer_coverage, transfer_mean)),
+            .max(scalar_field_support(transfer_coverage, transfer_mean)) * intent_factor,
+        intent_coverage_factor: intent_factor,
+        hit_seed_energy,
+        total_seed_energy,
+        semantic_field_contacts,
     }
 }
 
@@ -3037,7 +3111,8 @@ pub(crate) fn run_native_with_observation(
             );
             let visible = true; // 越权候选已在进入候选池前删除。
             let observables =
-                evaluate_observables(&curve, &geometry, &input, &workspace, visible, &cosines);
+                evaluate_observables(&curve, &geometry, &input, &workspace, visible, &cosines,
+                    &query_and_seed_tag_vectors);
             let (semantic_base, field_score, field_resonance_bonus) =
                 field_resonance(&curve, &input, observables.field_support);
             let topology_raw = clamp01(
@@ -3269,6 +3344,10 @@ pub(crate) fn run_native_with_observation(
             "fieldSupportPotentialSaturation": 0.02,
             "fieldSupportCoverageSaturation": 0.5,
             "fieldSupportTailCap": 0.1,
+            "fieldSupportSemanticThreshold": 0.82,
+            "fieldSupportSemanticDiscount": 0.75,
+            "fieldSupportIntentThreshold": 0.72,
+            "fieldSupportIntentFloor": 0.35,
             "implicitContactDiscount": 0.35,
             "implicitStrengthCap": 0.035,
             "weakSemanticPivot": 0.65,
@@ -3839,11 +3918,78 @@ mod conservative_topology_tests {
         };
         let cache = CosineCache::build(&[c.clone(), duplicate.clone()], &[1.0, 0.0],
             [], &TagVectorPool::new());
-        let a = evaluate_observables(&c, &GeometryOutput::default(), &input, &workspace, true, &cache);
+        let a = evaluate_observables(&c, &GeometryOutput::default(), &input, &workspace, true, &cache,
+            &TagVectorPool::new());
         let b = evaluate_observables(&duplicate, &GeometryOutput::default(),
-            &input, &workspace, true, &cache);
+            &input, &workspace, true, &cache, &TagVectorPool::new());
         assert_eq!(a.field_support, b.field_support);
         assert!(a.field_support > 0.8);
+    }
+
+    #[test]
+    fn semantic_field_support_is_strict_discounted_and_exact_first() {
+        let mut input = input();
+        input.query_state.river_nodes.truncate(1);
+        let pool: TagVectorPool = [(1, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
+        let mut workspace = FieldWorkspace {
+            local: HashMap::from([(1, 0.04)]), transfer: HashMap::from([(1, 0.02)]),
+            local_domain: HashSet::from([1]), transfer_domain: HashSet::from([1]),
+            source_ids: HashSet::from([1]), active_edges: HashMap::new(),
+        };
+        let evaluate = |c: &Curve, w: &FieldWorkspace| {
+            let cache = CosineCache::build(std::slice::from_ref(c), &input.query.vector, [1], &pool);
+            evaluate_observables(c, &GeometryOutput::default(), &input, w, true, &cache, &pool)
+        };
+        let weak = curve(vec![tag(9, 0, vec![0.81, (1.0_f32 - 0.81_f32.powi(2)).sqrt()])]);
+        assert_eq!(evaluate(&weak, &workspace).field_support, 0.0);
+        let alias = curve(vec![tag(9, 0, vec![1.0, 0.0])]);
+        let soft = evaluate(&alias, &workspace);
+        assert!((soft.local_potential - 0.03).abs() < 1e-12);
+        assert_eq!(soft.semantic_field_contacts, 1);
+        assert_eq!(soft.intent_coverage_factor, 1.0);
+        assert!(soft.field_support > 0.0);
+        let mut duplicate = alias.clone();
+        duplicate.tags.extend(alias.tags.clone());
+        assert_eq!(evaluate(&duplicate, &workspace).field_support, soft.field_support);
+        workspace.local.insert(9, 0.01);
+        workspace.local_domain.insert(9);
+        let exact = evaluate(&alias, &workspace);
+        assert_eq!(exact.local_potential, 0.01);
+        assert_eq!(exact.local_coverage, 1.0);
+    }
+
+    #[test]
+    fn intent_coverage_discounts_minor_leg_without_double_claiming_seeds() {
+        let mut input = input();
+        input.query_state.river_nodes = vec![
+            RiverNode { id: 1, energy: 0.4, normalized_energy: 1.0, hop: 0 },
+            RiverNode { id: 2, energy: 0.1, normalized_energy: 0.25, hop: 0 },
+        ];
+        let pool: TagVectorPool = [
+            (1, Arc::from(vec![1.0_f32, 0.0])),
+            (2, Arc::from(vec![0.0_f32, 1.0])),
+        ].into_iter().collect();
+        let minor = curve(vec![tag(2, 0, vec![0.0, 1.0])]);
+        let both = curve(vec![tag(1, 0, vec![1.0, 0.0]), tag(2, 1, vec![0.0, 1.0])]);
+        let cache = CosineCache::build(&[minor.clone(), both.clone()], &input.query.vector, [1,2], &pool);
+        assert_eq!(intent_coverage(&minor, &input, &pool, &cache), (0.5, 0.1, 0.5));
+        assert_eq!(intent_coverage(&both, &input, &pool, &cache), (1.0, 0.5, 0.5));
+        let mut duplicate = minor.clone();
+        duplicate.tags.extend(minor.tags.clone());
+        assert_eq!(intent_coverage(&duplicate, &input, &pool, &cache).1, 0.1);
+        let broad = curve(vec![tag(9, 0, vec![0.74, 0.74])]);
+        assert_eq!(intent_coverage(&broad, &input, &pool, &cache).1, 0.0);
+        input.query_state.river_nodes[1].id = 3;
+        let same_pool: TagVectorPool = [(1, Arc::from(vec![1.0_f32, 0.0])),
+            (3, Arc::from(vec![1.0_f32, 0.0]))].into_iter().collect();
+        let alias = curve(vec![tag(9, 0, vec![1.0, 0.0])]);
+        let same_cache = CosineCache::build(std::slice::from_ref(&alias),
+            &input.query.vector, [1,3], &same_pool);
+        assert_eq!(intent_coverage(&alias, &input, &same_pool, &same_cache).1, 0.4);
+        input.query_state.river_nodes.truncate(1);
+        assert_eq!(intent_coverage(&both, &input, &pool, &cache).0, 1.0);
+        input.query_state.river_nodes.clear();
+        assert_eq!(intent_coverage(&minor, &input, &pool, &cache), (1.0, 0.0, 0.0));
     }
 
     #[test]

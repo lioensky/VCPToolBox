@@ -7,7 +7,8 @@ use vcp_tdb_index::index::quiver::hyperbolic::{
 };
 use vcp_tdb_index::index::quiver::hyperbolic::warped_geometry::WarpedProfile;
 
-const RULE: &str = "chunk-axis-residual-v1";
+const LEGACY_RULE: &str = "chunk-axis-residual-v1";
+const RULE: &str = "chunk-axis-alignment-quantiles-v2";
 const MAGIC: &[u8; 8] = b"VCPWC001";
 const MAX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
@@ -26,6 +27,8 @@ struct Identity {
 struct Header {
     identity: Identity,
     mean: Vec<f64>,
+    #[serde(default)]
+    alignment_quantiles: Vec<f64>,
     // Legacy snapshots have no baseline: conservatively score all live rows
     // as deltas until the next training, without silently rebuilding geometry.
     #[serde(default)]
@@ -36,6 +39,7 @@ pub(super) struct WarpedChunks {
     identity: Identity,
     mean: Vec<f64>,
     versions: std::collections::BTreeMap<i64, (i64, i64)>,
+    alignment_quantiles: Vec<f64>,
     index: WarpedFieldIndex,
 }
 
@@ -66,6 +70,46 @@ fn radius(row: &[f32], mean: &[f64]) -> Result<f32, String> {
     Ok((0.35 + 0.30 * (1.0 - alignment.clamp(-1.0, 1.0).powi(2)).max(0.0).sqrt()) as f32)
 }
 
+fn alignment(row: &[f32], mean: &[f64]) -> Result<f64, String> {
+    if row.len() != mean.len() { return Err("WARPED_CHUNK_DIMENSION".into()); }
+    let n = norm(row)?;
+    let mn = mean.iter().map(|v| v * v).sum::<f64>().sqrt();
+    Ok(if mn > 1e-12 {
+        row.iter().zip(mean).map(|(&v,&m)| v as f64 / n * m / mn)
+            .sum::<f64>().abs().clamp(0.0, 1.0)
+    } else { 0.0 })
+}
+
+fn quantile_knots(values: &[f64]) -> Vec<f64> {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    (0..64).map(|i| {
+        let position = i as f64 * sorted.len().saturating_sub(1) as f64 / 63.0;
+        let lo = position.floor() as usize;
+        let hi = position.ceil() as usize;
+        sorted[lo] + (sorted[hi] - sorted[lo]) * position.fract()
+    }).collect()
+}
+
+/// Piecewise empirical CDF; ties share the midpoint, never arbitrary ID ranks.
+fn alignment_percentile(value: f64, knots: &[f64]) -> f64 {
+    let lo = knots.partition_point(|&v| v < value);
+    let hi = knots.partition_point(|&v| v <= value);
+    if lo != hi { return (lo + hi - 1) as f64 / (2.0 * (knots.len() - 1) as f64); }
+    if lo == 0 { return 0.0; }
+    if lo == knots.len() { return 1.0; }
+    ((lo - 1) as f64 + (value - knots[lo - 1]) / (knots[lo] - knots[lo - 1]))
+        / (knots.len() - 1) as f64
+}
+
+fn quantile_radius(value: f64, knots: &[f64]) -> f32 {
+    (0.35 + 0.30 * (1.0 - alignment_percentile(value, knots)).powf(1.10)) as f32
+}
+
+fn rerank_budget(limit: usize) -> usize {
+    limit.saturating_mul(2).clamp(64, 256).max(limit)
+}
+
 fn read_vector(connection: &Connection, id: u64, dimension: usize) -> Result<Vec<f32>, String> {
     let mut vector = Vec::with_capacity(dimension);
     let valid = connection.prepare_cached("SELECT vector FROM chunks WHERE id=?1")
@@ -79,10 +123,16 @@ fn read_vector(connection: &Connection, id: u64, dimension: usize) -> Result<Vec
 }
 
 impl WarpedChunks {
+    fn radius(&self, row: &[f32]) -> Result<f32, String> {
+        if self.identity.rule == LEGACY_RULE { return radius(row, &self.mean); }
+        Ok(quantile_radius(alignment(row, &self.mean)?, &self.alignment_quantiles))
+    }
+
     // Managed payload only; excludes BTree allocator/node bookkeeping and RSS.
     fn hot_bytes(&self) -> usize {
         self.index.hot_bytes() + self.mean.capacity() * std::mem::size_of::<f64>()
             + self.versions.len() * std::mem::size_of::<(i64, (i64, i64))>()
+            + self.alignment_quantiles.capacity() * std::mem::size_of::<f64>()
     }
 
     fn path(identity: &Identity) -> Option<PathBuf> {
@@ -102,6 +152,7 @@ impl WarpedChunks {
             },
             mean: self.mean.clone(),
             versions: self.versions.clone(),
+            alignment_quantiles: self.alignment_quantiles.clone(),
         }).map_err(|e| e.to_string())?;
         if header.len() > MAX_HEADER_BYTES {
             return Err("warped Chunk snapshot header exceeds size limit".into());
@@ -134,12 +185,20 @@ impl WarpedChunks {
         // Facts identify the TRAINING baseline, not the current live membership.
         // Daily writes must not turn a valid trained generation into a cache miss.
         if header.identity.database != expected.database || header.identity.model != expected.model
-            || header.identity.dimension != expected.dimension || header.identity.rule != expected.rule {
+            || header.identity.dimension != expected.dimension
+            || (header.identity.rule != expected.rule && header.identity.rule != LEGACY_RULE) {
             return Ok(None);
         }
         let index = WarpedFieldIndex::from_snapshot_bytes(&bytes[16+h..end])
             .map_err(|e| e.to_string())?;
-        if header.mean.len() != expected.dimension || header.mean.iter().any(|v| !v.is_finite())
+        let valid_quantiles = if header.identity.rule == LEGACY_RULE {
+            header.alignment_quantiles.is_empty()
+        } else {
+            header.alignment_quantiles.len() == 64
+                && header.alignment_quantiles.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                && header.alignment_quantiles.windows(2).all(|w| w[0] <= w[1])
+        };
+        if !valid_quantiles || header.mean.len() != expected.dimension || header.mean.iter().any(|v| !v.is_finite())
             || index.dimension() != expected.dimension
             || index.ids().iter().any(|&id| id == 0 || id > i64::MAX as u64)
             || index.ids().windows(2).any(|w| w[0] >= w[1])
@@ -148,7 +207,8 @@ impl WarpedChunks {
             || index.configuration() != configuration() || index.shell_landmark_count() == 0 {
             return Err("warped Chunk snapshot identity/configuration mismatch".into());
         }
-        Ok(Some(Self { identity: header.identity, mean: header.mean, versions: header.versions, index }))
+        Ok(Some(Self { identity: header.identity, mean: header.mean, versions: header.versions,
+            alignment_quantiles: header.alignment_quantiles, index }))
     }
 
     fn load_or_build(connection: &Connection, identity: Identity, ids: &[u64], force: bool)
@@ -180,9 +240,12 @@ impl WarpedChunks {
             for (m, &v) in mean.iter_mut().zip(&row) { *m += v as f64 / n; }
         }
         for m in &mut mean { *m /= ids.len().max(1) as f64; }
-        let radii = ids.iter().map(|&id|
-            radius(&read_vector(connection, id, identity.dimension)?, &mean))
+        let alignments = ids.iter().map(|&id|
+            alignment(&read_vector(connection, id, identity.dimension)?, &mean))
             .collect::<Result<Vec<_>, _>>()?;
+        let alignment_quantiles = quantile_knots(&alignments);
+        let radii: Vec<_> = alignments.iter()
+            .map(|&a| quantile_radius(a, &alignment_quantiles)).collect();
         let slots: Vec<_> = (0..ids.len()).collect();
         let mut error = None;
         let mut index = WarpedFieldIndex::build(identity.dimension, ids, &slots, &radii,
@@ -201,7 +264,7 @@ impl WarpedChunks {
                 .map_err(|e|e.to_string())?;
             versions.insert(id as i64, version);
         }
-        let field = Self { identity, mean, versions, index };
+        let field = Self { identity, mean, versions, alignment_quantiles, index };
         if let Some(path) = path {
             let bytes = field.encode()?;
             let staging = crate::CheckpointStaging::new(&path).map_err(|e| e.to_string())?;
@@ -237,14 +300,15 @@ impl GlobalChunks {
         let source = prepared["source"].as_str().unwrap_or("memory");
         let field = self.warped.as_ref().unwrap();
         let load_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let qr = radius(query, &field.mean)?;
+        let qr = field.radius(query)?;
         let delta: HashSet<_> = allowed.iter().copied().filter(|&id| {
             let row = &self.rows[&(id as i64)];
             field.versions.get(&row.id) != Some(&(row.vector_version, row.file_id))
         }).collect();
         let (max_visits, max_expansions) = warped_size_budget(field.index.ids().len());
         let mut diagnostics = serde_json::json!({
-            "used":"warped_chunks","source":source,"rule":RULE,"nodes":field.index.ids().len(),
+            "used":"warped_chunks","source":source,"rule":field.identity.rule,"nodes":field.index.ids().len(),
+            "rerankBudget":rerank_budget(limit),
             "liveNodes":ids.len(),"deltaChunks":delta.len(),"geometryFacts":field.identity.facts,
             "scopeChunks":allowed.len(),"queryRadius":qr,"geometryCheckMs":load_ms,
             "candidateBudget":limit,"hotBytes":field.hot_bytes(),
@@ -256,7 +320,7 @@ impl GlobalChunks {
             for &id in &allowed {
                 let row = read_vector(connection, id, self.dimension)?;
                 let distance = field.index.exact_distance_at_radius(query, qr, &row,
-                    radius(&row, &field.mean)?).map_err(|e| e.to_string())?;
+                    field.radius(&row)?).map_err(|e| e.to_string())?;
                 hits.push((id, distance));
             }
             hits.sort_by(|a,b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
@@ -267,7 +331,7 @@ impl GlobalChunks {
         } else {
             let mut error = None;
             let output = field.index.search_chunks(query, qr, HyperbolicSearchConfig {
-                top_k: limit, width: 128.max(limit * 2), rerank_limit: limit,
+                top_k: limit, width: 128.max(limit * 2), rerank_limit: rerank_budget(limit),
                 max_visits: max_visits.max(limit * 4),
                 max_expansions: max_expansions.max(limit * 2), radial_bound: true,
             }, None, |id| !allowed.contains(&id) || delta.contains(&id), |slot, output| {
@@ -287,7 +351,7 @@ impl GlobalChunks {
             for &id in &delta {
                 let row = read_vector(connection, id, self.dimension)?;
                 let distance = field.index.exact_distance_at_radius(query, qr, &row,
-                    radius(&row, &field.mean)?).map_err(|e|e.to_string())?;
+                    field.radius(&row)?).map_err(|e|e.to_string())?;
                 let hit = (id, distance);
                 let position = hits.binary_search_by(|other|
                     other.1.total_cmp(&distance).then(other.0.cmp(&id))).unwrap_or_else(|p|p);
@@ -307,6 +371,65 @@ impl GlobalChunks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quantile_radius_spreads_narrow_alignment_and_handles_ties() {
+        let values: Vec<_> = (0..1000).map(|i| 0.35 + 0.2 * i as f64 / 999.0).collect();
+        let knots = quantile_knots(&values);
+        let radii: Vec<_> = values.iter().map(|&v| quantile_radius(v, &knots)).collect();
+        assert!((radii[0] - 0.65).abs() < 1e-6);
+        assert!((radii[999] - 0.35).abs() < 1e-6);
+        assert!(radii.windows(2).all(|w| w[0] >= w[1]));
+        assert_eq!(alignment_percentile(0.0, &knots), 0.0);
+        assert_eq!(alignment_percentile(1.0, &knots), 1.0);
+        for count in [1, 10] {
+            let tied = quantile_knots(&vec![0.5; count]);
+            assert_eq!(alignment_percentile(0.5, &tied), 0.5);
+            assert!(quantile_radius(0.5, &tied).is_finite());
+        }
+        for limit in 1..=2000 {
+            let budget = rerank_budget(limit);
+            assert!(budget >= limit && budget <= 2000);
+        }
+        assert_eq!(rerank_budget(30), 64);
+        assert_eq!(rerank_budget(100), 200);
+        assert_eq!(rerank_budget(200), 256);
+    }
+
+    #[test]
+    fn quantiles_persist_validate_and_legacy_geometry_is_not_rebuilt() {
+        let db = fixture(160);
+        let mut table = GlobalChunks::empty(8, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        table.prepare_warped(&db, false).unwrap();
+        let field = table.warped.as_mut().unwrap();
+        let original = field.encode().unwrap();
+        let restored = WarpedChunks::decode(&original, &field.identity).unwrap().unwrap();
+        for id in 1..=160 {
+            let row = vector(id);
+            assert_eq!(field.radius(&row).unwrap(), restored.radius(&row).unwrap());
+        }
+        field.alignment_quantiles.swap(0, 63);
+        assert!(WarpedChunks::decode(&field.encode().unwrap(), &field.identity).is_err());
+        field.alignment_quantiles = restored.alignment_quantiles;
+        field.identity.rule = LEGACY_RULE.into();
+        field.alignment_quantiles.clear();
+        let ids = field.index.ids().to_vec();
+        let radii: Vec<_> = ids.iter().map(|&id| radius(&vector(id as usize), &field.mean).unwrap()).collect();
+        field.index = WarpedFieldIndex::build(8, &ids, &(0..ids.len()).collect::<Vec<_>>(),
+            &radii, &field.mean, configuration(), |slot, out| {
+                out.extend(vector(ids[slot] as usize)); true
+            }).unwrap();
+        field.index.build_shell_landmarks();
+        let expected = Identity { database: field.identity.database.clone(), model: "test".into(),
+            facts: "99".into(), dimension: 8, rule: RULE.into() };
+        let legacy = WarpedChunks::decode(&field.encode().unwrap(), &expected).unwrap().unwrap();
+        assert_eq!(legacy.identity.rule, LEGACY_RULE);
+        assert_eq!(legacy.radius(&vector(997)).unwrap(), radius(&vector(997), &legacy.mean).unwrap());
+        table.warped = Some(legacy);
+        assert_eq!(table.prepare_warped(&db, false).unwrap()["rule"], LEGACY_RULE);
+        assert_eq!(table.prepare_warped(&db, true).unwrap()["rule"], RULE);
+    }
 
     fn fixture(count: usize) -> Connection {
         let db = Connection::open_in_memory().unwrap();
@@ -575,7 +698,7 @@ impl GlobalChunks {
         };
         Ok(serde_json::json!({
             "ready":true,"source":source,"nodes":self.warped.as_ref().unwrap().index.ids().len(),
-            "liveNodes":ids.len(),"rule":RULE,"forced":force,
+            "liveNodes":ids.len(),"rule":self.warped.as_ref().unwrap().identity.rule,"forced":force,
             "facts":self.facts,"geometryFacts":self.warped.as_ref().unwrap().identity.facts,
             "elapsedMs":started.elapsed().as_secs_f64()*1000.,
             "hotBytes":self.warped.as_ref().unwrap().hot_bytes()
@@ -585,7 +708,7 @@ impl GlobalChunks {
     pub(crate) fn warped_stats(&self) -> serde_json::Value {
         match self.warped.as_ref() {
             Some(field) => serde_json::json!({
-                "resident":true,"nodes":field.index.ids().len(),"rule":RULE,
+                "resident":true,"nodes":field.index.ids().len(),"rule":field.identity.rule,
                 "hotBytes":field.hot_bytes(),
                 "facts":field.identity.facts
             }),
