@@ -1,6 +1,29 @@
 'use strict';
 
 // 仅格式化原生查询回执，不求解图、不读取数据库、不修改排序。
+function formatScopeDiagnostics(plugin, request, response) {
+    const escape = value => plugin._escapeMarkdownCell(String(value));
+    const scope = response.diagnostics?.scope;
+    let output = `\n## Chunk 范围诊断\n\n- 实际解析范围：${escape(JSON.stringify(scope?.requested || request.scope))}\n`;
+    if (!scope) return output + '- 原生未返回分阶段范围计数，请更新匹配的原生模块。\n';
+    output += `- 全局有效 Chunk：${scope.globalValidChunks}；匹配目录：${scope.matchedDiaryCount}；目录内 Chunk：${scope.diaryChunks}；日期过滤后：${scope.afterTimeChunks}；署名过滤后：${scope.afterMaidChunks}。\n`;
+    output += `- 匹配目录（最多32个）：${escape(JSON.stringify(scope.matchedDiaries))}。\n`;
+    const reasons = {
+        no_valid_global_chunks: '全局 Chunk 表没有有效向量行；检查入库、向量维度和同步状态，不是查询相关性不足。',
+        no_matching_diaries: '没有目录通过请求范围及排除规则；检查女仆/目录参数。',
+        matched_diaries_have_no_valid_chunks: '目录已匹配，但目录内没有可检索的有效 Chunk。',
+        time_filter_empty: '日期过滤后为空。',
+        maid_signature_filter_empty: '女仆署名过滤后为空：仅传 maid 时既匹配目录，也要求 Chunk 首行含署名；不会自动扩大到全库。'
+    };
+    if (scope.emptyReason) {
+        output += `- 空候选原因：${escape(reasons[scope.emptyReason] || scope.emptyReason)}\n`;
+        if (scope.sqlChunks != null) {
+            output += `- SQL 中 Chunk：${scope.sqlChunks}；含向量行：${scope.sqlVectorChunks}。\n`;
+        }
+        output += '- Tag 全局命中不证明该范围存在 Chunk；重建双曲场不会自动取消范围过滤。\n';
+    }
+    return output;
+}
 function formatDiagnostics(plugin, request, response) {
     const cell = value => plugin._escapeMarkdownCell(value);
     const json = value => cell(JSON.stringify(value) ?? '未返回');
@@ -16,6 +39,10 @@ function formatDiagnostics(plugin, request, response) {
     if (!river) {
         return output + '- RiverMemo 未执行（候选池为空或原生未返回），没有可用的传播图和读出诊断。\n';
     }
+    if (river.diagnostics?.available === false) {
+        return output + `- 实验轨不可用：${json(river.diagnostics)}；未用旧轨或余弦回退冒充。\n`;
+    }
+    output += `- 实验链路：${cell(river.pipelineVersion || '现有原生链路')}；底层读出版本独立列出。\n`;
     output += `- 资产：${cell(river.artifactSig || observation.artifactSig || '未返回')}；查询 ID：${cell(river.queryId || observation.queryId || '未返回')}\n`;
     output += `- 原生读出版本：${cell(river.algorithmVersion || '未返回')}\n`;
     output += `- Ω / 河网状态：${json(river.omega)}\n`;
@@ -131,4 +158,4 @@ function formatDiagnostics(plugin, request, response) {
     return output;
 }
 
-module.exports = { formatDiagnostics };
+module.exports = { formatDiagnostics, formatScopeDiagnostics };

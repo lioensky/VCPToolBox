@@ -29,7 +29,11 @@ function buildRagBlock(innerContent, metadata) {
         /<!--\s*(VCP_RAG_BLOCK_(?:START|END))\b([\s\S]*?)-->/gi,
         '<!-- $1$2--\\>'
     );
-    return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${safeInnerContent}<!-- VCP_RAG_BLOCK_END -->`;
+    const engine = metadata?.retrievalEngine;
+    const description = engine === 'warped_ann'
+        ? '[检索引擎: 双曲 ANN 兜底；RiverMemo V5 本次不可用，未加载旧 TDB ANN / RiverMemo V4。]\\n'
+        : '[检索引擎: RiverMemo V5；双曲 Chunk 召回与双曲 Tag 观测，原生 RiverMemo 读出。]\\n';
+    return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${description}${safeInnerContent}<!-- VCP_RAG_BLOCK_END -->`;
 }
 
 function formatStandardResults(searchResults, displayName, metadata) {

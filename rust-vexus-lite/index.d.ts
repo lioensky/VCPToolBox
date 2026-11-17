@@ -175,6 +175,11 @@ export declare class NativeKnowledgeRuntime {
    * an evicted table merely to save it.
    */
   checkpointGlobalChunkIndex(modelSig: string, threshold: number, allowInitial?: boolean | undefined | null): Promise<unknown>
+  /**
+   * Explicit global maintenance. force=true rebuilds from SQL and replaces the
+   * derived warped sidecar; ordinary queries never enable this force path.
+   */
+  prepareGlobalWarpedChunkIndex(modelSig: string, force?: boolean | undefined | null): Promise<unknown>
   lightMemoIndexStats(): string
   /** Never wait for a query lock on the Node main thread. */
   evictIdleLightMemoIndex(ttlMs: number): boolean
@@ -378,6 +383,8 @@ export declare class NativeKnowledgeRuntime {
 }
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {
+  warmupWarpedTagField(dbPath: string, artifactSig: string, preset?: string | undefined | null, force?: boolean | undefined | null): Promise<unknown>
+  warpedRuntimeStats(): string
   /** 创建新的空索引 */
   constructor(dim: number, capacity: number)
   /**

@@ -135,6 +135,13 @@ struct PipelineConfig {
     tech_tag_threshold: f64,
     normal_tag_threshold: f64,
     epa_gate_mode: String,
+    tag_routing_mode: String,
+    warped_preset: crate::warped_tag_field::Preset,
+    warped_radius_strategy: crate::warped_tag_field::RadiusStrategy,
+    warped_legacy_budget: bool,
+    warped_shell_directory: bool,
+    warped_reuse_beam: bool,
+    warped_seed_policy: u8,
     #[serde(default)]
     spike_routing: SenseConfig,
 }
@@ -171,6 +178,13 @@ impl Default for PipelineConfig {
             tech_tag_threshold: 0.08,
             normal_tag_threshold: 0.015,
             epa_gate_mode: "backgroundRelative".into(),
+            tag_routing_mode: "cosine".into(),
+            warped_preset: Default::default(),
+            warped_radius_strategy: Default::default(),
+            warped_legacy_budget: false,
+            warped_shell_directory: true,
+            warped_reuse_beam: true,
+            warped_seed_policy: 1,
             spike_routing: SenseConfig::default(),
         }
     }
@@ -267,6 +281,7 @@ fn calibrated_gate(ratio: f64, baseline: f64, background: f64, mode: &str) -> f6
 /// values derived from them alone.
 struct EpaBasis {
     raw: String,
+    digest: String,
     dimension: usize,
     k_sem: usize,
     labels: Vec<String>,
@@ -297,13 +312,22 @@ fn decode_epa_basis(raw: String, dimension: usize) -> Option<EpaBasis> {
     let mean_captured=bases.iter().take(semantic_count).map(|b|dot(&mean,b).powi(2)).sum::<f64>();
     let background_ratio=clamp01((semantic_count as f64/dimension.max(1) as f64+mean_captured)
         /(1.0+dot(&mean,&mean)));
+    use sha2::{Digest, Sha256};
+    let digest=format!("{:x}",Sha256::digest(raw.as_bytes()));
     Some(EpaBasis {
-        raw, dimension, k_sem: cache.k_sem, labels: cache.labels, mean, bases,
+        raw, digest, dimension, k_sem: cache.k_sem, labels: cache.labels, mean, bases,
         semantic_count, baseline_coverage, background_ratio,
     })
 }
 
+#[cfg(test)]
 fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usize, mode: &str) -> EpaOutput {
+    analyze_epa_with_digest(connection,query,dimension,mode,&mut None)
+}
+
+fn analyze_epa_with_digest(connection: &Connection, query: &[f32], dimension: usize,
+    mode: &str, digest:&mut Option<String>) -> EpaOutput {
+    *digest=None;
     let empty = || EpaOutput {
         logic_depth: 0.0,
         entropy: 1.0,
@@ -342,6 +366,7 @@ fn analyze_epa_with_mode(connection: &Connection, query: &[f32], dimension: usiz
             None => return empty(),
         },
     };
+    *digest=Some(basis.digest.clone());
     let mean = &basis.mean;
     let bases = &basis.bases;
     let centered: Vec<f32> = query
@@ -733,6 +758,7 @@ fn analyze_pyramid(
         .map(|(output, tags, _)| (output, tags))
 }
 
+#[cfg(test)]
 fn analyze_pyramid_with_pool(
     index: &Arc<crate::index_handle::IndexHandle>,
     connection: &Connection,
@@ -741,6 +767,16 @@ fn analyze_pyramid_with_pool(
     config: &PipelineConfig,
     tag_vectors: &mut TagVectorPool,
     eligible: Option<&HashMap<i64, usize>>,
+) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
+    analyze_pyramid_routed(index, connection, query, dimension, config, tag_vectors, eligible, None, &mut Vec::new())
+}
+
+fn analyze_pyramid_routed(
+    index: &Arc<crate::index_handle::IndexHandle>,
+    connection: &Connection, query: &[f32], dimension: usize, config: &PipelineConfig,
+    tag_vectors: &mut TagVectorPool, eligible: Option<&HashMap<i64, usize>>,
+    warped: Option<(&crate::warped_tag_field::WarpedTagField, &EpaOutput)>,
+    routing: &mut Vec<serde_json::Value>,
 ) -> std::result::Result<(PyramidOutput, Vec<Vec<PyramidTagWork>>, Vec<Vec<f32>>), String> {
     let original_energy = magnitude(query).powi(2);
     if original_energy <= 1e-12 {
@@ -764,11 +800,41 @@ fn analyze_pyramid_with_pool(
     let mut levels_work = Vec::new();
     let mut residuals = Vec::new();
     let mut total_explained = 0.0;
+    let mut excluded = HashSet::new();
     for level in 0..config.max_levels.clamp(1, 8) {
-        let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
-        let matches = guard
-            .search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
-            .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
+        let matches = if let Some((field, epa)) = warped {
+            let residual_ratio = magnitude(&residual).powi(2) / original_energy;
+            let radius = crate::warped_tag_field::residual_query_radius(
+                config.warped_radius_strategy, level, config.max_levels.clamp(1,8),
+                epa.in_domain_gate, epa.logic_depth, epa.entropy, epa.cache_available,
+                residual_ratio);
+            let (ids, stats, sql_reads, cache_hits) = field.search_policy(connection, &residual, radius,
+                config.pyramid_top_k.clamp(1,64), &excluded, tag_vectors, config.warped_legacy_budget,
+                config.warped_shell_directory, config.warped_reuse_beam,config.warped_seed_policy)?;
+            routing.push(serde_json::json!({
+                "level":level,"radius":radius,"ids":ids,"excluded":excluded.len(),
+                "inputResidualEnergyRatio":residual_ratio,
+                "visited":stats.visited,"expanded":stats.expanded,
+                "rerankFetches":stats.cold_reads,"sqlReads":sql_reads,"cacheHits":cache_hits,
+                "quadSkips":stats.exact_quad_skips,"distanceEvals":stats.exact_distance_evals,
+                "converged":stats.converged,"visitLimitReached":stats.visit_limit_reached,
+                "expansionLimitReached":stats.expansion_limit_reached,
+                "stage05Evaluations":stats.asymmetric_evals,
+                "epaAvailable":epa.cache_available,
+                "meanInboundQuantile":if ids.is_empty() {0.0} else {
+                    ids.iter().filter_map(|&id|field.inbound_quantile(id)).sum::<f64>()/ids.len() as f64
+                }
+            }));
+            ids.into_iter().map(|id| (id as u64,0.0_f32)).collect::<Vec<_>>()
+        } else {
+            let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+            let matches=guard.search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
+                .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
+            #[cfg(test)]
+            routing.push(serde_json::json!({"level":level,
+                "ids":matches.iter().map(|m|m.0).collect::<Vec<_>>(),"radius":null}));
+            matches
+        };
         if matches.is_empty() {
             break;
         }
@@ -776,7 +842,6 @@ fn analyze_pyramid_with_pool(
         // that no admitted propagation seed can carry. Do not require outdegree.
         let ids: Vec<i64> = matches.iter().map(|(id, _)| *id as i64)
             .filter(|id| eligible.map_or(true, |nodes| nodes.contains_key(id))).collect();
-        drop(guard);
         ensure_tag_vectors_loaded(connection, tag_vectors, &ids, dimension)?;
         let mut tags = Vec::new();
         for id in &ids {
@@ -842,6 +907,9 @@ fn analyze_pyramid_with_pool(
         });
         if config.spike_routing.dynamic_wormholes {
             residuals.push(residual.clone());
+        }
+        if warped.is_some() {
+            excluded.extend(tags.iter().map(|tag| tag.id));
         }
         levels_work.push(tags);
         residual = next_residual;
@@ -2116,6 +2184,7 @@ struct PipelineDiagnostics {
     runtime_ownership: String,
     epa_ms: f64,
     pyramid_ms: f64,
+    tag_routing_check_ms: f64,
     gating_ms: f64,
     sensing_ms: f64,
     fusion_ms: f64,
@@ -2132,6 +2201,10 @@ struct PipelineDiagnostics {
     dual_field: DualFieldDiagnostics,
     fusion: FusionDiagnostics,
     sensing: SenseDiagnostics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_routing: Option<serde_json::Value>,
+    #[cfg(test)]
+    pyramid_attempts: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -2209,12 +2282,34 @@ fn run_pipeline_with_connection(
     if !["absolute","relativeLinear","relativeSqrt","backgroundRelative"].contains(&input.config.epa_gate_mode.as_str()) {
         return Err("Invalid epaGateMode".into());
     }
-    let epa = analyze_epa_with_mode(&connection, &input.query_vector, dimensions, &input.config.epa_gate_mode);
+    let mut epa_digest=None;
+    let epa = analyze_epa_with_digest(&connection, &input.query_vector, dimensions,
+        &input.config.epa_gate_mode,&mut epa_digest);
     let epa_ms = epa_started.elapsed().as_secs_f64() * 1000.0;
 
+    if !["cosine","warped_ags"].contains(&input.config.tag_routing_mode.as_str()) {
+        return Err("Invalid tagRoutingMode".into());
+    }
+    let routing_check_started = Instant::now();
+    let mut fallback_reason=None;
+    let mut field_source=None;
+    let warped = if input.config.tag_routing_mode == "warped_ags" {
+        match crate::warped_tag_field::load_or_build(runtime,connection,artifact_sig,
+            artifact,dimensions,input.config.warped_preset) {
+            Ok((field,source))=>{field_source=Some(source);Some(field)},
+            Err(error) if error.starts_with("WARPED_NOT_INITIALIZED:")=>{
+                fallback_reason=Some(error);None
+            },
+            Err(error)=>return Err(error),
+        }
+    } else { None };
+    let tag_routing_check_ms = routing_check_started.elapsed().as_secs_f64()*1000.0;
     let mut tag_vectors = TagVectorPool::new();
+    let mut routing_attempts = Vec::new();
+    #[cfg(test)]
+    let audit_stage=crate::storage::tag_read_audit::Stage::enter("pyramid");
     let pyramid_started = Instant::now();
-    let (pyramid, level_tags, residuals) = analyze_pyramid_with_pool(
+    let (pyramid, level_tags, residuals) = analyze_pyramid_routed(
         index,
         &connection,
         &input.query_vector,
@@ -2222,9 +2317,15 @@ fn run_pipeline_with_connection(
         &input.config,
         &mut tag_vectors,
         Some(&artifact.node_index),
+        warped.as_deref().map(|field| (field, &epa)),
+        &mut routing_attempts,
     )?;
     let pyramid_ms = pyramid_started.elapsed().as_secs_f64() * 1000.0;
 
+    #[cfg(test)]
+    drop(audit_stage);
+    #[cfg(test)]
+    let audit_stage=crate::storage::tag_read_audit::Stage::enter("gating");
     let gating_started = Instant::now();
     let explicit_cores = resolve_core_seeds(connection, &input.core_tags, &input.ghost_tags,
         &artifact.node_index, &mut tag_vectors, dimensions)?;
@@ -2249,6 +2350,10 @@ fn run_pipeline_with_connection(
         .collect();
     let gating_ms = gating_started.elapsed().as_secs_f64() * 1000.0;
 
+    #[cfg(test)]
+    drop(audit_stage);
+    #[cfg(test)]
+    let audit_stage=crate::storage::tag_read_audit::Stage::enter("wormhole");
     let sensing_started = Instant::now();
     let mut seed_levels = HashMap::new();
     for (level, tags) in level_tags.iter().enumerate() {
@@ -2276,6 +2381,10 @@ fn run_pipeline_with_connection(
     drop(wormholes);
     let sensing_ms = sensing_started.elapsed().as_secs_f64() * 1000.0;
 
+    #[cfg(test)]
+    drop(audit_stage);
+    #[cfg(test)]
+    let audit_stage=crate::storage::tag_read_audit::Stage::enter("fusion");
     let fusion_started = Instant::now();
     let (enhanced_vector, fusion, selected_tags) = fuse_observation_with_pool(
         &connection,
@@ -2291,6 +2400,10 @@ fn run_pipeline_with_connection(
         &mut tag_vectors,
     )?;
     let fusion_ms = fusion_started.elapsed().as_secs_f64() * 1000.0;
+    #[cfg(test)]
+    drop(audit_stage);
+    #[cfg(test)]
+    let _audit_stage=crate::storage::tag_read_audit::Stage::enter("projection");
     let dual_fields = solve_dual_fields_with_pool(
         artifact,
         connection,
@@ -2374,6 +2487,7 @@ fn run_pipeline_with_connection(
             runtime_ownership: "vexus-index-instance".to_string(),
             epa_ms,
             pyramid_ms,
+            tag_routing_check_ms,
             gating_ms,
             sensing_ms,
             fusion_ms,
@@ -2389,6 +2503,21 @@ fn run_pipeline_with_connection(
             dual_field: dual_field_diagnostics,
             fusion,
             sensing: sensing_diagnostics,
+            #[cfg(test)]
+            pyramid_attempts: routing_attempts.clone(),
+            tag_routing: (input.config.tag_routing_mode == "warped_ags").then(||serde_json::json!({
+                "used":if warped.is_some() {"warped_ags"} else {"cosine"},
+                "fallback":warped.is_none(),
+                "preset":input.config.warped_preset.name(),
+                "source":field_source,
+                "fallbackReason":fallback_reason,
+                "radiusStrategy":format!("{:?}",input.config.warped_radius_strategy),
+                "legacyBudget":input.config.warped_legacy_budget,
+                "shellDirectory":input.config.warped_shell_directory,
+                "reuseBeam":input.config.warped_reuse_beam,
+                "seedPolicy":input.config.warped_seed_policy,
+                "attempts":routing_attempts,
+            })),
         },
     })
     .map_err(|error| format!("encode unified Memo pipeline metadata failed: {}", error))?;
@@ -3471,5 +3600,96 @@ mod experiment_c_tests {
             &[0.8,0.6], &levels, &PipelineConfig::default(),
             &HashSet::from(["华为".into()]));
         assert!(direction.is_empty() && ids.is_empty());
+    }
+}
+
+
+#[cfg(test)]
+mod routing_initialization_tests {
+    use super::*;
+
+    #[test]
+    fn low_level_default_and_unready_warped_route_preserve_cosine_observation() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);
+            CREATE TABLE kv_store(key TEXT,value TEXT);
+            CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+            INSERT INTO kbm_runtime_meta VALUES ('database_generation','1'),('memo_tag_facts','1'),('derived_geometry','1');
+            CREATE TABLE rivermemo_artifacts(artifact_sig TEXT,model_sig TEXT,status TEXT,algorithm_version TEXT,schema_version TEXT);
+            INSERT INTO rivermemo_artifacts VALUES ('synthetic','model','ready','memo.native-artifact-v2-binary','rivermemo-persisted-artifact-v2');
+            CREATE TABLE kbm_artifact_dependencies(artifact_sig TEXT,dependency_key TEXT,dependency_version TEXT);
+            INSERT INTO kbm_artifact_dependencies VALUES ('synthetic','memo_tag_facts','1'),('synthetic','derived_geometry','1');
+            CREATE TABLE tagmemo_artifacts(artifact_sig TEXT,asset_type TEXT,status TEXT,model_sig TEXT);").unwrap();
+        let vexus = crate::VexusIndex::new(3, 16).unwrap();
+        for (id, vector) in [(1, [1.0_f32, 0.0, 0.0]), (2, [0.0, 1.0, 0.0])] {
+            let bytes: Vec<_> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            c.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![id, format!("t{id}"), bytes]).unwrap();
+            vexus.index.write().unwrap().add(id as u64, &vector).unwrap();
+        }
+        c.execute_batch("BEGIN").unwrap();
+        let artifact = Arc::new(crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![1, 2], node_index: HashMap::from([(1, 0), (2, 1)]),
+            row_offsets: vec![0, 1, 2], targets: vec![1, 0], weights: vec![0.2, 0.2],
+            ..Default::default()
+        }.prepared());
+        let runtime = MemoRuntime::new();
+        let run = |input: &str| run_pipeline_with_connection(
+            &vexus.index, &runtime, "synthetic", 3, input,
+            &[0.6, 0.8, 0.2], &[], &artifact, &c).unwrap();
+        let default = run("{}");
+        let explicit = run(r#"{"config":{"tagRoutingMode":"cosine"}}"#);
+        let ledger = crate::storage::tag_read_audit::Session::begin();
+        let fallback = run(r#"{"config":{"tagRoutingMode":"warped_ags"}}"#);
+        let reads: Vec<_> = ledger.events().into_iter()
+            .filter(|(operation, _)| operation.ends_with(":bulk")).collect();
+        assert!(!reads.is_empty(), "the fixture must exercise request-pool reads");
+        let unique: HashSet<_> = reads.iter().map(|event| event.1).collect();
+        assert_eq!(reads.len(), unique.len(), "request pool must reuse Tag originals");
+        drop(ledger);
+        let default_meta: serde_json::Value = serde_json::from_str(&default.metadata_json).unwrap();
+        for output in [&explicit, &fallback] {
+            assert_eq!(default.enhanced_vector, output.enhanced_vector);
+            let metadata: serde_json::Value = serde_json::from_str(&output.metadata_json).unwrap();
+            assert_eq!(default_meta["pyramid"], metadata["pyramid"]);
+            runtime.release_query_observation(metadata["observationHandle"].as_str().unwrap()).unwrap();
+        }
+        let fallback_meta: serde_json::Value = serde_json::from_str(&fallback.metadata_json).unwrap();
+        assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["used"], "cosine");
+        assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["fallback"], true);
+        assert!(fallback_meta["diagnostics"]["tagRouting"]["fallbackReason"].as_str().unwrap()
+            .starts_with("WARPED_NOT_INITIALIZED:"));
+        assert!(default_meta["diagnostics"].get("tagRouting").is_none());
+        runtime.release_query_observation(default_meta["observationHandle"].as_str().unwrap()).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod production_warped_config_tests {
+    use super::*;
+    #[test]
+    fn defaults_and_camel_case_aliases_are_production_canonical() {
+        use crate::warped_tag_field::{Preset,RadiusStrategy};
+        let c:PipelineConfig=serde_json::from_str("{}").unwrap();
+        assert_eq!(c.tag_routing_mode,"cosine");
+        assert_eq!(c.warped_preset,Preset::Locked2);
+        assert_eq!(c.warped_radius_strategy,RadiusStrategy::EpaGuided);
+        assert!(c.warped_shell_directory && c.warped_reuse_beam);
+        assert!(!c.warped_legacy_budget);
+        assert_eq!(c.warped_seed_policy,1);
+        for (name,expected) in [("epa_guided",RadiusStrategy::EpaGuided),
+            ("EpaGuided",RadiusStrategy::EpaGuided),("layer_schedule",RadiusStrategy::LayerSchedule),
+            ("LayerSchedule",RadiusStrategy::LayerSchedule)] {
+            let c:PipelineConfig=serde_json::from_value(serde_json::json!({
+                "tagRoutingMode":"warped_ags","warpedPreset":"locked_0","warpedRadiusStrategy":name
+            })).unwrap();
+            assert_eq!(c.warped_preset,Preset::Locked0);
+            assert_eq!(c.warped_radius_strategy,expected);
+        }
+        assert!(serde_json::from_str::<PipelineConfig>(
+            r#"{"warpedPreset":"unknown"}"#).is_err());
+        assert!(serde_json::from_str::<PipelineConfig>(
+            r#"{"warpedRadiusStrategy":"unknown"}"#).is_err());
     }
 }

@@ -44,7 +44,7 @@ async function main() {
             ],
             tags: [1, 2, 3].map((id, slot) => ({ name: 'tag-' + id, position: id, vectorSlot: slot }))
         }), new Float32Array([1,0,0,0, 0.8,0.2,0,0]),
-        new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0]));
+        new Float32Array([1,0,0,0, 0.8,0.2,0,0, 0.7,0,0.3,0]));
 
         const effectiveConfig = {
             zeta: {
@@ -85,9 +85,10 @@ async function main() {
                 0.8, 0.2, 0, 0
             ])
         );
-        nativeKnowledgeRuntime.registerDiaryIndex('test', diaryIndex);
+        // Production joint queries must not require a registered old diary TDB index.
 
-        await index.computeMemoGeometry(dbPath, 'manifest-test-model', '{}');
+        await index.computeMemoGeometry(dbPath, 'manifest-test-model',
+            JSON.stringify({ local: { minNeighbors: 1 } }));
         const result = await index.rebuildMemoArtifact(
             dbPath,
             JSON.stringify({
@@ -154,6 +155,7 @@ async function main() {
             dbPath,
             result.artifactSig,
             JSON.stringify({
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 dimension: 4,
                 topK: 2,
@@ -234,6 +236,7 @@ async function main() {
             dbPath,
             result.artifactSig,
             JSON.stringify({
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 dimension: 4,
                 topK: 2,
@@ -294,12 +297,13 @@ async function main() {
             'caller-provided fake candidates must be replaced by native ANN results'
         );
 
-        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).legacyResident, false);
         const lightPlan = {
             scope: { folders: ['test'] }, modelSig: 'manifest-test-model',
             engineMode: 'rivermemo', k: 2, candidateK: 16, abMode: true,
             artifactSig: result.artifactSig,
             riverInput: {
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 query: { text: 'shared-file candidate' },
                 queryState: { queryId: 'typed-array-regression' },
@@ -319,7 +323,98 @@ async function main() {
             assert(light.results.every(item => typeof item.text === 'string'));
             assert(light.comparisonPool.every(item => !Object.hasOwn(item, 'vector')));
         }
-        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, true);
+        const warpedPipeline = await index.runMemoPipeline(
+            dbPath, result.artifactSig,
+            JSON.stringify({ queryText: 'shared-file candidate', config: {
+                maxLevels: 1, pyramidTopK: 3, tagRoutingMode: 'warped_ags',
+                warpedPreset: 'locked_2', warpedRadiusStrategy: 'epa_guided'
+            } }), new Float32Array([1,0,0,0]), new Float32Array()
+        );
+        const warpedMetadata = JSON.parse(warpedPipeline.metadataJson);
+        assert.strictEqual(warpedMetadata.diagnostics.tagRouting.used, 'warped_ags',
+            'the successful fixture must exercise a real warped Tag observation');
+        assert.strictEqual(warpedMetadata.diagnostics.tagRouting.fallback, false);
+        const forcedTag = JSON.parse(await index.warmupWarpedTagField(
+            dbPath, result.artifactSig, 'locked_2', true));
+        assert.strictEqual(forcedTag.forced, true);
+        assert.strictEqual(forcedTag.source, 'built');
+        assert(forcedTag.nodes > 0);
+        const warpedPlan = { ...lightPlan, warpedAb: true,
+            warpedRiverInput: {
+                ...lightPlan.riverInput,
+                observationHandle: warpedMetadata.observationHandle,
+                tagRouting: warpedMetadata.diagnostics.tagRouting
+            }
+        };
+        await new Promise(resolve => setTimeout(resolve, 15));
+        assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+        const productionPlan = { ...warpedPlan, abMode: false };
+        const production = await lightQuery(productionPlan);
+        assert.strictEqual(production.diagnostics.legacyResident, false);
+        assert.strictEqual(production.diagnostics.retrievalEngine, 'rivermemo_v5');
+        assert.strictEqual(production.river.pipelineVersion, 'rivermemo-v5-warped');
+        assert.strictEqual(production.tdbTopK.length, 0);
+        assert.strictEqual(production.results.length, 2);
+        assert(production.results.every(item => item.retrievalEngine === 'rivermemo_v5'));
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).legacyResident, false);
+        const productionFallback = await lightQuery({ ...productionPlan,
+            warpedRiverInput: { ...productionPlan.warpedRiverInput,
+                tagRouting: { used: 'cosine', fallback: true } } });
+        assert.strictEqual(productionFallback.diagnostics.degraded, true);
+        assert.strictEqual(productionFallback.diagnostics.retrievalEngine, 'warped_ann');
+        assert(productionFallback.results.every(item => item.retrievalEngine === 'warped_chunks'));
+        const permissionEmpty = await lightQuery({ ...productionPlan, engineMode: 'knn',
+            scope: { exactDiaryNames: ['test'], allowedFileIds: [] } });
+        assert.strictEqual(permissionEmpty.results.length, 0);
+        const warpedResult = await lightQuery(warpedPlan);
+        assert.strictEqual(warpedResult.diagnostics.legacyResident, true);
+        const productionAgain = await lightQuery(productionPlan);
+        assert.strictEqual(productionAgain.diagnostics.legacyResident, false);
+        assert.deepStrictEqual(warpedResult.tdbTopK, lightResults[0].tdbTopK,
+            'enabling warped experiments must not alter the TDB baseline');
+        assert.strictEqual(warpedResult.warpedTopK.length, 2);
+        assert(warpedResult.warpedTopK.every(item => Number.isFinite(item.warpedDistance)));
+        assert(warpedResult.warpedTopK.every(item => item.warpedScore === -item.warpedDistance));
+        assert.strictEqual(warpedResult.diagnostics.warpedChunks.used, 'warped_chunks');
+        assert.strictEqual(warpedResult.diagnostics.warpedChunks.fallback, false);
+        assert.strictEqual(warpedResult.recallPools.overlap, 2);
+        assert.strictEqual(warpedResult.comparisonPool.length, 2, 'union must deduplicate IDs');
+        if (warpedMetadata.diagnostics.tagRouting.used === 'warped_ags') {
+            assert.strictEqual(warpedResult.warpedRiver.results.length, 2);
+            assert.strictEqual(warpedResult.warpedRiver.algorithmVersion,
+                warpedResult.river.algorithmVersion, 'V5 must not forge a new readout algorithm');
+            assert.strictEqual(warpedResult.warpedRiver.pipelineVersion,
+                'rivermemo-v5-warped');
+            assert(warpedResult.warpedRiver.results.every(item =>
+                warpedResult.recallPools.warped.includes(item.chunkId)));
+        } else {
+            assert.strictEqual(warpedResult.warpedRiver.diagnostics.available, false);
+            assert.deepStrictEqual(warpedResult.warpedRiver.results, []);
+        }
+        const unavailable = await lightQuery({ ...warpedPlan,
+            warpedRiverInput: { ...warpedPlan.warpedRiverInput,
+                tagRouting: { used: 'cosine', fallback: true } } });
+        assert.strictEqual(unavailable.warpedRiver.diagnostics.available, false);
+        assert.deepStrictEqual(unavailable.warpedRiver.results, []);
+        const emptyV5 = await lightQuery({ ...warpedPlan, scope: { maid: 'test' } });
+        assert.strictEqual(emptyV5.warpedRiver.diagnostics.reason, 'empty_chunk_candidates');
+        assert.strictEqual(emptyV5.diagnostics.scope.emptyReason, 'maid_signature_filter_empty');
+        assert.strictEqual(emptyV5.diagnostics.scope.globalValidChunks, 2);
+        assert.deepStrictEqual(emptyV5.warpedRiver.results, []);
+        index.releaseMemoObservation(warpedMetadata.observationHandle);
+        const forcedChunks = JSON.parse(await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex(
+            'manifest-test-model', true));
+        assert.strictEqual(forcedChunks.ready, true);
+        assert.strictEqual(forcedChunks.forced, true);
+        assert.strictEqual(forcedChunks.source, 'built');
+        assert.strictEqual(forcedChunks.nodes, 2);
+        const warmedChunks = JSON.parse(await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex(
+            'manifest-test-model'));
+        assert.strictEqual(warmedChunks.source, 'memory');
+        const residentStats = JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats());
+        assert.strictEqual(residentStats.resident, true);
+        assert.strictEqual(residentStats.warpedChunks.resident, true);
+        assert(residentStats.warpedChunks.hotBytes > 0);
         assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(600000), false);
         await new Promise(resolve => setTimeout(resolve, 15));
         assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
@@ -354,6 +449,9 @@ async function main() {
         });
         assert.strictEqual(noSignature.results.length, 0,
             'diary-name match does not bypass first-line signature filtering');
+        assert.strictEqual(noSignature.diagnostics.scope.emptyReason, 'maid_signature_filter_empty');
+        assert.strictEqual(noSignature.diagnostics.scope.globalValidChunks, 2);
+        assert.strictEqual(noSignature.diagnostics.scope.diaryChunks, 2);
 
         // 并发冷加载回归：清空常驻 Arc 后，多条 Memo Pipeline 会同时从
         // SQLite 解码同一个 Artifact。后到的同签名发布不得清空先到查询
@@ -397,6 +495,7 @@ async function main() {
                     dbPath,
                     result.artifactSig,
                     JSON.stringify({
+                        modelSig: 'manifest-test-model',
                         observationHandle,
                         dimension: 4,
                         topK: 2,
@@ -495,6 +594,92 @@ async function main() {
             JSON.stringify({ queryText: 'stale', config: { maxLevels: 1 } }),
             new Float32Array([1, 0, 0, 0]), new Float32Array()
         );
+
+        // Daily ingestion must update live Chunk recall without rebuilding the
+        // trained geometry or rewriting either the warped or A/B-slot baseline.
+        const generationPipelines = await Promise.all([false, true].map(warped =>
+            index.runMemoPipeline(dbPath, result.artifactSig, JSON.stringify({
+                queryText: 'generation window',
+                config: { maxLevels: 1, pyramidTopK: 3,
+                    ...(warped ? { tagRoutingMode: 'warped_ags' } : {}) }
+            }), new Float32Array([1,0,0,0]), new Float32Array())
+        ));
+        const generationMetadata = generationPipelines.map(p => JSON.parse(p.metadataJson));
+        const generationPlan = {
+            ...lightPlan, k: 3, warpedAb: true,
+            riverInput: { ...lightPlan.riverInput,
+                observationHandle: generationMetadata[0].observationHandle },
+            warpedRiverInput: { ...lightPlan.riverInput,
+                observationHandle: generationMetadata[1].observationHandle,
+                tagRouting: generationMetadata[1].diagnostics.tagRouting }
+        };
+        try {
+            const beforeWrite = await lightQuery(generationPlan);
+            const geometryFacts = beforeWrite.diagnostics.warpedChunks.geometryFacts;
+            const warpedPath = path.join(root, fs.readdirSync(root).find(name => name.endsWith('.vcpwc')));
+            const warpedBytes = fs.readFileSync(warpedPath);
+            const warpedMtime = fs.statSync(warpedPath).mtimeMs;
+            await nativeKnowledgeRuntime.commitIngestionBatch(dbPath, JSON.stringify({
+                operationId: 'daily-generation-window', batchId: 'daily-generation-window',
+                dimension: 4, modelSig: 'manifest-test-model',
+                files: [{ path: 'new-diary.txt', diaryName: 'test', checksum: 'new',
+                    mtime: 2, size: 10, expectedVersion: 0,
+                    chunkStart: 0, chunkCount: 1, tagStart: 0, tagCount: 0 }],
+                chunks: [{ content: 'new daily candidate', chunkIndex: 0, vectorSlot: 0 }],
+                tags: []
+            }), new Float32Array([1,0,0,0]), new Float32Array());
+            // Query observations are request snapshots, unlike the shared
+            // trained field: a fact commit requires fresh per-query handles.
+            for (const metadata of generationMetadata) {
+                index.releaseMemoObservation(metadata.observationHandle);
+            }
+            generationMetadata.length = 0;
+            for (const warped of [false, true]) {
+                const pipeline = await index.runMemoPipeline(dbPath, result.artifactSig, JSON.stringify({
+                    queryText: 'generation window after ingestion',
+                    config: { maxLevels: 1, pyramidTopK: 3,
+                        ...(warped ? { tagRoutingMode: 'warped_ags' } : {}) }
+                }), new Float32Array([1,0,0,0]), new Float32Array());
+                generationMetadata.push(JSON.parse(pipeline.metadataJson));
+            }
+            generationPlan.riverInput.observationHandle = generationMetadata[0].observationHandle;
+            generationPlan.warpedRiverInput.observationHandle = generationMetadata[1].observationHandle;
+            generationPlan.warpedRiverInput.tagRouting = generationMetadata[1].diagnostics.tagRouting;
+            const afterWrite = await lightQuery(generationPlan);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.source, 'memory');
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.geometryFacts, geometryFacts);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.deltaChunks, 1);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.liveNodes, 3);
+            assert(afterWrite.tdbTopK.some(item => item.text === 'new daily candidate'));
+            assert(afterWrite.warpedTopK.some(item => item.text === 'new daily candidate'));
+            assert.deepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            assert.strictEqual(fs.statSync(warpedPath).mtimeMs, warpedMtime);
+            assert.deepStrictEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+            assert.strictEqual(fs.statSync(snapshotPath).mtimeMs, snapshotMtime);
+            await new Promise(resolve => setTimeout(resolve, 15));
+            assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+            const restoredGeneration = await lightQuery(generationPlan);
+            assert.strictEqual(restoredGeneration.diagnostics.warpedChunks.source, 'snapshot');
+            assert.strictEqual(restoredGeneration.diagnostics.warpedChunks.geometryFacts, geometryFacts);
+            assert.deepStrictEqual(restoredGeneration.warpedTopK, afterWrite.warpedTopK);
+            assert.deepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            assert.strictEqual(fs.statSync(warpedPath).mtimeMs, warpedMtime);
+            const nextGeneration = JSON.parse(
+                await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex('manifest-test-model', true));
+            assert.strictEqual(nextGeneration.source, 'built');
+            assert.strictEqual(nextGeneration.nodes, 3);
+            assert.notStrictEqual(nextGeneration.geometryFacts, geometryFacts);
+            const trainedResult = await lightQuery(generationPlan);
+            assert.strictEqual(trainedResult.diagnostics.warpedChunks.deltaChunks, 0);
+            assert.notDeepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            // Geometry training is not permission to publish the normal A/B slots.
+            assert.deepStrictEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+            assert.strictEqual(fs.statSync(snapshotPath).mtimeMs, snapshotMtime);
+        } finally {
+            for (const metadata of generationMetadata) {
+                index.releaseMemoObservation(metadata.observationHandle);
+            }
+        }
 
         nativeKnowledgeRuntime.openAndInitStore(path.join(root, 'other.sqlite'));
         assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false,

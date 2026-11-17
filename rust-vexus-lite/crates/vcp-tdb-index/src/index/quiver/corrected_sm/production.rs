@@ -15,6 +15,7 @@ impl CorrectedSmIndex {
             base_crc: 0,
             exact_scales: Vec::new(),
             scoring: SmScoring::ReconstructedL2,
+            flat_headers: None,
             dynamic: if dim == DIM {
                 None
             } else {
@@ -39,7 +40,7 @@ impl CorrectedSmIndex {
         if vector.len() != dim || vector.iter().any(|x| !x.is_finite()) {
             return Err(invalid("默认SM向量维度或数值无效"));
         }
-        let norm = vector.iter().map(|&x| (x as f64).powi(2)).sum::<f64>();
+        let norm = crate::metric_math::norm_squared_f64(vector);
         let scale = if norm == 0. || (norm - 1.).abs() <= 1e-5 {
             1.
         } else {
@@ -98,6 +99,11 @@ impl CorrectedSmIndex {
         }
         self.ids.push(id);
         self.exact_scales.push(scale);
+        if self.flat_headers.is_some() {
+            let mut header = self.make_flat_header(self.len() - 1);
+            header.sketch = crate::index::quiver::sketch::pack_strided_sketch256(x);
+            self.flat_headers.as_mut().unwrap().push(header);
+        }
         Ok(())
     }
 
@@ -113,11 +119,7 @@ pub(super) fn extreme_scale(scale: f32) -> bool {
 
 pub(super) fn prepare_exact_buffer(buffer: &mut [f32], scale: f32) {
     if extreme_scale(scale) {
-        let norm = buffer
-            .iter()
-            .map(|&x| (x as f64).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let norm = crate::metric_math::norm_squared_f64(buffer).sqrt();
         if norm > 0. {
             for value in buffer {
                 *value = (*value as f64 / norm) as f32;

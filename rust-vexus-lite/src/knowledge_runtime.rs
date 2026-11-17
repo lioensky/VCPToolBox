@@ -216,6 +216,8 @@ struct NativeAnnIndexSnapshot {
 struct NativeAnnDiagnostics {
     requested_diaries: usize,
     resolved_indices: usize,
+    recall_backend: &'static str,
+    warped_queries: Vec<serde_json::Value>,
     per_index_k: usize,
     candidate_k: usize,
     final_k: usize,
@@ -459,7 +461,14 @@ struct SemanticDedupConfig {
     threshold: f64,
 }
 
+struct WarpedRecall {
+    table: Arc<Mutex<Option<crate::global_chunks::GlobalChunks>>>,
+    model: String,
+    diaries: Vec<String>,
+}
+
 pub struct NativeMultiIndexAnnTask {
+    warped_source: Option<WarpedRecall>,
     search_options: RetrievalSearchOptions,
     db_path: Option<String>,
     index_scopes: Vec<String>,
@@ -541,6 +550,7 @@ impl NativeMultiIndexAnnTask {
     fn query_guard(&self, scopes: &[String]) -> Result<crate::publication_gate::PublicationGuard> {
         let path = self.db_path.as_deref().unwrap_or("unopened");
         let guard = crate::publication_gate::acquire_read(path, scopes).map_err(Error::from_reason)?;
+        if self.warped_source.is_some() { return Ok(guard); }
         if let Some(db_path) = &self.db_path {
             match ensure_index_scopes_ready(db_path, &self.index_scopes) {
                 Ok(()) => return Ok(guard),
@@ -570,6 +580,7 @@ impl NativeMultiIndexAnnTask {
     }
 
     fn prepare_indices(&self) -> Result<()> {
+        if self.warped_source.is_some() { return Ok(()); }
         if let Some(db_path) = &self.db_path {
             for snapshot in &self.snapshots {
                 let scope = format!("diary:{}", snapshot.diary_name);
@@ -627,6 +638,45 @@ impl NativeMultiIndexAnnTask {
         let mut merged: HashMap<i64, NativeAnnCandidate> = HashMap::new();
         let mut ann_candidates = 0usize;
         let mut index_diagnostics = Vec::with_capacity(self.snapshots.len());
+        let mut warped_queries = Vec::new();
+        if let Some(source) = &self.warped_source {
+            let connection = connection.ok_or_else(|| Error::from_reason("Warped recall requires SQL snapshot"))?;
+            let mut resident = source.table.lock().map_err(|_| Error::from_reason("Global Chunk table lock poisoned"))?;
+            if resident.as_ref().is_none_or(|table| !table.matches_model(self.dimension, &source.model)) {
+                *resident = Some(crate::global_chunks::GlobalChunks::production(self.dimension, &source.model)
+                    .map_err(Error::from_reason)?);
+            }
+            let table = resident.as_mut().unwrap();
+            table.disable_legacy().map_err(Error::from_reason)?;
+            table.synchronize(connection).map_err(Error::from_reason)?;
+            let excluded: HashSet<u64> = self.search_options.exclude_ids.iter().copied().collect();
+            for (query_index, query) in std::iter::once(&self.query).chain(&self.supplemental_queries).enumerate() {
+                let budget = if query_index == 0 { self.per_index_k } else { self.supplemental_per_index_k };
+                let (hits, diagnostics) = table.search_warped(connection, query, budget.clamp(1, 2000),
+                    |row| source.diaries.contains(&row.diary) && !excluded.contains(&(row.id as u64)))
+                    .map_err(Error::from_reason)?;
+                warped_queries.push(diagnostics);
+                let ids: Vec<_> = hits.iter().map(|h| h.0).collect();
+                let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &ids, self.dimension)
+                    .map_err(Error::from_reason)?;
+                ann_candidates += hits.len();
+                for (id, _) in hits {
+                    let Some(vector) = vectors.get(&id) else { continue; };
+                    let cosine = cosine_similarity(query, vector);
+                    let weight = if query_index == 0 { 1.0 } else {
+                        self.supplemental_weights.get(query_index - 1).copied().unwrap_or(1.0).clamp(0.0, 1.0)
+                    };
+                    let score = cosine * weight;
+                    let entry = merged.entry(id).or_insert_with(|| NativeAnnCandidate {
+                        id, score, vector_score: cosine, bm25_score: 0.0, time_score: 0.0, sources: Vec::new()
+                    });
+                    entry.score = entry.score.max(score);
+                    entry.vector_score = entry.vector_score.max(cosine);
+                    entry.sources.push(if query_index == 0 { table.rows[&id].diary.clone() }
+                        else { format!("history_{}:{}", query_index - 1, table.rows[&id].diary) });
+                }
+            }
+        }
         for (snapshot, index) in self.snapshots.iter().zip(guards.iter()) {
             let matches = match connection {
                 Some(connection) => index.search_sql_options(
@@ -727,11 +777,11 @@ impl NativeMultiIndexAnnTask {
                 })?;
             with_query_connection(connection, &semantic_db_path, |connection| {
                 let sparse_weight = self.bm25_weight.clamp(0.0, 1.0);
-                let allowed_diaries: HashSet<&str> = self
-                    .snapshots
-                    .iter()
-                    .map(|snapshot| snapshot.diary_name.as_str())
-                    .collect();
+                let allowed_diaries: HashSet<&str> = if let Some(source) = &self.warped_source {
+                    source.diaries.iter().map(String::as_str).collect()
+                } else {
+                    self.snapshots.iter().map(|snapshot| snapshot.diary_name.as_str()).collect()
+                };
                 let mut pending_time_by_diary: HashMap<String, HashMap<i64, NativeAnnCandidate>> =
                     HashMap::new();
                 for file_candidate in &self.file_candidates {
@@ -982,8 +1032,10 @@ impl NativeMultiIndexAnnTask {
             },
             results,
             diagnostics: NativeAnnDiagnostics {
-                requested_diaries: self.snapshots.len(),
-                resolved_indices: self.snapshots.len(),
+                requested_diaries: self.warped_source.as_ref().map_or(self.snapshots.len(), |s| s.diaries.len()),
+                resolved_indices: if self.warped_source.is_some() { 1 } else { self.snapshots.len() },
+                recall_backend: if self.warped_source.is_some() { "warped_chunks" } else { "legacy_tdb" },
+                warped_queries,
                 per_index_k: self.per_index_k,
                 candidate_k: self.candidate_k,
                 final_k: self.final_k,
@@ -2320,9 +2372,12 @@ impl Task for NativeMemoArtifactPruneTask {
             }
         }
 
+        let warped_snapshots_deleted=crate::storage::with_registered_read_transaction(&self.db_path,
+            crate::warped_tag_field::prune_snapshots).map_err(Error::from_reason)?;
         serde_json::to_string(&serde_json::json!({
             "retired": retired,
             "deleted": deleted,
+            "warpedSnapshotsDeleted": warped_snapshots_deleted,
             "retainedReadyArtifacts": retain
         }))
         .map_err(|error| {
@@ -2588,6 +2643,7 @@ impl NativeKnowledgeRuntime {
                 "watcher.runtime-owned.v1".to_string(),
                 "memo.native-artifact.v1".to_string(),
                 "river.native-query.v1".to_string(),
+                "river.warped-production.v1".to_string(),
                 "lightmemo.native-query.v1".to_string(),
             ],
         }
@@ -2690,14 +2746,7 @@ impl NativeKnowledgeRuntime {
             .collect::<HashSet<_>>().into_iter().collect();
         names.sort();
         if names.is_empty() { return Err(Error::from_reason("NATIVE_RERANK_EMPTY_SCOPE")); }
-        let snapshots = {
-            let registry = self.diaries.read().map_err(|_| Error::from_reason("Diary registry poisoned"))?;
-            names.iter().map(|name| {
-                let entry = registry.get(name).ok_or_else(|| Error::from_reason("Diary index not registered"))?;
-                Ok(DiarySearchSnapshot { diary_name:name.clone(), index:entry.index.clone(),
-                    content_revision:entry.content_revision.clone(), generation:entry.generation })
-            }).collect::<Result<Vec<_>>>()?
-        };
+        let snapshots = Vec::new();
         let storage = self.storage_snapshot()?.ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
         let db_path = storage.db_path().to_string_lossy().into_owned();
         let dimension = self.dimension as usize;
@@ -2738,8 +2787,12 @@ impl NativeKnowledgeRuntime {
             .map_err(|e| Error::from_reason(format!("Invalid ANN search options: {e}")))?;
         search_options.validate().map_err(|e| Error::from_reason(e.to_string()))?;
         let mut ann = NativeMultiIndexAnnTask {
+            warped_source: Some(WarpedRecall { table: self.global_chunks.clone(),
+                model: plan["modelSig"].as_str().filter(|v| !v.is_empty())
+                    .ok_or_else(|| Error::from_reason("Warped recall requires modelSig"))?.into(),
+                diaries: names.clone() }),
             search_options,
-            db_path:Some(db_path.clone()), index_scopes:names.iter().map(|n| format!("diary:{n}")).collect(),
+            db_path:Some(db_path.clone()), index_scopes:vec!["*".into()],
             dimension, query:query.to_vec(), supplemental_queries, supplemental_weights,
             supplemental_per_index_k:candidate_k / 2, file_candidates:Vec::new(), bm25_weight:0.6,
             time_per_diary_limit:10, time_global_limit:50, per_index_k:candidate_k,
@@ -2880,6 +2933,10 @@ impl NativeKnowledgeRuntime {
             let metadata: serde_json::Value = serde_json::from_str(&observation.metadata_json)
                 .map_err(|_| Error::from_reason("NATIVE_RERANK_SENSE_DECODE"))?;
             let handle = metadata["observationHandle"].as_str().unwrap_or("").to_string();
+            if metadata["diagnostics"]["tagRouting"]["used"].as_str() != Some("warped_ags") {
+                let _ = runtime.release_query_observation(&handle);
+                return Err(Error::from_reason("MEMO_ARTIFACT_UNAVAILABLE: warped Tag route not ready"));
+            }
             let release_handle = handle.clone();
             let river_runtime = runtime.clone();
             let docs = documents.clone();
@@ -2923,6 +2980,7 @@ impl NativeKnowledgeRuntime {
         if let Ok(scores) = external { results = crate::native_rerank::fuse(results, &scores, alpha); }
         results.truncate(k);
         river["results"] = serde_json::json!(results);
+        river["pipelineVersion"] = serde_json::json!("rivermemo-v5-warped");
         river["queryTags"] = serde_json::json!({"matchedTags":metadata["matchedTags"],
             "coreTagsMatched":metadata["coreTagsMatched"],"sourceMode":"rust_parallel"});
         river["diagnostics"]["nativeRerank"] = serde_json::json!({
@@ -2962,8 +3020,15 @@ impl NativeKnowledgeRuntime {
             ).map_err(Error::from_reason)?),
             None => None,
         };
+        let warped_observation = match plan["warpedRiverInput"]["observationHandle"].as_str() {
+            Some(handle) => Some(self.memo_runtime.get_query_observation(
+                handle, plan["artifactSig"].as_str().unwrap_or("")
+            ).map_err(Error::from_reason)?),
+            None => None,
+        };
         Ok(self.tracked_task(crate::light_memo::LightMemoTask {
             observation,
+            warped_observation,
             db_path: storage.db_path().to_string_lossy().into_owned(),
             dimension: self.dimension as usize,
             query: query.to_vec(),
@@ -2998,6 +3063,26 @@ impl NativeKnowledgeRuntime {
         }))
     }
 
+    /// Explicit global maintenance. force=true rebuilds from SQL and replaces the
+    /// derived warped sidecar; ordinary queries never enable this force path.
+    #[napi]
+    pub fn prepare_global_warped_chunk_index(&self, model_sig: String, force: Option<bool>)
+        -> Result<AsyncTask<TrackedTask<crate::light_memo::WarpedChunkPreparationTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("KNOWLEDGE_STORE_CLOSED"));
+        }
+        if model_sig.trim().is_empty() || model_sig.len() > 1024 {
+            return Err(Error::from_reason("Invalid global warped Chunk model signature"));
+        }
+        let storage = self.storage_snapshot()?
+            .ok_or_else(|| Error::from_reason("KNOWLEDGE_STORE_NOT_OPEN"))?;
+        Ok(self.tracked_task(crate::light_memo::WarpedChunkPreparationTask {
+            db_path: storage.db_path().to_string_lossy().into_owned(),
+            dimension: self.dimension as usize,model:model_sig,force:force.unwrap_or(false),
+            table:self.global_chunks.clone(),
+        }))
+    }
+
     #[napi]
     pub fn light_memo_index_stats(&self) -> Result<String> {
         match self.global_chunks.try_lock() {
@@ -3005,7 +3090,9 @@ impl NativeKnowledgeRuntime {
                 Some(table) => serde_json::json!({
                     "resident": true, "chunks": table.rows.len(),
                     "idleMs": table.last_used.elapsed().as_millis() as u64,
-                    "storageMode": "rust-sm-flat", "f32Resident": false
+                    "storageMode": "rust-warped-production", "f32Resident": false,
+                    "legacyResident": table.legacy_resident(),
+                    "warpedChunks": table.warped_stats()
                 }),
                 None => serde_json::json!({
                     "resident": false, "chunks": 0, "f32Resident": false
@@ -4232,6 +4319,7 @@ impl NativeKnowledgeRuntime {
 
         let final_k = global_k.max(1) as usize;
         Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            warped_source: None,
             search_options,
             db_path: Some(
                 self.storage_snapshot()?.ok_or_else(|| {
@@ -4328,6 +4416,7 @@ impl NativeKnowledgeRuntime {
         let candidate_k = global_k.max(1) as usize;
         let final_k = final_k.unwrap_or(global_k).max(1) as usize;
         Ok(self.tracked_task(NativeMultiIndexAnnTask {
+            warped_source: None,
             search_options: RetrievalSearchOptions::default(),
             db_path: Some(db_path.clone()),
             index_scopes: requested
@@ -4418,26 +4507,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        let registry = self.diaries.read().map_err(|error| {
-            Error::from_reason(format!("Diary registry read lock failed: {}", error))
-        })?;
-        let mut snapshots = Vec::with_capacity(requested.len());
-        for diary_name in requested {
-            let registered = registry.get(&diary_name).ok_or_else(|| {
-                Error::from_reason(format!(
-                    "Native diary index is not registered: {}",
-                    diary_name
-                ))
-            })?;
-            snapshots.push(DiarySearchSnapshot {
-                diary_name,
-                index: registered.index.clone(),
-                content_revision: registered.content_revision.clone(),
-                generation: registered.generation,
-            });
-        }
-        drop(registry);
-
+        let snapshots: Vec<DiarySearchSnapshot> = Vec::new();
         let candidate_k = candidate_k.max(1) as usize;
         Ok(self.tracked_task(NativeRiverQueryTask {
             runtime: self.memo_runtime.clone(),
@@ -4445,12 +4515,13 @@ impl NativeKnowledgeRuntime {
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+                warped_source: Some(WarpedRecall { table: self.global_chunks.clone(),
+                    model: plan["modelSig"].as_str().filter(|v| !v.is_empty())
+                        .ok_or_else(|| Error::from_reason("Warped recall requires modelSig"))?.into(),
+                    diaries: requested.clone() }),
             search_options: RetrievalSearchOptions::default(),
                 db_path: Some(db_path.clone()),
-                index_scopes: snapshots
-                    .iter()
-                    .map(|snapshot| format!("diary:{}", snapshot.diary_name))
-                    .collect(),
+                index_scopes: vec!["*".into()],
                 dimension: self.dimension as usize,
                 query: query.to_vec(),
                 supplemental_queries: Vec::new(),
@@ -4575,26 +4646,7 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
-        let registry = self.diaries.read().map_err(|error| {
-            Error::from_reason(format!("Diary registry read lock failed: {}", error))
-        })?;
-        let mut snapshots = Vec::with_capacity(requested.len());
-        for diary_name in requested {
-            let registered = registry.get(&diary_name).ok_or_else(|| {
-                Error::from_reason(format!(
-                    "Native diary index is not registered: {}",
-                    diary_name
-                ))
-            })?;
-            snapshots.push(DiarySearchSnapshot {
-                diary_name,
-                index: registered.index.clone(),
-                content_revision: registered.content_revision.clone(),
-                generation: registered.generation,
-            });
-        }
-        drop(registry);
-
+        let snapshots: Vec<DiarySearchSnapshot> = Vec::new();
         let candidate_k = candidate_k.max(1) as usize;
         let supplemental_per_index_k = plan
             .supplemental
@@ -4607,12 +4659,13 @@ impl NativeKnowledgeRuntime {
             artifact_sig,
             river_input_json,
             ann_task: NativeMultiIndexAnnTask {
+                warped_source: Some(WarpedRecall { table: self.global_chunks.clone(),
+                    model: river_plan["modelSig"].as_str().filter(|v| !v.is_empty())
+                        .ok_or_else(|| Error::from_reason("Warped recall requires modelSig"))?.into(),
+                    diaries: requested.clone() }),
             search_options: plan.ann_search,
                 db_path: Some(db_path.clone()),
-                index_scopes: snapshots
-                    .iter()
-                    .map(|snapshot| format!("diary:{}", snapshot.diary_name))
-                    .collect(),
+                index_scopes: vec!["*".into()],
                 dimension,
                 query: query.to_vec(),
                 supplemental_queries,
@@ -4875,6 +4928,7 @@ mod tests {
         let plan:NativeHybridQueryPlan=serde_json::from_str(
             r#"{"annSearch":{"excludeIds":[1],"efSearch":256}}"#).unwrap();
         let mut task = NativeMultiIndexAnnTask {
+            warped_source: None,
             search_options:plan.ann_search, db_path:None, index_scopes:Vec::new(),
             dimension:2, query:vec![1.,0.], supplemental_queries:vec![vec![1.,0.]],
             supplemental_weights:vec![1.], supplemental_per_index_k:2,
@@ -5131,6 +5185,7 @@ mod tests {
             connection.execute("INSERT INTO chunks VALUES (?1,1,?2)",rusqlite::params![id,bytes]).unwrap();
         }
         let mut task=NativeMultiIndexAnnTask {
+            warped_source: None,
             search_options:RetrievalSearchOptions {exclude_ids:(1..=10).collect(),..Default::default()},
             db_path:None,index_scopes:Vec::new(),dimension:2,query:vec![1.,0.],
             supplemental_queries:Vec::new(),supplemental_weights:Vec::new(),supplemental_per_index_k:10,

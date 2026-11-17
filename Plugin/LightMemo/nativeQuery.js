@@ -73,7 +73,8 @@ async function execute(plugin, request, args, { ab = false, topK = request.k } =
         { text: request.text, vector },
         {
             scope: request.scope, engineMode: request.mode, k: topK, candidateK,
-            abMode: ab, useBm25, queryTokens, tokenDiagnostics,
+            abMode: ab, ...(ab ? { warpedAb: true } : {}),
+            useBm25, queryTokens, tokenDiagnostics,
             coreTags: request.coreTags, sourceObservationConfig: {
                 baseTagBoost: request.tagBoost, coreBoostFactor: request.coreBoostFactor
             }
@@ -120,6 +121,11 @@ async function laboratory(args = {}) {
     if (request.k > 100) throw new RangeError('实验室 k 最大为 100。');
     const response = await execute(this, request, args, { ab: true, topK: request.k });
     const pool = response.comparisonPool;
+    if (!pool.length) {
+        console.warn('[LightMemo] Empty AB candidate pool:', JSON.stringify(
+            response.diagnostics?.scope || { requested: request.scope, reason: 'native_scope_diagnostics_unavailable' }
+        ));
+    }
     const compare = this._parseBoolean(args.compare_rerank ?? args.compareRerank, true);
     let external = [];
     if (compare && pool.length) {
@@ -144,18 +150,24 @@ async function laboratory(args = {}) {
         ['TDB 向量基线', response.tdbTopK, 'vectorScore'],
         ['Rerank', external, 'rerank_score'],
         ['Jev', jev, 'jev_score'],
-        ['RiverMemo V3', response.river?.results || [], 'score']
+        ['RiverMemo V3/4 · TDB候选', response.river?.results || [], 'score'],
+        ['双曲 Chunk ANN', response.warpedTopK || [], 'warpedScore'],
+        ['双曲 RiverMemo V5', response.warpedRiver?.results || [], 'score']
     ];
     const rows = new Map();
     tracks.forEach(([, items]) => items.forEach(item => rows.set(Number(item.id ?? item.chunkId), item)));
-    let output = '# LightMemo 四轨实验室\n\n';
+    let output = '# LightMemo 六轨实验室\n\n';
     output += `- 查询：${this._escapeMarkdownCell(request.originalQuery)}\n`;
-    output += `- 共同候选：${pool.length}；Top-K：${request.k}；同快照、同过滤边界。\n`;
+    output += `- 对照并集候选：${pool.length}；Top-K：${request.k}；Chunk 读取同快照、同过滤边界。\n`;
+    output += '- 原生 TDB ANN：保留现有 2-bit SM 无图扫描召回及原件余弦排序；双曲 Chunk ANN：全局共享几何，按范围检索，按双曲距离升序（展示负距离，越大越近）。范围内不超过 128 条时走共享几何上的精确扫描，不冒充图导航。\n';
+    output += '- 两条 Tag 观测分别准备并校验同资产签名，不保证跨阶段同一 SQL 快照；首次构建或快照恢复成本包含在诊断中；日常成员同步不重建冻结几何。\n';
+    output += '- RiverMemo V3/4：TDB 候选 + 现有 Tag/NNLS 观测；双曲 RiverMemo V5：双曲 Chunk 候选 + 双曲 Tag 观测。最终均由现有原生 RiverMemo 读出器重新评分，不沿用 ANN 排名；V5 是生产链路名，不伪造读出算法版本。\n';
+    output += '- Rerank/Jev 使用两套召回候选的去重并集；两条 RiverMemo 各用自己的召回池，因此这是端到端对照，不是固定池排序消融。\n';
     output += '- TDB 按原件余弦排序；比较排序/读出，不代表全库精确召回率。\n';
     output += `- Rerank：${external.length ? '获得有效外部评分' : '关闭、未配置或失败；不冒充回退评分'}。\n`;
     output += `- Jev：${jev.length ? '获得有效外部评分' : '关闭、未配置或失败；不冒充回退评分'}；共同池受 JevRerankMaxChoices 上限限制。\n`;
     output += '- BM25：候选内子串词频证据，不是全库倒排召回。\n\n';
-    output += '| Chunk | 摘要 | TDB 向量基线 | Rerank | Jev | RiverMemo V3 |\n|---:|---|---:|---:|---:|---:|\n';
+    output += '| Chunk | 摘要 | 原生 TDB ANN | Rerank | Jev | RiverMemo V3/4 · TDB候选 | 双曲 Chunk ANN | 双曲 RiverMemo V5 |\n|---:|---|---:|---:|---:|---:|---:|---:|\n';
     for (const [id, item] of rows) {
         const cells = tracks.map(([, items, scoreField]) => {
             const index = items.findIndex(item => Number(item.id ?? item.chunkId) === id);
@@ -165,7 +177,22 @@ async function laboratory(args = {}) {
         });
         output += `| ${id} | ${this._escapeMarkdownCell(String(item.text || '').replace(/\s+/g, ' ').slice(0, 100))} | ${cells.join(' | ')} |\n`;
     }
+    output += require('./abDiagnostics').formatScopeDiagnostics(this, request, response);
     output += require('./abDiagnostics').formatDiagnostics(this, request, response);
+    if (response.recallPools) {
+        output += `\n## 双召回对照\n\n- 候选 ID 与交集：${this._escapeMarkdownCell(JSON.stringify(response.recallPools))}\n`;
+    }
+    output += `\n- Chunk 双曲诊断：${this._escapeMarkdownCell(JSON.stringify(response.diagnostics?.warpedChunks) ?? '未返回；请重建原生模块')}\n`;
+    output += `- Tag 双曲诊断：${this._escapeMarkdownCell(JSON.stringify(response.warpedMemoObservation?.diagnostics?.tagRouting) ?? '未返回')}\n`;
+    if (response.warpedRiver) {
+        output += '\n## 双曲 RiverMemo V5 生产链路\n';
+        output += require('./abDiagnostics').formatDiagnostics(this, request, {
+            ...response, river: response.warpedRiver,
+            memoObservation: response.warpedMemoObservation
+        });
+    } else {
+        output += '\n- V5 未执行或原生未返回；不使用旧 RiverMemo 分数冒充 V5。\n';
+    }
     return output;
 }
 

@@ -1,15 +1,15 @@
 ---
 title: Vexus-Lite · 读写搜一体化原生记忆数据库
-summary: Vexus-Lite 原生记忆数据库架构指南，涵盖 SQLite 权威事实、TDB 2-bit 检索、局部 Cone-AGS 与全局 Span、原 Tag NNLS 残差金字塔、有界传播、共享预算双场、查询种差校准及连续 Ω 拓扑读出。
-updatedAt: 2026-11-14
+summary: Vexus-Lite 原生记忆数据库架构指南，涵盖 SQLite 权威事实、全局 Chunk 与 Tag 双曲检索、RiverMemo V5、Cone-AGS／Span、NNLS 残差金字塔、有界传播、共享预算双场和连续 Ω 拓扑读出。
+updatedAt: 2026-11-17
 category: guide
 ---
 
 # VexusMemo-Lite：读、写、搜一体化的原生记忆数据库
 
-> **SQLite 权威事实层 × TDB 2-bit 冲程检索 × AGS 统一背景场 × Spike 有界传播与请求级动态虫洞 × RiverMemo 共享预算双场投影与统一泛函**
+> **SQLite 权威事实层 × Chunk／Tag 双曲检索 × AGS 统一背景场 × Spike 有界传播与动态虫洞 × RiverMemo V5 双场投影与统一泛函**
 >
-> 更新日期：2026-11-14。本文说明当前数据库实现：局部 AGS 选列与 QR-NNLS、全局星团主题面、原 Tag 非负锥残差金字塔、查询种差校准、请求级动态虫洞、共享预算双场和连续统一拓扑评分，以及主动与被动记忆入口。本文描述实现与运行边界，不记录研发过程。
+> 更新日期：2026-11-17。生产检索使用全局 Chunk 双曲候选和双曲 Tag 观测，由 RiverMemo 原生读出器完成排序；观测初始化不可用时使用双曲 ANN。RAGDiary 被动记忆与 LightMemo 主动回忆共用这条 V5 数据链。旧 TDB ANN 与 V3/4 检索轨仅在 LightMemo AB 中按需启用。
 
 Vexus-Lite 已不只是一个“由 JavaScript 调用的向量索引”。它是 VCPToolBox 的嵌入式原生知识与记忆数据引擎：从事实事务、向量路由、几何预计算、传播观测，到候选精排和结果回填，在同一个 Rust 原生模块中协作完成。
 
@@ -37,7 +37,7 @@ Vexus-Lite 已不只是一个“由 JavaScript 调用的向量索引”。它是
 | 部分 | 回答的问题 | 核心职责 |
 | :-- | :-- | :-- |
 | SQLite 权威事实层 | 现在真正存在哪些内容与向量？ | 保存正文、原始 FP32 向量、有序 Tag 事实、版本、操作回执与派生资产元数据 |
-| TDB 2-bit 冲程检索 | 从大量向量中，先看哪些候选？ | 以紧凑位码进行图导航或全局扫描，再读取原始向量精排 |
+| 双曲向量检索 | 从大量向量中，先看哪些候选？ | 在共享全局 Chunk 几何与 Tag 场中导航，用 SQL 原始向量计算精确双曲距离；位码承担紧凑导航 |
 | AGS 统一背景场 | 局部邻域能正向解释目标多少，全局主题面能覆盖多少？ | 局部 AGS 选择原 Tag 列并求非负锥残差／锚增益；全局 Span 生成中心化星团主题面与覆盖率 |
 | Spike 有界传播与动态虫洞 | 本次查询实际激活了哪些关系？ | 沿共享传输图传播，以更深层残差为已有历史边提供请求级动态席位，形成带节点势与实际边流的河网 |
 | RiverMemo 双场与统一泛函 | 相似、关系、正文和直接事实如何共同排序？ | 求解局部场/迁移场，在共享选点预算下投影，结合有序 Tag 曲线与相对拓扑统一裁决 |
@@ -48,7 +48,7 @@ Vexus-Lite 已不只是一个“由 JavaScript 调用的向量索引”。它是
 
 ### 必须分清的三种“图”
 
-- **TDB 向量导航图**：为了快速定位近邻而建立的检索结构。
+- **双曲向量导航图**：在共享几何中用紧凑编码定位近邻，分别服务 Chunk 候选与 Tag 路由。
 - **AGS 几何参与构建的 Tag 传输图**：来自有序共现事实、语义增益与锚增益的长期背景。
 - **Spike 请求级河网**：某次查询在背景图上实际产生的节点响应与边流。
 
@@ -81,21 +81,22 @@ Vexus-Lite 选择另一条路径：
 
 ### 2.2 读路径：同一快照内完成候选与原始向量读取
 
-运行时的 SQL-owned 检索要求活动读事务。TDB 负责产生候选，但最终余弦分从该事务中的 SQLite 原始向量计算；不把旧快照文件或量化重建向量冒充现行事实。
+运行时在活动 SQL 读事务中同步 Chunk 成员与范围元数据，在全局双曲几何上召回候选，再读取当前原始向量计算精确距离和查询余弦。双曲 ANN 按距离升序排列，展示负距离；RiverMemo V5 将原查询余弦作为基础语义输入，再结合场与拓扑证据排序。
 
-这既降低双份原始向量常驻的压力，也避免“正文已更新、精排仍读取旧向量”的隐蔽错误。
+双曲索引持有紧凑编码、图、均值与成员版本基线，原始 FP32 向量由 SQLite 保存。新增和向量已修改的 Chunk 在当前训练代坐标中实时评分。
 
-实现见 [`search_sql()`](src/retrieval_index.rs:139)、[读事务封装](src/storage.rs:160)、[原始向量批量读取](src/storage.rs:984)。
+实现见 [全局 Chunk 双曲查询](src/warped_chunks.rs)、[读事务封装](src/storage.rs:160)、[原始向量批量读取](src/storage.rs:984)。
 
 ### 2.3 发布路径：可重建，不盲信文件
 
-检索快照使用双槽代际发布：写入非活动槽的暂存文件，完成校验与持久化，再由 SQLite 记录认可的资产身份和基线。
+派生资产有两类发布方式：旧兼容检索索引采用 SQLite 背书的 A/B 双槽；生产双曲场采用同目录旁路快照、完整性校验和原子替换。Tag 场绑定原生资产签名，Chunk 场绑定模型、维度、训练规则与成员版本基线。
 
 - 文件出现不等于资产已被数据库认可。
 - 发布前后检查事实代际、基线与索引修订，防止陈旧计算覆盖新状态。
 - 恢复时核对模型、维度、资产身份与文件标记。
 - 快照缺失或不兼容时，可以从 SQLite 原始向量重建内存路由，不必重新请求 embedding。
-- 查询同步内存路由与后台 checkpoint 分离，不让每次搜索都隐式写一份磁盘快照。
+- 日常查询同步实时成员，不重建训练代双曲几何、不重写场快照；缺少可用场时执行首次恢复或构建。
+- 手动全量训练及既有 1% Tag 变动阈值任务依次完成统一几何、原生传输资产、生产 Tag 双曲场和全局 Chunk 双曲场。
 
 实现见 [`IndexCheckpointTask`](src/index_lifecycle.rs:146)、[恢复任务](src/index_lifecycle.rs:961)、[全局 Chunk 发布](src/global_chunks.rs:225)。
 
@@ -103,66 +104,68 @@ Vexus-Lite 选择另一条路径：
 
 ---
 
-## 3. TDB2Bit 冲程向量图：把带宽用在值得看的向量上
+## 3. 双曲检索：全局共享几何，范围内返回结果
 
-本文用 **TDB2Bit / 2-bit 冲程检索**统称当前 TDB 紧凑位码导航与筛选机制；代码中的核心对象包括 [`Bq2Signature`](crates/vcp-tdb-index/src/index/bq.rs:86) 与 [`CorrectedSmIndex`](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs:560)。
+生产使用两套双曲场：Chunk 场产生正文候选，Tag 场产生金字塔每层的标签池。两者共享软化双曲导航内核，分别使用适合自身数据的径向规则。
 
-“冲程”描述紧凑编码驱动的分阶段推进，不意味着所有查询都执行同一种图遍历，也不表示已实现一个独立命名的全库块跳过算法。
+### 3.1 紧凑导航与原件精排
 
-### 3.1 每维两位：符号与强弱
+索引保存双位平面、极坐标元数据、CSR 导航图、入口及方向目录。导航先读取紧凑编码，用非对称评分与解析包络控制搜索，再从 SQLite 读取候选原始向量计算精确双曲距离。
 
-对原始向量，BQ2 使用两个位平面：
-
-- 符号位：该维为正还是非正。
-- 强弱位：该维绝对值是否超过该向量平均绝对值。
-
-这比只保存正负号多保留了一层幅值结构。位运算与人口计数可以快速比较大量维度，不必在导航每一步读取完整 FP32 行。
-
-紧凑 BQ2 位码载荷为：
+BQ2 的符号位与强弱位共同描述方向和幅值结构，位码载荷为：
 
 \[
-B_{\mathrm{code}}=16\left\lceil\frac d{64}\right\rceil\ \text{字节/向量}
+B_{\mathrm{code}}=16\left\lceil\frac d{64}\right\rceil\ \text{字节/向量}.
 \]
 
-例如 768 维的两个位平面共 192 字节，而原始 FP32 行为 3072 字节：**仅位码载荷约为原始行的 1/16。**
+768 维的位码为 192 字节，原始 FP32 行为 3072 字节。图邻接、节点元数据与目录另外计入载荷。
 
-这不是“整个数据库压缩 16 倍”的承诺：图邻接、ID、幅值元数据、对齐、增量、SQL 缓存和正文都需要额外空间。
+实现见 [双曲导航内核](crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped.rs)、[BQ2 编码](crates/vcp-tdb-index/src/index/bq.rs)。
 
-实现见 [BQ2 编码](crates/vcp-tdb-index/src/index/bq.rs:108) 与 [紧凑双数组存储](crates/vcp-tdb-index/src/index/bq.rs:907)。
+### 3.2 Chunk：全局坐标与经验分位半径
 
-### 3.2 不止 Hamming：保留强弱幅值的导航
+同一数据库、模型与维度的 Chunk 共用全局均值轴、量化图和方向目录。日记本、署名、时间和文件允许／排除集合构成查询范围视图，不单独重建分库几何。
 
-当前 SM 路径还保留弱幅值、强弱幅值差、重建范数等元数据，用位计数近似恢复内积与重建距离。它不是把所有导航都简化为无权 Hamming 距离。
+设单位 Chunk 向量为 \(v\)，全局单位向量均值为 \(\mu\)，绝对轴对齐度为 \(a(v)=|\langle v,\mu/\|\mu\|\rangle|\)。训练保存 64 个经验分位点，以分段插值得到分位数 \(F(a)\)，半径为：
 
-通用维度路径采用 64 字节对齐行与独立整数计数，避免维度增长引起打包计数串位；完整原始向量只在需要精排时读取。
+\[
+r(v)=0.35+0.30[1-F(a(v))]^{1.10}.
+\]
 
-实现见 [`DynamicSm`](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs:18)、[幅值编码](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs:63)、[导航评分](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs:815)。
+重复对齐度取分位中点；构图、查询、小范围精排和实时增量端点使用同一训练代映射。当前规则身份见 [Chunk 径向规则](src/warped_chunks.rs:10)。
 
-### 3.3 三种规模，三种合适的工作方式
+范围内不超过 128 条时直接计算精确双曲距离；更大范围在全局图中导航，范围外节点可作为导航桥，正文只从许可范围返回。精排预算为请求量的两倍，限制到 64–256，并保证不小于请求量；原生 Chunk 接口支持最多 2000 个候选。
 
-| 路径 | 当前工作方式 | 取舍 |
-| :-- | :-- | :-- |
-| 小规模 Tag / 日记索引 | 无图时逐行读取原始向量，以有界 Top-K 堆保留结果 | 避免小库建图成本；不是 2-bit 全局预筛 |
-| 达到建图条件的 Tag / 日记索引 | QuIVer 图导航与紧凑 SM 筛选，再以原始向量精排 | 减少大范围原始向量读取；召回属于近似检索 |
-| LightMemo 全局 Chunk 表 | 无图紧凑 SM 扫描，范围过滤后保留有界候选池，再批量读 SQL 原始向量 | 避免为全局 Chunk 表维护导航图；扫描成本仍随行数增长 |
+### 3.3 Tag：EPA 定位与残差能量推进
 
-TDB 当前建图阈值为 2048 个节点；具体是否已有图也受增量与维护状态影响。见 [`TdbIndex`](crates/vcp-tdb-index/src/engine.rs:12)。
+生产 Tag 路由使用双曲模式及生产预设，配置见 [Tag 场](src/warped_tag_field.rs:25)。几何采用软化系数 0.15、均值减除 0.7、喉部 1.5、角尺度 2.0、半径 0.35–0.65，并启用自适应罗盘。
 
-**全局 Chunk 表明确是 graph-free，不应把它宣传成全库图搜索。** 其过滤扫描返回的是近似重建负平方距离，不是最终余弦分；随后才在原始向量上计算候选余弦。
+L0 根据 EPA 域内门控、熵与逻辑深度定位半径。后续层用当前输入残差能量比 \(\rho_\ell=\|r_\ell\|^2/\|q\|^2\) 推进：
 
-实现见 [`GlobalChunks.search()`](src/global_chunks.rs:151)、[`search_flat_filtered()`](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs:575)、[LightMemo 候选精排](src/light_memo.rs:139)。
+\[
+p_\ell=p_0+0.75(1-p_0)(1-\rho_\ell^{0.35}),\qquad
+r_\ell^{\mathrm{route}}=0.35+0.30p_\ell.
+\]
 
-### 3.4 为什么这一层快
+残差越小，路由越向外壳推进；EPA 不可用时使用层级调度。每层最多精排 64 个 Tag，原 Tag NNLS 仍在原始向量上分解。实现见 [半径调度](src/warped_tag_field.rs:48)和 [金字塔检索](src/memo_pipeline.rs:804)。
 
-- **减少数据搬运**：路由先访问紧凑编码，不在每次导航时读取完整高维行。
-- **匹配硬件**：BQ2 距离按平台选择 AVX-512、AVX2、NEON 或标量路径；不同 SM 热点有自己的分发与回退，不能理解为所有函数都支持相同 SIMD。
-- **改善局部性**：紧凑数组、对齐行与预取减少热点中的缓存浪费。
-- **限制中间结果**：扫描与精排使用有界候选池，不先构建全库排序结果。
-- **控制增量成本**：更新、墓碑与维护分开处理，避免每条写入都重建全图。
+### 3.4 实时成员与训练代几何
 
-实现见 [距离分发](crates/vcp-tdb-index/src/index/bq.rs:357)、[预取](crates/vcp-tdb-index/src/index/bq.rs:1002)、[增量维护阈值](src/retrieval_index.rs:87)。
+| 对象 | 当前生命周期 |
+| :-- | :-- |
+| Chunk 成员、目录、正文和时间元数据 | 查询时从 SQL 同步，新增和删除立即影响范围结果 |
+| 不变向量 | 复用当前训练代图；已删除成员只可保留为量化导航桥 |
+| 新增或向量已修改的 Chunk | 读取当前原件，在冻结均值轴与分位映射中精确评分，与图候选合并 |
+| 双曲训练几何 | 手动全量训练或既有 1% Tag 变动阈值任务统一重建 |
+| Tag／Chunk 快照 | 数据库同目录保存；冷请求先命中内存，再恢复快照，最后首次构建 |
 
-**精排分数来自原始向量，不等于候选集合必然包含全库真实 Top-K。** 图导航和紧凑预筛的召回率仍须实测。
+日常事实版本前移不触发全场重建。增量评分量随当前范围内累计向量增量增长；换代训练更新成员基线。实现见 [实时同步](src/global_chunks.rs)、[Chunk 场与快照](src/warped_chunks.rs)和 [Tag 快照](src/warped_field_snapshot.rs)。
+
+### 3.5 旧轨只在 AB 检索中驻留
+
+生产全局表保留成员元数据和双曲场，不建立旧全库 TDB-SM 候选载荷，也不预加载旧分库索引。LightMemo AB 按需启用旧 TDB ANN 和余弦 Tag／RiverMemo V3/4 观测；返回普通查询后释放旧候选载荷，双曲场继续复用。
+
+底层旧索引 ABI 和维护快照继续用于兼容工具；生产路由由 [KBM](../KnowledgeBaseManager.js)、[统一搜索服务](../modules/knowledgeBase/searchService.js)和 [原生执行器](src/knowledge_runtime.rs)选择。
 
 ---
 
@@ -399,7 +402,9 @@ S(c)=\operatorname{clip}_{[0,1]}
 
 默认拓扑上限 \(C_T=0.08\)，满足 \(P+G\le C_T\)；锚上限 \(C_A=0.10\)。候选图证据由自身图分、支流置信度、方向与精度约束产生，不按同伴异常程度或解释角色分配排序特权。
 
-种差基础分以 \(m=0.5\,\operatorname{clip}_{[0,1]}(\text{confidence})\) 混合原查询余弦和种差余弦；没有有效种差方向时 \(m=0\)。场共振先封顶至 0.03，再乘候选标量场支持；无有效场时共振为零。校准基础分是非负增量的下限，原查询余弦不保证是校准后最终分的下限。
+种差基础分以 \(m=0.5\,\operatorname{clip}_{[0,1]}(\text{confidence})\) 混合原查询余弦和种差余弦；没有有效种差方向时 \(m=0\)。场共振先封顶至 0.03，再乘候选标量场支持。
+
+标量场支持按精确 ID 优先；没有对应场势的候选标签，可从余弦大于 0.82 的最相似活跃河网节点继承场势与有效域接触，折扣为 \(0.75(s-0.82)/0.18\)。场支持再乘 Hop-0 意图覆盖因子：按种子能量统计候选实际覆盖，精确接触优先、语义阈值 0.72，每个种子与候选标签最多认领一次，因子限制在 0.35–1。该因子调制场共振，不扣减查询基础分。完整公式见 [场支持与意图覆盖](../docs/RIVERMEMO_TOPOLOGY_V3.md)。
 
 直接锚使用精确优先、双侧一对一接触，最多三个独立接触。纯隐式锚强度上限 0.035，低于默认激活阈值 0.05。非原子候选被解释为直接答案，须有显式精确接触及至少 0.55 的正文闭合。
 
@@ -462,7 +467,7 @@ C_T\left[1-(1-g/C_T)(1-t/C_T)\right],
 
 - SQLite 保存权威 FP32；恢复后的生产路由释放快照原始向量与可变原始行缓存，见 [`release_originals()`](crates/vcp-tdb-index/src/engine.rs:99)。
 - 几何工作区是构建期资源，不是第二套永久向量数据库。
-- 小库不强制建图，大库不强制逐行 FP32 扫描，全局 Chunk 也不强制维护图。
+- 小范围直接精确评分，大范围复用全局 Chunk 图；生产不驻留旧 TDB-SM 全库候选载荷。
 - 批量差分减少跨界和锁获取次数；读者不会观察同一排他批次的半批状态。
 - 写队列、候选池、传播保留状态、动态目标评估、投影选点和搜索工作限额各自承担资源约束；不同预算不能相互替代。
 - 观测是跨原生调用的请求上下文，不是跨请求结果缓存。独立查询结束立即释放，共享作用域待内部消费者全部结束后释放；准备阶段产物校验失败也释放已创建句柄，不等待 TTL。
@@ -501,7 +506,7 @@ RAGDiary 将记忆唤起放在消息预处理阶段。它读取已声明的日�
 
 主链路可以概括为：
 
-占位符声明与门控 → 当前用户 / AI 意图融合、历史主题补充 → 显式日记本作用域与候选计划 → RiverMemo 召回和结构读出 → 可选时间处理、外部精排、联想与全文展开 → 去重、格式化 → 回填消息 → 模型生成回答。
+占位符声明与门控 → 当前用户 / AI 意图融合、历史主题补充 → 显式日记本作用域与候选计划 → 双曲 Chunk 召回与双曲 Tag 观测 → RiverMemo V5 结构读出 → 可选时间处理、外部精排、联想与全文展开 → 去重、格式化 → 回填消息 → 模型生成回答。观测初始化不可用时使用双曲 ANN，提示词明确标记实际链路。
 
 实现见 [占位符识别与无声明快速返回](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:1418)、[当前意图融合](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:1553)、[历史分段](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:1608) 与 [消息回填](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:1665)。
 
@@ -526,7 +531,7 @@ RAGDiary 的被动渠道有明确的控制面，而不是每轮无差别地执�
 - **声明决定入口**：检索式、相似度门控式与纯文本直接引入式入口承担不同职责；纯文本直接引入可走不依赖向量库和 embedding 的快速路径。
 - **语境决定唤起方向**：主查询融合当前用户与 AI 意图，历史主题分段提供补充方向；这些是可配置的工程权重，不是对用户真实意图的绝对判定。
 - **日记本决定候选作用域**：多个日记本可作为请求期虚拟联合索引，共享全局结果预算和后处理；联合不等于取消范围约束。
-- **RiverMemo 是当前标准 RAG 管线的核心引擎**：不是只有显式添加后缀才使用；原生联合路径受运行时开关及接口可用性约束，未走联合路径时仍可将候选交给 RiverMemo 重排。
+- **RiverMemo V5 是标准 RAG 管线的核心引擎**：联合检索和分阶段重排都使用双曲候选与双曲观测；初始化不可用时返回双曲 ANN，不加载旧 TDB／V4。
 - **时间、联想、全文与总结按需启用**：时间补充维护近期连续性，联想寻找跨种子共现，全文展开恢复事件语境，AIMemo 可进一步整理记忆；它们不应被描述成每轮默认全部执行。
 - **没有声明就不启动主记忆管线**：被动背景以实际配置为前提，不对未接入的 Agent 或普通无占位符请求承诺自动记忆。
 
@@ -534,7 +539,7 @@ RAGDiary 的被动渠道有明确的控制面，而不是每轮无差别地执�
 
 ### 8.4 RAGDiary 原生多索引 / RiverMemo 联合路径
 
-显式日记权限与候选计划 → 原生 ANN → 合并、展开、去重与投影 → 同代观测读出 → 候选级并行路径、拓扑与锚接触 → 查询形态与 Ω → 共享预算下的路径、图、Hop-1／虫洞证据及独立锚奖励 → 连续最终分稳定排序 → 最终结果。
+显式日记权限与候选计划 → 全局 Chunk 双曲 ANN（当前查询与历史多向量）→ 合并、展开、去重与投影 → 同代双曲 Tag 观测读出 → 候选级并行路径、拓扑与锚接触 → 查询形态与 Ω → 共享预算下的路径、图、Hop-1／虫洞证据及独立锚奖励 → 连续最终分稳定排序 → 最终结果。
 
 权限过滤先于候选归一化和统计，显式空权限集合表示无权限。拓扑读出只处理共同候选边界内的内容，内部候选超集默认上限 300，不从全库补回池外漏召回项；该边界不等于各入口的原始 ANN 数量。实现见 [权限过滤](src/rivermemo_topology_v3.rs:2773) 与 [`select_superset()`](src/rivermemo_topology_v3.rs:1362)。
 
@@ -544,13 +549,13 @@ RAGDiary 的被动渠道有明确的控制面，而不是每轮无差别地执�
 
 ### 原生 Rerank+：Sense 与候选召回并行，HTTP 与拓扑读出并行
 
-新增 [原生并发入口](src/knowledge_runtime.rs:2452) 与 [HTTP / RRF 单元](src/native_rerank.rs:1)。调用方只提交查询、作用域与计划；Rust 同时启动 Sense 和 TDB 候选召回。候选就绪后，外部精排立即开始，不必等待 Sense；RiverMemo 等待 Sense 后读取同一候选域，最后在 Rust 内融合排位，仅返回有界结果。中间候选正文不再为外部精排往返 JavaScript；HTTP 等待期间不持有 SQL 事务或索引读锁。
+[原生并发入口](src/knowledge_runtime.rs)与 [HTTP / RRF 单元](src/native_rerank.rs:1)接收查询、作用域与计划；Rust 并行准备双曲 Tag 观测与双曲 Chunk 候选。候选就绪后启动外部精排，RiverMemo V5 读取同一候选域与请求观测，最后在 Rust 内融合排位并返回有界结果。HTTP 等待期间不持有 SQL 事务或索引读锁。
 
-- **适用范围**：RAGDiary 常规 Rerank+，支持联合日记本与历史霰弹枪查询。要求原生联合查询已启用且新 ABI 可用。普通 Rerank，以及 Time、BM25、TimeDecay 和共享元思考观测组合继续走既有兼容路径。LightMemo 不受此次改动影响。
+- **适用范围**：RAGDiary 常规 Rerank+，支持联合日记本与历史霰弹枪查询。普通 Rerank、Time、BM25、TimeDecay 和共享元思考观测组合保留各自编排方式，原生向量候选均使用双曲后端。
 - **两种外部后端**：传统 Rerank 使用既有 URL、API、Model 配置；Jev 使用既有启用标志、Provider、API URL、API KEY、Model、代理和 Choice 配置，支持 Typesafe 与 OpenRouter。实现直接读取 [插件配置位置及调用代理](../KnowledgeBaseManager.js)，不修改配置文件；进程环境优先于插件文件，修改已加载的环境配置后需重启。
 - **有界网络**：传统请求每批最多25篇，按 Token 估算限制拆批，单查询并发沿用配置，全进程最多10个 HTTP 请求；连接复用，禁止重定向，响应上限4 MiB。Jev 原生路径不复用 JS 客户端的重试器，失败直接保留 RiverMemo 排名。
 - **失败语义**：未配置、网络错误、无效响应、批次失败或超时，不伪造外部排位，保留 RiverMemo 排序并返回诊断。候选、Sense 与拓扑事实代际不一致时明确报错，不混用新旧数据。任一外部批次失败将放弃本次全部外部排名。
-- **融合语义**：外部精排消费 TDB 小窗口，RiverMemo 消费更大的有界候选域；按 Chunk ID 对齐，缺失外部排位贡献零，平滑常数60，权重沿用 Rerank+ 参数。融合在 RiverMemo 返回域内进行，不额外引入被拓扑候选收缩排除的项目。这不是原先“RiverMemo 缩窗后再外排”的逐项等价替换。
+- **融合语义**：外部精排消费双曲候选小窗口，RiverMemo V5 消费更大的有界候选域；按 Chunk ID 对齐，缺失外部排位贡献零，RRF 平滑常数为 60，权重使用 Rerank+ 参数。融合结果限定在 RiverMemo 返回域内。
 - **配置新增项**：插件环境模板中的 NativeRerankTimeoutMs 默认30000，约束外部 HTTP 排队及全部批次总等待，不是整个数据库查询时限。RAG_SHOTGUN_HISTORY_ENABLED 默认 true；设为 false 后停止历史上下文分段多向量召回，当前查询仍正常检索。见 [配置模板](../Plugin/RAGDiaryPlugin/config.env.example)。
 - **后处理边界**：最终格式化、联想、全文展开和输出去重仍沿用上层管线；输出去重可能按需读取最终少量结果的向量，并非整个请求完全没有向量跨界。
 
@@ -562,9 +567,11 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 
 其全局 Chunk 路径为：
 
-原生读事务 → 同步全局紧凑表 → 日记/署名/时间等范围过滤 → 无图 SM 预筛 → SQL 原始向量余弦精排 → 有界正文回填 → 可选 RiverMemo → 最终结果。
+原生读事务 → 同步全局 Chunk 成员 → 日记／署名／时间与文件范围过滤 → 全局双曲图导航或小范围精确评分 → SQL 原件精排与正文回填 → 双曲 Tag 观测下的 RiverMemo V5 → 最终结果。
 
-该路径不把 Chunk 向量传给 JavaScript，也不在查询时发布快照。其可选词项证据目前是候选池内的子串词频评分，**不是独立的全局 BM25 倒排召回通道**；不要与 RAGDiary 的文件级 BM25 候选计划混为一谈。
+默认启用 V5；观测初始化不可用时返回双曲 ANN，纯 ANN 模式直接按负双曲距离展示。首次无可用场时构建并保存快照，日常成员同步沿用训练代几何。Chunk 向量留在原生侧；可选词项证据在候选池内计算子串词频。
+
+AB 使用两套独立候选池和两份 Tag 观测，展示旧 TDB ANN、RiverMemo V3/4、双曲 ANN、V5，以及可选外部 Rerank 和 Jev。外部对照使用两池去重并集，旧轨载荷只在 AB 按需驻留。
 
 实现见 [LightMemo 工具入口](../Plugin/LightMemo/plugin-manifest.json:68) 与 [`LightMemoTask`](src/light_memo.rs:104)。
 
@@ -586,10 +593,11 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 
 - **双场投影预算**：持久配置位于 KnowledgeBaseManager → riverMemo → effectiveSupport → [maxProjectionNodes](../modules/knowledgeBase/memoConfig.js)，默认 256。查询顶层 [maxFieldProjectionNodes](../KnowledgeBaseManager.js) 或查询有效支持配置中的同名预算可覆盖；显式 0 不回退默认值。仅接受非负整数，不要求为 128 的倍数，拒绝负数、小数、非有限数和字符串。
 - **动态虫洞配置**：原生输入路径为 config → spikeRouting，字段为 [dynamicWormholes](src/memo_sensing.rs)、[dynamicWormholeThreshold](src/memo_sensing.rs)、[dynamicWormholeSlots](src/memo_sensing.rs)、[dynamicWormholeMaxTargets](src/memo_sensing.rs)，默认依次为 true、0.2、2、4096。关闭开关、席位为 0 或目标预算为 0 均退回静态选边，阈值校验仍执行。
-- **不要假设上层自动透传**：动态虫洞技术节点未修改上层配置构造或调参文件；原生支持字段不代表管理器会透传任意新增字段。通过上层覆盖前须核对 [`KnowledgeBaseManager.js`](../KnowledgeBaseManager.js)，缺省调用使用 Rust 默认值。
-- 两个节点不要求数据库表结构迁移；动态虫洞不写持久化图，CSR 预处理可从旧资产冷加载派生。但源码更新不等于部署生效，必须重新构建匹配的原生产物并验证加载。Windows 部署需停止占用模块的进程、备份旧产物、核对新产物校验值后再启动；未透传动态开关时，不应把修改上层配置当成可靠的紧急关闭方式。
-- **版本与背景验证**：原生读出标识为 `rivermemo.unified-omega-experiment-c-v1`，统一查询管线为 `memo.nnls-cone-experiment-b-v1`，统一几何为 `unified_geometry_cone_t6_ags_selected_qr_nnls`；原生结果协议为 `rivermemo-topology-v3-native-result-v1`。各标识独立命名，以实际原生响应及资产元数据为准。更新平台模块后先重建统一几何，再重建传输 CSR 并发布运行时；仅替换二进制不更新旧派生背景。文档更新本身不执行部署或重建。
-- 专项回归测试验证工程契约，不替代生产 release 验证、并发内存测量和真实检索质量验收；没有固定新增延迟或无损召回承诺。比较效果时须固定查询、资产、配置、权限和候选身份，并记录实际加载版本与耗时。详细步骤见 [`MEMO_DYNAMIC_WORMHOLES.md`](../docs/MEMO_DYNAMIC_WORMHOLES.md) 与 [`RIVERMEMO_TOPOLOGY_V3.md`](../docs/RIVERMEMO_TOPOLOGY_V3.md)。
+- **生产路由**：[KBM](../KnowledgeBaseManager.js)默认准备双曲 Tag 观测，使用生产预设与 EPA 半径策略；底层管线仍接受显式余弦配置，用于 AB 对照。
+- **模块接入**：后端、插件与平台原生模块配套部署并重启；启动时检查生产双曲能力。Windows、Linux 和 macOS 分别使用目标平台构建产物。
+- **训练入口**：手动全量训练和 1% Tag 阈值训练执行“统一几何 → 传输资产发布 → Tag 双曲场 → Chunk 双曲场”。已加载场保持自身径向规则，训练换代时更新规则与成员基线。
+- **版本口径**：V5 标识生产双曲检索链路；Topology V3 标识评分架构。读出、查询管线、统一几何及结果协议各自具有独立身份，见 [RiverMemo 技术文档](../docs/RIVERMEMO_TOPOLOGY_V3.md)。
+- **验证结果**：原生 Release 回归 254 项通过，索引内核 124 项通过，JS 相关回归 87 项通过，真实 N-API 合成集成通过。集成覆盖 V5、双曲 ANN、AB 旧载荷启用与释放、范围过滤、增量、重启恢复和训练。
 
 ---
 
@@ -600,7 +608,8 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 | 原生 API 与索引生命周期 | [`lib.rs`](src/lib.rs)、[`knowledge_runtime.rs`](src/knowledge_runtime.rs) |
 | SQLite 事务、读池、写 Actor | [`storage.rs`](src/storage.rs) |
 | SQL 权威检索与 TDB 宿主 | [`retrieval_index.rs`](src/retrieval_index.rs)、[`engine.rs`](crates/vcp-tdb-index/src/engine.rs) |
-| 2-bit 编码与 SM 冲程导航 | [`bq.rs`](crates/vcp-tdb-index/src/index/bq.rs)、[`dynamic.rs`](crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs) |
+| 双曲导航、精确距离与紧凑编码 | [双曲索引](crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped.rs)、[几何内核](crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped_geometry.rs)、[位码](crates/vcp-tdb-index/src/index/bq.rs) |
+| Chunk／Tag 场与快照 | [Chunk 场](src/warped_chunks.rs)、[Tag 场](src/warped_tag_field.rs)、[Tag 快照](src/warped_field_snapshot.rs) |
 | RAGDiary 被动背景渠道与原生查询计划 | [`RAGDiaryPlugin.js`](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:1382)、[联合查询调用](../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js:3199) |
 | LightMemo 主动工具渠道与全局 Chunk 紧凑表 | [工具声明](../Plugin/LightMemo/plugin-manifest.json:68)、[`global_chunks.rs`](src/global_chunks.rs)、[`light_memo.rs`](src/light_memo.rs) |
 | 双槽发布、认可与恢复 | [`index_lifecycle.rs`](src/index_lifecycle.rs) |
@@ -620,7 +629,7 @@ LightMemo 让 Agent 在意识到信息缺口后，显式提出查询，指定日
 
 **Vexus-Lite 的核心不是某一个孤立算法，而是让每一份数据、每一次计算和每一种证据各就其位。**
 
-SQLite 维护事实，TDB2Bit 快速寻找值得精读的位置；AGS 提供统一背景，Spike 把查询变成有界且可观测的河网，动态虫洞用更深层残差在已有历史边中争取通行机会；RiverMemo 从同一传输过程生成双场，以保留河网骨架的共享预算约束高维投影，跨阶段复用请求级 FP32 向量池，再用正文闭合、相对拓扑、Ω 与直接锚共同完成排序。标量求解、动态评估与向量投影各有边界，任何一个预算都不代表整个请求的成本上限。
+SQLite 维护事实，全局 Chunk 双曲场寻找正文候选，Tag 双曲场按 EPA 与残差能量寻找标签；AGS 提供统一背景，Spike 把查询变成有界河网，动态虫洞用更深层残差激活已有历史边。RiverMemo V5 从同一传输过程生成双场，跨阶段复用原始向量池，以场支持、意图覆盖、正文闭合、相对拓扑、Ω 与直接锚完成排序。实时成员跟随写入，双曲几何按训练代复用，旧检索轨在 AB 中按需加载。
 
 在 Agent 侧，**RAGDiary 是更核心的被动记忆背景渠道**：让过往经验在回答形成前随语境浮现，参与直觉、联想与逻辑的构成；**LightMemo 是主动回忆渠道**：让 Agent 能够对信息缺口和已浮现的经验继续追问。这条经验河流不来自无限上下文，而来自事实持久化、背景结构与每次有边界的唤起。
 

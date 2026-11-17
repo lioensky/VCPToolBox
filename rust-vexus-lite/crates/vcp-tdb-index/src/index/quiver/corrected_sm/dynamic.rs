@@ -193,15 +193,14 @@ impl DynamicSm {
     }
     fn score(&self, q: &DynamicQuery, id: usize, optimized: bool) -> f32 {
         let row = self.row(id);
-        let counts = if optimized && simd_available() {
-            #[cfg(target_arch = "x86_64")]
-            {
-                unsafe { self.counts_avx512(q, id) }
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                self.counts_scalar(q, row)
-            }
+        let counts = if optimized {
+            crate::index::bq::sm_counts::counts(
+                &row[..self.words],
+                &row[self.words..self.words * 2],
+                &q.pos,
+                &q.strong,
+                self.dim,
+            )
         } else {
             self.counts_scalar(q, row)
         };
@@ -230,38 +229,6 @@ impl DynamicSm {
             }
         }
         sums
-    }
-    #[cfg(target_arch = "x86_64")]
-    #[target_feature(enable = "avx512f,avx512vpopcntdq")]
-    unsafe fn counts_avx512(&self, q: &DynamicQuery, id: usize) -> [u32; 5] {
-        use std::arch::x86_64::*;
-        unsafe {
-            let row = self.row(id);
-            let mut sums = [_mm512_setzero_si512(); 5];
-            for j in (0..self.words).step_by(8) {
-                let valid = (self.words - j).min(8);
-                let mask = ((1u16 << valid) - 1) as u8;
-                let pos = _mm512_maskz_loadu_epi64(mask, row.as_ptr().add(j).cast());
-                let strong =
-                    _mm512_maskz_loadu_epi64(mask, row.as_ptr().add(self.words + j).cast());
-                let qp = _mm512_loadu_si512(q.pos.as_ptr().add(j).cast());
-                let qs = _mm512_loadu_si512(q.strong.as_ptr().add(j).cast());
-                let diff = _mm512_xor_si512(pos, qp);
-                let both = _mm512_and_si512(strong, qs);
-                let values = [
-                    diff,
-                    _mm512_and_si512(diff, strong),
-                    _mm512_and_si512(diff, qs),
-                    both,
-                    _mm512_and_si512(diff, both),
-                ];
-                for k in 0..5 {
-                    sums[k] = _mm512_add_epi64(sums[k], _mm512_popcnt_epi64(values[k]));
-                }
-            }
-            // 各字段独立求和，不依赖768维十位打包，也不会在1536或3072维串位。
-            sums.map(|x| _mm512_reduce_add_epi64(x) as u32)
-        }
     }
     fn prefetch(&self, id: usize, l2: bool) {
         #[cfg(target_arch = "x86_64")]
@@ -460,8 +427,12 @@ impl<F: FnMut(usize, &mut Vec<f32>) -> bool> ExactSource for DynamicCallback<'_,
 }
 fn exact_dot(q: &[f32], x: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
-    if dot_simd_available() {
+    if avx512_dot_available() {
         return unsafe { dot_any_avx512::<false>(q, [x, x, x, x], false)[0] };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if avx2_dot_available() {
+        return unsafe { exact_avx2::<false>(q, [x, x, x, x], false)[0] };
     }
     let mut sums = [0f32; 16];
     for (i, (&a, &b)) in q.iter().zip(x).enumerate() {
@@ -477,8 +448,12 @@ fn exact_dot(q: &[f32], x: &[f32]) -> f32 {
 }
 fn exact_four(q: &[f32], x: [&[f32]; 4]) -> [f32; 4] {
     #[cfg(target_arch = "x86_64")]
-    if dot_simd_available() {
+    if avx512_dot_available() {
         return unsafe { dot_any_avx512::<false>(q, x, true) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if avx2_dot_available() {
+        return unsafe { exact_avx2::<false>(q, x, true) };
     }
     x.map(|row| exact_dot(q, row))
 }
@@ -488,8 +463,12 @@ fn exact_score(q: &[f32], x: &[f32], native_l2: bool) -> f32 {
         return exact_dot(q, x);
     }
     #[cfg(target_arch = "x86_64")]
-    if dot_simd_available() {
+    if avx512_dot_available() {
         return unsafe { dot_any_avx512::<true>(q, [x, x, x, x], false)[0] };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if avx2_dot_available() {
+        return unsafe { exact_avx2::<true>(q, [x, x, x, x], false)[0] };
     }
     let mut sums = [0f32; 16];
     for (i, (&a, &b)) in q.iter().zip(x).enumerate() {
@@ -510,8 +489,12 @@ fn exact_four_scored(q: &[f32], x: [&[f32]; 4], native_l2: bool) -> [f32; 4] {
         return exact_four(q, x);
     }
     #[cfg(target_arch = "x86_64")]
-    if dot_simd_available() {
+    if avx512_dot_available() {
         return unsafe { dot_any_avx512::<true>(q, x, true) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if avx2_dot_available() {
+        return unsafe { exact_avx2::<true>(q, x, true) };
     }
     x.map(|row| exact_score(q, row, true))
 }
@@ -587,7 +570,7 @@ impl CorrectedSmIndex {
         if limit == 0 || self.is_empty() {
             return Ok(Vec::new());
         }
-        let norm = query.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
+        let norm = crate::metric_math::norm_squared_f64(query).sqrt();
         let normalized = query.iter()
             .map(|&v| if norm > 0. { (v as f64 / norm) as f32 } else { 0. })
             .collect::<Vec<_>>();
@@ -729,6 +712,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring,
             dynamic: Some(dynamic),
+            flat_headers: None,
         })
     }
     pub(super) fn dynamic_slice_search(
@@ -1048,6 +1032,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: if dim == DIM { None } else { Some(model) },
+            flat_headers: None,
         };
         if mode == 1 {
             result.use_reconstructed_l2();

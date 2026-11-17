@@ -273,6 +273,12 @@ class TagMemoEngine {
         this._isMatrixRebuilding = true;
         const processedTagIds = new Set(this._accumulatedNewTagIds);
         try {
+            if (options.includeWarped === true
+                && (typeof this.tagIndex?.warmupWarpedTagField !== 'function'
+                    || typeof this.knowledgeBaseManager?.nativeKnowledgeRuntime
+                        ?.prepareGlobalWarpedChunkIndex !== 'function')) {
+                throw this._nativeUnavailable('full warped training: rebuild the matching native module');
+            }
             this.knowledgeBaseManager?._captureMemoryStage?.('training:geometry-begin');
             if (this._currentDerivedTask) this._currentDerivedTask.phase = 'geometry';
             const geometry = await this.recomputeGeometry();
@@ -312,6 +318,37 @@ class TagMemoEngine {
                 this._lastCompanionPublishedHandle = handle;
             }
             if (this._currentDerivedTask) this._currentDerivedTask.artifactSig = result.artifactSig;
+            if (options.includeWarped === true) {
+                const parse = raw => typeof raw === 'string' ? JSON.parse(raw) : raw;
+                const details = { tag: null, chunks: null };
+                if (this._currentDerivedTask) this._currentDerivedTask.warped = details;
+                try {
+                    if (this._currentDerivedTask) this._currentDerivedTask.phase = 'warped-tags';
+                    this.knowledgeBaseManager?._captureMemoryStage?.('training:warped-tags-begin');
+                    details.tag = parse(await this.tagIndex.warmupWarpedTagField(
+                        dbPath, result.artifactSig, 'locked_2', true
+                    ));
+                    if (details.tag?.forced !== true || details.tag?.source !== 'built'
+                        || !(details.tag.nodes > 0)) {
+                        throw new Error('Tag warped field was not confirmed as force-built');
+                    }
+                    this.knowledgeBaseManager?._captureMemoryStage?.('training:warped-tags-end');
+                    if (this._currentDerivedTask) this._currentDerivedTask.phase = 'warped-chunks';
+                    this.knowledgeBaseManager?._captureMemoryStage?.('training:warped-chunks-begin');
+                    const chunkModel = this.knowledgeBaseManager?.config?.modelSig;
+                    if (!chunkModel) throw new Error('Global Chunk model signature is unavailable');
+                    details.chunks = parse(await this.knowledgeBaseManager.nativeKnowledgeRuntime
+                        .prepareGlobalWarpedChunkIndex(chunkModel, true));
+                    if (details.chunks?.ready !== true || details.chunks?.forced !== true) {
+                        throw new Error(`Global Chunk warped field is not ready: ${JSON.stringify(details.chunks)}`);
+                    }
+                    this.knowledgeBaseManager?._captureMemoryStage?.('training:warped-chunks-end');
+                    console.log('[TagMemoEngine] Full warped preparation completed:', JSON.stringify(details));
+                } catch (error) {
+                    throw new Error(`MEMO_WARPED_PREPARATION_FAILED: base artifact ${result.artifactSig} `
+                        + `already published; ${error.message || error}`);
+                }
+            }
             for (const id of processedTagIds) this._accumulatedNewTagIds.delete(id);
             this._accumulatedTagChanges = this._accumulatedNewTagIds.size;
             return true;
@@ -333,7 +370,8 @@ class TagMemoEngine {
 
         const factsChanged = options.reason === 'tag-consistency-commit';
         const existing = this._derivedTaskQueue.find(task =>
-            task.status === 'queued' || (!factsChanged && task.status === 'running'));
+            task.type === 'active-full-training'
+            && (task.status === 'queued' || (!factsChanged && task.status === 'running')));
         if (existing) {
             return {
                 taskId: existing.id, queued: true, alreadyRunning: true,
@@ -349,6 +387,7 @@ class TagMemoEngine {
             'active-full-training',
             () => this.doMatrixRebuild({
                 reason: options.reason || 'admin-active-full-training',
+                includeWarped: true,
             }),
             { maxAttempts: options.maxAttempts ?? 1 }
         );
@@ -370,7 +409,8 @@ class TagMemoEngine {
             taskId: task.id, status: task.status, phase: task.phase,
             type: task.type, createdAt: task.createdAt, startedAt: task.startedAt,
             finishedAt: task.finishedAt, attempts: task.attempts,
-            error: task.error || null, artifactSig: task.artifactSig || null
+            error: task.error || null, artifactSig: task.artifactSig || null,
+            failedPhase: task.failedPhase || null, warped: task.warped || null
         };
     }
 
@@ -416,7 +456,8 @@ class TagMemoEngine {
             this._matrixRebuildTimer = null;
             if (!this._shutdownRequested) {
                 this._enqueueDerivedTask('threshold-rebuild', () => this.doMatrixRebuild({
-                    reason: 'threshold'
+                    reason: 'threshold',
+                    includeWarped: true,
                 }));
             }
         }, this._getMatrixRebuildQuietMs());
@@ -491,6 +532,8 @@ class TagMemoEngine {
         task.status = 'running';
         task.startedAt = Date.now();
         task.error = null;
+        task.failedPhase = null;
+        task.warped = null;
         this._currentDerivedTask = task;
         task.attempts++;
         try {
@@ -502,6 +545,7 @@ class TagMemoEngine {
             this._lastDerivedTask = task;
             this._derivedTaskQueue = this._derivedTaskQueue.filter(item => item !== task);
         } catch (error) {
+            task.failedPhase = task.phase;
             task.error = String(error.message || error);
             if (task.attempts >= task.maxAttempts) {
                 task.status = 'failed';

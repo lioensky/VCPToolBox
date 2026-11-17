@@ -26,7 +26,8 @@ for (const [name, nextName] of [
         const query = { text: 'fixture', vector: new Float32Array([1, 0]) };
         let captured;
         const owner = {
-            async _getOrLoadDiaryIndex() {},
+            config: { modelSig: 'fixture' },
+            async _getOrLoadDiaryIndex() { throw new Error('legacy index must not load'); },
             async prepareUnifiedMemoObservation() {
                 return { artifact: { artifactSig: 'fixture' }, pipeline: {},
                     queryVector: query.vector, ghostVectors: new Float32Array() };
@@ -47,6 +48,7 @@ for (const [name, nextName] of [
         const annSearch = { excludeIds: [17, 34], efSearch: 128 };
         const result = await run.call(owner, query, { diaryNames: ['fixture'], annSearch });
         assert.deepEqual(captured.annSearch, annSearch);
+        assert.equal(captured.modelSig, 'fixture');
         assert.equal(result.diagnostics.nativeRerank.sparseScan.filesStoppedAtScanLimit, 1);
         await run.call(owner, query, { diaryNames: ['fixture'] });
         assert.equal(captured.annSearch, undefined);

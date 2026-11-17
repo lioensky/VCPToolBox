@@ -24,6 +24,10 @@ mod build;
 mod dynamic;
 use dynamic::DynamicSm;
 
+#[path = "corrected_sm/flat.rs"]
+mod flat;
+pub use flat::{FlatSearchConfig, FlatSearchStats};
+
 #[path = "corrected_sm/production.rs"]
 mod production;
 
@@ -233,6 +237,9 @@ pub struct CorrectedSmIndex {
     exact_scales: Vec<f32>,
     scoring: SmScoring,
     dynamic: Option<DynamicSm>,
+    // Derived header-only cache, populated explicitly for experimental flat scans.
+    // Reconstructible from persisted bitcodes; never a second FP32 vector store.
+    flat_headers: Option<Vec<flat::FlatHeader>>,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -495,6 +502,7 @@ impl CorrectedSmIndex {
             + self.ids.capacity() * 8
             + self.graph.data.capacity() * 4
             + self.exact_scales.capacity() * 4
+            + self.flat_headers.as_ref().map_or(0, |rows| rows.capacity() * std::mem::size_of::<flat::FlatHeader>())
     }
 
     fn inline_reconstructed_norms_bytes(&self) -> usize {
@@ -602,6 +610,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: None,
+            flat_headers: None,
         })
     }
 
@@ -670,6 +679,7 @@ impl CorrectedSmIndex {
             "logical_rerank_fp32_bytes": self.len() * self.dimension() * 4,
             "visited_bytes_per_thread": self.len().div_ceil(64) * 8,
             "row_stride_bytes": self.dynamic.as_ref().map_or(std::mem::size_of::<SmRow>(), DynamicSm::row_bytes),
+            "derived_flat_header_bytes": self.flat_headers.as_ref().map_or(0, |rows| rows.capacity() * std::mem::size_of::<flat::FlatHeader>()),
             "runtime_note": "线程堆和候选容量、分配器及外部向量驻留另计",
             "dimension": self.dimension(), "nodes": self.len(), "entry": self.entry, "anchor": self.anchor,
             "simd_available": simd_available(),
@@ -1088,8 +1098,15 @@ impl CorrectedSmIndex {
 
     #[inline]
     fn score(&self, q: &SmQuery, id: usize, optimized: bool) -> f32 {
-        if optimized && simd_available() {
-            packed_score(&self.rows[id], q)
+        if optimized {
+            if simd_available() {
+                return packed_score(&self.rows[id], q);
+            }
+            let row = &self.rows[id];
+            let counts = crate::index::bq::sm_counts::counts(
+                &row.pos, &row.strong, &q.pos, &q.strong, DIM,
+            );
+            combine_counts(row, q, counts)
         } else {
             scalar_score(&self.rows[id], q)
         }
@@ -1261,6 +1278,7 @@ impl CorrectedSmIndex {
             exact_scales: Vec::new(),
             scoring: SmScoring::CorrectedInnerProduct,
             dynamic: None,
+            flat_headers: None,
         })
     }
 }
@@ -1359,6 +1377,22 @@ fn simd_available() -> bool {
     }
 }
 fn dot_simd_available() -> bool {
+    avx512_dot_available() || avx2_dot_available()
+}
+
+fn avx2_dot_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        static AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+            std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+        });
+        *AVAILABLE
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { false }
+}
+
+fn avx512_dot_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         // VCP-PATCH: use the same runtime ablation for exact SM dot kernels.
@@ -1486,8 +1520,12 @@ unsafe fn query_avx512(q: &[f32]) -> SmQuery {
 
 fn dot(q: &[f32], x: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
-    if dot_simd_available() {
+    if avx512_dot_available() {
         return unsafe { dot_avx512(q, x) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if avx2_dot_available() {
+        return unsafe { exact_avx2::<false>(q, [x, x, x, x], false)[0] };
     }
     // 回退路径保留16条FMA累加链，跨ISA只要求数值容差，不宣称位级一致。
     let mut sums = [0f32; 16];
@@ -1524,10 +1562,14 @@ unsafe fn dot_avx512(q: &[f32], x: &[f32]) -> f32 {
 
 fn dot4(q: &[f32], x: [&[f32]; 4]) -> [f32; 4] {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        dot4_avx512(q, x)
+    {
+        if avx512_dot_available() {
+            return unsafe { dot4_avx512(q, x) };
+        }
+        if avx2_dot_available() {
+            return unsafe { exact_avx2::<false>(q, x, true) };
+        }
     }
-    #[cfg(not(target_arch = "x86_64"))]
     x.map(|v| dot(q, v))
 }
 
@@ -1544,6 +1586,46 @@ unsafe fn dot4_avx512(q: &[f32], x: [&[f32]; 4]) -> [f32; 4] {
             }
         }
         sum.map(|v| _mm512_reduce_add_ps(v))
+    }
+}
+
+/// AVX2 halves retain the existing sixteen FMA chains and reduction order.
+/// This deliberately avoids an eight-lane reduction that changes FP32 bits.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn exact_avx2<const L2: bool>(q: &[f32], x: [&[f32]; 4], four: bool) -> [f32; 4] {
+    use std::arch::x86_64::*;
+    unsafe {
+        let lanes = if four { 4 } else { 1 };
+        let mut sums = [[_mm256_setzero_ps(); 2]; 4];
+        let end = q.len() / 16 * 16;
+        for j in (0..end).step_by(16) {
+            for half in 0..2 {
+                let query = _mm256_loadu_ps(q.as_ptr().add(j + half * 8));
+                for k in 0..lanes {
+                    let row = _mm256_loadu_ps(x[k].as_ptr().add(j + half * 8));
+                    let left = if L2 { _mm256_sub_ps(query, row) } else { query };
+                    let right = if L2 { left } else { row };
+                    sums[k][half] = _mm256_fmadd_ps(left, right, sums[k][half]);
+                }
+            }
+        }
+        let mut output = [0.; 4];
+        for k in 0..lanes {
+            let mut values = [0f32; 16];
+            _mm256_storeu_ps(values.as_mut_ptr(), sums[k][0]);
+            _mm256_storeu_ps(values.as_mut_ptr().add(8), sums[k][1]);
+            for j in end..q.len() {
+                let left = if L2 { q[j] - x[k][j] } else { q[j] };
+                let right = if L2 { left } else { x[k][j] };
+                values[j - end] = left.mul_add(right, values[j - end]);
+            }
+            for i in 0..8 { values[i] += values[i + 8]; }
+            for i in 0..4 { values[i] += values[i + 4]; }
+            let total = (values[0] + values[2]) + (values[1] + values[3]);
+            output[k] = if L2 { -total } else { total };
+        }
+        output
     }
 }
 
@@ -2008,5 +2090,42 @@ mod tests {
         raw.save_to_file(&path).unwrap();
         drop(raw);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+
+/// Explicit benchmark-only access; never selected by production configuration.
+#[cfg(feature = "ablation")]
+pub mod kernel_probe {
+    use super::*;
+
+    pub fn counts(a: &[u64], sa: &[u64], b: &[u64], sb: &[u64], dim: usize, optimized: bool) -> [u32; 5] {
+        let words = dim.div_ceil(64);
+        assert!(a.len() >= words && sa.len() >= words && b.len() >= words && sb.len() >= words);
+        if optimized { crate::index::bq::sm_counts::counts(a, sa, b, sb, dim) }
+        else { crate::index::bq::sm_counts::scalar(a, sa, b, sb, dim) }
+    }
+
+    pub fn dot(q: &[f32], x: &[f32], optimized: bool) -> f32 {
+        assert_eq!(q.len(), x.len());
+        #[cfg(target_arch = "x86_64")]
+        if optimized && avx2_dot_available() {
+            return unsafe { exact_avx2::<false>(q, [x; 4], false)[0] };
+        }
+        let mut sums = [0f32; 16];
+        for (i, (&a, &b)) in q.iter().zip(x).enumerate() {
+            sums[i % 16] = a.mul_add(b, sums[i % 16]);
+        }
+        for i in 0..8 { sums[i] += sums[i + 8]; }
+        for i in 0..4 { sums[i] += sums[i + 4]; }
+        (sums[0] + sums[2]) + (sums[1] + sums[3])
+    }
+
+    pub fn selected() -> (String, &'static str) {
+        #[cfg(target_arch = "x86_64")]
+        let bits = format!("{:?}", *crate::index::bq::X86_BIT_KERNEL);
+        #[cfg(not(target_arch = "x86_64"))]
+        let bits = "Scalar".to_string();
+        (bits, if avx2_dot_available() { "Avx2Fma" } else { "Scalar" })
     }
 }

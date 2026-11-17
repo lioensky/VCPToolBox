@@ -444,6 +444,9 @@ class LightMemoPlugin {
             } else if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
                 scoreValue = r.rerank_score;
                 scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (r.retrievalEngine === 'warped_chunks' && Number.isFinite(r.warpedDistance)) {
+                scoreValue = -r.warpedDistance;
+                scoreType = '双曲 ANN · 负距离';
             } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
                 scoreValue = r.hybridScore;
                 scoreType = '混合';
@@ -455,7 +458,9 @@ class LightMemoPlugin {
                 scoreType = 'BM25';
             }
 
-            const scoreDisplay = scoreValue > 0
+            const scoreDisplay = scoreType === '双曲 ANN · 负距离'
+                ? `${scoreValue.toFixed(4)} (${scoreType})`
+                : scoreValue > 0
                 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})`
                 : 'N/A';
 
@@ -466,7 +471,7 @@ class LightMemoPlugin {
             }
             if (r.riverMemo) {
                 const river = r.riverMemo;
-                content += `    [RiverMemo Topology V3: ` +
+                content += `    [RiverMemo V5 · 双曲原生链路: ` +
                     `Ω=${Number(river.omega || 0).toFixed(3)}` +
                     `/${river.regime || 'unknown'}, ` +
                     `角色=${river.role || 'unknown'}, ` +

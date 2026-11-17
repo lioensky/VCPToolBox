@@ -5,6 +5,7 @@
 
 pub mod asset;
 pub mod engine;
+pub mod metric_math;
 pub mod vector;
 pub use vector::VectorType;
 

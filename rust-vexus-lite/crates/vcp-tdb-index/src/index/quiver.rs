@@ -25,6 +25,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// Instance-local asymmetric query kernel selection.
+#[path = "quiver/asymmetric.rs"]
+pub mod asymmetric;
+#[path = "quiver/sketch.rs"]
+mod sketch;
+/// Explicit experimental warped-product geometry; default cosine is unchanged.
+#[path = "quiver/hyperbolic/mod.rs"]
+pub mod hyperbolic;
+
 /// 默认SM-L2查询内核，以及可显式选择的校正与原生欧氏模式。
 #[path = "quiver/corrected_sm.rs"]
 pub mod corrected_sm;

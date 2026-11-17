@@ -26,6 +26,8 @@ struct BuildInput {
     model_sig: String,
     #[serde(default)]
     effective_config: Value,
+    #[serde(default)]
+    warped_presets: Vec<crate::warped_tag_field::Preset>,
 }
 
 #[derive(Clone)]
@@ -171,8 +173,11 @@ fn load_anchor_gains(
         signature
     } else { String::new() };
     for row in rows {
-        let (tag_id, gain, raw_residual, _artifact_sig) =
+        let (tag_id, gain, raw_residual, row_signature) =
             row.map_err(|error| format!("decode intrinsic residual row failed: {}", error))?;
+        if !signature.is_empty() && row_signature != signature {
+            return Err(format!("intrinsic residual Tag {tag_id} geometry signature mismatch"));
+        }
         if !gain.is_finite() || !raw_residual.is_finite() {
             return Err(format!(
                 "intrinsic residual row for Tag {} contains non-finite values",
@@ -742,6 +747,7 @@ struct ArtifactPayload<'a> {
     anchor_gain: Vec<(i64, f64)>,
     inbound: Vec<(i64, f64)>,
     wormholes: Vec<EdgeKey>,
+    raw_residuals: Vec<(i64, f64)>,
 }
 
 impl Serialize for ArtifactPayload<'_> {
@@ -754,7 +760,7 @@ impl Serialize for ArtifactPayload<'_> {
             generation: &self.metadata["provenanceGeneration"],
             edges: ProvenanceEdges(self.provenance),
         })?;
-        map.serialize_entry("rawResidualRatioView", &Value::Array(Vec::new()))?;
+        map.serialize_entry("rawResidualRatioView", &self.raw_residuals)?;
         map.serialize_entry("schema", PAYLOAD_SCHEMA)?;
         map.serialize_entry("sharedTransport", &SharedTransport {
             content_sig: &self.metadata["graphGeneration"],
@@ -786,6 +792,7 @@ fn artifact_payload<'a>(
         anchor_gain,
         inbound,
         wormholes: wormhole_ids.into_iter().map(|(source, target)| EdgeKey(source, target)).collect(),
+        raw_residuals: Vec::new(),
     }
 }
 
@@ -804,10 +811,10 @@ fn run_build(
     }
 
     let snapshot_gate = crate::publication_gate::acquire_read(db_path, &["*".into()])?;
-    let (rows, fact, anchor_gain, residual_sig, database_generation, dependencies) =
+    let (rows, fact, anchor_gain, raw_residuals, residual_sig, database_generation, dependencies) =
         with_registered_read_transaction(db_path, |readonly| {
             let rows = load_file_tags(readonly)?;
-            let (anchor_gain, _raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
+            let (anchor_gain, raw_residuals, residual_sig) = load_anchor_gains(readonly, &input.model_sig)?;
             // Each Tag vector is read and normalised once per snapshot into the
             // memory-mapped f64 workspace that geometry precompute also uses, instead
             // of once per file; no vector SQL when semantic gain is disabled.
@@ -833,6 +840,7 @@ fn run_build(
                 rows,
                 fact,
                 anchor_gain,
+                raw_residuals,
                 residual_sig,
                 database_generation,
                 dependencies,
@@ -887,15 +895,19 @@ fn run_build(
         ),
         24,
     );
+    let mut residual_view: Vec<(i64,f64)> = raw_residuals.into_iter().collect();
+    residual_view.sort_unstable_by_key(|entry|entry.0);
+    let residual_digest = sha256_hex(&serde_json::to_vec(&residual_view).map_err(|e|e.to_string())?);
     let artifact_sig = hash_text(
         &format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|residual-view-v1:{}",
             ALGORITHM_VERSION,
             source_artifact_sig,
             graph_digest,
             provenance_generation,
             database_generation,
-            config_hash
+            config_hash,
+            residual_digest
         ),
         48,
     );
@@ -919,7 +931,8 @@ fn run_build(
         "effectiveConfig": input.effective_config
     });
     let graph_ms = started.elapsed().as_secs_f64()*1000.0-load_ms;
-    let payload = artifact_payload(&native, &provenance, &metadata);
+    let mut payload = artifact_payload(&native, &provenance, &metadata);
+    payload.raw_residuals = residual_view;
     let raw = serde_json::to_vec(&payload)
         .map_err(|error| format!("encode native artifact payload failed: {}", error))?;
     drop(payload);
@@ -1017,6 +1030,18 @@ fn run_build(
         dependencies.ensure_current(connection)
     })?;
     let generation = runtime.publish(&artifact_sig, native.clone())?;
+    drop(_publication_guard);
+    // Optional fields are built outside the exclusive publication gate.
+    // The persisted cosine artifact is already published; a field failure is
+    // explicitly partial success, not a rollback of that durable publication.
+    for preset in input.warped_presets {
+        let _field_gate=crate::publication_gate::acquire_read(db_path,&["*".into()])?;
+        with_registered_read_transaction(db_path, |connection| {
+            crate::warped_tag_field::load_or_build(runtime,connection,&artifact_sig,
+                &native,dimension,preset).map(|_|())
+        }).map_err(|error|format!(
+            "MEMO_OPTIONAL_FIELD_FAILED: artifact {artifact_sig} already published; {error}"))?;
+    }
     Ok(NativeMemoArtifactBuildResult {
         success: true,
         artifact_sig,
@@ -1715,3 +1740,8 @@ mod parallel_gain_tests {
 #[cfg(test)]
 #[path = "memo_workspace_build_tests.rs"]
 mod workspace_build_tests;
+
+
+#[cfg(test)]
+#[path = "warped_lifecycle_tests.rs"]
+mod warped_lifecycle_tests;

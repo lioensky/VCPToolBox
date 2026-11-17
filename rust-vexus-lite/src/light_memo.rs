@@ -7,8 +7,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use vcp_tdb_index::index::quiver::asymmetric::AsymKernel;
+use vcp_tdb_index::index::quiver::corrected_sm::FlatSearchConfig;
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, serde::Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct Scope {
     search_all: bool,
@@ -17,9 +19,12 @@ pub(crate) struct Scope {
     excluded_folders: Vec<String>,
     include_music: bool,
     time_range: Option<TimeRange>,
+    exact_diary_names: Vec<String>,
+    allowed_file_ids: Option<HashSet<i64>>,
+    denied_file_ids: HashSet<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct TimeRange { start: u32, end: u32 }
 
 #[derive(Deserialize)]
@@ -41,6 +46,18 @@ pub(crate) struct Plan {
     artifact_sig: String,
     #[serde(default)]
     river_input: Value,
+    #[serde(default)]
+    warped_ab: bool,
+    #[serde(default)]
+    warped_river_input: Value,
+    /// Experimental request-local route; absent means byte-compatible legacy recall.
+    #[serde(default)]
+    pelorus_route2: bool,
+    /// Statistical (not guaranteed) pruning; absent means no sketch rejections.
+    #[serde(default)]
+    pelorus_sketch_margin: Option<f64>,
+    #[serde(default)]
+    pelorus_asym_lut: bool,
 }
 
 fn default_pool() -> usize { 256 }
@@ -53,6 +70,7 @@ pub struct LightMemoTask {
     pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
     pub(crate) runtime: Arc<MemoRuntime>,
     pub(crate) observation: Option<Arc<crate::rivermemo_topology_v3::MemoQueryObservation>>,
+    pub(crate) warped_observation: Option<Arc<crate::rivermemo_topology_v3::MemoQueryObservation>>,
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
@@ -68,10 +86,51 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 impl Scope {
     fn admits(&self, row: &crate::global_chunks::ChunkHeader, diaries: &HashSet<String>) -> bool {
         diaries.contains(&row.diary)
+            && self.allowed_file_ids.as_ref().is_none_or(|ids| ids.contains(&row.file_id))
+            && !self.denied_file_ids.contains(&row.file_id)
             && (self.time_range.as_ref().is_none_or(|range|
                 row.date != 0 && row.date >= range.start && row.date <= range.end))
             && (self.search_all || !self.folders.is_empty() || self.maid.is_empty()
                 || row.first_line.contains(&self.maid))
+    }
+
+    fn diagnose(&self, connection: &rusqlite::Connection, table: &GlobalChunks,
+        diaries: &HashSet<String>) -> std::result::Result<Value,String> {
+        let mut in_diary = 0usize;
+        let mut after_time = 0usize;
+        let mut after_maid = 0usize;
+        for row in table.rows.values().filter(|row|diaries.contains(&row.diary)) {
+            in_diary += 1;
+            if self.time_range.as_ref().is_some_and(|range|
+                row.date == 0 || row.date < range.start || row.date > range.end) {continue;}
+            after_time += 1;
+            if self.search_all || !self.folders.is_empty() || self.maid.is_empty()
+                || row.first_line.contains(&self.maid) { after_maid += 1; }
+        }
+        let reason = if table.rows.is_empty() {Some("no_valid_global_chunks")}
+            else if diaries.is_empty() {Some("no_matching_diaries")}
+            else if in_diary == 0 {Some("matched_diaries_have_no_valid_chunks")}
+            else if after_time == 0 {Some("time_filter_empty")}
+            else if after_maid == 0 {Some("maid_signature_filter_empty")}
+            else {None};
+        let mut names:Vec<_> = diaries.iter().cloned().collect();
+        names.sort();
+        let mut value = json!({
+            "requested":self,"globalValidChunks":table.rows.len(),
+            "matchedDiaryCount":names.len(),"matchedDiaries":names.iter().take(32).collect::<Vec<_>>(),
+            "matchedDiariesTruncated":names.len()>32,"diaryChunks":in_diary,
+            "afterTimeChunks":after_time,"afterMaidChunks":after_maid,
+            "maidSignatureRequired":!self.search_all && self.folders.is_empty() && !self.maid.is_empty(),
+            "emptyReason":reason
+        });
+        if table.rows.is_empty() {
+            let (chunks,vectors):(i64,i64) = connection.query_row(
+                "SELECT COUNT(*),COUNT(vector) FROM chunks",[],|r|Ok((r.get(0)?,r.get(1)?)))
+                .map_err(|e|e.to_string())?;
+            value["sqlChunks"] = json!(chunks);
+            value["sqlVectorChunks"] = json!(vectors);
+        }
+        Ok(value)
     }
 
     fn diaries(&self, connection: &rusqlite::Connection) -> std::result::Result<HashSet<String>, String> {
@@ -82,6 +141,10 @@ impl Scope {
             .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
         let mut allowed = HashSet::new();
         for name in names {
+            if !self.exact_diary_names.is_empty() {
+                if self.exact_diary_names.contains(&name) { allowed.insert(name); }
+                continue;
+            }
             if name.starts_with("已整理") || name.ends_with('簇')
                 || self.excluded_folders.contains(&name)
                     && !(self.include_music && name == "MusicDiary") { continue; }
@@ -128,6 +191,10 @@ impl Task for LightMemoTask {
             Some(format!("field=candidateK actual={} min=1 max=2000", plan.candidate_k))
         } else if plan.model_sig.trim().is_empty() {
             Some("field=modelSig reason=empty".into())
+        } else if plan.pelorus_sketch_margin.is_some_and(|v| !v.is_finite() || !(0.0..=2.0).contains(&v)) {
+            Some("field=pelorusSketchMargin reason=expected_finite_0_to_2".into())
+        } else if !plan.pelorus_route2 && (plan.pelorus_sketch_margin.is_some() || plan.pelorus_asym_lut) {
+            Some("field=pelorusRoute2 reason=required_for_experimental_controls".into())
         } else if !matches!(plan.engine_mode.as_str(), "knn" | "rivermemo") {
             Some("field=engineMode reason=unsupported".into())
         } else if self.query.len() != self.dimension {
@@ -151,21 +218,43 @@ impl Task for LightMemoTask {
                     *resident = None;
                 }
                 if resident.is_none() {
-                    *resident = Some(GlobalChunks::load(connection, directory,
-                        self.dimension, &plan.model_sig)?);
+                    *resident = Some(GlobalChunks::production(self.dimension, &plan.model_sig)?);
                 }
                 let table = resident.as_mut().unwrap();
+                if plan.ab_mode { table.enable_legacy(connection, directory)?; }
+                else { table.disable_legacy()?; }
                 let synchronized = table.synchronize(connection)?;
                 table.compact_if_needed(connection)?;
                 let diaries = plan.scope.diaries(connection)?;
                 // Count admitted rows during the scan instead of materializing a scope set.
                 let mut scope_chunks = 0usize;
-                let ids = table.search(&self.query, plan.candidate_k.max(plan.k), |row| {
-                    let admitted = plan.scope.admits(row, &diaries);
-                    scope_chunks += usize::from(admitted);
-                    admitted
-                })?;
-                let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &ids, self.dimension)?;
+                let routing_config = FlatSearchConfig {
+                    enabled: plan.pelorus_route2,
+                    sketch_margin: plan.pelorus_sketch_margin,
+                    kernel: if plan.pelorus_asym_lut { AsymKernel::Avx2Lut } else { AsymKernel::Auto },
+                };
+                let (ids, routing_stats) = if plan.ab_mode { table.search_with_config(
+                    &self.query, plan.candidate_k.max(plan.k), &routing_config, |row| {
+                        let admitted = plan.scope.admits(row, &diaries);
+                        scope_chunks += usize::from(admitted);
+                        admitted
+                    },
+                )? } else {
+                    scope_chunks = table.rows.values().filter(|row| plan.scope.admits(row, &diaries)).count();
+                    (Vec::new(), Default::default())
+                };
+                let scope_diagnostics = if plan.ab_mode || ids.is_empty() {
+                    plan.scope.diagnose(connection,table,&diaries)?
+                } else { Value::Null };
+                let (warped_hits, warped_diagnostics) = if !plan.ab_mode || plan.warped_ab {
+                    table.search_warped(connection, &self.query, plan.candidate_k.max(plan.k),
+                        |row| plan.scope.admits(row, &diaries))?
+                } else { (Vec::new(), Value::Null) };
+                let warped_distances = warped_hits.iter().copied()
+                    .collect::<std::collections::HashMap<_,_>>();
+                let all_ids = ids.iter().copied().chain(warped_hits.iter().map(|hit|hit.0))
+                    .collect::<HashSet<_>>().into_iter().collect::<Vec<_>>();
+                let vectors = crate::storage::load_vectors_by_ids(connection, "chunks", &all_ids, self.dimension)?;
                 let mut candidates = ids.into_iter().filter_map(|id| {
                     vectors.get(&id).map(|vector| json!({
                         "id":id,"label":id,"chunkId":id,"vectorScore":cosine(&self.query, vector),
@@ -181,12 +270,18 @@ impl Task for LightMemoTask {
                     && !(plan.use_bm25 && !plan.query_tokens.is_empty()) {
                     candidates.truncate(plan.k);
                 }
+                let mut warped_candidates = warped_hits.iter().filter_map(|&(id,distance)| {
+                    vectors.get(&id).map(|vector| json!({
+                        "id":id,"label":id,"chunkId":id,"vectorScore":cosine(&self.query,vector),
+                        "warpedDistance":distance,"warpedScore":-distance,"bm25Score":0.0
+                    }))
+                }).collect::<Vec<_>>();
                 let mut hydrate = connection.prepare(
                     "SELECT c.content,f.path,f.diary_name,c.file_id FROM chunks c
                      JOIN files f ON f.id=c.file_id WHERE c.id=?1"
                 ).map_err(|e| e.to_string())?;
                 // Bounded candidate text only, never the full corpus.
-                for candidate in &mut candidates {
+                for candidate in candidates.iter_mut().chain(warped_candidates.iter_mut()) {
                     let id = candidate["id"].as_i64().unwrap();
                     let row: Option<(String,String,String,i64)> = hydrate.query_row([id],
                         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
@@ -197,18 +292,45 @@ impl Task for LightMemoTask {
                         candidate["dbName"] = json!(diary);
                         candidate["fileId"] = json!(file_id);
                     }
-                    candidate["score"] = candidate["vectorScore"].clone();
+                    candidate["score"] = candidate.get("warpedScore").unwrap_or(&candidate["vectorScore"]).clone();
                     candidate["hybridScore"] = candidate["vectorScore"].clone();
-                    candidate["retrievalEngine"] = json!("tdb");
+                    candidate["retrievalEngine"] = json!(
+                        if candidate.get("warpedDistance").is_some() { "warped_chunks" } else { "tdb" });
                 }
                 if plan.use_bm25 && !plan.query_tokens.is_empty() {
                     score_keywords(&mut candidates, &plan.query_tokens);
+                    score_keywords(&mut warped_candidates, &plan.query_tokens);
                 }
-                // A/B uses exactly this bounded pool; baseline remains pure cosine.
+                // Each native readout keeps its own recall pool. External tracks use the union.
                 let tdb = candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
-                let mut river = Value::Null;
+                let warped_top_k = warped_candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
+                let mut baseline_river = Value::Null;
+                let mut warped_river = Value::Null;
+                let variants: &[usize] = if !plan.ab_mode { &[1] }
+                    else if plan.warped_ab { &[0, 1] } else { &[0] };
+                for &variant in variants {
+                if variant == 1 && plan.warped_river_input["tagRouting"]["used"].as_str() != Some("warped_ags") {
+                    warped_river = json!({
+                        "results":[], "pipelineVersion":"rivermemo-v5-warped",
+                        "diagnostics":{"available":false,"reason":"Tag warped route unavailable; no cosine result presented as V5",
+                            "tagRouting":plan.warped_river_input["tagRouting"]}
+                    });
+                    continue;
+                }
+                let candidates = if variant == 0 { &candidates } else { &warped_candidates };
+                if variant == 1 && candidates.is_empty() {
+                    warped_river = json!({
+                        "results":[],"pipelineVersion":"rivermemo-v5-warped",
+                        "diagnostics":{"available":false,"reason":"empty_chunk_candidates",
+                            "tagRouting":plan.warped_river_input["tagRouting"],"scope":scope_diagnostics}
+                    });
+                    continue;
+                }
+                let mut current_river = Value::Null;
+                let river = &mut current_river;
                 if (plan.engine_mode == "rivermemo" || plan.ab_mode) && !candidates.is_empty() {
-                    let mut input = plan.river_input.clone();
+                    let mut input = if variant == 0 { plan.river_input.clone() }
+                        else { plan.warped_river_input.clone() };
                     if !input.is_object() || plan.artifact_sig.is_empty()
                         || !input["observationHandle"].is_string() {
                         return Err("LIGHTMEMO_RIVER_OBSERVATION_UNAVAILABLE".into());
@@ -219,14 +341,14 @@ impl Task for LightMemoTask {
                     input["candidates"] = json!(candidates);
                     input["allowedFileIds"] = json!(candidates.iter()
                         .filter_map(|c| c["fileId"].as_i64()).collect::<HashSet<_>>());
-                    river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_observation(
+                    *river = serde_json::from_str(&crate::rivermemo_topology_v3::run_native_with_observation(
                         &self.runtime, connection, &plan.artifact_sig, &input.to_string(),
-                        self.observation.as_ref(),
+                        if variant == 0 { self.observation.as_ref() } else { self.warped_observation.as_ref() },
                     )?).map_err(|e| e.to_string())?;
                     if plan.ab_mode {
                         // Export a bounded read-only view of this exact observation, never
                         // truncate the graph used by propagation or topology scoring.
-                        let cached = match self.observation.as_ref() {
+                        let cached = match if variant == 0 { self.observation.as_ref() } else { self.warped_observation.as_ref() } {
                             Some(value) => value.clone(),
                             None => self.runtime.get_query_observation(
                                 input["observationHandle"].as_str().unwrap(), &plan.artifact_sig)?,
@@ -267,6 +389,7 @@ impl Task for LightMemoTask {
                                 item[key] = original[key].clone();
                             }
                             item["hybridScore"] = item["score"].clone();
+                            item["retrievalEngine"] = json!(if variant == 1 { "rivermemo_v5" } else { "rivermemo_v4" });
                             item["riverMemo"] = json!({
                                 "omega":item["omega"],"role":item["role"],
                                 "regime":item["riverRegime"],"topologyBonus":item["topologyBonus"],
@@ -283,21 +406,58 @@ impl Task for LightMemoTask {
                             river["results"].as_array().map_or(0, Vec::len));
                     }
                 }
-                let results = if plan.engine_mode == "rivermemo" {
+                if variant == 0 { baseline_river = current_river; } else {
+                    if current_river.is_object() {
+                        current_river["pipelineVersion"] = json!("rivermemo-v5-warped");
+                        current_river["diagnostics"]["tagRouting"] = plan.warped_river_input["tagRouting"].clone();
+                        current_river["diagnostics"]["chunkRouting"] = warped_diagnostics.clone();
+                    }
+                    warped_river = current_river;
+                }
+                }
+                let river = if plan.ab_mode { baseline_river } else { warped_river.clone() };
+                let mut comparison_pool = candidates.clone();
+                let mut seen = comparison_pool.iter().filter_map(|c|c["id"].as_i64()).collect::<HashSet<_>>();
+                for candidate in &warped_candidates {
+                    if seen.insert(candidate["id"].as_i64().unwrap()) { comparison_pool.push(candidate.clone()); }
+                }
+                let degraded = !plan.ab_mode && plan.engine_mode == "rivermemo"
+                    && river["diagnostics"]["available"] == json!(false);
+                let results = if plan.engine_mode == "rivermemo" && !degraded {
                     river["results"].as_array().cloned().unwrap_or_default()
-                } else { tdb.clone() };
+                } else if plan.ab_mode { tdb.clone() } else { warped_top_k.clone() };
                 Ok(json!({
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
-                    "comparisonPool":if plan.ab_mode { candidates } else { Vec::new() },
+                    "warpedTopK":warped_top_k,"warpedRiver":warped_river,
+                    "recallPools":if plan.warped_ab { json!({
+                        "tdb":candidates.iter().map(|c|c["id"].clone()).collect::<Vec<_>>(),
+                        "warped":warped_hits.iter().map(|h|h.0).collect::<Vec<_>>(),
+                        "overlap":candidates.iter().filter(|c|warped_distances.contains_key(&c["id"].as_i64().unwrap())).count()
+                    }) } else { Value::Null },
+                    "comparisonPool":if plan.ab_mode { comparison_pool } else { Vec::new() },
                     "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
-                        "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1}
+                        "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1,
+                        "scope":scope_diagnostics,"degraded":degraded,
+                        "retrievalEngine":if !plan.ab_mode && !degraded && plan.engine_mode=="rivermemo" {
+                            "rivermemo_v5" } else if !plan.ab_mode { "warped_ann" } else { "ab" },
+                        "legacyResident":table.legacy_resident(),
+                        "warpedChunks":warped_diagnostics,
+                        "routingMode":if !plan.ab_mode { "warped_chunks" }
+                            else if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
+                        "routing":{"admitted":routing_stats.admitted,
+                            "symmetricScored":routing_stats.symmetric_scored,
+                            "asymmetricScored":routing_stats.asymmetric_scored,
+                            "sketchTested":routing_stats.sketch_tested,
+                            "sketchRejected":routing_stats.sketch_rejected,
+                            "peakPool":routing_stats.peak_pool,
+                            "statisticalSketchFilter":plan.pelorus_sketch_margin.is_some()}}
                 }))
             },
         ).map_err(Error::from_reason)?;
-        // Queries only synchronize memory routing. Snapshot publication belongs
-        // to the independently scheduled, policy-gated checkpoint task.
+        // TDB snapshot publication remains independently scheduled and policy-gated.
+        // Explicit warped AB may publish its separate rebuildable derived sidecar.
         resident.as_mut().unwrap().last_used = std::time::Instant::now();
         output["diagnostics"]["totalMs"] = json!(started.elapsed().as_secs_f64()*1000.);
         Ok(output.to_string())
@@ -391,6 +551,7 @@ mod tests {
             table: Arc::new(Mutex::new(None)),
             runtime: Arc::new(MemoRuntime::new()),
             observation: None,
+            warped_observation: None,
         };
         for count in [256, 257] {
             task.plan_json = json!({
@@ -480,6 +641,7 @@ mod tests {
             plan_json:String::new(),table:Arc::new(Mutex::new(None)),
             runtime:Arc::new(MemoRuntime::new()),
             observation:None,
+            warped_observation:None,
         };
         let run = |task:&mut LightMemoTask,scope:Value| {
             task.plan_json=json!({"scope":scope,"modelSig":"test","engineMode":"knn",
@@ -501,12 +663,44 @@ mod tests {
         assert_eq!(signature["diagnostics"]["scopeChunks"],1);
         assert_eq!(folder["diagnostics"]["scopeChunks"],1);
         assert_eq!(excluded["diagnostics"]["scopeChunks"],2);
+        // Request-local Route 2 keeps scope and original-SQL exact score contracts.
+        for (scope, expected) in [
+            (json!({"maid":"Alice","excludedFolders":["MusicDiary"]}), &signature),
+            (json!({"folders":["Alice"],"timeRange":{"start":20250101,"end":20250131}}), &folder),
+            (json!({"searchAll":true,"excludedFolders":["MusicDiary"]}), &excluded),
+        ] {
+            task.plan_json = json!({"scope":scope,"modelSig":"test","engineMode":"knn",
+                "k":10,"candidateK":20,"pelorusRoute2":true}).to_string();
+            let routed: Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
+            assert_eq!(routed["results"], expected["results"]);
+            assert_eq!(routed["diagnostics"]["scopeChunks"], expected["diagnostics"]["scopeChunks"]);
+            assert_eq!(routed["diagnostics"]["routingMode"], "warped_chunks");
+            assert_eq!(routed["diagnostics"]["legacyResident"], false);
+            assert_eq!(routed["diagnostics"]["routing"]["sketchRejected"], 0);
+        }
+        for extra in [
+            json!({"pelorusSketchMargin":0.2}),
+            json!({"pelorusRoute2":true,"pelorusSketchMargin":-0.1}),
+            json!({"pelorusAsymLut":true}),
+        ] {
+            let mut plan = json!({"scope":{"searchAll":true},"modelSig":"test",
+                "engineMode":"knn","k":10,"candidateK":20});
+            plan.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            task.plan_json = plan.to_string();
+            assert!(task.compute().unwrap_err().reason.contains("LIGHTMEMO_INVALID_PLAN"));
+        }
         // knn with k below the pool returns the same leading rows, fully hydrated.
         task.plan_json=json!({"scope":{"searchAll":true,"excludedFolders":["MusicDiary"]},
             "modelSig":"test","engineMode":"knn","k":1,"candidateK":20}).to_string();
         let top=serde_json::from_str::<Value>(&task.compute().unwrap()).unwrap();
         assert_eq!(top["results"],json!([excluded["results"][0].clone()]));
-        assert_eq!(top["tdbTopK"],top["results"]);
+        assert_eq!(top["warpedTopK"],top["results"]);
+        assert!(top["tdbTopK"].as_array().unwrap().is_empty());
+        assert_eq!(top["diagnostics"]["legacyResident"],false);
+        let denied=run(&mut task,json!({"exactDiaryNames":["AliceDiary"],"allowedFileIds":[]}));
+        assert!(denied["results"].as_array().unwrap().is_empty());
+        let exact=run(&mut task,json!({"exactDiaryNames":["AliceDiary"],"allowedFileIds":[1],"deniedFileIds":[2]}));
+        assert_eq!(exact["results"].as_array().unwrap().len(),2);
         assert_eq!(top["diagnostics"]["candidateCount"],2);
         assert_eq!(top["diagnostics"]["scopeChunks"],2);
         assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
@@ -534,5 +728,96 @@ mod tests {
         drop(task);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Explicit maintenance only; no query embedding or scope is involved.
+pub struct WarpedChunkPreparationTask {
+    pub(crate) db_path: String,
+    pub(crate) dimension: usize,
+    pub(crate) model: String,
+    pub(crate) force: bool,
+    pub(crate) table: Arc<Mutex<Option<GlobalChunks>>>,
+}
+impl Task for WarpedChunkPreparationTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<String> {
+        let _gate = crate::publication_gate::acquire_read(&self.db_path,&["*".into()])
+            .map_err(Error::from_reason)?;
+        let mut resident = self.table.lock()
+            .map_err(|_|Error::from_reason("Global Chunk table lock poisoned"))?;
+        let result = crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
+            // Forced maintenance re-reads SQL instead of trusting a cached TDB snapshot.
+            // Publish the replacement in memory only after successful field preparation.
+            let mut replacement = if self.force {
+                Some(GlobalChunks::production(self.dimension,&self.model)?)
+            } else if resident.as_ref().is_none_or(|table|
+                !table.matches_model(self.dimension,&self.model)) {
+                Some(GlobalChunks::production(self.dimension,&self.model)?)
+            } else { None };
+            let table = match replacement.as_mut() {
+                Some(table) => table,
+                None => resident.as_mut().unwrap(),
+            };
+            let synchronized = table.synchronize(connection)?;
+            let mut result = table.prepare_warped(connection,self.force)?;
+            result["synchronizedRows"] = json!(synchronized);
+            result["databaseGeneration"] = json!(crate::storage::read_generation(connection)?);
+            result["dimension"] = json!(self.dimension);
+            result["modelSig"] = json!(self.model);
+            if let Some(table) = replacement { *resident = Some(table); }
+            Ok(result)
+        }).map_err(Error::from_reason)?;
+        Ok(result.to_string())
+    }
+    fn resolve(&mut self,_env:Env,output:String)->Result<String> { Ok(output) }
+}
+
+#[cfg(test)]
+mod scope_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn maid_first_line_empty_is_distinct_from_missing_diary_and_empty_corpus() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES('global_chunk_facts','1');
+             CREATE TABLE files(id INTEGER PRIMARY KEY,diary_name TEXT,metadata_version INTEGER);
+             INSERT INTO files VALUES(1,'小克的消费研究',1),(2,'其他目录',1);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY,file_id INTEGER,content TEXT,vector BLOB,
+                 vector_version INTEGER,metadata_version INTEGER);
+             INSERT INTO chunks VALUES(1,1,'[2026-11-17] 手机研究
+正文署名小克',X'0000803f00000000',1,1);
+             INSERT INTO chunks VALUES(2,2,'[2026-11-17] 其他',X'0000803f00000000',1,1);
+             BEGIN;"
+        ).unwrap();
+        let mut table = GlobalChunks::empty(2,"test").unwrap();
+        table.synchronize(&db).unwrap();
+        let diagnose = |scope: Value| {
+            let scope:Scope = serde_json::from_value(scope).unwrap();
+            let diaries = scope.diaries(&db).unwrap();
+            scope.diagnose(&db,&table,&diaries).unwrap()
+        };
+        let maid = diagnose(json!({"maid":"小克"}));
+        assert_eq!(maid["globalValidChunks"],2);
+        assert_eq!(maid["matchedDiaryCount"],1);
+        assert_eq!(maid["diaryChunks"],1);
+        assert_eq!(maid["afterTimeChunks"],1);
+        assert_eq!(maid["afterMaidChunks"],0);
+        assert_eq!(maid["emptyReason"],"maid_signature_filter_empty");
+        assert_eq!(diagnose(json!({"maid":"不存在"}))["emptyReason"],"no_matching_diaries");
+        assert_eq!(diagnose(json!({"folders":["小克"]}))["afterMaidChunks"],1);
+        assert_eq!(diagnose(json!({"searchAll":true}))["afterMaidChunks"],2);
+        assert_eq!(diagnose(json!({"folders":["小克"],"timeRange":{"start":20250101,"end":20250131}}))
+            ["emptyReason"],"time_filter_empty");
+        let empty=GlobalChunks::empty(2,"test").unwrap();
+        let scope=Scope {search_all:true,..Default::default()};
+        let raw=scope.diagnose(&db,&empty,&scope.diaries(&db).unwrap()).unwrap();
+        assert_eq!(raw["emptyReason"],"no_valid_global_chunks");
+        assert_eq!(raw["sqlChunks"],2);
+        assert_eq!(raw["sqlVectorChunks"],2);
     }
 }

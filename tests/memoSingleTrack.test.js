@@ -7,28 +7,23 @@ const DreamWaveEngine = require('../Plugin/AgentDream/DreamWaveEngine');
 const rag = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
 const kb = require('../KnowledgeBaseManager');
 
-test('pure KNN merges selected indices and hydrates without Memo processing', async () => {
+test('pure ANN uses warped native scope without loading old indices or sensing', async () => {
     const owner = {
         config: { dimension: 2 },
         _isVectorLike: value => Array.isArray(value) || value instanceof Float32Array,
         async listDistinctDiaries() { return []; },
-        nativeKnowledgeRuntime: {
-            async searchDiaryIndices(names, vector) {
-                assert.deepEqual(names, ['A', 'B']);
-                assert(vector instanceof Float32Array);
-                return { results: [{ id: 3, score: 1 }, { id: 2, score: 0.9 }, { id: 1, score: 0.8 }],
-                    hydratedChunks: [
-                        { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
-                        { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
-                        { id: 3, text: 'outside', sourceFile: 'C/c.md', diaryName: 'C', fileId: 30 }
-                    ] };
-            }
+        async executeLightMemoQuery(query, options) {
+            assert.deepEqual(options.scope.exactDiaryNames, ['A', 'B']);
+            assert.equal(options.engineMode, 'knn');
+            assert(query.vector instanceof Float32Array);
+            return { results: [
+                { id: 2, chunkId: 2, text: 'b', score: -0.1, vectorScore: 0.9,
+                    sourceFile: 'B/b.md', dbName: 'B', fileId: 20 },
+                { id: 1, chunkId: 1, text: 'a', score: -0.2, vectorScore: 0.8,
+                    sourceFile: 'A/a.md', dbName: 'A', fileId: 10 }
+            ] };
         },
-        async _getOrLoadDiaryIndex(name) {
-            return { search: () => name === 'A'
-                ? [{ id: 1, score: 0.8 }, { id: 3, score: 1 }]
-                : [{ id: 2, score: 0.9 }, { id: 1, score: 0.7 }] };
-        },
+        async _getOrLoadDiaryIndex() { throw new Error('legacy index must stay sealed'); },
         _queryByChunks: () => [
             { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
             { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
@@ -41,7 +36,9 @@ test('pure KNN merges selected indices and hydrates without Memo processing', as
     const results = await service.searchKnnMany(['A', 'B'], [1, 0], 2);
     assert.deepEqual(results.map(item => item.chunkId), [2, 1]);
     assert.equal(results[0].fullPath, 'B/b.md');
-    assert.equal(results[0].retrievalEngine, 'knn');
+    assert.equal(results[0].retrievalEngine, 'warped_ann');
+    assert.equal(results[0].score, -0.1);
+    assert.equal(results[0].vectorScore, 0.9);
     assert.deepEqual(await service.searchKnn([], [1, 0], 2), []);
 });
 
@@ -251,7 +248,7 @@ test('Memory A/B restores independent Jev scoring on the complete shared pool', 
     const args = { query: 'test', folder: 'A', k: 1 };
     let report = await owner.handleMemoryAB(args);
     assert.equal(nativeCalls, 1, 'all four tracks share one native query');
-    assert.match(report, /四轨实验室/);
+    assert.match(report, /六轨实验室/);
     assert.match(report, /Jev：获得有效外部评分/);
     assert.match(report, /\| 6 \| memory 6 \| — \| — \| #1 \/ 0\.8200 \| — \|/);
     assert.equal(pool[0].jev_score, undefined);
@@ -276,8 +273,12 @@ test('LightMemo releases its observation on success and native failure', async (
     const prepared = { observationHandle: 'light-owned', artifact: { artifactSig: 'a' } };
     let released = 0;
     const owner = {
+        _executeLightMemoQueryAdmitted: kb._executeLightMemoQueryAdmitted,
         config: { dimension: 2, modelSig: 'model', rootPath: '.' },
-        async prepareUnifiedMemoObservation() { return prepared; },
+        async prepareUnifiedMemoObservation(_query, options) {
+            assert.equal(options.tagRoutingMode, 'warped_ags');
+            return prepared;
+        },
         releaseMemoObservation(value) { assert.equal(value, prepared); released++; },
         riverMemoEngine: { _nativeConfig() { return {}; } },
         nativeKnowledgeRuntime: {
@@ -292,4 +293,56 @@ test('LightMemo releases its observation on success and native failure', async (
     await assert.rejects(kb.executeLightMemoQuery.call(owner,
         { vector: [1, 0] }, { engineMode: 'rivermemo' }), /native failure/);
     assert.equal(released, 2);
+});
+
+test('warped AB owns two independent observations and releases both on all exits', async () => {
+    const released = [];
+    const calls = [];
+    let failPreparation = false;
+    let failNative = false;
+    const prepare = mode => ({
+        observationHandle: mode, artifact: { artifactSig: 'a' },
+        sourceObservationResult: {
+            matchedTags: [], coreTagsMatched: [],
+            diagnostics: { nativePipeline: { tagRouting: { used: mode } } }
+        }
+    });
+    const owner = {
+        config: { modelSig: 'model', rootPath: '.' },
+        async prepareUnifiedMemoObservation(_query, options) {
+            const mode = options.tagRoutingMode || 'cosine';
+            calls.push(mode);
+            if (failPreparation && mode === 'warped_ags') throw new Error('prepare failed');
+            return prepare(mode);
+        },
+        releaseMemoObservation(value) { released.push(value.observationHandle); },
+        riverMemoEngine: { _nativeConfig: () => ({}) },
+        nativeKnowledgeRuntime: {
+            async executeLightMemoQuery(raw) {
+                const plan = JSON.parse(raw);
+                assert.equal(plan.riverInput.observationHandle, 'cosine');
+                assert.equal(plan.warpedRiverInput.observationHandle, 'warped_ags');
+                assert.equal(plan.warpedRiverInput.tagRouting.used, 'warped_ags');
+                if (failNative) throw new Error('native failed');
+                return { schema: 'vcp-lightmemo-result-v1', results: [],
+                    warpedTopK: [{ id: 2 }], warpedRiver: { results: [{ chunkId: 2 }] } };
+            }
+        }
+    };
+    const run = () => kb._executeLightMemoQueryAdmitted.call(owner,
+        { text: 'q', vector: [1, 0] },
+        { engineMode: 'rivermemo', abMode: true, warpedAb: true });
+    const result = await run();
+    assert.equal(result.warpedTopK[0].label, 2);
+    assert.equal(result.warpedRiver.results[0].label, 2);
+    assert.deepEqual(calls, ['cosine', 'warped_ags']);
+    assert.deepEqual(released, ['warped_ags', 'cosine']);
+    released.length = 0;
+    failNative = true;
+    await assert.rejects(run(), /native failed/);
+    assert.deepEqual(released, ['warped_ags', 'cosine']);
+    released.length = 0;
+    failPreparation = true;
+    await assert.rejects(run(), /prepare failed/);
+    assert.deepEqual(released, ['cosine']);
 });
