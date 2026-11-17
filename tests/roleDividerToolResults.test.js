@@ -170,3 +170,40 @@ test('HTML code/pre blocks are shielded and multimodal cache_control is preserve
     };
     assert.deepEqual(roleDivider.process([cachedMsg]), [cachedMsg]);
 });
+test('multimodal array message preserves split role when starting, ending, or consisting solely of role tag', () => {
+    const img = { type: 'image_url', image_url: { url: 'https://example.com/a.png' } };
+
+    // 1. Array message ending with ROLE_DIVIDE_USER (no trailing assistant text)
+    assert.deepEqual(
+        run([{ type: 'text', text: `before\n${user.start}tail_user${user.end}` }]),
+        [
+            { role: 'assistant', content: [{ type: 'text', text: 'before\n' }] },
+            { role: 'user', content: 'tail_user' }
+        ]
+    );
+
+    // 2. Array message consisting solely of ROLE_DIVIDE_USER (splitResults.length === 1)
+    assert.deepEqual(
+        run([{ type: 'text', text: `${user.start}only_user${user.end}` }]),
+        [{ role: 'user', content: 'only_user' }]
+    );
+
+    // 3. Array message starting with ROLE_DIVIDE_USER followed by assistant text
+    assert.deepEqual(
+        run([{ type: 'text', text: `${user.start}head_user${user.end}after` }]),
+        [
+            { role: 'user', content: 'head_user' },
+            { role: 'assistant', content: [{ type: 'text', text: 'after' }] }
+        ]
+    );
+
+    // 4. Image part before pure role-tag part and after trailing role-tag part stay in baseRole
+    assert.deepEqual(
+        run([img, { type: 'text', text: `${user.start}mid_user${user.end}` }, img]),
+        [
+            { role: 'assistant', content: [img] },
+            { role: 'user', content: 'mid_user' },
+            { role: 'assistant', content: [img] }
+        ]
+    );
+});
