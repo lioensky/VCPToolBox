@@ -7,6 +7,8 @@ use crate::retrieval_index::RetrievalIndex as Index;
 pub(crate) struct IndexHandle {
     inner: RwLock<Index>,
     pub(crate) maintenance: std::sync::Mutex<()>,
+    /// Production may keep SQL-owned Tag routing cold; standalone defaults stay eager.
+    pub(crate) lazy_tag_routing: std::sync::atomic::AtomicBool,
     count: AtomicU64,
     capacity: AtomicU64,
     memory: AtomicU64,
@@ -24,6 +26,7 @@ impl IndexHandle {
             tombstones: AtomicU64::new(index.tombstones() as u64),
             inner: RwLock::new(index),
             maintenance: std::sync::Mutex::new(()),
+            lazy_tag_routing: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

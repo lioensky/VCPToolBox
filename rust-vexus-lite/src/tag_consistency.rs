@@ -448,6 +448,9 @@ impl Task for TagConsistencyCommitTask {
             .take()
             .ok_or_else(|| Error::from_reason("Tag consistency commit completed without details"))?;
 
+        let routing_resident = self.global_tag_index.read()
+            .map_err(|error| Error::from_reason(error.to_string()))?
+            .routing_resident();
         let mut index_ready = if !receipt.facts_changed {
             crate::storage::with_registered_read(&self.db_path, |connection| {
                 connection.query_row(
@@ -456,6 +459,25 @@ impl Task for TagConsistencyCommitTask {
                     [], |row| row.get::<_, bool>(0),
                 ).map_err(|error| error.to_string())
             }).unwrap_or(false)
+        } else if !routing_resident {
+            let refreshed = crate::storage::with_registered_read(&self.db_path, |connection| {
+                let mut index = self.global_tag_index.write()
+                    .map_err(|error| error.to_string())?;
+                if index.dimensions() != dimension {
+                    return Err("Global Tag retrieval dimension mismatch".into());
+                }
+                index.refresh_cold_tag_count(connection)
+            });
+            match refreshed {
+                Ok(()) => {
+                    self.global_tag_content_revision.fetch_add(1, Ordering::AcqRel);
+                    self.memo_runtime.clear().is_ok()
+                }
+                Err(error) => {
+                    eprintln!("[KBM] Cold Tag consistency refresh failed: {}", error);
+                    false
+                }
+            }
         } else { apply_tag_index_delta(
             &self.global_tag_index,
             &self.global_tag_content_revision,

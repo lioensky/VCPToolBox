@@ -44,7 +44,7 @@ pub(crate) fn maintain(
         crate::storage::ensure_generation(connection, generation)
     })?;
     let mut active = index.write().map_err(|error| error.to_string())?;
-    if revision.load(Ordering::Acquire) != revision_before {
+    if revision.load(Ordering::Acquire) != revision_before || !active.routing_resident() {
         return Ok(false);
     }
     *active = RetrievalIndex::from_sql(build);

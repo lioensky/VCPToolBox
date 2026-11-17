@@ -69,10 +69,14 @@ impl Task for GlobalTagSearchTask {
             .map_err(Error::from_reason)?;
         guard.downgrade().map_err(Error::from_reason)?;
         let output = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
-            let matches = self.index.read()
-                .map_err(|_| "Global Tag index lock poisoned".to_string())?
-                .search_sql_options(connection, None, &self.query, self.limit, &self.search_options)
-                .map_err(|error| format!("Global Tag search failed: {}", error))?;
+            let matches = {
+                let mut routing = self.index.write()
+                    .map_err(|_| "Global Tag index lock poisoned".to_string())?;
+                routing.ensure_routing(connection, None)?;
+                routing.search_sql_options(
+                    connection, None, &self.query, self.limit, &self.search_options,
+                ).map_err(|error| format!("Global Tag search failed: {}", error))?
+            };
             let mut statement = connection.prepare("SELECT name FROM tags WHERE id=?1")
                 .map_err(|error| error.to_string())?;
             let mut output = Vec::new();
@@ -649,6 +653,8 @@ impl NativeMultiIndexAnnTask {
             let table = resident.as_mut().unwrap();
             table.disable_legacy().map_err(Error::from_reason)?;
             table.synchronize(connection).map_err(Error::from_reason)?;
+            let partitions: HashSet<String> = source.diaries.iter().cloned().collect();
+            table.activate_partitions(connection, &partitions).map_err(Error::from_reason)?;
             let excluded: HashSet<u64> = self.search_options.exclude_ids.iter().copied().collect();
             for (query_index, query) in std::iter::once(&self.query).chain(&self.supplemental_queries).enumerate() {
                 let budget = if query_index == 0 { self.per_index_k } else { self.supplemental_per_index_k };
@@ -1120,13 +1126,28 @@ pub(crate) fn recover_index_snapshot(
                 "SELECT facts_generation FROM kbm_index_states WHERE scope=?1 AND state='recovering'",
                 [&scope], |row| row.get(0),
             ).map_err(|error| format!("Read recovery generation failed: {}", error))?;
-            let build = crate::index_source::build_memory_from_connection(
-                connection, diary_name, dimension, "unendorsed-runtime-recovery",
-            )?;
-            Ok((generation, build))
+            let lazy = diary_name.is_none()
+                && index.lazy_tag_routing.load(Ordering::Acquire);
+            if lazy {
+                let mut replacement = Index::empty(dimension).map_err(|error| error.to_string())?;
+                replacement.release_originals();
+                replacement.sleep_routing().map_err(|error| error.to_string())?;
+                replacement.refresh_cold_tag_count(connection)?;
+                let total: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM tags WHERE vector IS NOT NULL",
+                    [], |row| row.get(0),
+                ).map_err(|error| error.to_string())?;
+                let skipped = (total.max(0) as u64).saturating_sub(replacement.size() as u64);
+                Ok((generation, (replacement, skipped)))
+            } else {
+                let build = crate::index_source::build_memory_from_connection(
+                    connection, diary_name, dimension, "unendorsed-runtime-recovery",
+                )?;
+                let skipped = build.skipped_invalid;
+                Ok((generation, (Index::from_sql(build), skipped)))
+            }
         })?;
-    let skipped_invalid_vectors = build.skipped_invalid;
-    let replacement = Index::from_sql(build);
+    let (replacement, skipped_invalid_vectors) = build;
     if skipped_invalid_vectors > 0 {
         eprintln!("[KBM] Recovery for '{}' skipped {} invalid vectors", scope, skipped_invalid_vectors);
     }
@@ -3092,6 +3113,7 @@ impl NativeKnowledgeRuntime {
                     "idleMs": table.last_used.elapsed().as_millis() as u64,
                     "storageMode": "rust-warped-production", "f32Resident": false,
                     "legacyResident": table.legacy_resident(),
+                    "partitions": table.partition_stats(),
                     "warpedChunks": table.warped_stats()
                 }),
                 None => serde_json::json!({
@@ -4082,6 +4104,7 @@ impl NativeKnowledgeRuntime {
         index_path: String,
         model_sig: String,
         capacity: u32,
+        lazy_routing: Option<bool>,
     ) -> Result<AsyncTask<TrackedTask<IndexRestoreTask>>> {
         if !self.accepting_queries.load(Ordering::Acquire) {
             return Err(Error::from_reason(
@@ -4094,6 +4117,9 @@ impl NativeKnowledgeRuntime {
             ));
         }
 
+        self.global_tag_index.lazy_tag_routing.store(
+            lazy_routing.unwrap_or(false), Ordering::Release,
+        );
         Ok(self.tracked_task(IndexRestoreTask {
             db_path,
             index_path,

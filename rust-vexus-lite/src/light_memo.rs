@@ -226,6 +226,7 @@ impl Task for LightMemoTask {
                 let synchronized = table.synchronize(connection)?;
                 table.compact_if_needed(connection)?;
                 let diaries = plan.scope.diaries(connection)?;
+                table.activate_partitions(connection, &diaries)?;
                 // Count admitted rows during the scan instead of materializing a scope set.
                 let mut scope_chunks = 0usize;
                 let routing_config = FlatSearchConfig {

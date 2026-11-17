@@ -827,7 +827,8 @@ fn analyze_pyramid_routed(
             }));
             ids.into_iter().map(|id| (id as u64,0.0_f32)).collect::<Vec<_>>()
         } else {
-            let guard = index.read().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+            let mut guard = index.write().map_err(|error| format!("Pyramid index lock failed: {}", error))?;
+            guard.ensure_routing(connection, None)?;
             let matches=guard.search_sql(connection, None, &residual, config.pyramid_top_k.clamp(1, 128))
                 .map_err(|error| format!("Memo pyramid retrieval search failed: {:?}", error))?;
             #[cfg(test)]
@@ -2303,6 +2304,12 @@ fn run_pipeline_with_connection(
             Err(error)=>return Err(error),
         }
     } else { None };
+    if warped.is_some()
+        && index.lazy_tag_routing.load(std::sync::atomic::Ordering::Acquire)
+    {
+        let mut routing = index.write().map_err(|error| error.to_string())?;
+        routing.sleep_routing().map_err(|error| error.to_string())?;
+    }
     let tag_routing_check_ms = routing_check_started.elapsed().as_secs_f64()*1000.0;
     let mut tag_vectors = TagVectorPool::new();
     let mut routing_attempts = Vec::new();

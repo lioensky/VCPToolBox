@@ -37,6 +37,8 @@ pub(crate) struct RetrievalIndex {
     private_path: Option<PathBuf>,
     reserved: usize,
     sql_owned: bool,
+    /// Logical SQL member count while the derived routing payload is cold.
+    cold_count: Option<usize>,
 }
 
 impl RetrievalIndex {
@@ -49,6 +51,7 @@ impl RetrievalIndex {
             private_path: None,
             reserved: 0,
             sql_owned: false,
+            cold_count: None,
         })
     }
 
@@ -57,7 +60,7 @@ impl RetrievalIndex {
         let reserved = index.len();
         let private_path = (!path.as_os_str().is_empty()).then_some(path);
         let sql_owned = private_path.is_none();
-        Self { inner: Some(index), identity, private_path, reserved, sql_owned }
+        Self { inner: Some(index), identity, private_path, reserved, sql_owned, cold_count: None }
     }
 
     /// Explicit standalone API only. Runtime restores must supply SQL endorsement.
@@ -77,7 +80,7 @@ impl RetrievalIndex {
     pub(crate) fn load(path: &Path, expected: AssetIdentity) -> io::Result<Self> {
         let index = TdbIndex::load_snapshot(path, &expected)?;
         let reserved = index.len();
-        Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved, sql_owned: false })
+        Ok(Self { inner: Some(index), identity: expected, private_path: None, reserved, sql_owned: false, cold_count: None })
     }
 
     pub(crate) fn from_validated_asset(
@@ -86,7 +89,7 @@ impl RetrievalIndex {
         let identity = asset.identity().clone();
         let index = TdbIndex::from_validated_asset(asset)?;
         let reserved = index.len();
-        Ok(Self { inner: Some(index), identity, private_path: None, reserved, sql_owned: true })
+        Ok(Self { inner: Some(index), identity, private_path: None, reserved, sql_owned: true, cold_count: None })
     }
 
     fn core(&self) -> &TdbIndex {
@@ -97,25 +100,87 @@ impl RetrievalIndex {
         self.inner.as_mut().expect("retrieval index is live until Drop")
     }
 
+    /// Release only SQL-derived routing; never touches MemoRuntime or SQL facts.
+    pub(crate) fn sleep_routing(&mut self) -> io::Result<()> {
+        if !self.sql_owned || self.private_path.is_some() {
+            return Err(io::Error::other("Only SQL-owned routing can be made cold"));
+        }
+        self.cold_count = Some(self.size());
+        drop(self.inner.take());
+        self.reserved = 0;
+        Ok(())
+    }
+
+    pub(crate) fn routing_resident(&self) -> bool { self.inner.is_some() }
+
+    /// Refresh scalar diagnostics from authoritative facts without allocating routing.
+    /// The caller holds the scope publication gate and the index write guard.
+    pub(crate) fn refresh_cold_tag_count(
+        &mut self, connection: &rusqlite::Connection,
+    ) -> Result<(), String> {
+        if self.routing_resident() {
+            return Err("Cold Tag count refresh requires nonresident routing".into());
+        }
+        let mut statement = connection.prepare(
+            "SELECT id,vector FROM tags WHERE vector IS NOT NULL",
+        ).map_err(|error| error.to_string())?;
+        let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+        let mut count = 0;
+        let mut vector = Vec::new();
+        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            let id: i64 = row.get(0).map_err(|error| error.to_string())?;
+            if id > 0 && crate::index_source::decode_column_into(
+                row, 1, self.dimensions(), &mut vector,
+            ).map_err(|error| error.to_string())? {
+                count += 1;
+            }
+        }
+        self.cold_count = Some(count);
+        self.identity.content_digest = [0; 32];
+        Ok(())
+    }
+
     pub(crate) fn identity(&self) -> &AssetIdentity { &self.identity }
-    pub(crate) fn size(&self) -> usize { self.core().len() }
+    pub(crate) fn size(&self) -> usize {
+        self.cold_count.unwrap_or_else(|| self.core().len())
+    }
     pub(crate) fn dimensions(&self) -> usize { self.identity.dimension }
     pub(crate) fn capacity(&self) -> usize { self.reserved.max(self.size()) }
-    pub(crate) fn memory_usage(&self) -> usize { self.core().hot_bytes() }
-    pub(crate) fn mmap_bytes(&self) -> usize { self.core().mapped_bytes() }
-    pub(crate) fn tombstones(&self) -> usize { self.core().tombstones() }
+    pub(crate) fn memory_usage(&self) -> usize { self.inner.as_ref().map_or(0, |index| index.hot_bytes()) }
+    pub(crate) fn mmap_bytes(&self) -> usize { self.inner.as_ref().map_or(0, |index| index.mapped_bytes()) }
+    pub(crate) fn tombstones(&self) -> usize { self.inner.as_ref().map_or(0, |index| index.tombstones()) }
     #[cfg(test)]
-    pub(crate) fn contains(&self, id: u64) -> bool { self.core().contains(id) }
+    pub(crate) fn contains(&self, id: u64) -> bool {
+        self.inner.as_ref().is_some_and(|index| index.contains(id))
+    }
+
+    /// Caller supplies the same frozen SQL transaction used by the query and
+    /// holds the owning IndexHandle write guard, making cold restoration single-flight.
+    pub(crate) fn ensure_routing(
+        &mut self, connection: &rusqlite::Connection, diary: Option<&str>,
+    ) -> Result<(), String> {
+        if !self.routing_resident() {
+            let build = crate::index_source::build_memory_from_connection(
+                connection, diary, self.dimensions(), "unendorsed-runtime-lazy-routing",
+            )?;
+            *self = Self::from_sql(build);
+        }
+        Ok(())
+    }
 
     pub(crate) fn maintenance_required(&self) -> bool {
         // A publication threshold measures SQL drift, not routing health or
         // heap residency. Repeated updates of one ID may leave little SQL drift.
         const MAX_DELTA_BYTES: usize = 16 * 1024 * 1024;
-        self.core().needs_graph_rebuild() || self.core().delta_bytes() >= MAX_DELTA_BYTES
+        self.inner.as_ref().is_some_and(|index|
+            index.needs_graph_rebuild() || index.delta_bytes() >= MAX_DELTA_BYTES)
     }
 
     /// Existing host capacity arguments are absolute, unlike Vec::reserve.
     pub(crate) fn reserve(&mut self, capacity: usize) -> io::Result<()> {
+        if !self.routing_resident() {
+            return Err(io::Error::other("Cold SQL routing requires explicit restoration"));
+        }
         if capacity > self.reserved {
             let additional = capacity.saturating_sub(self.size());
             self.core_mut().reserve(additional)?;
@@ -127,6 +192,9 @@ impl RetrievalIndex {
     pub(crate) fn apply_delta(
         &mut self, removes: &[u64], upserts: &[u64], vectors: &[f32],
     ) -> io::Result<usize> {
+        if !self.routing_resident() {
+            return Err(io::Error::other("Cold SQL routing requires explicit restoration"));
+        }
         let removed = self.core_mut().apply_delta(removes, upserts, vectors)?;
         // A mutation invalidates the previous snapshot digest; a checkpoint must
         // provide a fresh SQL-derived identity, not reuse the old endorsement.
@@ -147,7 +215,9 @@ impl RetrievalIndex {
     /// Runtime routing no longer retains startup snapshot originals.
     pub(crate) fn release_originals(&mut self) {
         self.sql_owned = true;
-        self.core_mut().release_originals();
+        if let Some(index) = self.inner.as_mut() {
+            index.release_originals();
+        }
     }
 
     pub(crate) fn search(&self, query: &[f32], k: usize) -> io::Result<Vec<(u64, f32)>> {
@@ -185,6 +255,9 @@ impl RetrievalIndex {
         options: &RetrievalSearchOptions,
     ) -> io::Result<Vec<(u64, f32)>> {
         options.validate()?;
+        if !self.routing_resident() {
+            return Err(io::Error::other("Cold SQL routing requires explicit restoration"));
+        }
         if connection.is_autocommit() {
             return Err(io::Error::other("SQL retrieval requires an active read transaction"));
         }
@@ -260,6 +333,47 @@ impl Drop for RetrievalIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_sql_routing_releases_payload_and_restores_current_facts_without_files() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE tags(id INTEGER PRIMARY KEY,vector BLOB);
+             INSERT INTO tags VALUES (7,X'0000803F00000000');
+             BEGIN;"
+        ).unwrap();
+        let build = crate::index_source::build_memory_from_connection(
+            &connection, None, 2, "model",
+        ).unwrap();
+        let mut index = RetrievalIndex::from_sql(build);
+        index.sleep_routing().unwrap();
+        index.sleep_routing().unwrap();
+        assert!(!index.routing_resident());
+        assert_eq!(index.size(), 1);
+        assert_eq!(index.memory_usage(), 0);
+        assert_eq!(index.mmap_bytes(), 0);
+        assert!(!index.maintenance_required());
+        assert!(index.search_sql(&connection, None, &[1., 0.], 1).is_err());
+        assert!(index.add(9, &[0., 1.]).is_err());
+        connection.execute_batch(
+            "DELETE FROM tags;
+             INSERT INTO tags VALUES (9,X'000000000000803F');"
+        ).unwrap();
+        index.ensure_routing(&connection, None).unwrap();
+        assert!(index.routing_resident());
+        assert!(!index.contains(7));
+        assert_eq!(index.search_sql(&connection, None, &[0., 1.], 1).unwrap(),
+            vec![(9, 1.)]);
+        connection.execute_batch("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn standalone_routing_cannot_be_silently_put_to_sleep() {
+        let mut index = RetrievalIndex::empty(2).unwrap();
+        index.add(7, &[1., 0.]).unwrap();
+        assert!(index.sleep_routing().is_err());
+        assert_eq!(index.search(&[1., 0.], 1).unwrap(), vec![(7, 1.)]);
+    }
 
     #[test]
     fn sql_options_exclude_ids_in_flat_and_graph_routes_and_require_a_transaction() {

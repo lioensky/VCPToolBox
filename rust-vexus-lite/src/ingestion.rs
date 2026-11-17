@@ -974,6 +974,22 @@ fn apply_scope_index_deltas(
     }
 
     if !tag_updates.is_empty() {
+        let cold = !global_tag_index.read()
+            .map_err(|_| "Global Tag index read lock poisoned".to_string())?
+            .routing_resident();
+        if cold {
+            // The caller owns the exclusive publication gate. SQL facts have
+            // committed; no cosine consumer can race this cold refresh.
+            with_registered_read(db_path, |connection| {
+                let mut guard = global_tag_index.write()
+                    .map_err(|_| "Global Tag index write lock poisoned".to_string())?;
+                if guard.dimensions() != plan.dimension {
+                    return Err("Global Tag retrieval dimension mismatch".into());
+                }
+                guard.refresh_cold_tag_count(connection)
+            })?;
+            return Ok(ready);
+        }
         let mut ids = Vec::new();
         let mut vectors = Vec::new();
         for (id, slot) in tag_updates {

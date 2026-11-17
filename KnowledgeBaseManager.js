@@ -491,7 +491,8 @@ class KnowledgeBaseManager {
                 dbPath,
                 path.join(this.config.storePath, 'index_global_tags_a.vec'),
                 this.config.modelSig,
-                tagCapacity
+                tagCapacity,
+                true
             );
             const parsed = typeof restored === 'string'
                 ? JSON.parse(restored)

@@ -32,6 +32,10 @@ async function main() {
     nativeKnowledgeRuntime.openAndInitStore(dbPath);
 
     try {
+        const coldStart = JSON.parse(await nativeKnowledgeRuntime.restoreGlobalTagIndex(
+            dbPath, path.join(root, 'tags_a.vec'), 'manifest-test-model', 16, true));
+        assert.strictEqual(coldStart.restored, true);
+        assert.strictEqual(index.stats().hotBytes, 0);
         await nativeKnowledgeRuntime.commitIngestionBatch(dbPath, JSON.stringify({
             operationId: 'manifest-fixture', batchId: 'manifest-fixture',
             dimension: 4, modelSig: 'manifest-test-model',
@@ -46,6 +50,9 @@ async function main() {
         }), new Float32Array([1,0,0,0, 0.8,0.2,0,0]),
         new Float32Array([1,0,0,0, 0.8,0.2,0,0, 0.7,0,0.3,0]));
 
+        assert.strictEqual(index.stats().totalVectors, 3);
+        assert.strictEqual(index.stats().hotBytes, 0,
+            'production ingestion must not wake legacy Tag routing');
         const effectiveConfig = {
             zeta: {
                 second: 2,
@@ -127,6 +134,8 @@ async function main() {
             'Memo pipeline must return its high-dimensional result as Float32Array'
         );
         assert.strictEqual(pipelineResult.enhancedVector.length, 4);
+        assert(index.stats().hotBytes > 0,
+            'explicit cosine pipeline restores compatibility routing on demand');
         const pipelineMetadata = JSON.parse(pipelineResult.metadataJson);
         assert.strictEqual(pipelineMetadata.artifactSig, result.artifactSig);
         assert.strictEqual(
@@ -334,6 +343,11 @@ async function main() {
         assert.strictEqual(warpedMetadata.diagnostics.tagRouting.used, 'warped_ags',
             'the successful fixture must exercise a real warped Tag observation');
         assert.strictEqual(warpedMetadata.diagnostics.tagRouting.fallback, false);
+        assert.strictEqual(index.stats().hotBytes, 0,
+            'warped production pipeline releases legacy routing without clearing MemoRuntime');
+        assert.strictEqual(index.memoRuntimeStats().resident, true);
+        assert(JSON.parse(index.memoObservationMemoryStats()).entries >= 2,
+            'reclaiming routing must preserve both independent query observations');
         const forcedTag = JSON.parse(await index.warmupWarpedTagField(
             dbPath, result.artifactSig, 'locked_2', true));
         assert.strictEqual(forcedTag.forced, true);
@@ -357,6 +371,23 @@ async function main() {
         assert.strictEqual(production.results.length, 2);
         assert(production.results.every(item => item.retrievalEngine === 'rivermemo_v5'));
         assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).legacyResident, false);
+        const partitionBefore = JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats());
+        assert.strictEqual(partitionBefore.partitions.hotPartitions, 1);
+        assert(partitionBefore.partitions.firstLineBytes > 0);
+        const emptyPartition = await lightQuery({
+            modelSig: 'manifest-test-model', engineMode: 'knn', abMode: false,
+            k: 2, candidateK: 16, scope: { exactDiaryNames: ['missing-diary'] }
+        });
+        assert.strictEqual(emptyPartition.results.length, 0);
+        const partitionCold = JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats());
+        assert.strictEqual(partitionCold.partitions.hotPartitions, 0);
+        assert.strictEqual(partitionCold.partitions.firstLineBytes, 0);
+        assert.strictEqual(partitionCold.warpedChunks.resident, true);
+        const partitionReload = await lightQuery(productionPlan);
+        assert.deepStrictEqual(partitionReload.results, production.results);
+        assert.strictEqual(partitionReload.diagnostics.warpedChunks.source, 'memory');
+        assert.strictEqual(partitionReload.diagnostics.warpedChunks.geometryFacts,
+            production.diagnostics.warpedChunks.geometryFacts);
         const productionFallback = await lightQuery({ ...productionPlan,
             warpedRiverInput: { ...productionPlan.warpedRiverInput,
                 tagRouting: { used: 'cosine', fallback: true } } });

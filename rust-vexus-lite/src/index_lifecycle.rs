@@ -842,7 +842,13 @@ impl Task for IndexCheckpointTask {
             Error::from_reason(format!("Rebase checkpoint index failed: {}", error))
         })?;
         if self.content_revision.load(Ordering::Acquire) == revision_before_save {
-            *active = Index::from_sql(build);
+            let was_cold = !active.routing_resident();
+            let mut replacement = Index::from_sql(build);
+            if was_cold {
+                replacement.sleep_routing()
+                    .map_err(|error| Error::from_reason(error.to_string()))?;
+            }
+            *active = replacement;
         }
         drop(active);
 
@@ -990,6 +996,51 @@ impl Task for IndexRestoreTask {
         if Path::new(&self.index_path).extension().and_then(|value| value.to_str()) != Some("vec") {
             return Err(Error::from_reason("Runtime index paths must use the .vec format"));
         }
+        let (generation, slot, replayed, rebuilt, skipped_invalid_vectors, target) =
+        if self.scope == IndexScope::GlobalTags
+            && self.index.lazy_tag_routing.load(Ordering::Acquire)
+        {
+            let mut target = Index::empty(dimension).map_err(|error|
+                Error::from_reason(error.to_string()))?;
+            target.release_originals();
+            target.sleep_routing().map_err(|error|
+                Error::from_reason(error.to_string()))?;
+            let (generation, slot, skipped) = with_registered_read_transaction(&self.db_path, |connection| {
+                target.refresh_cold_tag_count(connection)?;
+                let total: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM tags WHERE vector IS NOT NULL",
+                    [], |row| row.get(0),
+                ).map_err(|error| error.to_string())?;
+                let active: Option<String> = connection.query_row(
+                    "SELECT value FROM kv_store WHERE key='tag_index_active_baseline'",
+                    [], |row| row.get(0),
+                ).optional().map_err(|error| error.to_string())?;
+                let mut generation = 0;
+                let mut slot = String::new();
+                if let Some(raw) = active {
+                    let pointer: serde_json::Value = serde_json::from_str(&raw)
+                        .map_err(|error| format!("Decode Tag baseline pointer failed: {error}"))?;
+                    let candidate = pointer["generation"].as_i64().unwrap_or(0);
+                    let candidate_slot = pointer["slot"].as_str().unwrap_or_default();
+                    let manifest: Option<(i64, String)> = connection.query_row(
+                        "SELECT dimension,model_sig FROM tag_index_baselines
+                         WHERE generation=?1 AND slot=?2 AND status='ready'",
+                        rusqlite::params![candidate, candidate_slot],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    ).optional().map_err(|error| error.to_string())?;
+                    if candidate > 0 && matches!(candidate_slot, "a" | "b")
+                        && manifest == Some((dimension as i64, self.model_sig.clone()))
+                    {
+                        generation = candidate;
+                        slot = candidate_slot.to_string();
+                    }
+                }
+                Ok((generation, slot, (total.max(0) as u64).saturating_sub(target.size() as u64)))
+            }).map_err(Error::from_reason)?;
+            // No legacy payload is restored. Its SQL endorsement remains visible
+            // in diagnostics, without opening or rewriting the endorsed asset.
+            (generation, slot, false, false, skipped, target)
+        } else {
         let db_path = self.db_path.clone();
         let diary_name = self.diary_name.clone();
         let model_sig = self.model_sig.clone();
@@ -1297,6 +1348,8 @@ impl Task for IndexRestoreTask {
         target.reserve(self.capacity as usize).map_err(|error| {
             Error::from_reason(format!("Reserve restored index capacity failed: {}", error))
         })?;
+        (generation, slot, replayed, rebuilt, skipped_invalid_vectors, target)
+        };
         let vector_count = target.size() as u64;
         let mut active = self
             .index
@@ -1811,6 +1864,85 @@ mod failed_endorsement_tests {
         drop(checkpoint);
         drop(restore);
         drop(index);
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod lazy_tag_routing_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_restore_checkpoint_and_reload_preserve_sql_baseline_without_resident_routing() {
+        let root = std::env::temp_dir().join(format!(
+            "kbm-lazy-tags-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let baseline = root.join("tags_a.vec").to_string_lossy().into_owned();
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(
+            &db, crate::storage::StorageOptions::default(),
+        ).unwrap();
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [1_f32, 0.].iter().flat_map(|v| v.to_le_bytes()).collect();
+            for id in 1..=100 {
+                tx.execute("INSERT INTO tags(id,name,vector) VALUES (?1,?2,?3)",
+                    rusqlite::params![id, format!("tag-{id}"), &bytes])
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(WriteReceipt { operation: "fixture".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let owner = crate::VexusIndex::new(2, 128).unwrap();
+        owner.index.lazy_tag_routing.store(true, Ordering::Release);
+        let mut restore = IndexRestoreTask {
+            content_revision: owner.content_revision.clone(), memo_runtime: None,
+            db_path: db.clone(), index_path: baseline.clone(), index: owner.index.clone(),
+            scope: IndexScope::GlobalTags, diary_name: None, dimension: 2,
+            model_sig: "test".into(), capacity: 128,
+        };
+        let receipt: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(receipt["vectorCount"], 100);
+        assert!(!owner.index.read().unwrap().routing_resident());
+        assert_eq!(owner.index.cached_stats().2, 0);
+        let mut checkpoint = IndexCheckpointTask {
+            db_path: db.clone(), index_path: baseline.clone(), index: owner.index.clone(),
+            content_revision: owner.content_revision.clone(), scope: IndexScope::GlobalTags,
+            diary_name: None, dimension: 2, model_sig: "test".into(),
+            threshold: 0.05, force: false, allow_initial: true,
+        };
+        let published: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(published["published"], true);
+        assert!(!owner.index.read().unwrap().routing_resident());
+        let original = std::fs::read(&baseline).unwrap();
+        storage.submit_write(|tx| {
+            let bytes: Vec<u8> = [0_f32, 1.].iter().flat_map(|v| v.to_le_bytes()).collect();
+            tx.execute("UPDATE tags SET vector=?1 WHERE id=1", [bytes])
+                .map_err(|error| error.to_string())?;
+            Ok(WriteReceipt { operation: "change".into(), database_generation: 0, facts_changed: true })
+        }).unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&restore.compute().unwrap()).unwrap();
+        assert_eq!(restored["generation"], 1);
+        assert_eq!(restored["slot"], "a");
+        assert_eq!(restored["skippedInvalidVectors"], 0);
+        let skipped: serde_json::Value = serde_json::from_str(&checkpoint.compute().unwrap()).unwrap();
+        assert_eq!(skipped["published"], false);
+        assert_eq!(skipped["delta"], 1);
+        assert_eq!(std::fs::read(&baseline).unwrap(), original);
+        with_registered_read_transaction(&db, |connection| {
+            let mut routing = owner.index.write().map_err(|error| error.to_string())?;
+            routing.ensure_routing(connection, None)?;
+            assert_eq!(routing.search_sql(connection, None, &[0., 1.], 1)
+                .map_err(|error| error.to_string())?, vec![(1, 1.)]);
+            routing.sleep_routing().map_err(|error| error.to_string())?;
+            Ok(())
+        }).unwrap();
+        assert!(!owner.index.read().unwrap().routing_resident());
+        drop(checkpoint);
+        drop(restore);
+        drop(owner);
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -307,7 +307,7 @@ export declare class NativeKnowledgeRuntime {
    */
   restoreDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, capacity: number, diaryIndex: VexusIndex): Promise<unknown>
   /** 在 Rust 后台线程恢复全局 Tag 索引。 */
-  restoreGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, capacity: number): Promise<unknown>
+  restoreGlobalTagIndex(dbPath: string, indexPath: string, modelSig: string, capacity: number, lazyRouting?: boolean | undefined | null): Promise<unknown>
   /** 在 Rust 后台线程执行日记索引双槽代际 checkpoint。 */
   checkpointDiaryIndex(dbPath: string, diaryName: string, indexPath: string, modelSig: string, threshold: number, force?: boolean | undefined | null, allowInitial?: boolean | undefined | null): Promise<unknown>
   /** 在 Rust 后台线程执行全局 Tag 索引双槽代际 checkpoint。 */

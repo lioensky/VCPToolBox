@@ -45,6 +45,9 @@ pub(crate) struct GlobalChunks {
     model: String,
     facts: String,
     pub last_used: Instant,
+    // Only production scope metadata is cold-loaded. Global membership and
+    // trained geometry remain independent of this request working set.
+    hot_partitions: HashSet<String>,
 }
 
 fn facts(connection: &Connection) -> Result<String, String> {
@@ -76,6 +79,7 @@ impl GlobalChunks {
             warped: None,
             dimension, model: model.into(), facts: String::new(),
             last_used: Instant::now(),
+            hot_partitions: HashSet::new(),
         })
     }
 
@@ -92,6 +96,11 @@ impl GlobalChunks {
         if self.legacy_enabled {
             self.routing = CorrectedSmIndex::empty_flat(self.dimension).map_err(|e| e.to_string())?;
             self.legacy_enabled = false;
+            self.hot_partitions.clear();
+            for row in self.rows.values_mut() {
+                row.first_line = String::new();
+                row.date = 0;
+            }
         }
         Ok(())
     }
@@ -177,16 +186,66 @@ impl GlobalChunks {
             let (file_id, content, diary): (i64, String, String) =
                 metadata.query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                     .map_err(|e| e.to_string())?;
+            let hot = self.legacy_enabled || self.hot_partitions.contains(&diary);
             self.rows.insert(id, ChunkHeader {
                 id, file_id, diary,
-                first_line: content.split('\n').next().unwrap_or_default().trim().into(),
-                date: chunk_date(&content),
+                first_line: if hot {
+                    content.split('\n').next().unwrap_or_default().trim().into()
+                } else { String::new() },
+                date: if hot { chunk_date(&content) } else { 0 },
                 vector_version: vv, metadata_version: mv, file_version: fv, slot,
             });
             changed += 1;
         }
         self.facts = current;
         Ok(changed)
+    }
+
+    /// Activate exactly the partitions required by this frozen request. The
+    /// caller holds the table mutex until scope filtering and retrieval finish.
+    /// No vector payload, file publication, or geometry rebuild is involved.
+    pub fn activate_partitions(
+        &mut self, connection: &Connection, diaries: &HashSet<String>,
+    ) -> Result<(), String> {
+        if self.legacy_enabled { return Ok(()); }
+        if connection.is_autocommit() {
+            return Err("Chunk partition activation requires a read transaction".into());
+        }
+        // Publish readiness only after all reads succeed. Partial text loads on
+        // error are not marked ready and are retried; no result escapes that request.
+        let missing: HashSet<_> = diaries.difference(&self.hot_partitions).cloned().collect();
+        let mut statement = connection.prepare(
+            "SELECT c.id,c.content FROM chunks c JOIN files f ON f.id=c.file_id
+             WHERE f.diary_name=?1 AND c.vector IS NOT NULL",
+        ).map_err(|error| error.to_string())?;
+        for diary in &missing {
+            let mut rows = statement.query([diary]).map_err(|error| error.to_string())?;
+            while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+                let id: i64 = row.get(0).map_err(|error| error.to_string())?;
+                if let Some(header) = self.rows.get_mut(&id) {
+                    let content: String = row.get(1).map_err(|error| error.to_string())?;
+                    header.first_line = content.split('\n').next().unwrap_or_default().trim().into();
+                    header.date = chunk_date(&content);
+                }
+            }
+        }
+        for row in self.rows.values_mut().filter(|row| !diaries.contains(&row.diary)) {
+            row.first_line = String::new();
+            row.date = 0;
+        }
+        self.hot_partitions = diaries.clone();
+        Ok(())
+    }
+
+    pub fn partition_stats(&self) -> serde_json::Value {
+        let first_line_bytes: usize = self.rows.values().map(|row| row.first_line.capacity()).sum();
+        serde_json::json!({
+            "mode":if self.legacy_enabled {"legacy-global"} else {"request-partitions"},
+            "hotPartitions":self.hot_partitions.len(),
+            "globalMembers":self.rows.len(),
+            "firstLineBytes":first_line_bytes,
+            "note":"Managed text capacity only; excludes global member headers, geometry and RSS"
+        })
     }
 
     /// `admits` is called exactly once per live row, at that row's current slot,
@@ -270,6 +329,7 @@ impl GlobalChunks {
                 rows: snapshot.rows.into_iter().map(|row| (row.id, row)).collect(),
                 routing, legacy_enabled: true, warped: None, dimension, model: model.into(), facts: snapshot.facts,
                 last_used: Instant::now(),
+                hot_partitions: HashSet::new(),
             })
         })();
         match loaded {
@@ -408,6 +468,52 @@ fn slot_path(directory: &Path, slot: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_partitions_release_text_reload_and_follow_live_metadata() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO kbm_runtime_meta VALUES('global_chunk_facts','1');
+             CREATE TABLE files(id INTEGER PRIMARY KEY,diary_name TEXT,metadata_version INTEGER);
+             INSERT INTO files VALUES(1,'A',1),(2,'B',1);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY,file_id INTEGER,content TEXT,vector BLOB,
+                 vector_version INTEGER,metadata_version INTEGER);
+             INSERT INTO chunks VALUES(1,1,'[2026-11-17] Alice',X'0000803f00000000',1,1);
+             INSERT INTO chunks VALUES(2,2,'[2026-11-18] Bob',X'000000000000803f',1,1);
+             BEGIN;"
+        ).unwrap();
+        let mut table = GlobalChunks::production(2, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        assert_eq!(table.rows.len(), 2);
+        assert!(table.rows.values().all(|row| row.first_line.capacity() == 0));
+        let a = HashSet::from(["A".to_string()]);
+        let b = HashSet::from(["B".to_string()]);
+        table.activate_partitions(&db, &a).unwrap();
+        assert!(table.rows[&1].first_line.contains("Alice"));
+        assert_eq!(table.rows[&1].date, 20261117);
+        assert!(table.rows[&2].first_line.is_empty());
+        table.activate_partitions(&db, &b).unwrap();
+        assert_eq!(table.rows[&1].first_line.capacity(), 0);
+        assert_eq!(table.rows[&1].date, 0);
+        assert!(table.rows[&2].first_line.contains("Bob"));
+        db.execute_batch(
+            "UPDATE chunks SET content='[2026-12-01] Changed',metadata_version=2 WHERE id=1;
+             UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        table.synchronize(&db).unwrap();
+        assert!(table.rows[&1].first_line.is_empty());
+        table.activate_partitions(&db, &a).unwrap();
+        assert!(table.rows[&1].first_line.contains("Changed"));
+        assert_eq!(table.rows[&1].date, 20261201);
+        assert_eq!(table.rows[&2].first_line.capacity(), 0);
+        assert_eq!(table.partition_stats()["hotPartitions"], 1);
+        assert!(!table.legacy_resident());
+        table.activate_partitions(&db, &HashSet::new()).unwrap();
+        assert!(table.rows.values().all(|row| row.first_line.capacity() == 0));
+        assert_eq!(table.rows.len(), 2);
+        db.execute_batch("ROLLBACK").unwrap();
+    }
 
     #[test]
     fn generations_checkpoint_reload_and_corruption_recover_without_embeddings() {
