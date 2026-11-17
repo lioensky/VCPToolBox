@@ -19,6 +19,9 @@ pub(crate) struct Scope {
     excluded_folders: Vec<String>,
     include_music: bool,
     time_range: Option<TimeRange>,
+    exact_diary_names: Vec<String>,
+    allowed_file_ids: Option<HashSet<i64>>,
+    denied_file_ids: HashSet<i64>,
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -83,6 +86,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 impl Scope {
     fn admits(&self, row: &crate::global_chunks::ChunkHeader, diaries: &HashSet<String>) -> bool {
         diaries.contains(&row.diary)
+            && self.allowed_file_ids.as_ref().is_none_or(|ids| ids.contains(&row.file_id))
+            && !self.denied_file_ids.contains(&row.file_id)
             && (self.time_range.as_ref().is_none_or(|range|
                 row.date != 0 && row.date >= range.start && row.date <= range.end))
             && (self.search_all || !self.folders.is_empty() || self.maid.is_empty()
@@ -136,6 +141,10 @@ impl Scope {
             .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
         let mut allowed = HashSet::new();
         for name in names {
+            if !self.exact_diary_names.is_empty() {
+                if self.exact_diary_names.contains(&name) { allowed.insert(name); }
+                continue;
+            }
             if name.starts_with("已整理") || name.ends_with('簇')
                 || self.excluded_folders.contains(&name)
                     && !(self.include_music && name == "MusicDiary") { continue; }
@@ -209,10 +218,11 @@ impl Task for LightMemoTask {
                     *resident = None;
                 }
                 if resident.is_none() {
-                    *resident = Some(GlobalChunks::load(connection, directory,
-                        self.dimension, &plan.model_sig)?);
+                    *resident = Some(GlobalChunks::production(self.dimension, &plan.model_sig)?);
                 }
                 let table = resident.as_mut().unwrap();
+                if plan.ab_mode { table.enable_legacy(connection, directory)?; }
+                else { table.disable_legacy()?; }
                 let synchronized = table.synchronize(connection)?;
                 table.compact_if_needed(connection)?;
                 let diaries = plan.scope.diaries(connection)?;
@@ -223,17 +233,20 @@ impl Task for LightMemoTask {
                     sketch_margin: plan.pelorus_sketch_margin,
                     kernel: if plan.pelorus_asym_lut { AsymKernel::Avx2Lut } else { AsymKernel::Auto },
                 };
-                let (ids, routing_stats) = table.search_with_config(
+                let (ids, routing_stats) = if plan.ab_mode { table.search_with_config(
                     &self.query, plan.candidate_k.max(plan.k), &routing_config, |row| {
                         let admitted = plan.scope.admits(row, &diaries);
                         scope_chunks += usize::from(admitted);
                         admitted
                     },
-                )?;
+                )? } else {
+                    scope_chunks = table.rows.values().filter(|row| plan.scope.admits(row, &diaries)).count();
+                    (Vec::new(), Default::default())
+                };
                 let scope_diagnostics = if plan.ab_mode || ids.is_empty() {
                     plan.scope.diagnose(connection,table,&diaries)?
                 } else { Value::Null };
-                let (warped_hits, warped_diagnostics) = if plan.ab_mode && plan.warped_ab {
+                let (warped_hits, warped_diagnostics) = if !plan.ab_mode || plan.warped_ab {
                     table.search_warped(connection, &self.query, plan.candidate_k.max(plan.k),
                         |row| plan.scope.admits(row, &diaries))?
                 } else { (Vec::new(), Value::Null) };
@@ -279,7 +292,7 @@ impl Task for LightMemoTask {
                         candidate["dbName"] = json!(diary);
                         candidate["fileId"] = json!(file_id);
                     }
-                    candidate["score"] = candidate["vectorScore"].clone();
+                    candidate["score"] = candidate.get("warpedScore").unwrap_or(&candidate["vectorScore"]).clone();
                     candidate["hybridScore"] = candidate["vectorScore"].clone();
                     candidate["retrievalEngine"] = json!(
                         if candidate.get("warpedDistance").is_some() { "warped_chunks" } else { "tdb" });
@@ -293,10 +306,12 @@ impl Task for LightMemoTask {
                 let warped_top_k = warped_candidates.iter().take(plan.k).cloned().collect::<Vec<_>>();
                 let mut baseline_river = Value::Null;
                 let mut warped_river = Value::Null;
-                for variant in 0..if plan.ab_mode && plan.warped_ab { 2 } else { 1 } {
+                let variants: &[usize] = if !plan.ab_mode { &[1] }
+                    else if plan.warped_ab { &[0, 1] } else { &[0] };
+                for &variant in variants {
                 if variant == 1 && plan.warped_river_input["tagRouting"]["used"].as_str() != Some("warped_ags") {
                     warped_river = json!({
-                        "results":[], "pipelineVersion":"rivermemo-v5-warped-experimental",
+                        "results":[], "pipelineVersion":"rivermemo-v5-warped",
                         "diagnostics":{"available":false,"reason":"Tag warped route unavailable; no cosine result presented as V5",
                             "tagRouting":plan.warped_river_input["tagRouting"]}
                     });
@@ -305,7 +320,7 @@ impl Task for LightMemoTask {
                 let candidates = if variant == 0 { &candidates } else { &warped_candidates };
                 if variant == 1 && candidates.is_empty() {
                     warped_river = json!({
-                        "results":[],"pipelineVersion":"rivermemo-v5-warped-experimental",
+                        "results":[],"pipelineVersion":"rivermemo-v5-warped",
                         "diagnostics":{"available":false,"reason":"empty_chunk_candidates",
                             "tagRouting":plan.warped_river_input["tagRouting"],"scope":scope_diagnostics}
                     });
@@ -374,6 +389,7 @@ impl Task for LightMemoTask {
                                 item[key] = original[key].clone();
                             }
                             item["hybridScore"] = item["score"].clone();
+                            item["retrievalEngine"] = json!(if variant == 1 { "rivermemo_v5" } else { "rivermemo_v4" });
                             item["riverMemo"] = json!({
                                 "omega":item["omega"],"role":item["role"],
                                 "regime":item["riverRegime"],"topologyBonus":item["topologyBonus"],
@@ -392,22 +408,24 @@ impl Task for LightMemoTask {
                 }
                 if variant == 0 { baseline_river = current_river; } else {
                     if current_river.is_object() {
-                        current_river["pipelineVersion"] = json!("rivermemo-v5-warped-experimental");
+                        current_river["pipelineVersion"] = json!("rivermemo-v5-warped");
                         current_river["diagnostics"]["tagRouting"] = plan.warped_river_input["tagRouting"].clone();
                         current_river["diagnostics"]["chunkRouting"] = warped_diagnostics.clone();
                     }
                     warped_river = current_river;
                 }
                 }
-                let river = baseline_river;
+                let river = if plan.ab_mode { baseline_river } else { warped_river.clone() };
                 let mut comparison_pool = candidates.clone();
                 let mut seen = comparison_pool.iter().filter_map(|c|c["id"].as_i64()).collect::<HashSet<_>>();
                 for candidate in &warped_candidates {
                     if seen.insert(candidate["id"].as_i64().unwrap()) { comparison_pool.push(candidate.clone()); }
                 }
-                let results = if plan.engine_mode == "rivermemo" {
+                let degraded = !plan.ab_mode && plan.engine_mode == "rivermemo"
+                    && river["diagnostics"]["available"] == json!(false);
+                let results = if plan.engine_mode == "rivermemo" && !degraded {
                     river["results"].as_array().cloned().unwrap_or_default()
-                } else { tdb.clone() };
+                } else if plan.ab_mode { tdb.clone() } else { warped_top_k.clone() };
                 Ok(json!({
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
@@ -421,9 +439,13 @@ impl Task for LightMemoTask {
                     "diagnostics":{"scopeChunks":scope_chunks,"candidateCount":vectors.len(),
                         "synchronizedRows":synchronized,"databaseGeneration":generation,
                         "bm25Mode":"candidate-substring-tf-v1","ffiTrips":1,
-                        "scope":scope_diagnostics,
+                        "scope":scope_diagnostics,"degraded":degraded,
+                        "retrievalEngine":if !plan.ab_mode && !degraded && plan.engine_mode=="rivermemo" {
+                            "rivermemo_v5" } else if !plan.ab_mode { "warped_ann" } else { "ab" },
+                        "legacyResident":table.legacy_resident(),
                         "warpedChunks":warped_diagnostics,
-                        "routingMode":if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
+                        "routingMode":if !plan.ab_mode { "warped_chunks" }
+                            else if plan.pelorus_route2 { "pelorus-route2" } else { "legacy-sm-l2" },
                         "routing":{"admitted":routing_stats.admitted,
                             "symmetricScored":routing_stats.symmetric_scored,
                             "asymmetricScored":routing_stats.asymmetric_scored,
@@ -652,7 +674,8 @@ mod tests {
             let routed: Value = serde_json::from_str(&task.compute().unwrap()).unwrap();
             assert_eq!(routed["results"], expected["results"]);
             assert_eq!(routed["diagnostics"]["scopeChunks"], expected["diagnostics"]["scopeChunks"]);
-            assert_eq!(routed["diagnostics"]["routingMode"], "pelorus-route2");
+            assert_eq!(routed["diagnostics"]["routingMode"], "warped_chunks");
+            assert_eq!(routed["diagnostics"]["legacyResident"], false);
             assert_eq!(routed["diagnostics"]["routing"]["sketchRejected"], 0);
         }
         for extra in [
@@ -671,7 +694,13 @@ mod tests {
             "modelSig":"test","engineMode":"knn","k":1,"candidateK":20}).to_string();
         let top=serde_json::from_str::<Value>(&task.compute().unwrap()).unwrap();
         assert_eq!(top["results"],json!([excluded["results"][0].clone()]));
-        assert_eq!(top["tdbTopK"],top["results"]);
+        assert_eq!(top["warpedTopK"],top["results"]);
+        assert!(top["tdbTopK"].as_array().unwrap().is_empty());
+        assert_eq!(top["diagnostics"]["legacyResident"],false);
+        let denied=run(&mut task,json!({"exactDiaryNames":["AliceDiary"],"allowedFileIds":[]}));
+        assert!(denied["results"].as_array().unwrap().is_empty());
+        let exact=run(&mut task,json!({"exactDiaryNames":["AliceDiary"],"allowedFileIds":[1],"deniedFileIds":[2]}));
+        assert_eq!(exact["results"].as_array().unwrap().len(),2);
         assert_eq!(top["diagnostics"]["candidateCount"],2);
         assert_eq!(top["diagnostics"]["scopeChunks"],2);
         assert!(!std::fs::read_dir(&root).unwrap().any(|entry|
@@ -719,15 +748,14 @@ impl Task for WarpedChunkPreparationTask {
             .map_err(Error::from_reason)?;
         let mut resident = self.table.lock()
             .map_err(|_|Error::from_reason("Global Chunk table lock poisoned"))?;
-        let directory = std::path::Path::new(&self.db_path).parent().unwrap();
         let result = crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
             // Forced maintenance re-reads SQL instead of trusting a cached TDB snapshot.
             // Publish the replacement in memory only after successful field preparation.
             let mut replacement = if self.force {
-                Some(GlobalChunks::empty(self.dimension,&self.model)?)
+                Some(GlobalChunks::production(self.dimension,&self.model)?)
             } else if resident.as_ref().is_none_or(|table|
                 !table.matches_model(self.dimension,&self.model)) {
-                Some(GlobalChunks::load(connection,directory,self.dimension,&self.model)?)
+                Some(GlobalChunks::production(self.dimension,&self.model)?)
             } else { None };
             let table = match replacement.as_mut() {
                 Some(table) => table,

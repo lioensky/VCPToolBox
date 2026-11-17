@@ -85,7 +85,7 @@ async function main() {
                 0.8, 0.2, 0, 0
             ])
         );
-        nativeKnowledgeRuntime.registerDiaryIndex('test', diaryIndex);
+        // Production joint queries must not require a registered old diary TDB index.
 
         await index.computeMemoGeometry(dbPath, 'manifest-test-model',
             JSON.stringify({ local: { minNeighbors: 1 } }));
@@ -155,6 +155,7 @@ async function main() {
             dbPath,
             result.artifactSig,
             JSON.stringify({
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 dimension: 4,
                 topK: 2,
@@ -235,6 +236,7 @@ async function main() {
             dbPath,
             result.artifactSig,
             JSON.stringify({
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 dimension: 4,
                 topK: 2,
@@ -295,12 +297,13 @@ async function main() {
             'caller-provided fake candidates must be replaced by native ANN results'
         );
 
-        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false);
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).legacyResident, false);
         const lightPlan = {
             scope: { folders: ['test'] }, modelSig: 'manifest-test-model',
             engineMode: 'rivermemo', k: 2, candidateK: 16, abMode: true,
             artifactSig: result.artifactSig,
             riverInput: {
+                modelSig: 'manifest-test-model',
                 observationHandle: pipelineMetadata.observationHandle,
                 query: { text: 'shared-file candidate' },
                 queryState: { queryId: 'typed-array-regression' },
@@ -343,7 +346,30 @@ async function main() {
                 tagRouting: warpedMetadata.diagnostics.tagRouting
             }
         };
+        await new Promise(resolve => setTimeout(resolve, 15));
+        assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+        const productionPlan = { ...warpedPlan, abMode: false };
+        const production = await lightQuery(productionPlan);
+        assert.strictEqual(production.diagnostics.legacyResident, false);
+        assert.strictEqual(production.diagnostics.retrievalEngine, 'rivermemo_v5');
+        assert.strictEqual(production.river.pipelineVersion, 'rivermemo-v5-warped');
+        assert.strictEqual(production.tdbTopK.length, 0);
+        assert.strictEqual(production.results.length, 2);
+        assert(production.results.every(item => item.retrievalEngine === 'rivermemo_v5'));
+        assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).legacyResident, false);
+        const productionFallback = await lightQuery({ ...productionPlan,
+            warpedRiverInput: { ...productionPlan.warpedRiverInput,
+                tagRouting: { used: 'cosine', fallback: true } } });
+        assert.strictEqual(productionFallback.diagnostics.degraded, true);
+        assert.strictEqual(productionFallback.diagnostics.retrievalEngine, 'warped_ann');
+        assert(productionFallback.results.every(item => item.retrievalEngine === 'warped_chunks'));
+        const permissionEmpty = await lightQuery({ ...productionPlan, engineMode: 'knn',
+            scope: { exactDiaryNames: ['test'], allowedFileIds: [] } });
+        assert.strictEqual(permissionEmpty.results.length, 0);
         const warpedResult = await lightQuery(warpedPlan);
+        assert.strictEqual(warpedResult.diagnostics.legacyResident, true);
+        const productionAgain = await lightQuery(productionPlan);
+        assert.strictEqual(productionAgain.diagnostics.legacyResident, false);
         assert.deepStrictEqual(warpedResult.tdbTopK, lightResults[0].tdbTopK,
             'enabling warped experiments must not alter the TDB baseline');
         assert.strictEqual(warpedResult.warpedTopK.length, 2);
@@ -358,7 +384,7 @@ async function main() {
             assert.strictEqual(warpedResult.warpedRiver.algorithmVersion,
                 warpedResult.river.algorithmVersion, 'V5 must not forge a new readout algorithm');
             assert.strictEqual(warpedResult.warpedRiver.pipelineVersion,
-                'rivermemo-v5-warped-experimental');
+                'rivermemo-v5-warped');
             assert(warpedResult.warpedRiver.results.every(item =>
                 warpedResult.recallPools.warped.includes(item.chunkId)));
         } else {
@@ -469,6 +495,7 @@ async function main() {
                     dbPath,
                     result.artifactSig,
                     JSON.stringify({
+                        modelSig: 'manifest-test-model',
                         observationHandle,
                         dimension: 4,
                         topK: 2,

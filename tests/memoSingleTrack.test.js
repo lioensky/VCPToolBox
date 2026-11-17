@@ -7,28 +7,23 @@ const DreamWaveEngine = require('../Plugin/AgentDream/DreamWaveEngine');
 const rag = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
 const kb = require('../KnowledgeBaseManager');
 
-test('pure KNN merges selected indices and hydrates without Memo processing', async () => {
+test('pure ANN uses warped native scope without loading old indices or sensing', async () => {
     const owner = {
         config: { dimension: 2 },
         _isVectorLike: value => Array.isArray(value) || value instanceof Float32Array,
         async listDistinctDiaries() { return []; },
-        nativeKnowledgeRuntime: {
-            async searchDiaryIndices(names, vector) {
-                assert.deepEqual(names, ['A', 'B']);
-                assert(vector instanceof Float32Array);
-                return { results: [{ id: 3, score: 1 }, { id: 2, score: 0.9 }, { id: 1, score: 0.8 }],
-                    hydratedChunks: [
-                        { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
-                        { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
-                        { id: 3, text: 'outside', sourceFile: 'C/c.md', diaryName: 'C', fileId: 30 }
-                    ] };
-            }
+        async executeLightMemoQuery(query, options) {
+            assert.deepEqual(options.scope.exactDiaryNames, ['A', 'B']);
+            assert.equal(options.engineMode, 'knn');
+            assert(query.vector instanceof Float32Array);
+            return { results: [
+                { id: 2, chunkId: 2, text: 'b', score: -0.1, vectorScore: 0.9,
+                    sourceFile: 'B/b.md', dbName: 'B', fileId: 20 },
+                { id: 1, chunkId: 1, text: 'a', score: -0.2, vectorScore: 0.8,
+                    sourceFile: 'A/a.md', dbName: 'A', fileId: 10 }
+            ] };
         },
-        async _getOrLoadDiaryIndex(name) {
-            return { search: () => name === 'A'
-                ? [{ id: 1, score: 0.8 }, { id: 3, score: 1 }]
-                : [{ id: 2, score: 0.9 }, { id: 1, score: 0.7 }] };
-        },
+        async _getOrLoadDiaryIndex() { throw new Error('legacy index must stay sealed'); },
         _queryByChunks: () => [
             { id: 1, text: 'a', sourceFile: 'A/a.md', diaryName: 'A', fileId: 10 },
             { id: 2, text: 'b', sourceFile: 'B/b.md', diaryName: 'B', fileId: 20 },
@@ -41,7 +36,9 @@ test('pure KNN merges selected indices and hydrates without Memo processing', as
     const results = await service.searchKnnMany(['A', 'B'], [1, 0], 2);
     assert.deepEqual(results.map(item => item.chunkId), [2, 1]);
     assert.equal(results[0].fullPath, 'B/b.md');
-    assert.equal(results[0].retrievalEngine, 'knn');
+    assert.equal(results[0].retrievalEngine, 'warped_ann');
+    assert.equal(results[0].score, -0.1);
+    assert.equal(results[0].vectorScore, 0.9);
     assert.deepEqual(await service.searchKnn([], [1, 0], 2), []);
 });
 
@@ -278,7 +275,10 @@ test('LightMemo releases its observation on success and native failure', async (
     const owner = {
         _executeLightMemoQueryAdmitted: kb._executeLightMemoQueryAdmitted,
         config: { dimension: 2, modelSig: 'model', rootPath: '.' },
-        async prepareUnifiedMemoObservation() { return prepared; },
+        async prepareUnifiedMemoObservation(_query, options) {
+            assert.equal(options.tagRoutingMode, 'warped_ags');
+            return prepared;
+        },
         releaseMemoObservation(value) { assert.equal(value, prepared); released++; },
         riverMemoEngine: { _nativeConfig() { return {}; } },
         nativeKnowledgeRuntime: {

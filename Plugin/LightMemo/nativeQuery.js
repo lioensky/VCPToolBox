@@ -160,8 +160,8 @@ async function laboratory(args = {}) {
     output += `- 查询：${this._escapeMarkdownCell(request.originalQuery)}\n`;
     output += `- 对照并集候选：${pool.length}；Top-K：${request.k}；Chunk 读取同快照、同过滤边界。\n`;
     output += '- 原生 TDB ANN：保留现有 2-bit SM 无图扫描召回及原件余弦排序；双曲 Chunk ANN：全局共享几何，按范围检索，按双曲距离升序（展示负距离，越大越近）。范围内不超过 128 条时走共享几何上的精确扫描，不冒充图导航。\n';
-    output += '- 两条 Tag 观测分别准备并校验同资产签名，不保证跨阶段同一 SQL 快照；首次双曲构建或事实变更后的重建成本包含在诊断中。\n';
-    output += '- RiverMemo V3/4：TDB 候选 + 现有 Tag/NNLS 观测；双曲 RiverMemo V5：双曲 Chunk 候选 + 双曲 Tag 观测。最终均由现有原生 RiverMemo 读出器重新评分，不沿用 ANN 排名；V5 是实验链路名，不伪造读出算法版本。\n';
+    output += '- 两条 Tag 观测分别准备并校验同资产签名，不保证跨阶段同一 SQL 快照；首次构建或快照恢复成本包含在诊断中；日常成员同步不重建冻结几何。\n';
+    output += '- RiverMemo V3/4：TDB 候选 + 现有 Tag/NNLS 观测；双曲 RiverMemo V5：双曲 Chunk 候选 + 双曲 Tag 观测。最终均由现有原生 RiverMemo 读出器重新评分，不沿用 ANN 排名；V5 是生产链路名，不伪造读出算法版本。\n';
     output += '- Rerank/Jev 使用两套召回候选的去重并集；两条 RiverMemo 各用自己的召回池，因此这是端到端对照，不是固定池排序消融。\n';
     output += '- TDB 按原件余弦排序；比较排序/读出，不代表全库精确召回率。\n';
     output += `- Rerank：${external.length ? '获得有效外部评分' : '关闭、未配置或失败；不冒充回退评分'}。\n`;
@@ -185,7 +185,7 @@ async function laboratory(args = {}) {
     output += `\n- Chunk 双曲诊断：${this._escapeMarkdownCell(JSON.stringify(response.diagnostics?.warpedChunks) ?? '未返回；请重建原生模块')}\n`;
     output += `- Tag 双曲诊断：${this._escapeMarkdownCell(JSON.stringify(response.warpedMemoObservation?.diagnostics?.tagRouting) ?? '未返回')}\n`;
     if (response.warpedRiver) {
-        output += '\n## 双曲 RiverMemo V5 实验链路\n';
+        output += '\n## 双曲 RiverMemo V5 生产链路\n';
         output += require('./abDiagnostics').formatDiagnostics(this, request, {
             ...response, river: response.warpedRiver,
             memoObservation: response.warpedMemoObservation

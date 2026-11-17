@@ -5,7 +5,7 @@ const {
     computeRiverObservability
 } = require('./modules/tagmemoV10/riverObservability');
 
-const VERSION = 'rivermemo_v1';
+const VERSION = 'rivermemo_v5';
 const ALGORITHM_VERSION = 'rivermemo.topology-v3.1';
 const RESULT_SCHEMA = 'rivermemo-topology-v3-result-v1';
 
@@ -154,6 +154,7 @@ class RiverMemoEngine {
             : null;
         const payload = {
             observationHandle,
+            modelSig: options.modelSig || this.runtime.config.modelSig,
             dimension: Number(this.runtime.config.dimension),
             topK: Math.max(
                 1,

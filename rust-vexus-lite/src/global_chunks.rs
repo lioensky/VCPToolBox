@@ -39,6 +39,7 @@ struct Snapshot {
 pub(crate) struct GlobalChunks {
     pub rows: HashMap<i64, ChunkHeader>,
     routing: CorrectedSmIndex,
+    legacy_enabled: bool,
     warped: Option<warped_chunks::WarpedChunks>,
     dimension: usize,
     model: String,
@@ -71,10 +72,37 @@ impl GlobalChunks {
         Ok(Self {
             rows: HashMap::new(),
             routing: CorrectedSmIndex::empty_flat(dimension).map_err(|e| e.to_string())?,
+            legacy_enabled: true,
             warped: None,
             dimension, model: model.into(), facts: String::new(),
             last_used: Instant::now(),
         })
+    }
+
+    /// Production keeps only live membership; the old quantized payload is AB-only.
+    pub fn production(dimension: usize, model: &str) -> Result<Self, String> {
+        let mut table = Self::empty(dimension, model)?;
+        table.legacy_enabled = false;
+        Ok(table)
+    }
+
+    pub fn legacy_resident(&self) -> bool { self.legacy_enabled }
+
+    pub fn disable_legacy(&mut self) -> Result<(), String> {
+        if self.legacy_enabled {
+            self.routing = CorrectedSmIndex::empty_flat(self.dimension).map_err(|e| e.to_string())?;
+            self.legacy_enabled = false;
+        }
+        Ok(())
+    }
+
+    pub fn enable_legacy(&mut self, connection: &Connection, directory: &Path) -> Result<(), String> {
+        if !self.legacy_enabled {
+            let mut replacement = Self::load(connection, directory, self.dimension, &self.model)?;
+            replacement.warped = self.warped.take();
+            *self = replacement;
+        }
+        Ok(())
     }
 
     pub fn matches_model(&self, dimension: usize, model: &str) -> bool {
@@ -141,7 +169,9 @@ impl GlobalChunks {
                     continue;
                 }
                 let slot = self.routing.len();
-                self.routing.push_flat_vector(&values, id as u64).map_err(|e| e.to_string())?;
+                if self.legacy_enabled {
+                    self.routing.push_flat_vector(&values, id as u64).map_err(|e| e.to_string())?;
+                }
                 slot
             } else { previous_slot.unwrap() };
             let (file_id, content, diary): (i64, String, String) =
@@ -238,7 +268,7 @@ impl GlobalChunks {
             }
             Ok(Self {
                 rows: snapshot.rows.into_iter().map(|row| (row.id, row)).collect(),
-                routing, warped: None, dimension, model: model.into(), facts: snapshot.facts,
+                routing, legacy_enabled: true, warped: None, dimension, model: model.into(), facts: snapshot.facts,
                 last_used: Instant::now(),
             })
         })();
@@ -255,6 +285,7 @@ impl GlobalChunks {
     /// is separate from queries; SQL member versions survive eviction/restart.
     pub fn checkpoint(&mut self, db_path: &str, directory: &Path, database_generation: u64,
         threshold: f64, allow_initial: bool) -> Result<bool, String> {
+        if !self.legacy_enabled { return Ok(false); }
         if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
             return Err("Invalid global Chunk checkpoint threshold".into());
         }

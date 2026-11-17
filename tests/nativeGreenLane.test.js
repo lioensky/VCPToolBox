@@ -46,16 +46,14 @@ test('native green lane runs without Memo assets, filters scope and enforces HTT
         } finally {
             db.close();
         }
-        const index = new VexusIndex(2, 16);
-        await runtime.restoreDiaryIndex(dbPath, 'A', path.join(root, 'a.vec'), 'fixture', 16, index);
-        runtime.registerDiaryIndex('A', index);
+        // The external lane recalls from shared warped geometry without diary TDB registration.
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         process.env.JEV_API_URL = `http://127.0.0.1:${server.address().port}/jev`;
         process.env.JEV_API_KEY = 'fixture';
         process.env.JEV_PROXY_URL = '';
         process.env.NativeRerankTimeoutMs = '100';
         const plan = JSON.stringify({
-            diaryNames: ['A'], useJev: true, topK: 2, candidateK: 16, externalK: 2,
+            modelSig: 'fixture', diaryNames: ['A'], useJev: true, topK: 2, candidateK: 16, externalK: 2,
             configPath: path.join(root, 'missing.env'),
             fileCandidates: [{ path: 'B/b.txt', normalizedBM25Score: 1 }],
             excludedPrefixes: []
@@ -64,6 +62,7 @@ test('native green lane runs without Memo assets, filters scope and enforces HTT
         assert.equal(result.diagnostics.nativeRerank.greenLane, true);
         assert.deepEqual(result.results.map(row => row.chunkId), [2, 1]);
         assert.equal(runtime.stats().memoRuntimeResident, false);
+        assert.equal(JSON.parse(runtime.lightMemoIndexStats()).legacyResident, false);
         delayed = true;
         await assert.rejects(runtime.executeExternalRerank(plan, new Float32Array([1, 0])), /RERANK_DEADLINE|RERANK_NETWORK_ERROR/);
         assert.equal(received, 2);
