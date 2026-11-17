@@ -720,6 +720,13 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
     const resultMessages = [];
     let currentPartsBuffer = [];
 
+    const flushBaseBuffer = () => {
+        if (currentPartsBuffer.length > 0) {
+            resultMessages.push({ ...message, role: baseRole, content: currentPartsBuffer });
+            currentPartsBuffer = [];
+        }
+    };
+
     for (const part of originalParts) {
         if (part.type !== 'text' || typeof part.text !== 'string') {
             currentPartsBuffer.push(part);
@@ -731,39 +738,47 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
         const splitResults = processSingleMessage(tempMsg, { ignoreList, switches, scanSwitches, removeDisabledTags });
 
         if (splitResults.length === 1) {
-            // No split occurred in this text part; preserve part metadata such as cache_control
-            currentPartsBuffer.push({ ...part, type: 'text', text: splitResults[0].content });
+            if (splitResults[0].role === baseRole) {
+                // No split occurred in this text part; preserve part metadata such as cache_control
+                currentPartsBuffer.push({ ...part, type: 'text', text: splitResults[0].content });
+            } else {
+                flushBaseBuffer();
+                resultMessages.push(splitResults[0]);
+            }
         } else {
             // Split occurred!
-            
-            // 1. The first part of splitResults belongs to the current buffer
-            if (splitResults[0].content.trim().length > 0) {
-                currentPartsBuffer.push({ type: 'text', text: splitResults[0].content });
-            }
-            
-            // 2. Push the accumulated buffer as a message
-            if (currentPartsBuffer.length > 0) {
-                resultMessages.push({ ...message, role: baseRole, content: currentPartsBuffer });
-                currentPartsBuffer = [];
+
+            // 1. Handle the first part: keep in baseRole buffer only if it actually belongs to baseRole
+            const firstSplitPart = splitResults[0];
+            if (firstSplitPart.role === baseRole) {
+                if (firstSplitPart.content.trim().length > 0) {
+                    currentPartsBuffer.push({ type: 'text', text: firstSplitPart.content });
+                }
+                flushBaseBuffer();
+            } else {
+                flushBaseBuffer();
+                resultMessages.push(firstSplitPart);
             }
 
-            // 3. Middle parts are new roles (they are always pure text)
+            // 2. Middle parts are new roles (they are always pure text)
             for (let i = 1; i < splitResults.length - 1; i++) {
                 resultMessages.push(splitResults[i]);
             }
 
-            // 4. The last part becomes the new start of the buffer
+            // 3. The last part becomes the new start of the buffer only if it belongs to baseRole
             const lastSplitPart = splitResults[splitResults.length - 1];
-            if (lastSplitPart.content.trim().length > 0) {
-                currentPartsBuffer.push({ type: 'text', text: lastSplitPart.content });
+            if (lastSplitPart.role === baseRole) {
+                if (lastSplitPart.content.trim().length > 0) {
+                    currentPartsBuffer.push({ type: 'text', text: lastSplitPart.content });
+                }
+            } else {
+                resultMessages.push(lastSplitPart);
             }
         }
     }
 
     // Push remaining buffer
-    if (currentPartsBuffer.length > 0) {
-        resultMessages.push({ ...message, role: baseRole, content: currentPartsBuffer });
-    }
+    flushBaseBuffer();
 
     return resultMessages.length > 0 ? resultMessages : [message];
 }

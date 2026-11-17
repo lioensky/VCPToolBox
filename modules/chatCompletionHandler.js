@@ -1072,6 +1072,10 @@ class ChatCompletionHandler {
       let processedMessages = [];
       for (const msg of tavernProcessedMessages) {
         throwIfRequestAborted();
+        if (msg && (msg.role === 'tool' || msg.role === 'function')) {
+          processedMessages.push(JSON.parse(JSON.stringify(msg)));
+          continue;
+        }
         const newMessage = JSON.parse(JSON.stringify(msg));
         if (newMessage.content && typeof newMessage.content === 'string') {
           newMessage.content = await messageProcessor.replaceAgentVariables(

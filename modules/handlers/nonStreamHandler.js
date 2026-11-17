@@ -2,6 +2,7 @@
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream } = require('../toolResultBatch.js');
+const { matchesNativeToolIsolation } = require('../nativeToolIsolation.js');
 const {
   buildClientVisibleContent,
   removeReasoningFields,
@@ -57,11 +58,23 @@ function parseNonStreamResponse(rawResponseText) {
   }
 }
 
-function isCompleteNonStreamResponse(readResult) {
+function hasNativeToolCallPayload(message) {
+  return (
+    (Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) ||
+    Boolean(message?.function_call && typeof message.function_call === 'object')
+  );
+}
+
+function isCompleteNonStreamResponse(readResult, stripNativeTools = false) {
   const { parsedJson, message, choice } = parseNonStreamResponse(readResult.text);
-  return readResult.response.ok && !readResult.semanticRetryExhausted &&
-    !!parsedJson && !parsedJson.error && !!message &&
-    hasVisibleContent(message.content) && choice?.finish_reason === 'stop';
+  if (!readResult.response.ok || readResult.semanticRetryExhausted || !parsedJson || parsedJson.error || !message) {
+    return false;
+  }
+  if (!stripNativeTools && hasNativeToolCallPayload(message) &&
+      ['tool_calls', 'function_call', 'stop'].includes(choice?.finish_reason)) {
+    return true;
+  }
+  return hasVisibleContent(message.content) && choice?.finish_reason === 'stop';
 }
 
 function isReasoningOnlyNonStreamResponse(rawResponseText) {
@@ -254,8 +267,9 @@ class NonStreamHandler {
     firstAiAPIResponse = firstReadResult.response;
     const aiResponseText = firstReadResult.text;
     let chatLogs = [];
+    const stripInitialNativeTools = matchesNativeToolIsolation(originalBody?.model);
     let oneRingAssistantTurnParts = [];
-    let validUpstreamTurns = isCompleteNonStreamResponse(firstReadResult);
+    let validUpstreamTurns = isCompleteNonStreamResponse(firstReadResult, stripInitialNativeTools);
     let completed = false;
 
     let fullContentFromAI = '';
@@ -542,16 +556,36 @@ class NonStreamHandler {
     let finalJsonResponse;
     try {
       finalJsonResponse = JSON.parse(aiResponseText);
-      if (!finalJsonResponse.choices?.[0]?.message) {
+      const stripTools = matchesNativeToolIsolation(finalJsonResponse?.model || originalBody?.model);
+      const choice0 = finalJsonResponse.choices?.[0];
+      const msg0 = choice0?.message;
+      const preserveNativeToolTurn = !stripTools && recursionDepth === 0 && hasNativeToolCallPayload(msg0);
+
+      if (!msg0) {
         finalJsonResponse.choices = [{ message: { content: finalContentForClient } }];
+        finalJsonResponse.choices[0].finish_reason = recursionDepth >= maxRecursion ? 'length' : 'stop';
       } else {
-        finalJsonResponse.choices[0].message.content = finalContentForClient;
+        if (stripTools) {
+          delete msg0.tool_calls;
+          delete msg0.function_call;
+        }
+        if (!preserveNativeToolTurn || finalContentForClient.length > 0 || msg0.content !== null) {
+          msg0.content = finalContentForClient;
+        }
         if (reasoningToContentEnabled) {
-          removeReasoningFields(finalJsonResponse.choices[0].message);
-          removeReasoningFields(finalJsonResponse.choices[0]);
+          removeReasoningFields(msg0);
+          removeReasoningFields(choice0);
+        }
+        if (recursionDepth >= maxRecursion) {
+          choice0.finish_reason = 'length';
+        } else if (preserveNativeToolTurn && ['tool_calls', 'function_call'].includes(choice0.finish_reason)) {
+          // Keep native tool termination reason intact for downstream tool-calling clients.
+        } else if (preserveNativeToolTurn) {
+          choice0.finish_reason = msg0.function_call && !msg0.tool_calls ? 'function_call' : 'tool_calls';
+        } else {
+          choice0.finish_reason = 'stop';
         }
       }
-      finalJsonResponse.choices[0].finish_reason = recursionDepth >= maxRecursion ? 'length' : 'stop';
     } catch (e) {
       finalJsonResponse = {
         choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient }, finish_reason: recursionDepth >= maxRecursion ? 'length' : 'stop' }]
