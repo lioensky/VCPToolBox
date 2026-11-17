@@ -86,6 +86,8 @@ impl GlobalChunks {
             && self.routing.len() > self.rows.len().saturating_mul(5) / 4 {
             let mut replacement = Self::empty(self.dimension, &self.model)?;
             replacement.synchronize(connection)?;
+            // Routing compaction is not a mathematical training boundary.
+            replacement.warped = self.warped.take();
             *self = replacement;
         }
         Ok(())
@@ -96,7 +98,8 @@ impl GlobalChunks {
         self.last_used = Instant::now();
         let current = facts(connection)?;
         if current == self.facts { return Ok(0); }
-        self.warped = None;
+        // Keep the trained geometry. Live membership/vector deltas are handled
+        // in its frozen coordinates; only explicit training replaces the field.
         let mut statement = connection.prepare(
             "SELECT c.id,c.vector_version,c.metadata_version,f.metadata_version
              FROM chunks c JOIN files f ON f.id=c.file_id WHERE c.vector IS NOT NULL"

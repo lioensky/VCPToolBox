@@ -456,7 +456,8 @@ class TagMemoEngine {
             this._matrixRebuildTimer = null;
             if (!this._shutdownRequested) {
                 this._enqueueDerivedTask('threshold-rebuild', () => this.doMatrixRebuild({
-                    reason: 'threshold'
+                    reason: 'threshold',
+                    includeWarped: true,
                 }));
             }
         }, this._getMatrixRebuildQuietMs());

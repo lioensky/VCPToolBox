@@ -301,11 +301,21 @@ impl WarpedFieldIndex {
         if node >= self.ids.len() || !radius.is_finite() || radius < 0.0 || radius as f64 > self.config.radius_max {
             return Err(invalid("invalid warped exact endpoint"));
         }
+        self.exact_distance_at_radius(query, radius, row, self.meta[node].depth)
+    }
+    /// Score a live delta endpoint in this generation's frozen coordinate system.
+    /// Does not insert a node, change the mean axis or rebuild navigation.
+    pub fn exact_distance_at_radius(&self, query: &[f32], radius: f32,
+        row: &[f32], row_radius: f32) -> io::Result<f64> {
+        if [radius, row_radius].iter().any(|&r|
+            !r.is_finite() || r < 0.0 || r as f64 > self.config.radius_max) {
+            return Err(invalid("invalid warped exact endpoint radius"));
+        }
         let q = Self::transform(query,&self.mean_axis,self.config.mean_subtract_beta)?;
         let v = Self::transform(row,&self.mean_axis,self.config.mean_subtract_beta)?;
         let (qn,vn) = (checked_norm(&q)?,checked_norm(&v)?);
         let cosine = q.iter().zip(&v).map(|(&a,&b)| a as f64*b as f64).sum::<f64>()/qn/vn;
-        Ok(clairaut_distance(self.config.geometry_profile()?,radius as f64,self.meta[node].depth as f64,
+        Ok(clairaut_distance(self.config.geometry_profile()?,radius as f64,row_radius as f64,
             self.config.effective_cosine(cosine)))
     }
     /// Optional experiment directory. Does not rebuild or mutate graph edges.

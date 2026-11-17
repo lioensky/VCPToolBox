@@ -568,6 +568,92 @@ async function main() {
             new Float32Array([1, 0, 0, 0]), new Float32Array()
         );
 
+        // Daily ingestion must update live Chunk recall without rebuilding the
+        // trained geometry or rewriting either the warped or A/B-slot baseline.
+        const generationPipelines = await Promise.all([false, true].map(warped =>
+            index.runMemoPipeline(dbPath, result.artifactSig, JSON.stringify({
+                queryText: 'generation window',
+                config: { maxLevels: 1, pyramidTopK: 3,
+                    ...(warped ? { tagRoutingMode: 'warped_ags' } : {}) }
+            }), new Float32Array([1,0,0,0]), new Float32Array())
+        ));
+        const generationMetadata = generationPipelines.map(p => JSON.parse(p.metadataJson));
+        const generationPlan = {
+            ...lightPlan, k: 3, warpedAb: true,
+            riverInput: { ...lightPlan.riverInput,
+                observationHandle: generationMetadata[0].observationHandle },
+            warpedRiverInput: { ...lightPlan.riverInput,
+                observationHandle: generationMetadata[1].observationHandle,
+                tagRouting: generationMetadata[1].diagnostics.tagRouting }
+        };
+        try {
+            const beforeWrite = await lightQuery(generationPlan);
+            const geometryFacts = beforeWrite.diagnostics.warpedChunks.geometryFacts;
+            const warpedPath = path.join(root, fs.readdirSync(root).find(name => name.endsWith('.vcpwc')));
+            const warpedBytes = fs.readFileSync(warpedPath);
+            const warpedMtime = fs.statSync(warpedPath).mtimeMs;
+            await nativeKnowledgeRuntime.commitIngestionBatch(dbPath, JSON.stringify({
+                operationId: 'daily-generation-window', batchId: 'daily-generation-window',
+                dimension: 4, modelSig: 'manifest-test-model',
+                files: [{ path: 'new-diary.txt', diaryName: 'test', checksum: 'new',
+                    mtime: 2, size: 10, expectedVersion: 0,
+                    chunkStart: 0, chunkCount: 1, tagStart: 0, tagCount: 0 }],
+                chunks: [{ content: 'new daily candidate', chunkIndex: 0, vectorSlot: 0 }],
+                tags: []
+            }), new Float32Array([1,0,0,0]), new Float32Array());
+            // Query observations are request snapshots, unlike the shared
+            // trained field: a fact commit requires fresh per-query handles.
+            for (const metadata of generationMetadata) {
+                index.releaseMemoObservation(metadata.observationHandle);
+            }
+            generationMetadata.length = 0;
+            for (const warped of [false, true]) {
+                const pipeline = await index.runMemoPipeline(dbPath, result.artifactSig, JSON.stringify({
+                    queryText: 'generation window after ingestion',
+                    config: { maxLevels: 1, pyramidTopK: 3,
+                        ...(warped ? { tagRoutingMode: 'warped_ags' } : {}) }
+                }), new Float32Array([1,0,0,0]), new Float32Array());
+                generationMetadata.push(JSON.parse(pipeline.metadataJson));
+            }
+            generationPlan.riverInput.observationHandle = generationMetadata[0].observationHandle;
+            generationPlan.warpedRiverInput.observationHandle = generationMetadata[1].observationHandle;
+            generationPlan.warpedRiverInput.tagRouting = generationMetadata[1].diagnostics.tagRouting;
+            const afterWrite = await lightQuery(generationPlan);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.source, 'memory');
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.geometryFacts, geometryFacts);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.deltaChunks, 1);
+            assert.strictEqual(afterWrite.diagnostics.warpedChunks.liveNodes, 3);
+            assert(afterWrite.tdbTopK.some(item => item.text === 'new daily candidate'));
+            assert(afterWrite.warpedTopK.some(item => item.text === 'new daily candidate'));
+            assert.deepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            assert.strictEqual(fs.statSync(warpedPath).mtimeMs, warpedMtime);
+            assert.deepStrictEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+            assert.strictEqual(fs.statSync(snapshotPath).mtimeMs, snapshotMtime);
+            await new Promise(resolve => setTimeout(resolve, 15));
+            assert.strictEqual(nativeKnowledgeRuntime.evictIdleLightMemoIndex(1), true);
+            const restoredGeneration = await lightQuery(generationPlan);
+            assert.strictEqual(restoredGeneration.diagnostics.warpedChunks.source, 'snapshot');
+            assert.strictEqual(restoredGeneration.diagnostics.warpedChunks.geometryFacts, geometryFacts);
+            assert.deepStrictEqual(restoredGeneration.warpedTopK, afterWrite.warpedTopK);
+            assert.deepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            assert.strictEqual(fs.statSync(warpedPath).mtimeMs, warpedMtime);
+            const nextGeneration = JSON.parse(
+                await nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex('manifest-test-model', true));
+            assert.strictEqual(nextGeneration.source, 'built');
+            assert.strictEqual(nextGeneration.nodes, 3);
+            assert.notStrictEqual(nextGeneration.geometryFacts, geometryFacts);
+            const trainedResult = await lightQuery(generationPlan);
+            assert.strictEqual(trainedResult.diagnostics.warpedChunks.deltaChunks, 0);
+            assert.notDeepStrictEqual(fs.readFileSync(warpedPath), warpedBytes);
+            // Geometry training is not permission to publish the normal A/B slots.
+            assert.deepStrictEqual(fs.readFileSync(snapshotPath), snapshotBytes);
+            assert.strictEqual(fs.statSync(snapshotPath).mtimeMs, snapshotMtime);
+        } finally {
+            for (const metadata of generationMetadata) {
+                index.releaseMemoObservation(metadata.observationHandle);
+            }
+        }
+
         nativeKnowledgeRuntime.openAndInitStore(path.join(root, 'other.sqlite'));
         assert.strictEqual(JSON.parse(nativeKnowledgeRuntime.lightMemoIndexStats()).resident, false,
             'store replacement must discard the previous database table');

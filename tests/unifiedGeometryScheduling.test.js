@@ -213,3 +213,52 @@ test('missing native warped ABI fails before publishing any new base assets', as
     assert.equal(engine._isMatrixRebuilding, false);
     await engine.shutdown();
 });
+
+test('1% durable Tag boundary rebuilds both warped fields, below threshold does nothing', async () => {
+    const { engine, calls, owner } = fixture();
+    let changed = 999;
+    owner._buildNativeMemoEffectiveConfig = () => ({});
+    owner._computeNativeMemoConfigHash = () => 'cfg';
+    owner.nativeKnowledgeRuntime.getNativeMemoManifest = async () => ({
+        trainingTagCount: 100000, changedTagCount: changed
+    });
+    engine._getMatrixRebuildQuietMs = () => 0;
+    // Exercise the actual threshold timer, but run the queue deterministically.
+    engine._scheduleDerivedTaskPump = () => {};
+    assert.equal(await engine.scheduleMatrixRebuildForNewTags([1]), false);
+    assert.equal(engine._matrixRebuildTimer, null);
+    assert.deepEqual(calls, []);
+    changed = 1000;
+    assert.equal(await engine.scheduleMatrixRebuildForNewTags([]), true);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(engine._derivedTaskQueue.length, 1);
+    assert.equal(engine._derivedTaskQueue[0].type, 'threshold-rebuild');
+    await engine._processDerivedTaskQueue();
+    assert.equal(engine.getTrainingStatus().status, 'completed');
+    assert.deepEqual(calls, ['geometry', 'artifact', 'published', 'warped-tags', 'warped-chunks']);
+    assert.equal(engine.getTrainingStatus().warped.chunks.source, 'built');
+    await engine.shutdown();
+});
+
+test('automatic warped training failures retain the failed phase and published base identity', async () => {
+    const { engine, owner } = fixture();
+    owner._buildNativeMemoEffectiveConfig = () => ({});
+    owner._computeNativeMemoConfigHash = () => 'cfg';
+    owner.nativeKnowledgeRuntime.getNativeMemoManifest = async () => ({
+        trainingTagCount: 100000, changedTagCount: 1000
+    });
+    owner.nativeKnowledgeRuntime.prepareGlobalWarpedChunkIndex = async () => {
+        throw new Error('automatic warped failure');
+    };
+    engine._getMatrixRebuildQuietMs = () => 0;
+    engine._scheduleDerivedTaskPump = () => {};
+    await engine.scheduleMatrixRebuildForNewTags([]);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    engine._derivedTaskQueue[0].maxAttempts = 1;
+    await engine._processDerivedTaskQueue();
+    assert.equal(engine.getTrainingStatus().status, 'failed');
+    assert.equal(engine.getTrainingStatus().failedPhase, 'warped-chunks');
+    assert.match(engine.getTrainingStatus().error, /already published.*automatic warped failure/);
+    assert.equal(engine.getTrainingStatus().artifactSig, 'runtime');
+    await engine.shutdown();
+});

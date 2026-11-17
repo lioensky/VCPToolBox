@@ -10,6 +10,7 @@ use vcp_tdb_index::index::quiver::hyperbolic::warped_geometry::WarpedProfile;
 const RULE: &str = "chunk-axis-residual-v1";
 const MAGIC: &[u8; 8] = b"VCPWC001";
 const MAX_BYTES: usize = 512 * 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 static SNAPSHOT_IO: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -25,11 +26,16 @@ struct Identity {
 struct Header {
     identity: Identity,
     mean: Vec<f64>,
+    // Legacy snapshots have no baseline: conservatively score all live rows
+    // as deltas until the next training, without silently rebuilding geometry.
+    #[serde(default)]
+    versions: std::collections::BTreeMap<i64, (i64, i64)>,
 }
 
 pub(super) struct WarpedChunks {
     identity: Identity,
     mean: Vec<f64>,
+    versions: std::collections::BTreeMap<i64, (i64, i64)>,
     index: WarpedFieldIndex,
 }
 
@@ -73,6 +79,12 @@ fn read_vector(connection: &Connection, id: u64, dimension: usize) -> Result<Vec
 }
 
 impl WarpedChunks {
+    // Managed payload only; excludes BTree allocator/node bookkeeping and RSS.
+    fn hot_bytes(&self) -> usize {
+        self.index.hot_bytes() + self.mean.capacity() * std::mem::size_of::<f64>()
+            + self.versions.len() * std::mem::size_of::<(i64, (i64, i64))>()
+    }
+
     fn path(identity: &Identity) -> Option<PathBuf> {
         if identity.database.is_empty() { return None; }
         let db = Path::new(&identity.database);
@@ -89,7 +101,11 @@ impl WarpedChunks {
                 rule: self.identity.rule.clone(),
             },
             mean: self.mean.clone(),
+            versions: self.versions.clone(),
         }).map_err(|e| e.to_string())?;
+        if header.len() > MAX_HEADER_BYTES {
+            return Err("warped Chunk snapshot header exceeds size limit".into());
+        }
         let payload = self.index.snapshot_bytes();
         let mut bytes = MAGIC.to_vec();
         bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
@@ -101,7 +117,7 @@ impl WarpedChunks {
         Ok(bytes)
     }
 
-    fn decode(bytes: &[u8], expected: &Identity, ids: &[u64]) -> Result<Option<Self>, String> {
+    fn decode(bytes: &[u8], expected: &Identity) -> Result<Option<Self>, String> {
         if bytes.len() < 48 || bytes.len() > MAX_BYTES || &bytes[..8] != MAGIC {
             return Err("warped Chunk snapshot magic/length".into());
         }
@@ -111,20 +127,28 @@ impl WarpedChunks {
         }
         let h = usize::try_from(u64::from_le_bytes(bytes[8..16].try_into().unwrap()))
             .map_err(|_| "warped Chunk header overflow")?;
-        if h > 2 * 1024 * 1024 || h > end - 16 {
+        if h > MAX_HEADER_BYTES || h > end - 16 {
             return Err("warped Chunk snapshot header length".into());
         }
         let header: Header = serde_json::from_slice(&bytes[16..16+h]).map_err(|e| e.to_string())?;
-        // A valid but old sidecar is a cache miss, never an active stale geometry.
-        if &header.identity != expected { return Ok(None); }
+        // Facts identify the TRAINING baseline, not the current live membership.
+        // Daily writes must not turn a valid trained generation into a cache miss.
+        if header.identity.database != expected.database || header.identity.model != expected.model
+            || header.identity.dimension != expected.dimension || header.identity.rule != expected.rule {
+            return Ok(None);
+        }
         let index = WarpedFieldIndex::from_snapshot_bytes(&bytes[16+h..end])
             .map_err(|e| e.to_string())?;
         if header.mean.len() != expected.dimension || header.mean.iter().any(|v| !v.is_finite())
-            || index.dimension() != expected.dimension || index.ids() != ids
+            || index.dimension() != expected.dimension
+            || index.ids().iter().any(|&id| id == 0 || id > i64::MAX as u64)
+            || index.ids().windows(2).any(|w| w[0] >= w[1])
+            || (!header.versions.is_empty() && (header.versions.len() != index.ids().len()
+                || index.ids().iter().any(|&id| !header.versions.contains_key(&(id as i64)))))
             || index.configuration() != configuration() || index.shell_landmark_count() == 0 {
             return Err("warped Chunk snapshot identity/configuration mismatch".into());
         }
-        Ok(Some(Self { identity: header.identity, mean: header.mean, index }))
+        Ok(Some(Self { identity: header.identity, mean: header.mean, versions: header.versions, index }))
     }
 
     fn load_or_build(connection: &Connection, identity: Identity, ids: &[u64], force: bool)
@@ -141,7 +165,7 @@ impl WarpedChunks {
                     }
                     let mut bytes = Vec::new();
                     file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-                    if let Some(field) = Self::decode(&bytes, &identity, ids)? {
+                    if let Some(field) = Self::decode(&bytes, &identity)? {
                         return Ok((field, "snapshot"));
                     }
                 },
@@ -169,7 +193,15 @@ impl WarpedChunks {
                 }
             }).map_err(|e| error.unwrap_or_else(|| e.to_string()))?;
         index.build_shell_landmarks();
-        let field = Self { identity, mean, index };
+        let mut versions = std::collections::BTreeMap::new();
+        let mut statement = connection.prepare_cached(
+            "SELECT vector_version,file_id FROM chunks WHERE id=?1").map_err(|e|e.to_string())?;
+        for &id in ids {
+            let version = statement.query_row([id as i64], |r| Ok((r.get(0)?,r.get(1)?)))
+                .map_err(|e|e.to_string())?;
+            versions.insert(id as i64, version);
+        }
+        let field = Self { identity, mean, versions, index };
         if let Some(path) = path {
             let bytes = field.encode()?;
             let staging = crate::CheckpointStaging::new(&path).map_err(|e| e.to_string())?;
@@ -206,23 +238,26 @@ impl GlobalChunks {
         let field = self.warped.as_ref().unwrap();
         let load_ms = started.elapsed().as_secs_f64() * 1000.0;
         let qr = radius(query, &field.mean)?;
-        let (max_visits, max_expansions) = warped_size_budget(ids.len());
+        let delta: HashSet<_> = allowed.iter().copied().filter(|&id| {
+            let row = &self.rows[&(id as i64)];
+            field.versions.get(&row.id) != Some(&(row.vector_version, row.file_id))
+        }).collect();
+        let (max_visits, max_expansions) = warped_size_budget(field.index.ids().len());
         let mut diagnostics = serde_json::json!({
-            "used":"warped_chunks","source":source,"rule":RULE,"nodes":ids.len(),
+            "used":"warped_chunks","source":source,"rule":RULE,"nodes":field.index.ids().len(),
+            "liveNodes":ids.len(),"deltaChunks":delta.len(),"geometryFacts":field.identity.facts,
             "scopeChunks":allowed.len(),"queryRadius":qr,"geometryCheckMs":load_ms,
-            "candidateBudget":limit,"hotBytes":field.index.hot_bytes(),
+            "candidateBudget":limit,"hotBytes":field.hot_bytes(),
             "facts":self.facts,"fallback":false
         });
         // A tiny scope is cheaper and more reliable than walking a mostly excluded graph.
         let hits = if allowed.len() <= 128 {
             let mut hits = Vec::with_capacity(allowed.len());
-            for (node, &id) in field.index.ids().iter().enumerate() {
-                if allowed.contains(&id) {
-                    let row = read_vector(connection, id, self.dimension)?;
-                    let distance = field.index.exact_distance(query, qr, &row, node)
-                        .map_err(|e| e.to_string())?;
-                    hits.push((id, distance));
-                }
+            for &id in &allowed {
+                let row = read_vector(connection, id, self.dimension)?;
+                let distance = field.index.exact_distance_at_radius(query, qr, &row,
+                    radius(&row, &field.mean)?).map_err(|e| e.to_string())?;
+                hits.push((id, distance));
             }
             hits.sort_by(|a,b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             hits.truncate(limit);
@@ -235,7 +270,7 @@ impl GlobalChunks {
                 top_k: limit, width: 128.max(limit * 2), rerank_limit: limit,
                 max_visits: max_visits.max(limit * 4),
                 max_expansions: max_expansions.max(limit * 2), radial_bound: true,
-            }, None, |id| !allowed.contains(&id), |slot, output| {
+            }, None, |id| !allowed.contains(&id) || delta.contains(&id), |slot, output| {
                 match read_vector(connection, field.index.ids()[slot], self.dimension) {
                     Ok(row) => { output.extend(row); true },
                     Err(e) => { error = Some(e); false },
@@ -245,8 +280,23 @@ impl GlobalChunks {
             diagnostics["path"] = serde_json::json!("global-warped-ann");
             diagnostics["visited"] = serde_json::json!(output.stats.visited);
             diagnostics["expanded"] = serde_json::json!(output.stats.expanded);
-            diagnostics["coldReads"] = serde_json::json!(output.stats.cold_reads);
-            output.neighbors
+            diagnostics["coldReads"] = serde_json::json!(output.stats.cold_reads + delta.len());
+            // Only live vector deltas read originals here. Memory stays bounded
+            // by the candidate budget; no FP32 corpus and no per-write graph build.
+            let mut hits = output.neighbors;
+            for &id in &delta {
+                let row = read_vector(connection, id, self.dimension)?;
+                let distance = field.index.exact_distance_at_radius(query, qr, &row,
+                    radius(&row, &field.mean)?).map_err(|e|e.to_string())?;
+                let hit = (id, distance);
+                let position = hits.binary_search_by(|other|
+                    other.1.total_cmp(&distance).then(other.0.cmp(&id))).unwrap_or_else(|p|p);
+                if position < limit {
+                    hits.insert(position, hit);
+                    hits.truncate(limit);
+                }
+            }
+            hits
         };
         diagnostics["totalMs"] = serde_json::json!(started.elapsed().as_secs_f64() * 1000.0);
         diagnostics["returned"] = serde_json::json!(hits.len());
@@ -300,11 +350,11 @@ mod tests {
         assert!(scoped.iter().all(|h|h.0 % 2 == 0));
         let field = table.warped.as_ref().unwrap();
         let bytes = field.encode().unwrap();
-        let restored = WarpedChunks::decode(&bytes,&field.identity,field.index.ids()).unwrap().unwrap();
+        let restored = WarpedChunks::decode(&bytes,&field.identity).unwrap().unwrap();
         assert_eq!(bytes,restored.encode().unwrap());
         let mut damaged = bytes.clone();
         damaged[32] ^= 1;
-        assert!(WarpedChunks::decode(&damaged,&field.identity,field.index.ids()).is_err());
+        assert!(WarpedChunks::decode(&damaged,&field.identity).is_err());
         table.warped = Some(restored);
         assert_eq!(scoped, table.search_warped(&db,&query,100,|r|r.diary=="A").unwrap().0);
         db.execute_batch(
@@ -312,13 +362,145 @@ mod tests {
              UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
         ).unwrap();
         assert_eq!(table.synchronize(&db).unwrap(),1);
-        assert!(table.warped.is_none());
+        assert!(table.warped.is_some());
         let (updated,stats) = table.search_warped(&db,&query,100,|r|r.diary=="A").unwrap();
-        assert_eq!(stats["source"],"built");
+        assert_eq!(stats["source"],"memory");
+        assert_eq!(stats["geometryFacts"],"1");
         assert_eq!(updated.len(),79);
         assert!(updated.iter().all(|h|h.0!=2));
         assert!(table.search_warped(&db,&[f32::NAN;8],10,|_|true).is_err());
         assert!(table.search_warped(&db,&query,2001,|_|true).is_err());
+    }
+
+    #[test]
+    fn daily_deltas_restart_and_compaction_preserve_trained_geometry_until_training() {
+        let root = std::env::temp_dir().join(format!("warped-generation-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = fixture(160);
+        source.execute_batch("COMMIT").unwrap();
+        let path = root.join("test.sqlite");
+        source.execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let mut table = GlobalChunks::empty(8, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        table.prepare_warped(&db, false).unwrap();
+        let field = table.warped.as_ref().unwrap();
+        let sidecar = WarpedChunks::path(&field.identity).unwrap();
+        let original = std::fs::read(&sidecar).unwrap();
+        let modified = std::fs::metadata(&sidecar).unwrap().modified().unwrap();
+        let frozen = field.encode().unwrap();
+        let query = vector(997);
+        let bytes: Vec<_> = query.iter().flat_map(|v|v.to_le_bytes()).collect();
+        db.execute_batch("DELETE FROM chunks WHERE id=2").unwrap();
+        db.execute("UPDATE chunks SET vector=?1,vector_version=2 WHERE id=3", [&bytes]).unwrap();
+        db.execute("INSERT INTO chunks VALUES(161,2,'[2026-11-17] new',?1,1,1)", [&bytes]).unwrap();
+        db.execute_batch(
+            "UPDATE chunks SET content='metadata only',metadata_version=2 WHERE id=4;
+             UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        table.synchronize(&db).unwrap();
+        let (expected, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "memory");
+        assert_eq!(stats["path"], "global-warped-ann");
+        assert_eq!(stats["deltaChunks"], 2);
+        assert_eq!(stats["geometryFacts"], "1");
+        assert_eq!(stats["facts"], "2");
+        assert!(expected.iter().any(|h|h.0==3));
+        assert!(expected.iter().any(|h|h.0==161));
+        assert!(!expected.iter().any(|h|h.0==2));
+        assert_eq!(expected[0].0, 3);
+        assert_eq!(expected[1].0, 161);
+        assert_eq!(table.warped.as_ref().unwrap().encode().unwrap(), frozen);
+        let (scoped, stats) = table.search_warped(&db, &query, 100, |r|r.diary=="B").unwrap();
+        assert_eq!(stats["path"], "scope-exact-warped");
+        assert!(scoped.iter().any(|h|h.0==161));
+        assert_eq!(std::fs::read(&sidecar).unwrap(), original);
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().modified().unwrap(), modified);
+
+        db.execute_batch("COMMIT").unwrap();
+        drop(table);
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let mut restored = GlobalChunks::empty(8, "test").unwrap();
+        restored.synchronize(&db).unwrap();
+        let (actual, stats) = restored.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "snapshot");
+        assert_eq!(expected, actual);
+        assert_eq!(restored.warped.as_ref().unwrap().encode().unwrap(), frozen);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), original);
+        assert_eq!(std::fs::metadata(&sidecar).unwrap().modified().unwrap(), modified);
+
+        // Routing compaction must not reset the field or its baseline.
+        db.execute_batch(
+            "UPDATE chunks SET vector_version=vector_version+1 WHERE id<=100;
+             UPDATE kbm_runtime_meta SET value='3' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        restored.synchronize(&db).unwrap();
+        let before = restored.routing.len();
+        restored.compact_if_needed(&db).unwrap();
+        assert!(restored.routing.len() < before);
+        assert_eq!(restored.warped.as_ref().unwrap().encode().unwrap(), frozen);
+        let (_, stats) = restored.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "memory");
+        assert_eq!(stats["geometryFacts"], "1");
+        assert_eq!(std::fs::read(&sidecar).unwrap(), original);
+
+        let trained = restored.prepare_warped(&db, true).unwrap();
+        assert_eq!(trained["source"], "built");
+        assert_eq!(trained["geometryFacts"], "3");
+        assert_ne!(std::fs::read(&sidecar).unwrap(), original);
+        let (_, stats) = restored.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "memory");
+        assert_eq!(stats["deltaChunks"], 0);
+        drop(restored);
+        drop(db);
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_baseline_is_conservative_and_invalid_version_coverage_is_rejected() {
+        let db = fixture(160);
+        let mut table = GlobalChunks::empty(8, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        table.prepare_warped(&db, false).unwrap();
+        let field = table.warped.as_ref().unwrap();
+        let original = field.encode().unwrap();
+        let h = u64::from_le_bytes(original[8..16].try_into().unwrap()) as usize;
+        let mut header: serde_json::Value = serde_json::from_slice(&original[16..16+h]).unwrap();
+        header.as_object_mut().unwrap().remove("versions");
+        let header = serde_json::to_vec(&header).unwrap();
+        let mut legacy = MAGIC.to_vec();
+        legacy.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        legacy.extend_from_slice(&header);
+        legacy.extend_from_slice(&original[16+h..original.len()-32]);
+        let digest = Sha256::digest(&legacy);
+        legacy.extend_from_slice(&digest);
+        let restored = WarpedChunks::decode(&legacy, &field.identity).unwrap().unwrap();
+        assert!(restored.versions.is_empty());
+        assert_eq!(restored.mean, field.mean);
+        table.warped = Some(restored);
+        let query = vector(997);
+        let bytes: Vec<_> = query.iter().flat_map(|v|v.to_le_bytes()).collect();
+        db.execute("UPDATE chunks SET vector=?1,vector_version=2 WHERE id=3", [&bytes]).unwrap();
+        db.execute_batch(
+            "DELETE FROM chunks WHERE id=2;
+             UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        table.synchronize(&db).unwrap();
+        let (hits, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "memory");
+        assert_eq!(stats["deltaChunks"], 159);
+        assert_eq!(hits[0].0, 3);
+        assert!(!hits.iter().any(|h|h.0==2));
+        table.prepare_warped(&db, true).unwrap();
+        let field = table.warped.as_mut().unwrap();
+        field.versions.pop_first();
+        assert!(WarpedChunks::decode(&field.encode().unwrap(), &field.identity).is_err());
     }
 
     #[test]
@@ -363,7 +545,7 @@ mod tests {
             "UPDATE chunks SET metadata_version=2 WHERE id=3;
              UPDATE kbm_runtime_meta SET value='2' WHERE key='global_chunk_facts';"
         ).unwrap();
-        assert_eq!(run(&mut second).1["source"],"built");
+        assert_eq!(run(&mut second).1["source"],"memory");
         drop(first);drop(second);drop(db);drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -377,7 +559,7 @@ impl GlobalChunks {
         let mut ids: Vec<_> = self.rows.keys().map(|&id|id as u64).collect();
         ids.sort_unstable();
         if ids.is_empty() {
-            self.warped = None;
+            // An empty live scope does not retire the mathematical generation.
             return Ok(serde_json::json!({
                 "ready":false,"source":"empty","nodes":0,"reason":"no_valid_global_chunks","forced":force
             }));
@@ -392,9 +574,11 @@ impl GlobalChunks {
             source
         };
         Ok(serde_json::json!({
-            "ready":true,"source":source,"nodes":ids.len(),"rule":RULE,"forced":force,
-            "facts":self.facts,"elapsedMs":started.elapsed().as_secs_f64()*1000.,
-            "hotBytes":self.warped.as_ref().unwrap().index.hot_bytes()
+            "ready":true,"source":source,"nodes":self.warped.as_ref().unwrap().index.ids().len(),
+            "liveNodes":ids.len(),"rule":RULE,"forced":force,
+            "facts":self.facts,"geometryFacts":self.warped.as_ref().unwrap().identity.facts,
+            "elapsedMs":started.elapsed().as_secs_f64()*1000.,
+            "hotBytes":self.warped.as_ref().unwrap().hot_bytes()
         }))
     }
 
@@ -402,7 +586,7 @@ impl GlobalChunks {
         match self.warped.as_ref() {
             Some(field) => serde_json::json!({
                 "resident":true,"nodes":field.index.ids().len(),"rule":RULE,
-                "hotBytes":field.index.hot_bytes() + field.mean.capacity()*8,
+                "hotBytes":field.hot_bytes(),
                 "facts":field.identity.facts
             }),
             None => serde_json::json!({"resident":false,"nodes":0,"hotBytes":0,"rule":RULE}),
