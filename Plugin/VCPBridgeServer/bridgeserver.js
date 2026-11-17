@@ -1006,25 +1006,67 @@ function startServer() {
         });
     });
 
-    // 模型列表探活（支持 OpenAI 根端点与 Profile 前缀端点，兼容客户端连通性检查）
-    app.get(['/v1/models', '/v1/:profile/models'], (req, res, next) => {
+    // 模型列表动态透传与探活（支持 OpenAI 根端点与 Profile 前缀端点，上游不可达时平滑回退本地配置）
+    app.get(['/v1/models', '/v1/:profile/models'], async (req, res, next) => {
         const profile = req.params?.profile;
         if (profile && ['chat', 'responses', 'messages', 'beta'].includes(profile)) {
             return next();
         }
-        const configuredModels = new Set([
+        const matchedProfile = profile ? readProfileCached(profile) : resolveProfileForRequest(req, '');
+        const localModelIds = new Set([
+            matchedProfile?.modelOverride,
             runtimeConfig.defaultModel,
             ...Object.keys(runtimeConfig.modelMap || {}),
             ...Object.values(runtimeConfig.modelMap || {})
         ].filter(Boolean));
-        if (configuredModels.size === 0) configuredModels.add('gpt-5.6-sol');
-        const data = Array.from(configuredModels).map(id => ({
+        if (localModelIds.size === 0) localModelIds.add('gpt-5.6-sol');
+
+        const buildFallbackList = () => Array.from(localModelIds).map(id => ({
             id,
             object: 'model',
             created: 1700000000,
             owned_by: 'vcp-bridge'
         }));
-        res.json({ object: 'list', data });
+
+        const base = String(runtimeConfig.upstreamUrl || '').replace(/\/+$/, '');
+        if (base) {
+            try {
+                const requestToken = extractBearerToken(req.headers.authorization);
+                const upstreamKey = runtimeConfig.upstreamKey || requestToken;
+                const headers = { Accept: 'application/json' };
+                if (upstreamKey) headers.Authorization = `Bearer ${upstreamKey}`;
+                const upstreamRes = await fetch(`${base}/v1/models`, {
+                    method: 'GET',
+                    headers,
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (upstreamRes.ok) {
+                    const parsed = safeJsonParse(await upstreamRes.text());
+                    if (parsed && Array.isArray(parsed.data)) {
+                        const seen = new Set();
+                        const merged = [];
+                        for (const item of parsed.data) {
+                            if (!item || typeof item.id !== 'string' || !item.id || seen.has(item.id)) continue;
+                            seen.add(item.id);
+                            merged.push(item);
+                        }
+                        for (const localId of localModelIds) {
+                            if (!seen.has(localId)) {
+                                seen.add(localId);
+                                merged.push({ id: localId, object: 'model', created: 1700000000, owned_by: 'vcp-bridge' });
+                            }
+                        }
+                        return res.json({ ...parsed, object: parsed.object || 'list', data: merged });
+                    }
+                }
+            } catch (err) {
+                if (runtimeConfig.debugMode) {
+                    console.warn(`[VCPBridgeServer] Upstream /v1/models fetch fallback to local list: ${err.message}`);
+                }
+            }
+        }
+
+        res.json({ object: 'list', data: buildFallbackList() });
     });
 
     // ─── Profile-prefixed routes ─────────────────────────────────────────

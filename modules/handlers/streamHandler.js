@@ -3,6 +3,7 @@ const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream } = require('../toolResultBatch.js');
+const { matchesNativeToolIsolation } = require('../nativeToolIsolation.js');
 const {
   extractReasoningText,
   removeReasoningFields,
@@ -203,15 +204,24 @@ class StreamHandler {
         let invalidPayload = false;
         let hasPayloadError = false;
         let upstreamEnded = false;
+        let sawNativeToolCall = false;
+        const shouldStripNativeTools = (payloadModel) =>
+          matchesNativeToolIsolation(payloadModel || originalBody?.model);
         const result = () => {
           streamSettled = true;
           if (toolTailTimer) clearTimeout(toolTailTimer);
+          const hasNativeToolCompletion = sawNativeToolCall && (
+            ['tool_calls', 'function_call', 'stop'].includes(finishReason) ||
+            (!finishReason && sawDone)
+          );
           return {
             content: collectedContentThisTurn, message, malformedFunctionCall,
-            streamAborted, hasPayloadError,
-            completed: !streamAborted && !invalidPayload && aiResponse.ok &&
-              collectedContentThisTurn.trim().length > 0 &&
-              (finishReason === 'stop' || (!finishReason && sawDone))
+            streamAborted, hasPayloadError, sawNativeToolCall, finishReason,
+            completed: !streamAborted && !invalidPayload && aiResponse.ok && (
+              (collectedContentThisTurn.trim().length > 0 &&
+                (finishReason === 'stop' || (!finishReason && sawDone))) ||
+              hasNativeToolCompletion
+            )
           };
         };
         const observePayload = (parsedData) => {
@@ -224,6 +234,19 @@ class StreamHandler {
             .some(reason => typeof reason === 'string' && reason.toLowerCase() === 'malformed_function_call')) {
             malformedFunctionCall = true;
             invalidPayload = true;
+          }
+          if (!shouldStripNativeTools(parsedData?.model)) {
+            const delta = choice?.delta;
+            const msg = choice?.message;
+            if (
+              (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) ||
+              delta?.function_call ||
+              (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) ||
+              msg?.function_call ||
+              ['tool_calls', 'function_call'].includes(choice?.finish_reason)
+            ) {
+              sawNativeToolCall = true;
+            }
           }
           const reason = parsedData?.choices?.[0]?.finish_reason;
           if (reason) finishReason = reason;
@@ -247,16 +270,21 @@ class StreamHandler {
         const transformParsedDataForClient = (parsedData) => {
           if (!parsedData || typeof parsedData !== 'object') return parsedData;
 
+          const stripTools = shouldStripNativeTools(parsedData.model);
+          if (!stripTools && !reasoningToContentEnabled) return parsedData;
+
           const transformed = JSON.parse(JSON.stringify(parsedData));
-          for (const item of transformed.choices || []) {
-            for (const payload of [item.delta, item.message]) {
-              if (!payload || typeof payload !== 'object') continue;
-              delete payload.tool_calls;
-              delete payload.function_call;
-            }
-            // Native FC is not a frontend termination or execution channel in VCP.
-            for (const key of ['finish_reason', 'native_finish_reason']) {
-              if (['tool_calls', 'function_call'].includes(item[key])) item[key] = null;
+          if (stripTools) {
+            for (const item of transformed.choices || []) {
+              for (const payload of [item.delta, item.message]) {
+                if (!payload || typeof payload !== 'object') continue;
+                delete payload.tool_calls;
+                delete payload.function_call;
+              }
+              // Strip hallucinated native FC only for models matched by NativeToolIsolationModels.
+              for (const key of ['finish_reason', 'native_finish_reason']) {
+                if (['tool_calls', 'function_call'].includes(item[key])) item[key] = null;
+              }
             }
           }
           if (!reasoningToContentEnabled) return transformed;
@@ -632,6 +660,8 @@ class StreamHandler {
     // --- 初始 AI 调用 ---
     if (DEBUG_MODE) console.log('[VCP Stream Loop] Processing initial AI call.');
     let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
+    let lastTurnSawNativeToolCall = Boolean(initialAIResponseData.sawNativeToolCall);
+    let lastTurnFinishReason = initialAIResponseData.finishReason || null;
     validUpstreamTurns = initialAIResponseData.completed;
     currentAIContentForLoop = initialAIResponseData.content;
     if (writeChatLog) chatLogs.push({ request: originalBody, response: initialAIResponseData.message });
@@ -663,15 +693,26 @@ class StreamHandler {
       if (toolCalls.length === 0) {
         if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found. Exiting loop.');
         if (!res.writableEnded) {
-          const finalChunkPayload = {
-            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: originalBody.model,
-            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-          };
           try {
-            res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+            if (!lastTurnSawNativeToolCall) {
+              const finalChunkPayload = {
+                id: `chatcmpl-VCP-final-stop-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: originalBody.model,
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              };
+              res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+            } else if (!['tool_calls', 'function_call'].includes(lastTurnFinishReason)) {
+              const finalToolChunkPayload = {
+                id: `chatcmpl-VCP-final-tool-calls-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: originalBody.model,
+                choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+              };
+              res.write(`data: ${JSON.stringify(finalToolChunkPayload)}\n\n`);
+            }
             res.write('data: [DONE]\n\n', () => res.end());
           } catch (writeError) {
             console.error('[VCP Stream Loop] Failed to write final chunk:', writeError.message);
@@ -768,6 +809,8 @@ class StreamHandler {
 
         if (nextAiAPIResponse.ok) {
           let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
+          lastTurnSawNativeToolCall = Boolean(nextAIResponseData.sawNativeToolCall);
+          lastTurnFinishReason = nextAIResponseData.finishReason || null;
           validUpstreamTurns = validUpstreamTurns && nextAIResponseData.completed;
           currentAIContentForLoop = nextAIResponseData.content;
           if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
@@ -938,6 +981,8 @@ class StreamHandler {
       }
 
       let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
+      lastTurnSawNativeToolCall = Boolean(nextAIResponseData.sawNativeToolCall);
+      lastTurnFinishReason = nextAIResponseData.finishReason || null;
       validUpstreamTurns = validUpstreamTurns && nextAIResponseData.completed;
       currentAIContentForLoop = nextAIResponseData.content;
       if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
