@@ -6,12 +6,11 @@ rust-version = "1.89"
 publish = false
 
 [dependencies]
-vcp-tdb-index = { path = "../../crates/vcp-tdb-index", features = ["ablation"] }
+vcp-tdb-index = { path = "../../crates/vcp-tdb-index" }
 rusqlite = { version = "0.29", features = ["bundled", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 rayon = "1"
-nalgebra = "0.32"
 
 [workspace]

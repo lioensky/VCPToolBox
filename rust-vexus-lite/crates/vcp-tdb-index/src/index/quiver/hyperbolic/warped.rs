@@ -1,4 +1,4 @@
-//! Immutable streamed Tier-3 experiment. No original-vector ownership.
+//! Immutable streamed production warped field. Originals remain SQL-owned.
 //! Geometry/graph adapted from Pelorus, Apache-2.0, Copyright 2024 TriviumDB Authors.
 use super::*;
 use super::beam::{bounded_beam, reusable_beam, BeamBudget};
@@ -229,7 +229,7 @@ impl WarpedFieldIndex {
             row.clear();
             if !fill(slot,&mut row) { return Err(invalid("warped build cold read failed")); }
             let unit = Self::transform(&row,&mean_axis,config.mean_subtract_beta)?;
-            let (mut header,sig) = PolarNodeMeta::encode(&unit,PolarPoint::new(0.0,1.0)?)?;
+            let (mut header,sig) = PolarNodeMeta::encode(&unit)?;
             // Tier-3 radius is directly geodesic; no Poincare denominator.
             header.depth = radius;
             store.push_sig(&sig);
@@ -457,7 +457,7 @@ impl WarpedFieldIndex {
         }
         let slice=self.table.checked_slice(radius as f64)?;
         let unit=Self::transform(query,&self.mean_axis,self.config.mean_subtract_beta)?;
-        let (qmeta,sig)=PolarNodeMeta::encode(&unit,PolarPoint::new(0.0,1.0)?)?;
+        let (qmeta,sig)=PolarNodeMeta::encode(&unit)?;
         if config.top_k==0 || self.ids.is_empty() {
             return Ok(HyperbolicOutput {neighbors:Vec::new(),stats:Default::default()});
         }
@@ -683,7 +683,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod phase4c_tests {
+mod navigation_precision_tests {
     use super::*;
     #[test]
     fn compact_asymmetric_navigation_preserves_budget_and_excluded_bridges() {
@@ -726,7 +726,7 @@ mod phase4c_tests {
 }
 
 #[cfg(test)]
-mod phase4d_tests {
+mod rerank_envelope_tests {
     use super::*;
     use std::alloc::{GlobalAlloc,Layout,System};
     std::thread_local! {
@@ -845,7 +845,7 @@ mod phase4d_tests {
 }
 
 #[cfg(test)]
-mod phase5c_tests {
+mod shell_directory_and_reuse_tests {
     use super::*;
     #[test]
     fn shell_directory_and_reused_scores_preserve_exact_reference_per_directory() {
@@ -900,7 +900,7 @@ mod phase5c_tests {
 }
 
 #[cfg(test)]
-mod phase5d_tests {
+mod seed_policy_tests {
     use super::*;
     #[test]
     fn angular_nms_rejects_clumps_then_fills_without_duplicates() {
@@ -928,7 +928,7 @@ mod phase5d_tests {
 }
 
 #[cfg(test)]
-mod phase5d_budget_tests {
+mod seed_budget_tests {
     use super::*;
     #[test]
     fn nms_query_budgets_exclusions_and_reused_distance_bits() {

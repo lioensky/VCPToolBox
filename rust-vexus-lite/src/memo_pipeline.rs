@@ -3605,8 +3605,64 @@ mod experiment_c_tests {
 
 
 #[cfg(test)]
-#[path = "phase5_pipeline_experiment.rs"]
-mod phase5_pipeline_experiment;
+mod routing_initialization_tests {
+    use super::*;
+
+    #[test]
+    fn low_level_default_and_unready_warped_route_preserve_cosine_observation() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT,vector BLOB);
+            CREATE TABLE kv_store(key TEXT,value TEXT);
+            CREATE TABLE kbm_runtime_meta(key TEXT PRIMARY KEY,value TEXT);
+            INSERT INTO kbm_runtime_meta VALUES ('database_generation','1'),('memo_tag_facts','1'),('derived_geometry','1');
+            CREATE TABLE rivermemo_artifacts(artifact_sig TEXT,model_sig TEXT,status TEXT,algorithm_version TEXT,schema_version TEXT);
+            INSERT INTO rivermemo_artifacts VALUES ('synthetic','model','ready','memo.native-artifact-v2-binary','rivermemo-persisted-artifact-v2');
+            CREATE TABLE kbm_artifact_dependencies(artifact_sig TEXT,dependency_key TEXT,dependency_version TEXT);
+            INSERT INTO kbm_artifact_dependencies VALUES ('synthetic','memo_tag_facts','1'),('synthetic','derived_geometry','1');
+            CREATE TABLE tagmemo_artifacts(artifact_sig TEXT,asset_type TEXT,status TEXT,model_sig TEXT);").unwrap();
+        let vexus = crate::VexusIndex::new(3, 16).unwrap();
+        for (id, vector) in [(1, [1.0_f32, 0.0, 0.0]), (2, [0.0, 1.0, 0.0])] {
+            let bytes: Vec<_> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+            c.execute("INSERT INTO tags VALUES (?1,?2,?3)",
+                rusqlite::params![id, format!("t{id}"), bytes]).unwrap();
+            vexus.index.write().unwrap().add(id as u64, &vector).unwrap();
+        }
+        c.execute_batch("BEGIN").unwrap();
+        let artifact = Arc::new(crate::rivermemo_topology_v3::NativeArtifact {
+            node_ids: vec![1, 2], node_index: HashMap::from([(1, 0), (2, 1)]),
+            row_offsets: vec![0, 1, 2], targets: vec![1, 0], weights: vec![0.2, 0.2],
+            ..Default::default()
+        }.prepared());
+        let runtime = MemoRuntime::new();
+        let run = |input: &str| run_pipeline_with_connection(
+            &vexus.index, &runtime, "synthetic", 3, input,
+            &[0.6, 0.8, 0.2], &[], &artifact, &c).unwrap();
+        let default = run("{}");
+        let explicit = run(r#"{"config":{"tagRoutingMode":"cosine"}}"#);
+        let ledger = crate::storage::tag_read_audit::Session::begin();
+        let fallback = run(r#"{"config":{"tagRoutingMode":"warped_ags"}}"#);
+        let reads: Vec<_> = ledger.events().into_iter()
+            .filter(|(operation, _)| operation.ends_with(":bulk")).collect();
+        assert!(!reads.is_empty(), "the fixture must exercise request-pool reads");
+        let unique: HashSet<_> = reads.iter().map(|event| event.1).collect();
+        assert_eq!(reads.len(), unique.len(), "request pool must reuse Tag originals");
+        drop(ledger);
+        let default_meta: serde_json::Value = serde_json::from_str(&default.metadata_json).unwrap();
+        for output in [&explicit, &fallback] {
+            assert_eq!(default.enhanced_vector, output.enhanced_vector);
+            let metadata: serde_json::Value = serde_json::from_str(&output.metadata_json).unwrap();
+            assert_eq!(default_meta["pyramid"], metadata["pyramid"]);
+            runtime.release_query_observation(metadata["observationHandle"].as_str().unwrap()).unwrap();
+        }
+        let fallback_meta: serde_json::Value = serde_json::from_str(&fallback.metadata_json).unwrap();
+        assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["used"], "cosine");
+        assert_eq!(fallback_meta["diagnostics"]["tagRouting"]["fallback"], true);
+        assert!(fallback_meta["diagnostics"]["tagRouting"]["fallbackReason"].as_str().unwrap()
+            .starts_with("WARPED_NOT_INITIALIZED:"));
+        assert!(default_meta["diagnostics"].get("tagRouting").is_none());
+        runtime.release_query_observation(default_meta["observationHandle"].as_str().unwrap()).unwrap();
+    }
+}
 
 
 #[cfg(test)]

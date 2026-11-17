@@ -249,7 +249,7 @@ impl VarGraph {
             })
             .collect();
 
-        super::construction::repair(&mut adj, entries[0], &(0..n as u32).collect::<Vec<_>>(), m_max)?;
+        super::connectivity::repair(&mut adj, entries[0], &(0..n as u32).collect::<Vec<_>>(), m_max)?;
 
         Ok(Self {
             neighbors: adj,
