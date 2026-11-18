@@ -1,0 +1,116 @@
+{
+  "displayName": "Moss 文生图",
+  "description": "由 moss文生图 原始工作流转换。模型及特殊采样参数固定：50 步、CFG 3、Euler、sgm_uniform、denoise 1；跳过 single layer 22，生效区间 0–0.5。正面提示词使用用户原文，负面提示词保持为空。",
+  "version": "1.0",
+  "defaults": {
+    "defaultWidth": 896,
+    "defaultHeight": 1344,
+    "defaultBatchSize": 1
+  },
+  "workflow": {
+    "2": {
+      "inputs": {
+        "unet_name": "moss_image_sft_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": { "title": "加载 Moss UNet（保持原样）" }
+    },
+    "3": {
+      "inputs": {
+        "clip_name": "qwen3.5_9b_w4a8_gptq.safetensors",
+        "type": "stable_diffusion",
+        "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": { "title": "加载 Moss 文本编码器（保持原样）" }
+    },
+    "4": {
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": { "title": "加载 Flux2 VAE（保持原样）" }
+    },
+    "5": {
+      "inputs": {
+        "samples": ["8", 0],
+        "vae": ["4", 0]
+      },
+      "class_type": "VAEDecode",
+      "_meta": { "title": "VAE 解码" }
+    },
+    "6": {
+      "inputs": {
+        "pixels": ["7", 0],
+        "vae": ["4", 0]
+      },
+      "class_type": "VAEEncode",
+      "_meta": { "title": "空白图像 VAE 编码（保持原样）" }
+    },
+    "7": {
+      "inputs": {
+        "width": "{{WIDTH}}",
+        "height": "{{HEIGHT}}",
+        "batch_size": "{{BATCH_SIZE}}",
+        "color": 0
+      },
+      "class_type": "EmptyImage",
+      "_meta": { "title": "空白图像" }
+    },
+    "8": {
+      "inputs": {
+        "seed": "{{SEED}}",
+        "steps": 50,
+        "cfg": 3,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1,
+        "model": ["12", 0],
+        "positive": ["9", 0],
+        "negative": ["10", 0],
+        "latent_image": ["6", 0]
+      },
+      "class_type": "KSampler",
+      "_meta": { "title": "Moss 采样（步数、CFG、采样设置保持原样）" }
+    },
+    "9": {
+      "inputs": {
+        "text": "{{USER_PROMPT}}",
+        "clip": ["3", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "用户提示词（不追加质量词或 LoRA token）" }
+    },
+    "10": {
+      "inputs": {
+        "text": "",
+        "clip": ["3", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "空负面提示词（保持原样）" }
+    },
+    "11": {
+      "inputs": {
+        "filename_prefix": "ComfyUI",
+        "format": "png",
+        "format.bit_depth": "8-bit",
+        "format.input_color_space": "sRGB",
+        "images": ["5", 0]
+      },
+      "class_type": "SaveImageAdvanced",
+      "_meta": { "title": "保存图像（保持原样）" }
+    },
+    "12": {
+      "inputs": {
+        "double_layers": "",
+        "single_layers": "22",
+        "start_percent": 0,
+        "end_percent": 0.5,
+        "model": ["2", 0]
+      },
+      "class_type": "SkipLayerGuidanceDiTSimple",
+      "_meta": { "title": "Moss 跳过层引导（保持原样）" }
+    }
+  }
+}

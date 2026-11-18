@@ -1,20 +1,12 @@
 <template>
-  <Teleport to="body">
-    <div
-      v-if="modelValue"
-      class="wormhole-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="wormhole-routing-title"
-    >
-      <div class="wormhole-modal__backdrop" aria-hidden="true" @click="emit('close')"></div>
-
-      <div
-        ref="dialogRef"
-        class="wormhole-modal__shell"
-        tabindex="-1"
-        @keydown="handleDialogKeydown"
-      >
+  <BaseModal
+    :model-value="modelValue"
+    aria-labelledby="wormhole-routing-title"
+    @update:modelValue="handleModalVisibility"
+  >
+    <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+      <div v-bind="overlayAttrs" class="wormhole-modal">
+        <div :ref="panelRef" v-bind="panelAttrs" class="wormhole-modal__shell">
         <header class="wormhole-modal__header">
           <div class="wormhole-modal__hero">
             <span class="wormhole-modal__eyebrow">Wormhole Routing Cockpit</span>
@@ -230,13 +222,15 @@
             </div>
           </aside>
         </div>
+        </div>
       </div>
-    </div>
-  </Teleport>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
+import BaseModal from "@/components/ui/BaseModal.vue";
 import {
   WORMHOLE_PRIMARY_KEYS,
   WORMHOLE_ROUTING_PANELS,
@@ -274,9 +268,7 @@ const emit = defineEmits<{
   updateField: [subKey: string, value: number];
 }>();
 
-const dialogRef = ref<HTMLElement | null>(null);
 const activePanelId = ref<WormholeRoutingPanelId>(WORMHOLE_ROUTING_PANELS[0].id);
-const previousBodyOverflow = ref("");
 
 const activePanel = computed(
   () =>
@@ -431,62 +423,6 @@ function handleFieldInput(subKey: string, event: Event): void {
   emit("updateField", subKey, nextValue);
 }
 
-function getDialogFocusableElements(): HTMLElement[] {
-  if (!dialogRef.value) {
-    return [];
-  }
-
-  const selector = [
-    "button:not([disabled])",
-    "a[href]",
-    "input:not([disabled])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    "[tabindex]:not([tabindex='-1'])",
-  ].join(",");
-
-  return Array.from(dialogRef.value.querySelectorAll<HTMLElement>(selector)).filter(
-    (element) => !element.hasAttribute("disabled")
-  );
-}
-
-function handleDialogKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape") {
-    event.preventDefault();
-    emit("close");
-    return;
-  }
-
-  if (event.key !== "Tab") {
-    return;
-  }
-
-  const focusableElements = getDialogFocusableElements();
-  if (focusableElements.length === 0) {
-    event.preventDefault();
-    dialogRef.value?.focus();
-    return;
-  }
-
-  const firstFocusable = focusableElements[0];
-  const lastFocusable = focusableElements[focusableElements.length - 1];
-  const activeElement = document.activeElement as HTMLElement | null;
-  const isInsideDialog = Boolean(activeElement && dialogRef.value?.contains(activeElement));
-
-  if (event.shiftKey) {
-    if (!isInsideDialog || activeElement === firstFocusable) {
-      event.preventDefault();
-      lastFocusable.focus();
-    }
-    return;
-  }
-
-  if (!isInsideDialog || activeElement === lastFocusable) {
-    event.preventDefault();
-    firstFocusable.focus();
-  }
-}
-
 function getPreferredPanelId(): WormholeRoutingPanelId {
   const changedKeySet = new Set(changedKeys.value);
   const firstChangedPanel = WORMHOLE_ROUTING_PANELS.find((panel) =>
@@ -496,38 +432,22 @@ function getPreferredPanelId(): WormholeRoutingPanelId {
   return firstChangedPanel?.id ?? WORMHOLE_ROUTING_PANELS[0].id;
 }
 
-function syncBodyScrollLock(isOpen: boolean): void {
-  if (typeof document === "undefined") {
-    return;
+function handleModalVisibility(visible: boolean): void {
+  if (!visible) {
+    emit("close");
   }
-
-  if (isOpen) {
-    previousBodyOverflow.value = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return;
-  }
-
-  document.body.style.overflow = previousBodyOverflow.value;
 }
 
 watch(
   () => props.modelValue,
-  async (isOpen) => {
-    syncBodyScrollLock(isOpen);
-
+  (isOpen) => {
     if (!isOpen) {
       return;
     }
 
     activePanelId.value = getPreferredPanelId();
-    await nextTick();
-    dialogRef.value?.focus();
   }
 );
-
-onUnmounted(() => {
-  syncBodyScrollLock(false);
-});
 
 const COUPLING_HINTS: Record<string, CouplingHint> = {
   tensionThreshold: {
@@ -566,52 +486,27 @@ const COUPLING_HINTS: Record<string, CouplingHint> = {
 </script>
 
 <style scoped>
-.wormhole-modal {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-index-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 
-.wormhole-modal__backdrop {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(
-      circle at top,
-      color-mix(in srgb, var(--highlight-text) 18%, transparent),
-      transparent 40%
-    ),
-    var(--overlay-backdrop-strong);
-  backdrop-filter: blur(12px);
+.wormhole-modal {
+  z-index: var(--z-index-modal);
+  padding: var(--space-4);
+  background: var(--overlay-backdrop-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .wormhole-modal__shell {
-  position: relative;
+  width: min(1480px, calc(100vw - (var(--space-4) * 2)));
+  max-height: min(calc(var(--app-viewport-height) - (var(--space-4) * 2)), 980px);
   display: flex;
   flex-direction: column;
-  width: min(1480px, 88vw);
-  height: min(920px, 90vh);
-  border: 1px solid var(--border-color);
-  border-radius: 28px;
   overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
   background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--primary-bg) 86%, var(--surface-overlay-strong)),
-      color-mix(in srgb, var(--secondary-bg) 90%, var(--primary-bg))
-    ),
-    var(--secondary-bg);
+    linear-gradient(0deg, var(--secondary-bg), var(--secondary-bg)),
+    var(--primary-bg);
   box-shadow: var(--overlay-panel-shadow);
-  outline: none;
-  overscroll-behavior: contain;
-}
-
-.wormhole-modal__shell:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .wormhole-modal__header {
@@ -1094,11 +989,6 @@ const COUPLING_HINTS: Record<string, CouplingHint> = {
 }
 
 @media (max-width: 1320px) {
-  .wormhole-modal__shell {
-    width: min(1500px, calc(100vw - 20px));
-    height: min(920px, calc(var(--app-viewport-height, 100vh) - 20px));
-  }
-
   .wormhole-modal__body {
     grid-template-columns: 220px minmax(0, 1fr);
   }
@@ -1152,12 +1042,6 @@ const COUPLING_HINTS: Record<string, CouplingHint> = {
 }
 
 @media (max-width: 720px) {
-  .wormhole-modal__shell {
-    width: 100vw;
-    height: var(--app-viewport-height, 100vh);
-    border-radius: 0;
-  }
-
   .wormhole-modal__header,
   .wormhole-modal__workspace,
   .wormhole-modal__nav,

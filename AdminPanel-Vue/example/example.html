@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCPToolbox - Cyberpunk Flow</title>
+    <style>
+        /* 引入赛博朋克感十足的机甲字体 */
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@900&display=swap');
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050508; /* 极暗的深空背景 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            /* 添加一点赛博朋克网格背景 */
+            background-image: 
+                linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 30px 30px;
+        }
+
+        .cyber-container {
+            width: 100%;
+            max-width: 1000px;
+            position: relative;
+        }
+
+        .cyber-text {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 100px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+        }
+
+        /* 基础文字层：暗色填充，微弱的边框 */
+        .text-base {
+            fill: #0a0a10;
+            stroke: #1a1a2e;
+            stroke-width: 2px;
+        }
+
+        /* 流光层通用设置 */
+        .text-flow {
+            fill: transparent;
+            stroke-width: 4px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            /* 核心魔法：定义虚线长度和间距。150是光条长度，400是空白间距 */
+            stroke-dasharray: 150 400; 
+        }
+
+        /* 青色流光 */
+        .flow-cyan {
+            stroke: #00f3ff;
+            filter: drop-shadow(0 0 8px #00f3ff) drop-shadow(0 0 20px #00f3ff);
+            animation: flow-anim 6s linear infinite;
+        }
+
+        /* 粉色流光（反向或延迟，制造交错感） */
+        .flow-pink {
+            stroke: #ff00ea;
+            filter: drop-shadow(0 0 8px #ff00ea) drop-shadow(0 0 20px #ff00ea);
+            animation: flow-anim 6s linear infinite;
+            animation-delay: -3s; /* 延迟一半的时间，让粉色和青色交替出现 */
+        }
+
+        /* 动画：通过改变虚线偏移量让线条“跑”起来 */
+        @keyframes flow-anim {
+            0% {
+                stroke-dashoffset: 550;
+            }
+            100% {
+                stroke-dashoffset: 0;
+            }
+        }
+
+        /* 鼠标悬浮时的整体发光特效 */
+        .cyber-container:hover .text-base {
+            fill: #111122;
+            transition: fill 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="cyber-container">
+        <!-- viewBox 确保在不同屏幕下按比例缩放 -->
+        <svg viewBox="0 0 1000 200" width="100%" height="100%">
+            <defs>
+                <!-- SVG 原生发光滤镜，让光效更柔和融合 -->
+                <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="4" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+            </defs>
+
+            <!-- 底层文字 -->
+            <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="cyber-text text-base">
+                vcptoolbox
+            </text>
+
+            <!-- 青色流光层 -->
+            <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="cyber-text text-flow flow-cyan" filter="url(#glow)">
+                vcptoolbox
+            </text>
+
+            <!-- 粉色流光层 -->
+            <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="cyber-text text-flow flow-pink" filter="url(#glow)">
+                vcptoolbox
+            </text>
+        </svg>
+    </div>
+
+</body>
+</html>

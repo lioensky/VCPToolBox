@@ -63,7 +63,7 @@ AdminPanel-Vue 采用**Manifest + Component**分离的路由架构设计：
 
 ```typescript
 // 路由分组
-type AppRouteGroup = 'core' | 'agent' | 'tools' | 'rag' | 'plugins' | 'other'
+type AppRouteGroup = 'core' | 'agentContent' | 'knowledge' | 'toolsPlugins'
 
 // 路由ID（严格类型）
 type AppRouteId = 
@@ -157,38 +157,35 @@ isAppRouteId('unknown')   // false (TypeScript编译错误)
 路由按功能域分组，用于生成侧边栏导航：
 
 ```
-核心功能 (core)
+核心 (core)
 ├── 仪表盘
 ├── 全局基础配置
-├── 日记知识库管理
-├── VCP 论坛
-├── 多媒体 Base64 编辑器
-├── 语义组编辑器
-├── VCPTavern 预设编辑
-├── 日程管理
-├── 梦境审批
 └── 服务器日志
 
-Agent 相关 (agent)
+Agent & 内容 (agentContent)
 ├── Agent 管理器
-├── Agent 助手配置
-└── Agent 积分排行榜
+├── Agent 通讯配置
+├── Agent 积分排行榜
+├── 梦境审批
+├── 日程管理
+├── VCPTavern 预设编辑
+├── VCP 论坛
+├── 表情包画廊
+└── 多媒体 Base64 编辑器
 
-工具相关 (tools)
+知识 & RAG (knowledge)
+├── 日记知识库管理
+├── 语义组编辑器
+├── 思维链编辑器
+└── 浪潮 RAG 调参
+
+工具 & 插件 (toolsPlugins)
 ├── Toolbox 管理器
 ├── 高级变量编辑器
 ├── 工具列表配置编辑器
 ├── 预处理器顺序管理
-└── 插件调用审核管理
-
-RAG 相关 (rag)
-├── 思维链编辑器
-└── 浪潮 RAG 调参
-
-插件中心 (plugins)
-└── 插件中心
-
-其他 (other)
+├── 插件调用审核管理
+├── 插件中心
 └── 占位符查看器
 ```
 
@@ -196,12 +193,10 @@ RAG 相关 (rag)
 
 ```typescript
 const NAV_GROUP_LABELS: Record<AppRouteGroup, string> = {
-  core: '———— 核 心 功 能 ————',
-  agent: '———— Agent 相 关 ————',
-  tools: '———— 工 具 相 关 ————',
-  rag: '———— RAG 相 关 ————',
-  plugins: '———— 插 件 中 心 ————',
-  other: '———— 其 他 ————',
+  core: '核心',
+  agentContent: 'Agent & 内容',
+  knowledge: '知识 & RAG',
+  toolsPlugins: '工具 & 插件',
 }
 ```
 
@@ -279,11 +274,11 @@ export function buildSidebarNavItems(): AppNavItem[] {
 
 ```typescript
 [
-  { category: '———— 核 心 功 能 ————' },
+  { category: '核心' },
   { target: 'dashboard', label: '仪表盘', icon: 'dashboard' },
   { target: 'base-config', label: '全局基础配置', icon: 'settings' },
   // ...
-  { category: '———— Agent 相 关 ————' },
+  { category: 'Agent & 内容' },
   { target: 'agent-files-editor', label: 'Agent 管理器', icon: 'smart_toy' },
   // ...
 ]
@@ -352,22 +347,21 @@ function isPublicRoute(to: RouteLocationNormalized): boolean {
 ### 导航工具
 
 ```typescript
-// app/routes/navigation.ts
+// app/routes/manifest.ts
 
 /**
- * 根据目标导航
- * @param target - 路由ID或外部URL
- * @param pluginName - 插件名称（如果是插件页面）
+ * 将导航目标解析为 vue-router 的 RouteLocationRaw
+ * @param target - 路由 ID（如 'dashboard'）、自定义 target，或 'plugin-<name>-config' 形式
+ * @param pluginName - 若为插件配置页，传入插件名
  */
-export function navigateByTarget(
-  router: Router,
+export function resolveAppNavigationLocation(
   target: string,
   pluginName?: string
-): void
+): RouteLocationRaw
 
 // 使用示例
-navigateByTarget(router, 'dashboard')
-navigateByTarget(router, 'plugin-config', 'MyPlugin')
+router.push(resolveAppNavigationLocation('dashboard'))
+router.push(resolveAppNavigationLocation('plugin-config', 'MyPlugin'))
 ```
 
 ### 重定向工具
@@ -376,18 +370,17 @@ navigateByTarget(router, 'plugin-config', 'MyPlugin')
 // app/routes/redirect.ts
 
 /**
- * 解析安全的重定向目标
- * 防止外部跳转和循环跳转
+ * 解析安全的重定向路径
+ * 仅接受以 '/' 开头的内部路径，且路由必须存在且非 Login
  */
 export function resolveSafeAppRedirect(
   router: Router,
-  redirectPath: string | null,
-  fallbackRouteId?: AppRouteId
-): RouteLocationRaw
+  target: unknown,
+  fallbackRouteId?: 'dashboard' | 'login'
+): string
 
 // 使用示例
-const redirect = resolveSafeAppRedirect(router, '/some/path', 'dashboard')
-// 如果 '/some/path' 不安全或无效，返回 dashboard 路由
+const redirect = resolveSafeAppRedirect(router, route.query.redirect, 'dashboard')
 ```
 
 ### 路径解析
@@ -395,32 +388,39 @@ const redirect = resolveSafeAppRedirect(router, '/some/path', 'dashboard')
 ```typescript
 // app/routes/base.ts
 
-/** 应用基础路径 */
-export const APP_ROUTER_BASE = '/AdminPanel/'
+/** 应用基础路径（vue-router base） */
+export const APP_ROUTER_BASE = '/AdminPanel'
 
-/** 规范化的应用基础路径 */
-export const NORMALIZED_APP_BASE = '/AdminPanel'
+/** 旧版入口路径，保留用于兼容旧书签 */
+export const APP_LEGACY_ROUTER_BASE = '/AdminPanelLegacy'
 
-/**
- * 解析规范化的应用位置
- * 处理路径中的双斜杠等问题
- */
-export function resolveCanonicalAppLocation(location: Location): string | null
+/** 将 legacy 路径规范化到 canonical 路径 */
+export function normalizeLegacyAppPath(pathname: string): string
+
+/** 返回需要跳转的 canonical URL（含 search/hash），否则返回 null */
+export function resolveCanonicalAppLocation(location: {
+  pathname: string
+  search?: string
+  hash?: string
+}): string | null
 ```
 
 ### 页面标题解析
 
 ```typescript
-// utils/navigation.ts
+// app/routes/manifest.ts
 
 /**
- * 根据路由解析页面标题
+ * 根据当前路由解析页面标题
+ * 对 plugin-config 会附加插件 displayName
  */
-export function resolveRouteTitle(
-  route: RouteLocationNormalized,
-  navItems: AppNavItem[],
-  plugins: PluginInfo[]
-): string
+export function resolveAppRouteTitle(
+  route: RouteLocationNormalizedLoaded,
+  context?: {
+    navItems?: readonly AppNavItem[]
+    plugins?: readonly PluginInfo[]
+  }
+): string | undefined
 ```
 
 ---
@@ -523,10 +523,10 @@ const pluginName = computed(() => route.params.pluginName as string)
 ### 导航到动态路由
 
 ```typescript
-// 方式 1：使用 navigateByTarget
-navigateByTarget(router, 'plugin-config', 'MyPlugin')
+// 方式 1：使用 resolveAppNavigationLocation
+router.push(resolveAppNavigationLocation('plugin-config', 'MyPlugin'))
 
-// 方式 2：使用 router.push
+// 方式 2：直接使用 router.push
 router.push({
   name: 'PluginConfig',
   params: { pluginName: 'MyPlugin' }

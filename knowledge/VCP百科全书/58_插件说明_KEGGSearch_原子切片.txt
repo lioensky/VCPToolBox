@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——KEGGSearch（原子切片）
+
+一、插件身份
+- name: KEGGSearch
+- displayName: KEGG 数据库查询
+- pluginType: synchronous
+- command: get_database_info, search_pathways, get_pathway_info, get_pathway_genes, search_genes, get_gene_info, search_compounds, get_compound_info, search_reactions, get_reaction_info, search_enzymes, get_enzyme_info, search_diseases, get_disease_info, search_drugs, get_drug_info, get_drug_interactions, search_modules, get_module_info, search_ko_entries, get_ko_info, search_glycans, get_glycan_info, search_brite, get_brite_info, get_pathway_compounds, get_pathway_reactions, get_compound_reactions, get_gene_orthologs, convert_identifiers, find_related_entries, batch_entry_lookup
+
+二、核心能力
+- 一个用于查询 KEGG 数据库的 VCP 插件，提供通路、基因、化合物等多维度的数据检索与分析功能。
+- 提供可调用命令：get_database_info、search_pathways、get_pathway_info、get_pathway_genes、search_genes、get_gene_info、search_compounds、get_compound_info、search_reactions、get_reaction_info、search_enzymes、get_enzyme_info、search_diseases、get_disease_info、search_drugs、get_drug_info、get_drug_interactions、search_modules、get_module_info、search_ko_entries、get_ko_info、search_glycans、get_glycan_info、search_brite、get_brite_info、get_pathway_compounds、get_pathway_reactions、get_compound_reactions、get_gene_orthologs、convert_identifiers、find_related_entries、batch_entry_lookup。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」KEGGSearch「末」,
+command:「始」get_database_info「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: KEGGSearch, synchronous, 同步调用, 检索, 信息获取, get_database_info, search_pathways, get_pathway_info, get_pathway_genes, search_genes, multi-command

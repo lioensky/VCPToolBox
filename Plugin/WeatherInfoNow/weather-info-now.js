@@ -1,12 +1,13 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { getFreshWeather } = require('../WeatherReporter/weather-data');
 
 const WEATHER_REPORTER_JSON_CACHE = path.join(__dirname, '../WeatherReporter/weather_cache.json');
 
 async function main() {
     try {
         const data = await fs.readFile(WEATHER_REPORTER_JSON_CACHE, 'utf-8');
-        const weatherData = JSON.parse(data);
+        const weatherData = getFreshWeather(JSON.parse(data));
 
         if (!weatherData || !weatherData.hourly || weatherData.hourly.length === 0) {
             process.stdout.write('[实时天气信息暂不可用]');
@@ -15,8 +16,8 @@ async function main() {
 
         // 寻找与当前时间最接近的小时预报
         const currentTime = new Date();
-        let now = weatherData.hourly[0];
-        let minDiff = Infinity;
+        let now = weatherData.now || weatherData.hourly[0];
+        let minDiff = weatherData.now ? Math.abs(currentTime - new Date(weatherData.now.obsTime)) : Infinity;
 
         for (const hour of weatherData.hourly) {
             const fxTime = new Date(hour.fxTime);
@@ -47,6 +48,7 @@ async function main() {
             output += warningDetail;
         }
 
+        output += `\n数据更新时间: ${new Date(weatherData.sourceUpdatedAt || weatherData.lastUpdate).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
         process.stdout.write(output);
     } catch (error) {
         if (error.code === 'ENOENT') {

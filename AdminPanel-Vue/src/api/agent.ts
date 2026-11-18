@@ -5,6 +5,9 @@ import {
 } from "./requestWithUi";
 import type {
   AgentAssistantConfigResponse,
+  AgentAssistantDelegationTask,
+  AgentAssistantDelegationsResponse,
+  CancelAgentAssistantDelegationResponse,
   AgentMapResponse,
   AgentScoreHistoryEntry,
   AgentScoreSummary,
@@ -15,6 +18,9 @@ const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 export type {
   AgentAssistantConfigAgent,
   AgentAssistantConfigResponse,
+  AgentAssistantDelegationTask,
+  AgentAssistantDelegationsResponse,
+  CancelAgentAssistantDelegationResponse,
   AgentInfo,
   AgentMapResponse,
   AgentScoreHistoryEntry,
@@ -55,6 +61,56 @@ export const agentApi = {
         url: "/admin_api/agent-assistant/config",
         method: "POST",
         body: config,
+      },
+      uiOptions
+    );
+  },
+
+  async getAgentDelegations(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<AgentAssistantDelegationsResponse> {
+    const response = await requestWithUi<{ data?: AgentAssistantDelegationsResponse } | AgentAssistantDelegationsResponse>(
+      {
+        url: "/admin_api/agent-assistant/delegations",
+        ...requestContext,
+      },
+      uiOptions
+    );
+    if ("data" in response && response.data) {
+      return response.data;
+    }
+    return response as AgentAssistantDelegationsResponse;
+  },
+
+  async getAgentDelegationDetail(
+    delegationId: string,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<AgentAssistantDelegationTask | null> {
+    const response = await requestWithUi<{ data?: AgentAssistantDelegationTask } | AgentAssistantDelegationTask>(
+      {
+        url: `/admin_api/agent-assistant/delegations/${encodeURIComponent(delegationId)}`,
+        ...requestContext,
+      },
+      uiOptions
+    );
+    if ("data" in response && response.data) {
+      return response.data;
+    }
+    return response as AgentAssistantDelegationTask;
+  },
+
+  async cancelAgentDelegation(
+    delegationId: string,
+    reason = "用户从管理面板请求取消。",
+    uiOptions: RequestUiOptions = {}
+  ): Promise<CancelAgentAssistantDelegationResponse> {
+    return requestWithUi(
+      {
+        url: `/admin_api/agent-assistant/delegations/${encodeURIComponent(delegationId)}/cancel`,
+        method: "POST",
+        body: { reason },
       },
       uiOptions
     );

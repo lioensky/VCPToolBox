@@ -1,0 +1,92 @@
+[2026-03-03] - Agent-C
+[VCP百科全书] WindowSensor (窗口感知雷达) - 系统活跃窗口监控静态插件
+
+一、插件基本信息
+1. 插件名称：WindowSensor / 窗口感知雷达
+2. 插件类型：静态插件 (static)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：实时监控系统活跃窗口进程，为AI提供上下文感知视界
+
+二、功能定位
+WindowSensor是一个系统监控静态插件，通过PowerShell脚本定期扫描当前设备上有图形界面的活跃进程，构建多级上下文感知视界。插件可自动忽略指定的系统进程（如Rainmeter、RazerAppEngine等），为AI提供清晰的用户活动环境信息，支持防干扰的上下文注入。
+
+适用场景：
+- AI需要了解用户当前的工作环境
+- 根据活跃窗口动态调整AI的回应方式
+- 系统级上下文感知和环境监控
+- 多任务环境下的AI决策优化
+
+三、配置参数
+
+1. IgnoreApps (数组, 可选)
+   - 类型：array of strings
+   - 默认值：["Rainmeter", "RazerAppEngine", "Taskmgr"]
+   - 作用：指定需要被WindowSensor忽略的进程名称列表，支持部分匹配（忽略大小写）
+   - 示例：["Rainmeter", "RazerAppEngine", "TextInputHost"]
+
+2. NodeName (字符串, 可选)
+   - 类型：string
+   - 默认值："主节点"
+   - 作用：标识当前节点的名称，用于分布式环境中区分不同节点
+
+四、调用命令列表
+
+WindowSensor是静态插件，不提供直接的调用命令。而是通过系统提示词占位符自动注入窗口信息。
+
+1. {{WindowSensor_Node}} - 窗口信息占位符
+   功能描述：在系统提示词中使用此占位符，自动注入当前节点的活跃窗口进程数据
+   返回值说明：返回当前活跃窗口的进程摘要与详情，包含进程名、窗口标题、活跃状态等信息
+
+五、使用示例
+
+示例1：在系统提示词中使用窗口感知信息
+系统提示词中包含：
+{{WindowSensor_Node}}
+
+AI会自动获得类似以下信息：
+当前活跃窗口：
+- Visual Studio Code (文件: main.js)
+- Chrome (标签: GitHub - VCPToolBox)
+- Notepad (文件: notes.txt)
+
+示例2：根据窗口信息调整回应
+如果WindowSensor检测到用户正在使用代码编辑器，AI可以提供更技术性的回应；
+如果检测到浏览器活跃，AI可以提供网络相关的建议。
+
+示例3：分布式环境中的节点识别
+在多节点部署中，{{WindowSensor_Node}}会包含NodeName标识：
+[主节点] 活跃窗口列表：...
+[从节点1] 活跃窗口列表：...
+
+六、注意事项与限制
+
+1. 刷新机制：
+   - 插件使用Cron表达式"*/3 * * * *"，每3分钟刷新一次窗口信息
+   - 启动时自动执行（executeOnStartup: true）
+   - 刷新间隔可能导致窗口信息有3分钟的延迟
+
+2. 平台限制：
+   - 仅支持Windows系统（使用PowerShell脚本）
+   - 需要PowerShell执行权限（使用-ExecutionPolicy Bypass）
+   - 依赖系统的窗口管理API
+
+3. 进程过滤：
+   - IgnoreApps支持部分匹配，不区分大小写
+   - 默认忽略Rainmeter、RazerAppEngine、Taskmgr等系统工具
+   - 可自定义忽略列表以减少噪音
+
+4. 隐私考虑：
+   - 插件会监控所有活跃窗口，包括用户的私密应用
+   - 建议在隐私敏感的环境中谨慎使用或配置IgnoreApps
+   - 窗口信息仅在系统提示词中使用，不会外传
+
+5. 性能影响：
+   - PowerShell脚本执行可能消耗系统资源
+   - 3分钟的刷新间隔是性能和实时性的平衡
+
+七、关联插件
+- 其他系统监控插件
+- 需要上下文感知的AI对话插件
+
+Tag: 系统监控, 窗口感知, 上下文注入, 静态插件, 进程监控, PowerShell, 分布式节点, 防干扰

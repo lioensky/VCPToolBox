@@ -21,7 +21,7 @@
 ## 服务器集成
 
 -   服务器 ([`server.js`](../../../server.js)) 在初始化 (`initialize` 函数) 过程中会调用 `pluginManager.executePlugin("EmojiListGenerator")` 来执行此插件，确保所有表情包的 `.txt` 列表文件在插件的 `generated_lists/` 目录中是最新的。
--   随后，[`server.js`](../../../server.js) 会读取这些位于 `Plugin/EmojiListGenerator/generated_lists/` 下的 `.txt` 文件，并将它们的内加载到内存中的 `cachedEmojiLists` 缓存。
+-   随后，[`server.js`](../../../server.js) 会读取这些位于 `Plugin/EmojiListGenerator/generated_lists/` 下的 `.txt` 文件，并将它们的内容加载到内存中的 `cachedEmojiLists` 缓存。
 -   最终，当处理文本中的 `{{xx表情包}}` 占位符时，服务器会从 `cachedEmojiLists` 中获取对应的列表进行替换。
 
 ## 目录结构
@@ -35,5 +35,47 @@
 
 ## 注意事项
 
--   确保 `PROJECT_BASE_PATH` 环境变量被正确设置。
+-   `PROJECT_BASE_PATH` 由 VCP 的 `server.js` 在启动时自动设置为 VCPToolBox 根目录，通常无需手动配置。
 -   插件会覆盖 `generated_lists/` 目录中已存在的同名 `.txt` 文件。
+
+## 前端表情包修复器
+
+VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能自动修复 AI 生成的错误表情包 URL。
+
+### 数据流
+
+1. **后端启动时**：本插件扫描 `image/` 目录，生成 `generated_lists/*.txt` 文件
+2. **后端缓存**：`server.js` 读取这些 `.txt` 文件，加载到内存中的 `cachedEmojiLists` 缓存
+3. **前端获取**：前端 `emoticonHandlers.js` 通过 `fetch` 请求后端 `/admin_api/emojis/list` 端点获取表情包列表
+4. **修复器工作**：`emoticonUrlFixer` 使用获取到的列表作为匹配知识库，自动修复 AI 生成的错误 URL
+
+### 配置
+
+前端只需确保 VCPChat 的 `settings.json` 中 `fileKey` 字段填写了正确的图床密码（与 VCPToolBox 根目录 `config.env` 中的 `Image_Key` 一致）。无需手动复制任何文件。
+
+### 验证（可选）
+
+启动 VCPChat 后，打开开发者工具（`Ctrl+Shift+I`）→ Console，搜索 `EmoticonFixer`：
+- 成功：`[EmoticonFixer] Library loaded with N items.`
+- 失败：`[EmoticonFixer] Library unavailable, fixer running in degraded passthrough mode.`
+
+
+> **注意**：如果看到 `Library unavailable`，请检查：(1) VCPToolBox 后端是否正常运行；(2) `fileKey` 是否正确配置；(3) 前端 `emoticonHandlers.js` 是否为最新版本（应通过 API 获取数据，而非读取本地文件）。
+
+## 表情包 URL 修复器工作原理
+
+当 AI 生成的表情包 URL 存在错误时（文件夹名错误、文件格式错误、文件名拼写错误等），前端修复器会自动尝试修复：
+
+### 修复机制（按优先级）
+
+1. **完美匹配检查**：URL 与库中某项完全一致 → 直接通过，不做修改
+2. **精确文件名匹配**：剥离扩展名后进行精确比对，忽略文件夹差异和格式差异。当 AI 写对了文件名但文件夹或格式错误时，能准确跨文件夹匹配到正确的表情包
+3. **模糊匹配**（降级方案）：使用编辑距离算法计算加权相似度（70% 文件夹名权重 + 30% 文件名权重），选择得分最高且超过阈值（0.6）的结果
+
+### 注意事项
+
+- 新增表情包目录后需**重启 VCPToolBox 后端**，本插件才会重新扫描生成列表，后端 API 会自动返回最新数据
+- 也可通过 `/admin_api/emojis/list/rebuild` 端点手动触发重新生成，无需重启
+
+- 修复器在库为空时自动降级为直通模式（passthrough），不做任何 URL 修改
+- 后端 ImageServer 提供了额外的图片格式回退机制（`.png`↔`.jpg`↔`.webp` 等），作为前端修复器的补充防御层

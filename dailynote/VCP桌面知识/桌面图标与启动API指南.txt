@@ -58,6 +58,20 @@ window.VCPDesktop.dock.launch(item)
 | `builtinWeather` | 天气挂件 |
 | `builtinMusic` | 音乐播放条 |
 | `builtinAppTray` | 应用托盘 |
+| `builtinNews` | 今日热点 |
+| `builtinTranslate` | AI 翻译 |
+| `builtinPerformanceMonitor` | 性能监视器 |
+| `builtinCpuMonitor` | CPU 监控 |
+| `builtinMemoryMonitor` | RAM 监控 |
+| `builtinDiskMonitor` | 磁盘监控 |
+| `builtinNetworkMonitor` | 网络监控 |
+| `builtinGpuMonitor` | GPU 监控 |
+| `builtinBatteryMonitor` | 电池监控 |
+| `builtinDockerMonitor` | Docker 监控 |
+| `builtinSensorsMonitor` | 传感器监控 |
+| `builtinProcessMonitor` | 进程监视器 |
+
+builtinId 是 `window.VCPDesktop` 上的模块名，dock.launch 据此调用 `window.VCPDesktop[builtinId].spawn()`。挂件上屏后的 widgetId 是另一套名字（如 builtin-weather、builtin-monitor-cpu），QueryDesktop 和性能监视器里看到的是 widgetId。九个监控挂件另有总入口 `window.VCPDesktop.builtinSystemMonitor.spawn('cpu')`。（依据 Desktopmodules/builtinWidgets 源码整理）
 
 ---
 

@@ -1,81 +1,17 @@
-// Plugin/LightMemoPlugin/LightMemo.js
+// Plugin/LightMemo/LightMemo.js
 const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
-const dotenv = require('dotenv');
 const { Jieba } = require('@node-rs/jieba');
 const { dict } = require('@node-rs/jieba/dict');
-
-class BM25Ranker {
-    constructor() {
-        this.k1 = 1.5;  // 词频饱和参数
-        this.b = 0.75;  // 长度惩罚参数
-    }
-
-    /**
-     * 计算BM25分数
-     * @param {Array} queryTokens - 查询分词
-     * @param {Array} docTokens - 文档分词
-     * @param {Number} avgDocLength - 平均文档长度
-     * @param {Object} idfScores - 每个词的IDF分数
-     */
-    score(queryTokens, docTokens, avgDocLength, idfScores) {
-        const docLength = docTokens.length;
-        const termFreq = {};
-
-        // 统计词频
-        for (const token of docTokens) {
-            termFreq[token] = (termFreq[token] || 0) + 1;
-        }
-
-        let score = 0;
-        for (const token of queryTokens) {
-            const tf = termFreq[token] || 0;
-            if (tf === 0) continue;
-
-            const idf = idfScores[token] || 0;
-
-            // BM25公式
-            const numerator = tf * (this.k1 + 1);
-            const denominator = tf + this.k1 * (1 - this.b + this.b * (docLength / avgDocLength));
-
-            score += idf * (numerator / denominator);
-        }
-
-        return score;
-    }
-
-    /**
-     * 计算IDF（逆文档频率）
-     * @param {Array} allDocs - 所有文档的分词数组
-     */
-    calculateIDF(allDocs) {
-        const N = allDocs.length;
-        const df = {}; // document frequency
-
-        // 统计每个词出现在多少文档中
-        for (const doc of allDocs) {
-            const uniqueTokens = new Set(doc);
-            for (const token of uniqueTokens) {
-                df[token] = (df[token] || 0) + 1;
-            }
-        }
-
-        // 计算IDF
-        const idfScores = {};
-        for (const token in df) {
-            // IDF = log((N - df + 0.5) / (df + 0.5) + 1)
-            idfScores[token] = Math.log((N - df[token] + 0.5) / (df[token] + 0.5) + 1);
-        }
-
-        return idfScores;
-    }
-}
 
 class LightMemoPlugin {
     constructor() {
         this.name = 'LightMemo';
         this.vectorDBManager = null;
+        this.tdbKnowledgeManager = null; // 冷知识库（TriviumDB）检索管理器
+        this.aiMemoBridge = null; // RAGDiaryPlugin 共享的 AI 记忆总结桥
+        this.jevClient = null; // VCP 根配置共享的 Jev 结构化决策客户端
         this.getSingleEmbedding = null;
         this.projectBasePath = '';
         this.dailyNoteRootPath = '';
@@ -106,6 +42,18 @@ class LightMemoPlugin {
         if (dependencies.vectorDBManager) {
             this.vectorDBManager = dependencies.vectorDBManager;
         }
+        if (dependencies.tdbKnowledgeManager) {
+            this.tdbKnowledgeManager = dependencies.tdbKnowledgeManager;
+            console.log('[LightMemo] TDBKnowledgeManager injected. Cold knowledge base search enabled.');
+        }
+        if (dependencies.aiMemoBridge) {
+            this.aiMemoBridge = dependencies.aiMemoBridge;
+            console.log('[LightMemo] AIMemoBridge injected. Optional AI memory summarization enabled.');
+        }
+        if (dependencies.jevClient) {
+            this.jevClient = dependencies.jevClient;
+            console.log('[LightMemo] JevClient injected. Optional Jev decision rerank enabled.');
+        }
         if (dependencies.getSingleEmbedding) {
             this.getSingleEmbedding = dependencies.getSingleEmbedding;
         }
@@ -120,315 +68,358 @@ class LightMemoPlugin {
         const excluded = process.env.EXCLUDED_FOLDERS || "已整理,夜伽,MusicDiary";
         this.excludedFolders = excluded.split(',').map(f => f.trim()).filter(Boolean);
 
+        const configuredMaxDocuments = parseInt(process.env.RerankMaxDocumentsPerRequest, 10);
+        const configuredConcurrency = parseInt(process.env.RerankMaxConcurrentRequests, 10);
+        const configuredJevMaxChoices = parseInt(process.env.JevRerankMaxChoices, 10);
+        const configuredJevMaxDocumentChars = parseInt(process.env.JevRerankMaxDocumentChars, 10);
         this.rerankConfig = {
             url: process.env.RerankUrl || '',
             apiKey: process.env.RerankApi || '',
             model: process.env.RerankModel || '',
             maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000,
-            multiplier: 2.0
+            // 单次最多 25 个 documents，避免误入服务商按 Token 计费的大批量档。
+            maxDocumentsPerRequest: Number.isFinite(configuredMaxDocuments)
+                ? Math.max(1, Math.min(25, configuredMaxDocuments))
+                : 25,
+            // 小批量请求采用有界并发，避免无上限并发压垮服务商。
+            maxConcurrentRequests: Number.isFinite(configuredConcurrency)
+                ? Math.max(1, Math.min(10, configuredConcurrency))
+                : 3,
+            jevPrompt: process.env.JevRerankPrompt
+                || '请选择最值得用于回答当前查询的记忆。请综合考虑逻辑关联、记忆叙事连续性与信息解释力；优先选择能直接回答问题、补足关键背景或维持事件连续性的内容，压低表面词汇重合、重复、跑题或缺乏上下文价值的内容。',
+            jevMaxChoices: Number.isFinite(configuredJevMaxChoices)
+                ? Math.max(2, Math.min(255, configuredJevMaxChoices))
+                : 255,
+            jevMaxDocumentChars: Number.isFinite(configuredJevMaxDocumentChars)
+                ? Math.max(200, Math.min(50000, configuredJevMaxDocumentChars))
+                : 6000
         };
     }
 
     async processToolCall(args) {
         try {
-            return await this.handleSearch(args);
+            if (/^(tagmemo[-_](ab|compare)|v91_compare)$/i.test(String(args.command || args.action || ''))) {
+                throw new RangeError('TagMemo A/B 已退休，请使用 memory_ab');
+            }
+            const result = this._isMemoryABRequest(args)
+                ? await this.handleMemoryAB(args)
+                : await this.handleSearch(args);
+
+            return this._normalizeToolResult(result);
         } catch (error) {
-            console.error('[LightMemo] Error processing tool call:', error);
+            console.error('[LightMemo] Error processing tool call:', {
+                message: error?.message || String(error),
+                code: error?.code || null
+            });
             // Return an error structure that Plugin.js can understand
             return { plugin_error: error.message || 'An unknown error occurred in LightMemo.' };
         }
     }
 
+    _normalizeToolResult(result) {
+        if (typeof result === 'string') {
+            return this._buildAiFriendlyTextResult(result);
+        }
+
+        if (
+            result &&
+            typeof result === 'object' &&
+            result.status === 'success' &&
+            Array.isArray(result.result)
+        ) {
+            return {
+                status: 'success',
+                result: { content: result.result }
+            };
+        }
+
+        if (
+            result &&
+            typeof result === 'object' &&
+            result.status === 'success' &&
+            result.result &&
+            typeof result.result === 'object' &&
+            Array.isArray(result.result.content)
+        ) {
+            return result;
+        }
+
+        if (result && typeof result === 'object' && Array.isArray(result.content)) {
+            return {
+                status: 'success',
+                result
+            };
+        }
+
+        return result;
+    }
+
+    _isMemoryABRequest(args = {}) {
+        const command = String(args.command || args.action || '')
+            .trim()
+            .toLowerCase();
+        return [
+            'memory_ab', 'memory-ab', 'memory_compare', 'memory_address_ab', 'memory-address-ab'
+        ].includes(command);
+    }
+
     async handleSearch(args) {
-        // 兼容性处理：解构时提供默认值，确保 core_tags 缺失时不会报错
-        const {
-            query, maid, folder, k = 5, rerank = false,
-            search_all_knowledge_bases = false,
-            tag_boost: rawTagBoost = 0.5,
-            core_tags = [],
-            core_boost_factor = 1.33
-        } = args;
+        return require('./nativeQuery').search.call(this, args);
+    }
 
-        // 🌟 Wave v8: 解析 tag_boost 的 "+" 后缀
-        // tag_boost:「始」0.6「末」  → 正常浪潮 (tagBoost=0.6, geodesic=false)
-        // tag_boost:「始」0.6+「末」 → 浪潮v8 (tagBoost=0.6, geodesic=true)
-        let useGeodesicRerank = false;
-        let tag_boost = rawTagBoost;
-        if (typeof rawTagBoost === 'string') {
-            if (rawTagBoost.endsWith('+')) {
-                useGeodesicRerank = true;
-                tag_boost = parseFloat(rawTagBoost.slice(0, -1)) || 0;
-            } else {
-                tag_boost = parseFloat(rawTagBoost) || 0;
-            }
+    _parseEngineMode(value) {
+        const normalized = String(value || 'rivermemo').trim().toLowerCase();
+        if ([
+            'rivermemo',
+            'river_memo',
+            'river-memo',
+            'topology_v3',
+            'topology-v3',
+            'river',
+            '浪潮河流',
+            '河流记忆'
+        ].includes(normalized)) {
+            return 'rivermemo';
+        }
+        if ([
+            'tagmemo',
+            'tagmemo_v9',
+            'tagmemo-v9',
+            'v9'
+        ].includes(normalized)) {
+            throw new RangeError('TagMemo V9 retrieval retired; select rivermemo or knn');
+        }
+        if ([
+            'knn',
+            'vector',
+            'vector_knn',
+            'vector-knn',
+            '向量'
+        ].includes(normalized)) {
+            return 'knn';
+        }
+        throw new RangeError(
+            `enginemode 仅支持 rivermemo 或 knn，收到 "${value}"`
+        );
+    }
+
+    _parseRerankOptions(rerank) {
+        if (rerank === true) return { enabled: true, rrfOptions: null };
+        if (typeof rerank === 'number' && rerank > 0 && rerank <= 1) {
+            return { enabled: true, rrfOptions: { alpha: rerank } };
+        }
+        if (typeof rerank !== 'string') {
+            return { enabled: false, rrfOptions: null };
         }
 
-        let isMusicSearch = false;
-        let actualQuery = query || "";
-
-        if (actualQuery.includes('[音乐检索]')) {
-            isMusicSearch = true;
-            actualQuery = actualQuery.replace('[音乐检索]', '').trim();
+        const normalized = rerank.toLowerCase().trim();
+        if (normalized.startsWith('rrf')) {
+            const alphaMatch = normalized.match(/rrf(\d+\.?\d*)/);
+            return {
+                enabled: true,
+                rrfOptions: {
+                    alpha: alphaMatch
+                        ? Math.min(1, Math.max(0, parseFloat(alphaMatch[1])))
+                        : 0.5
+                }
+            };
         }
-
-        // --- 时间范围约束语法解析 ---
-        let timeRange = null;
-        const timeRangeRegex = /\[\s*(20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?)\s*[~到-]\s*(20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?)\s*\]/;
-        let timeMatch = actualQuery.match(timeRangeRegex);
-
-        const parseDateToNumber = (dateStr, isEnd) => {
-            const parts = dateStr.split(/[-./]/);
-            const y = parts[0];
-            const m = (parts[1] || (isEnd ? '12' : '01')).padStart(2, '0');
-            const d = (parts[2] || (isEnd ? '31' : '01')).padStart(2, '0');
-            return parseInt(`${y}${m}${d}`, 10);
+        const numericAlpha = parseFloat(normalized);
+        if (
+            Number.isFinite(numericAlpha)
+            && numericAlpha > 0
+            && numericAlpha <= 1
+        ) {
+            return {
+                enabled: true,
+                rrfOptions: { alpha: numericAlpha }
+            };
+        }
+        return {
+            enabled: normalized === 'true',
+            rrfOptions: null
         };
+    }
 
-        if (timeMatch) {
-            const startNum = parseDateToNumber(timeMatch[1], false);
-            const endNum = parseDateToNumber(timeMatch[2], true);
-            timeRange = { start: startNum, end: endNum };
-            actualQuery = actualQuery.replace(timeMatch[0], '').trim();
-            console.log(`[LightMemo] Parsed time range constraint: ${timeMatch[1]} to ${timeMatch[2]} (${startNum} - ${endNum})`);
-        } else {
-            const singleDateRegex = /\[\s*(20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?)\s*\]/;
-            const singleDateMatch = actualQuery.match(singleDateRegex);
-            if (singleDateMatch) {
-                const dateNumStart = parseDateToNumber(singleDateMatch[1], false);
-                const dateNumEnd = parseDateToNumber(singleDateMatch[1], true);
-                timeRange = { start: dateNumStart, end: dateNumEnd };
-                actualQuery = actualQuery.replace(singleDateMatch[0], '').trim();
-                console.log(`[LightMemo] Parsed single date constraint: ${singleDateMatch[1]} (${dateNumStart} - ${dateNumEnd})`);
+    async handleMemoryAB(args = {}) {
+        return require('./nativeQuery').laboratory.call(this, args);
+    }
+
+    _buildAiFriendlyTextResult(reportText) {
+        // hybridservice/direct 插件会被 Plugin.js 解开 { status, result }。
+        // 这里保持 result 为 { content: [...] }，让最终工具结果拥有 content 字段；
+        // 不要让 result 直接等于数组，否则外层会把整个数组再次序列化进 text。
+        return {
+            status: 'success',
+            result: {
+                content: [
+                    { type: 'text', text: reportText }
+                ]
             }
+        };
+    }
+
+    _escapeMarkdownCell(value) {
+        return String(value ?? '')
+            .replace(/\|/g, '\\|')
+            .replace(/\r?\n/g, '<br>');
+    }
+
+    /**
+     * 🧊 检测冷知识库检索路由。
+     * 支持两种触发方式：
+     *   1. query 中包含 [知识库] 或 [知识库:库名1,库名2] / [知识库：库名] 语法
+     *   2. 显式传入 knowledge_base 参数（字符串/数组），库名用逗号分隔
+     * @returns {{ query: string, libraries: string[] }|null}
+     */
+    _detectColdKnowledgeRoute(query, knowledgeBaseArg) {
+        if (!this.tdbKnowledgeManager) return null;
+
+        let libraries = [];
+        let cleanedQuery = typeof query === 'string' ? query : '';
+
+        // 语法：[知识库] 或 [知识库:库名] 或 [知识库：库名1,库名2]
+        const kbRegex = /\[\s*知识库\s*(?:[:：]\s*([^\]]+))?\s*\]/;
+        const match = cleanedQuery.match(kbRegex);
+        if (match) {
+            if (match[1]) {
+                libraries.push(...this._parseStringArray(match[1]));
+            }
+            cleanedQuery = cleanedQuery.replace(match[0], '').trim();
         }
 
-        if (!actualQuery && timeRange) {
-            actualQuery = maid || folder || "记录"; // 如果只有时间约束，给予默认查询词避免向量化报错
+        // 显式 knowledge_base 参数
+        if (knowledgeBaseArg) {
+            libraries.push(...this._parseStringArray(knowledgeBaseArg));
         }
 
-        if (!isMusicSearch && (!query || (!maid && !folder))) {
-            throw new Error("参数 'query' 是必需的，且必须提供 'maid' 或 'folder'。");
+        // 既没有 [知识库] 语法，也没有显式参数 → 不分流
+        if (!match && (!knowledgeBaseArg || libraries.length === 0)) {
+            return null;
         }
 
-        const effectiveFolder = isMusicSearch ? 'MusicDiary' : folder;
-        const effectiveMaid = isMusicSearch ? null : maid;
-        const effectiveSearchAll = isMusicSearch ? false : search_all_knowledge_bases;
+        // 去重
+        libraries = [...new Set(libraries)];
 
-        // 从所有日记本中收集候选chunks
-        const candidates = await this._gatherCandidateChunks({
-            maid: effectiveMaid,
-            folder: effectiveFolder,
-            searchAll: effectiveSearchAll,
-            ignoreExcludedFolders: isMusicSearch,
-            timeRange: timeRange
+        return { query: cleanedQuery || query || '', libraries };
+    }
+
+    /**
+     * 🧊 处理冷知识库（TriviumDB）检索。
+     * 走 TDBKnowledge 的 search_hybrid（BM25 稀疏 + 向量稠密 + 图扩散），
+     * 可选叠加 LightMemo 自带的 Rerank 精排。
+     */
+    async _handleColdKnowledgeSearch({ query, libraries, k, rerank, jev = false }) {
+        if (!this.tdbKnowledgeManager) {
+            return '冷知识库（TDBKnowledge）未启用或未注入，无法检索。';
+        }
+        if (!query || !query.trim()) {
+            throw new Error("冷知识库检索的 'query' 不能为空。");
+        }
+
+        const normalizedK = Math.max(1, Math.floor(this._parseNumber(k, 5)));
+        const rerankOptions = this._parseRerankOptions(rerank);
+        const jevOptions = this._parseRerankOptions(jev);
+        if (rerankOptions.enabled && jevOptions.enabled) {
+            console.warn('[LightMemo] 冷知识检索同时启用 rerank 与 jev；为避免双重费用，本次仅执行 Jev。');
+        }
+        const refinementEnabled = rerankOptions.enabled || jevOptions.enabled;
+        const fetchK = refinementEnabled ? normalizedK * 2 : normalizedK;
+
+        console.log(`[LightMemo] 🧊 Cold knowledge search: query="${query}", libraries=[${libraries.join(', ') || 'ALL'}], k=${normalizedK}`);
+
+        let hits = [];
+        try {
+            hits = await this.tdbKnowledgeManager.search(query, {
+                libraries: libraries.length > 0 ? libraries : undefined,
+                topK: fetchK,
+                expandDepth: 1,
+                minScore: 0.1,
+                hybridAlpha: 0.65
+            });
+        } catch (error) {
+            console.error('[LightMemo] Cold knowledge search failed:', error.message);
+            return `冷知识库检索出错: ${error.message}`;
+        }
+
+        if (!hits || hits.length === 0) {
+            const scope = libraries.length > 0 ? libraries.join(', ') : '全部知识库';
+            return `关于"${query}"，在冷知识库（${scope}）中没有找到相关内容。`;
+        }
+
+        // 映射成 LightMemo Rerank/格式化所需的统一结构
+        let docs = hits.map(h => ({
+            dbName: h.library || '知识库',
+            label: h.id,
+            text: h.text || h.payload?.text_preview || '',
+            sourceFile: h.sourceFile || h.payload?.source_path || '',
+            vectorScore: typeof h.score === 'number' ? h.score : 0,
+            hybridScore: typeof h.score === 'number' ? h.score : 0
+        })).filter(d => d.text);
+
+        if (refinementEnabled && docs.length > 0) {
+            docs = docs.slice(0, fetchK);
+            docs.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+            docs = jevOptions.enabled
+                ? await this._jevRerankDocuments(
+                    query,
+                    docs,
+                    normalizedK,
+                    jevOptions.rrfOptions
+                )
+                : await this._rerankDocuments(
+                    query,
+                    docs,
+                    normalizedK,
+                    rerankOptions.rrfOptions
+                );
+        } else {
+            docs = docs.slice(0, normalizedK);
+        }
+
+        return this._formatColdKnowledgeResults(docs, query, libraries);
+    }
+
+    _formatColdKnowledgeResults(results, query, libraries) {
+        if (!results || results.length === 0) {
+            const scope = libraries.length > 0 ? libraries.join(', ') : '全部知识库';
+            return `关于"${query}"，在冷知识库（${scope}）中没有找到相关内容。`;
+        }
+
+        const searchedLibs = [...new Set(results.map(r => r.dbName))];
+        let content = `\n[--- TDB 冷知识库检索 ---]\n`;
+        content += `[查询内容: "${query}"]\n`;
+        content += `[知识库范围: ${searchedLibs.join(', ')}]\n\n`;
+        content += `[找到 ${results.length} 条相关知识片段:]\n`;
+
+        results.forEach((r) => {
+            let scoreValue = 0;
+            let scoreType = '';
+            if (typeof r.jev_score === 'number' && !isNaN(r.jev_score)) {
+                scoreValue = r.jev_score;
+                scoreType = 'Jev';
+            } else if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
+                scoreValue = r.rerank_score;
+                scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
+                scoreValue = r.hybridScore;
+                scoreType = '混合';
+            } else if (typeof r.vectorScore === 'number' && !isNaN(r.vectorScore)) {
+                scoreValue = r.vectorScore;
+                scoreType = 'TDB';
+            }
+            const scoreDisplay = scoreValue > 0 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})` : 'N/A';
+
+            content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
+            if (r.sourceFile) {
+                content += `    [路径: ${r.sourceFile}]\n`;
+            }
+            // 每条召回内容后保留一个空行，避免多个知识片段视觉上粘连。
+            content += `${(r.text || '').trim()}\n\n`;
         });
 
-        if (candidates.length === 0) {
-            if (isMusicSearch) return `没有在 ${effectiveFolder} 中找到相关的音乐记忆。`;
-            return `没有找到署名为 "${effectiveMaid}" 的相关记忆。`;
-        }
-
-        console.log(`[LightMemo] Gathered ${candidates.length} candidate chunks from ${new Set(candidates.map(c => c.dbName)).size} diaries.`);
-
-        let topByKeyword = [];
-
-        if (isMusicSearch) {
-            console.log(`[LightMemo] [音乐检索] 触发，跳过BM25关键词检索。`);
-            topByKeyword = candidates; // 直接所有进入下一阶段
-        } else {
-            // --- 第一阶段：关键词初筛（BM25） ---
-            const queryTokens = this._tokenize(actualQuery);
-            console.log(`[LightMemo] Query tokens: [${queryTokens.join(', ')}]`);
-
-            // 扩展查询词（语义组）
-            const expandedTokens = this._expandQueryTokens(queryTokens);
-            const allQueryTokens = [...new Set([...queryTokens, ...expandedTokens])];
-            console.log(`[LightMemo] Expanded tokens: [${allQueryTokens.join(', ')}]`);
-
-            // BM25排序
-            const bm25Ranker = new BM25Ranker();
-            const allDocs = candidates.map(c => c.tokens);
-            const idfScores = bm25Ranker.calculateIDF(allDocs);
-            const avgDocLength = allDocs.reduce((sum, doc) => sum + doc.length, 0) / allDocs.length;
-
-            const scoredCandidates = candidates.map(candidate => {
-                const bm25Score = bm25Ranker.score(
-                    allQueryTokens,
-                    candidate.tokens,
-                    avgDocLength,
-                    idfScores
-                );
-                return { ...candidate, bm25Score };
-            });
-
-            // 🚀 优化：放宽 BM25 限制。如果 BM25 没搜到，可能是分词太碎或太死板，此时允许向量检索兜底。
-            topByKeyword = scoredCandidates
-                .filter(c => c.bm25Score > 0)
-                .sort((a, b) => b.bm25Score - a.bm25Score)
-                .slice(0, k * 5); // 增加候选数量
-
-            // 如果关键词匹配太少，补充一些向量相似度高的（这里先取前 N 个作为兜底候选）
-            if (topByKeyword.length < k) {
-                console.log(`[LightMemo] BM25 results insufficient (${topByKeyword.length}), adding fallback candidates.`);
-                const existingIds = new Set(topByKeyword.map(c => c.label));
-                const fallbacks = scoredCandidates
-                    .filter(c => !existingIds.has(c.label))
-                    .slice(0, k * 2);
-                topByKeyword = [...topByKeyword, ...fallbacks];
-            }
-        }
-
-        console.log(`[LightMemo] Candidate pool size: ${topByKeyword.length} chunks.`);
-
-        // --- 第二阶段：向量精排 ---
-        let queryVector = await this.getSingleEmbedding(actualQuery);
-        if (!queryVector) {
-            throw new Error("查询内容向量化失败。");
-        }
-
-        let tagBoostInfo = null;
-        // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
-        if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
-            const hasCore = Array.isArray(core_tags) && core_tags.length > 0;
-            const waveLabel = useGeodesicRerank ? 'TagMemo+ (Wave v8)' : 'TagMemo V6';
-            console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
-
-            // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
-            const boostResult = this.vectorDBManager.applyTagBoost(
-                new Float32Array(queryVector),
-                tag_boost,
-                core_tags,
-                core_boost_factor
-            );
-
-            if (boostResult && boostResult.vector) {
-                queryVector = boostResult.vector;
-                tagBoostInfo = boostResult.info;
-
-                if (tagBoostInfo) {
-                    const matched = tagBoostInfo.matchedTags || [];
-                    const coreMatched = tagBoostInfo.coreTagsMatched || [];
-                    if (coreMatched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V6 Spotlight: [${coreMatched.join(', ')}]`);
-                    }
-                    if (matched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V6 Matched: [${matched.slice(0, 5).join(', ')}]`);
-                    }
-                }
-            }
-        }
-
-        // 为每个候选chunk计算向量相似度
-        const vectorScoredCandidates = await this._scoreByVectorSimilarity(
-            topByKeyword,
-            queryVector
-        );
-
-        // 混合BM25和向量分数
-        // 🚀 优化：动态调整权重。如果有 BM25 分数，则关键词权重高；如果没有，则全靠向量。
-        const hybridScored = vectorScoredCandidates.map(c => {
-            if (isMusicSearch) {
-                return {
-                    ...c,
-                    hybridScore: c.vectorScore, // 完全依赖向量分数
-                    tagBoostInfo: tagBoostInfo
-                };
-            }
-
-            const hasBM25 = c.bm25Score > 0;
-            const bmWeight = hasBM25 ? 0.6 : 0.0;
-            const vecWeight = hasBM25 ? 0.4 : 1.0;
-
-            // 归一化 BM25 分数以便混合 (简单处理：除以最大可能分数或当前最高分)
-            const normalizedBM25 = hasBM25 ? Math.min(1.0, c.bm25Score / 10) : 0;
-
-            return {
-                ...c,
-                hybridScore: normalizedBM25 * bmWeight + c.vectorScore * vecWeight,
-                tagBoostInfo: tagBoostInfo
-            };
-        }).sort((a, b) => b.hybridScore - a.hybridScore);
-
-        // 🌟 Wave v8: 测地线重排 (Geodesic Rerank)
-        let rankedCandidates = hybridScored;
-        if (useGeodesicRerank && tag_boost > 0 && tagBoostInfo && this.vectorDBManager && this.vectorDBManager.geodesicRerank) {
-            console.log(`[LightMemo] 🌟 Wave v8: Applying geodesic rerank to ${hybridScored.length} candidates...`);
-
-            // geodesicRerank expects candidates with `id` (chunk ID) and `score` fields
-            const geoInput = hybridScored.map(c => ({
-                ...c,
-                id: c.label,  // label is chunk.id from SQLite
-                score: c.hybridScore || c.vectorScore || 0
-            }));
-
-            const geoConfig = this.vectorDBManager.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
-            const reranked = this.vectorDBManager.geodesicRerank(geoInput, {
-                alpha: geoConfig.alpha ?? 0.3,
-                minGeoSamples: geoConfig.minGeoSamples ?? 4
-            });
-
-            // Map results back with geodesic metadata
-            rankedCandidates = reranked.map(r => ({
-                ...r,
-                hybridScore: r.score,
-                tagBoostInfo: tagBoostInfo,
-                waveV8: r.geo_score > 0
-            }));
-
-            const geoCount = rankedCandidates.filter(r => r.waveV8).length;
-            console.log(`[LightMemo] 🌟 Wave v8: Geodesic rerank complete. ${geoCount}/${rankedCandidates.length} candidates with geo contribution.`);
-        }
-
-        // 取top K
-        let finalResults = rankedCandidates.slice(0, k);
-
-        // --- 第三阶段：Rerank（可选） ---
-        // 🌟 Rerank+ (RRF): rerank 参数支持多种形式
-        //   false          → 不使用 Rerank
-        //   true           → 标准 Rerank（纯精排，无融合）
-        //   "rrf"          → RRF 融合 (α=0.5)
-        //   "rrf0.7"       → RRF 融合 (α=0.7, Reranker 占 70% 权重)
-        //   0.7 (数字)     → RRF 融合 (α=0.7)，等价于 "rrf0.7"
-        //   "0.7" (字符串) → RRF 融合 (α=0.7)，等价于 "rrf0.7"
-        let useRerank = false;
-        let rrfOptions = null;
-
-        if (rerank === true) {
-            useRerank = true;
-        } else if (typeof rerank === 'number' && rerank > 0 && rerank <= 1.0) {
-            // 直接传数字 → RRF 融合
-            useRerank = true;
-            rrfOptions = { alpha: rerank };
-            console.log(`[LightMemo] 🌟 Rerank+ (RRF) 数字模式启用: α=${rerank}`);
-        } else if (typeof rerank === 'string') {
-            const lowerRerank = rerank.toLowerCase().trim();
-            if (lowerRerank.startsWith('rrf')) {
-                // "rrf" / "rrf0.7" 形式
-                useRerank = true;
-                const alphaMatch = lowerRerank.match(/rrf(\d+\.?\d*)/);
-                const alpha = alphaMatch ? Math.min(1.0, Math.max(0.0, parseFloat(alphaMatch[1]))) : 0.5;
-                rrfOptions = { alpha };
-                console.log(`[LightMemo] 🌟 Rerank+ (RRF) 模式启用: α=${alpha}`);
-            } else {
-                // 尝试解析为数字字符串 "0.7"
-                const numericAlpha = parseFloat(lowerRerank);
-                if (!isNaN(numericAlpha) && numericAlpha > 0 && numericAlpha <= 1.0) {
-                    useRerank = true;
-                    rrfOptions = { alpha: numericAlpha };
-                    console.log(`[LightMemo] 🌟 Rerank+ (RRF) 数字字符串模式启用: α=${numericAlpha}`);
-                } else if (lowerRerank === 'true') {
-                    useRerank = true;
-                }
-            }
-        }
-
-        if (useRerank && finalResults.length > 0) {
-            // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
-            finalResults.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
-            finalResults = await this._rerankDocuments(actualQuery, finalResults, k, rrfOptions);
-        }
-
-        return this.formatResults(finalResults, query);
+        content += `\n[--- 知识库检索结束 ---]\n`;
+        return content;
     }
 
     formatResults(results, query) {
@@ -447,9 +438,15 @@ class LightMemoPlugin {
             let scoreValue = 0;
             let scoreType = '';
 
-            if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
+            if (typeof r.jev_score === 'number' && !isNaN(r.jev_score)) {
+                scoreValue = r.jev_score;
+                scoreType = 'Jev';
+            } else if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
                 scoreValue = r.rerank_score;
                 scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (r.retrievalEngine === 'warped_chunks' && Number.isFinite(r.warpedDistance)) {
+                scoreValue = -r.warpedDistance;
+                scoreType = '双曲 ANN · 负距离';
             } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
                 scoreValue = r.hybridScore;
                 scoreType = '混合';
@@ -461,7 +458,9 @@ class LightMemoPlugin {
                 scoreType = 'BM25';
             }
 
-            const scoreDisplay = scoreValue > 0
+            const scoreDisplay = scoreType === '双曲 ANN · 负距离'
+                ? `${scoreValue.toFixed(4)} (${scoreType})`
+                : scoreValue > 0
                 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})`
                 : 'N/A';
 
@@ -470,25 +469,17 @@ class LightMemoPlugin {
             if (localUrl) {
                 content += `    [路径: ${localUrl}]\n`;
             }
-            if (r.tagBoostInfo) {
-                // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行
-                const { matchedTags = [], coreTagsMatched = [] } = r.tagBoostInfo;
-                if (matchedTags.length > 0 || coreTagsMatched.length > 0) {
-                    // 🌟 Wave v8: 根据是否有测地线贡献显示不同标签
-                    const memoLabel = r.waveV8 ? 'TagMemo+ v8' : 'TagMemo';
-                    let boostLine = `    [${memoLabel} 增强: `;
-                    // 只有当确实命中了核心标签时，才显示 🌟 标志
-                    if (coreTagsMatched.length > 0) {
-                        boostLine += `🌟${coreTagsMatched.join(', ')} `;
-                        if (matchedTags.length > 0) boostLine += `| `;
-                    }
-                    if (matchedTags.length > 0) {
-                        boostLine += `${matchedTags.slice(0, 5).join(', ')}`;
-                    }
-                    content += boostLine + `]\n`;
-                }
+            if (r.riverMemo) {
+                const river = r.riverMemo;
+                content += `    [RiverMemo V5 · 双曲原生链路: ` +
+                    `Ω=${Number(river.omega || 0).toFixed(3)}` +
+                    `/${river.regime || 'unknown'}, ` +
+                    `角色=${river.role || 'unknown'}, ` +
+                    `拓扑+${Number(river.topologyBonus || 0).toFixed(4)}, ` +
+                    `直锚+${Number(river.anchorBonus || 0).toFixed(4)}]\n`;
             }
-            content += `${r.text.trim()}\n`;
+            // 每条召回内容后保留一个空行，避免多个记忆片段视觉上粘连。
+            content += `${r.text.trim()}\n\n`;
         });
 
         content += `\n[--- 回忆结束 ---]\n`;
@@ -502,12 +493,162 @@ class LightMemoPlugin {
         return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
     }
 
+    _applyRrfFusion(documents, originalK, rrfOptions = null, label = 'Rerank') {
+        if (!rrfOptions) {
+            return documents.slice(0, originalK);
+        }
+
+        const RRF_K = 60;
+        const alpha = rrfOptions.alpha ?? 0.5;
+        documents.forEach((doc, index) => {
+            doc.rerank_rank = index + 1;
+            const retrievalRank = doc.retrieval_rank || documents.length;
+            doc.rrf_score = alpha * (1 / (RRF_K + doc.rerank_rank))
+                + (1 - alpha) * (1 / (RRF_K + retrievalRank));
+        });
+        documents.sort((left, right) => right.rrf_score - left.rrf_score);
+        const finalDocuments = documents.slice(0, originalK);
+        console.log(
+            `[LightMemo] ${label}+(RRF) completed: ` +
+            `${documents.length} -> ${finalDocuments.length} (α=${alpha}).`
+        );
+        return finalDocuments;
+    }
+
+    async _jevRerankDocuments(query, documents, originalK, rrfOptions = null) {
+        if (
+            !this.jevClient
+            || typeof this.jevClient.decide !== 'function'
+            || this.jevClient.isConfigured?.() !== true
+        ) {
+            console.warn('[LightMemo] Jev requested but shared JevClient is not configured. Keeping retrieval order.');
+            return documents.slice(0, originalK);
+        }
+        if (!Array.isArray(documents) || documents.length <= 1) {
+            return (documents || []).slice(0, originalK);
+        }
+
+        const maxChoices = Math.max(
+            2,
+            Math.min(255, Number(this.rerankConfig.jevMaxChoices) || 255)
+        );
+        const maxDocumentChars = Math.max(
+            200,
+            Number(this.rerankConfig.jevMaxDocumentChars) || 6000
+        );
+        const refinementWindow = Math.max(1, Math.floor(Number(originalK) || 1) * 2);
+        const eligibleDocuments = documents.slice(
+            0,
+            Math.min(maxChoices, refinementWindow)
+        );
+        const criteria = {};
+        const documentByChoice = new Map();
+
+        eligibleDocuments.forEach((document, index) => {
+            const choiceId = `doc_${String(index).padStart(3, '0')}`;
+            const text = String(document?.text || '').trim();
+            const boundedText = text.length > maxDocumentChars
+                ? `${text.substring(0, maxDocumentChars)}…`
+                : text;
+            criteria[choiceId] = [
+                `候选记忆 ${index + 1}`,
+                document?.dbName ? `日记本: ${document.dbName}` : null,
+                document?.sourceFile ? `路径: ${document.sourceFile}` : null,
+                `内容:\n${boundedText}`
+            ].filter(Boolean).join('\n');
+            documentByChoice.set(choiceId, document);
+        });
+
+        try {
+            const response = await this.jevClient.decide(
+                {
+                    task: 'lightmemo_memory_rerank',
+                    query: String(query || ''),
+                    candidate_count: eligibleDocuments.length
+                },
+                {
+                    best_memory: {
+                        type: 'choice',
+                        instructions: this.rerankConfig.jevPrompt,
+                        criteria
+                    }
+                }
+            );
+            const answer = response?.answers?.best_memory;
+            const probabilities = answer?.probabilities;
+            if (!probabilities || typeof probabilities !== 'object') {
+                throw new Error('Jev choice response is missing probabilities.');
+            }
+
+            const reranked = Array.from(documentByChoice.entries())
+                .map(([choiceId, document], index) => ({
+                    ...document,
+                    rerank_score: Number(probabilities[choiceId]) || 0,
+                    jev_score: Number(probabilities[choiceId]) || 0,
+                    jev_choice: choiceId,
+                    jev_selected: answer.choice === choiceId,
+                    jev_confidence: Number(answer.confidence) || 0,
+                    rerank_failed: false,
+                    _jevStableIndex: index
+                }))
+                .sort((left, right) =>
+                    (right.jev_score - left.jev_score)
+                    || (Number(right.jev_selected) - Number(left.jev_selected))
+                    || (left._jevStableIndex - right._jevStableIndex)
+                );
+            reranked.forEach(document => {
+                delete document._jevStableIndex;
+            });
+
+            const finalDocuments = this._applyRrfFusion(
+                reranked,
+                originalK,
+                rrfOptions,
+                'Jev'
+            );
+            console.log(
+                `[LightMemo] Jev rerank completed: ${eligibleDocuments.length} -> ` +
+                `${finalDocuments.length}, selected=${answer.choice || 'unknown'}, ` +
+                `confidence=${Number(answer.confidence || 0).toFixed(4)}.`
+            );
+            return finalDocuments;
+        } catch (error) {
+            console.error('[LightMemo] Jev rerank failed; keeping retrieval order:', error.message);
+            return documents.slice(0, originalK);
+        }
+    }
+
     async _rerankDocuments(query, documents, originalK, rrfOptions = null) {
         if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
             console.warn('[LightMemo] Rerank not configured. Skipping.');
             return documents.slice(0, originalK);
         }
-        console.log(`[LightMemo] Starting rerank for ${documents.length} documents.`);
+
+        // Rerank API 要求 query/documents 均为非空字符串；undefined 数组项会被
+        // JSON.stringify 转成 null，部分服务会以 “input cannot be null” 拒绝整批。
+        const normalizedQuery = String(query ?? '').trim();
+        if (!normalizedQuery) {
+            console.warn('[LightMemo] Rerank skipped because query is empty.');
+            return documents.slice(0, originalK);
+        }
+        const refinementWindow = Math.max(1, Math.floor(Number(originalK) || 1) * 2);
+        const validDocuments = documents
+            .slice(0, refinementWindow)
+            .map(doc => ({
+                ...doc,
+                text: String(doc?.text ?? '').trim()
+            }))
+            .filter(doc => doc.text);
+        const droppedCount = documents.length - validDocuments.length;
+        if (droppedCount > 0) {
+            console.warn(`[LightMemo] Dropped ${droppedCount} documents without valid text before reranking.`);
+        }
+        if (validDocuments.length === 0) {
+            console.warn('[LightMemo] Rerank skipped because no document contains valid text.');
+            return [];
+        }
+
+        console.log(`[LightMemo] Starting rerank for ${validDocuments.length} documents.`);
 
         const rerankUrl = new URL('v1/rerank', this.rerankConfig.url).toString();
         const headers = {
@@ -515,15 +656,25 @@ class LightMemoPlugin {
             'Content-Type': 'application/json',
         };
         const maxTokens = this.rerankConfig.maxTokens;
-        const queryTokens = this._estimateTokens(query);
+        const queryTokens = this._estimateTokens(normalizedQuery);
+        const maxDocumentsPerRequest = Math.max(
+            1,
+            Math.min(25, parseInt(this.rerankConfig.maxDocumentsPerRequest, 10) || 25)
+        );
+        const maxConcurrentRequests = Math.max(
+            1,
+            Math.min(10, parseInt(this.rerankConfig.maxConcurrentRequests, 10) || 3)
+        );
 
         let batches = [];
         let currentBatch = [];
         let currentTokens = queryTokens;
 
-        for (const doc of documents) {
+        for (const doc of validDocuments) {
             const docTokens = this._estimateTokens(doc.text);
-            if (currentTokens + docTokens > maxTokens && currentBatch.length > 0) {
+            const exceedsDocumentLimit = currentBatch.length >= maxDocumentsPerRequest;
+            const exceedsTokenLimit = currentTokens + docTokens > maxTokens;
+            if ((exceedsDocumentLimit || exceedsTokenLimit) && currentBatch.length > 0) {
                 batches.push(currentBatch);
                 currentBatch = [doc];
                 currentTokens = queryTokens + docTokens;
@@ -536,25 +687,30 @@ class LightMemoPlugin {
             batches.push(currentBatch);
         }
 
-        console.log(`[LightMemo] Split into ${batches.length} batches for reranking.`);
+        console.log(
+            `[LightMemo] Split into ${batches.length} free-tier batches ` +
+            `(max ${maxDocumentsPerRequest} documents/request, concurrency ` +
+            `${Math.min(maxConcurrentRequests, batches.length)}).`
+        );
 
-        let allRerankedDocs = [];
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
+        const batchResults = new Array(batches.length);
+        let nextBatchIndex = 0;
+
+        const rerankBatch = async (batch, batchIndex) => {
             const docTexts = batch.map(d => d.text);
 
             try {
                 const body = {
                     model: this.rerankConfig.model,
-                    query: query,
+                    query: normalizedQuery,
                     documents: docTexts,
                     top_n: docTexts.length
                 };
 
-                console.log(`[LightMemo] Reranking batch ${i + 1}/${batches.length} (${docTexts.length} docs).`);
+                console.log(`[LightMemo] Reranking batch ${batchIndex + 1}/${batches.length} (${docTexts.length} docs).`);
                 const response = await axios.post(rerankUrl, body, {
                     headers,
-                    timeout: 30000  // 👈 添加超时
+                    timeout: 30000
                 });
 
                 let responseData = response.data;
@@ -569,10 +725,10 @@ class LightMemoPlugin {
 
                 if (responseData && Array.isArray(responseData.results)) {
                     const rerankedResults = responseData.results;
-                    console.log(`[LightMemo] Batch ${i + 1} rerank scores:`,
+                    console.log(`[LightMemo] Batch ${batchIndex + 1} rerank scores:`,
                         rerankedResults.map(r => r.relevance_score.toFixed(3)).join(', '));
 
-                    const orderedBatch = rerankedResults
+                    return rerankedResults
                         .map(result => {
                             const originalDoc = batch[result.index];
                             if (!originalDoc) return null;
@@ -582,27 +738,35 @@ class LightMemoPlugin {
                             };
                         })
                         .filter(Boolean);
-
-                    allRerankedDocs.push(...orderedBatch);
-                } else {
-                    throw new Error('Invalid response format');
                 }
+
+                throw new Error('Invalid response format');
             } catch (error) {
-                console.error(`[LightMemo] Rerank failed for batch ${i + 1}:`, error.message);
+                console.error(`[LightMemo] Rerank failed for batch ${batchIndex + 1}:`, error.message);
                 if (error.response) {
                     console.error(`[LightMemo] API Error - Status: ${error.response.status}, Data:`,
                         JSON.stringify(error.response.data).slice(0, 200));
                 }
 
-                // ⚠️ 关键修复：保留原有分数
-                const fallbackBatch = batch.map(doc => ({
+                return batch.map(doc => ({
                     ...doc,
                     rerank_score: doc.hybridScore || doc.vectorScore || doc.bm25Score || 0,
-                    rerank_failed: true  // 标记rerank失败
+                    rerank_failed: true
                 }));
-                allRerankedDocs.push(...fallbackBatch);
             }
-        }
+        };
+
+        // 有界 worker pool：并发处理免费小批量请求，结果按原批次顺序合并。
+        const workerCount = Math.min(maxConcurrentRequests, batches.length);
+        const workers = Array.from({ length: workerCount }, async () => {
+            while (true) {
+                const batchIndex = nextBatchIndex++;
+                if (batchIndex >= batches.length) return;
+                batchResults[batchIndex] = await rerankBatch(batches[batchIndex], batchIndex);
+            }
+        });
+        await Promise.all(workers);
+        const allRerankedDocs = batchResults.flatMap(result => result || []);
 
         // 🌟 Rerank+ (RRF Fusion) 或标准 Rerank 排序
         if (rrfOptions) {
@@ -649,6 +813,232 @@ class LightMemoPlugin {
     }
 
     /**
+     * 解析 LightMemo 的 AIMemo+ 开关。
+     * - false/未传：关闭
+     * - true、aimemo、aimemo+、true+：使用默认配置
+     * - 其他非布尔字符串：作为 RAGDiaryPlugin 的 AIMemo 预设名
+     * - aimemo_preset 显式值优先作为预设名，并自动开启
+     */
+    _parseAIMemoOptions(value, explicitPreset = null) {
+        const preset = typeof explicitPreset === 'string' ? explicitPreset.trim() : '';
+        if (preset) {
+            return { enabled: true, presetName: preset };
+        }
+
+        if (typeof value === 'boolean') {
+            return { enabled: value, presetName: null };
+        }
+        if (typeof value === 'number') {
+            return { enabled: value !== 0, presetName: null };
+        }
+        if (typeof value !== 'string') {
+            return { enabled: false, presetName: null };
+        }
+
+        const normalized = value.trim();
+        const lower = normalized.toLowerCase();
+        if (!normalized || ['false', '0', 'no', 'off', 'disable', 'disabled', '关闭', '禁用', '否'].includes(lower)) {
+            return { enabled: false, presetName: null };
+        }
+        if (['true', '1', 'yes', 'on', 'enable', 'enabled', 'aimemo', 'aimemo+', 'true+', '开启', '启用', '是'].includes(lower)) {
+            return { enabled: true, presetName: null };
+        }
+
+        return { enabled: true, presetName: normalized };
+    }
+
+    /**
+     * 将 LightMemo 最终候选提交给 RAGDiaryPlugin 唯一持有的 AIMemoHandler。
+     * 返回 null 表示桥不可用、未配置或总结失败，调用方应保留原始检索结果。
+     */
+    async _summarizeWithAIMemo({ results, query, presetName = null, cacheSalt = '' }) {
+        if (!this.aiMemoBridge || typeof this.aiMemoBridge.summarizeCandidates !== 'function') {
+            console.warn('[LightMemo] AIMemo requested, but AIMemoBridge is unavailable. Falling back to raw memories.');
+            return null;
+        }
+
+        if (
+            !presetName &&
+            typeof this.aiMemoBridge.isConfigured === 'function' &&
+            !this.aiMemoBridge.isConfigured()
+        ) {
+            console.warn('[LightMemo] AIMemo requested, but default AIMemo configuration is incomplete. Falling back to raw memories.');
+            return null;
+        }
+
+        const diaryNames = [...new Set(
+            results.map(result => String(result?.dbName || '').trim()).filter(Boolean)
+        )];
+
+        try {
+            const summary = await this.aiMemoBridge.summarizeCandidates({
+                candidates: results,
+                diaryNames,
+                userContent: String(query || '').trim(),
+                displayQuery: String(query || '').trim(),
+                presetName,
+                cacheSalt
+            });
+            const normalized = typeof summary === 'string' ? summary.trim() : '';
+            if (
+                !normalized ||
+                /^\[(?:AIMemo功能未配置|AIMemo\+?处理失败|AIMemo聚合处理失败|AI模型调用失败)/.test(normalized)
+            ) {
+                console.warn(`[LightMemo] AIMemo returned an unusable result: ${normalized || '(empty)'}. Falling back to raw memories.`);
+                return null;
+            }
+
+            return `\n[--- LightMemo AIMemo+ AI总结 ---]\n${normalized}\n[--- AI总结结束 ---]\n`;
+        } catch (error) {
+            console.error('[LightMemo] AIMemo summarization failed. Falling back to raw memories:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * 将工具协议传入的布尔值参数规范化。
+     * VCP 工具参数常以字符串形式传入，字符串 "false" 在 JS 中是真值，
+     * 如果不转换会导致 search_all_knowledge_bases 被误判为开启。
+     */
+    _parseBoolean(value, defaultValue = false) {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        if (typeof value !== 'string') return defaultValue;
+
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on', 'enable', 'enabled', '开启', '启用', '是'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off', '', 'disable', 'disabled', '关闭', '禁用', '否'].includes(normalized)) return false;
+
+        return defaultValue;
+    }
+
+    /**
+     * 从多个别名参数中解析布尔开关。
+     * 后出现的显式可解析值优先生效，未提供或不可解析时保留默认值。
+     */
+    _parseBooleanAlias(namedValues, defaultValue = false, label = 'boolean option') {
+        let result = defaultValue;
+        let matchedName = null;
+
+        for (const [name, value] of namedValues) {
+            if (value === undefined || value === null) continue;
+            const parsed = this._parseBoolean(value, null);
+            if (parsed === null) {
+                console.warn(`[LightMemo] Ignoring invalid ${label} value from ${name}: ${value}`);
+                continue;
+            }
+            result = parsed;
+            matchedName = name;
+        }
+
+        if (matchedName) {
+            console.log(`[LightMemo] ${label} resolved from ${matchedName}: ${result}`);
+        }
+
+        return result;
+    }
+
+    /**
+     * 将工具协议传入的数字参数规范化。
+     */
+    _parseNumber(value, defaultValue = 0) {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'boolean') return value ? 1 : 0;
+        if (typeof value !== 'string') return defaultValue;
+
+        const parsed = parseFloat(value.trim());
+        return Number.isFinite(parsed) ? parsed : defaultValue;
+    }
+
+    /**
+     * 将工具协议传入的数组参数规范化。
+     * 兼容真实数组、JSON数组字符串，以及逗号/中文逗号/顿号/竖线分隔字符串。
+     */
+    _parseStringArray(value) {
+        if (Array.isArray(value)) {
+            return value
+                .map(v => typeof v === 'string' ? v.trim() : String(v ?? '').trim())
+                .filter(Boolean);
+        }
+
+        if (typeof value !== 'string') return [];
+
+        const trimmed = value.trim();
+        if (!trimmed) return [];
+
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) {
+                    return parsed
+                        .map(v => typeof v === 'string' ? v.trim() : String(v ?? '').trim())
+                        .filter(Boolean);
+                }
+            } catch (e) {
+                // 非 JSON 数组时继续按分隔符解析
+            }
+        }
+
+        return trimmed
+            .split(/[,，、|｜]/)
+            .map(v => v.trim())
+            .filter(Boolean);
+    }
+
+    /**
+     * 解析 maid 中的作用域语法：[文件夹]署名
+     * 示例：[小吉的地缘政治]小吉 => folder: 小吉的地缘政治, maid: 小吉
+     * 文件夹部分支持用中文逗号、英文逗号或 | 分隔多个文件夹。
+     */
+    _parseMaidScopedFolder(maid) {
+        if (typeof maid !== 'string') {
+            return { maid, folder: null };
+        }
+
+        const trimmedMaid = maid.trim();
+        const scopedMatch = trimmedMaid.match(/^\[([^\]]+)\](.*)$/);
+        if (!scopedMatch) {
+            return { maid: trimmedMaid, folder: null };
+        }
+
+        const scopedFolder = scopedMatch[1].trim();
+        const scopedMaid = scopedMatch[2].trim();
+
+        return {
+            maid: scopedMaid || null,
+            folder: scopedFolder || null
+        };
+    }
+
+    /**
+     * 合并显式 folder 参数与 maid 作用域文件夹，兼容中文逗号、英文逗号和 | 分隔的多文件夹写法
+     */
+    _mergeFolderScopes(folder, scopedFolder) {
+        const folders = [];
+
+        const appendFolders = (value) => {
+            if (typeof value !== 'string') return;
+            value.split(/[,，|]/)
+                .map(f => f.trim())
+                .filter(Boolean)
+                .forEach(f => {
+                    if (!folders.includes(f)) {
+                        folders.push(f);
+                    }
+                });
+        };
+
+        appendFolders(folder);
+        appendFolders(scopedFolder);
+
+        return folders.length > 0 ? folders.join(',') : null;
+    }
+
+    _isBM25TokenLikeWord(token) {
+        return /[\p{Script=Han}a-z0-9_]/iu.test(String(token || ''));
+    }
+
+    /**
      * 改用jieba分词（保留词组）
      */
     _tokenize(text) {
@@ -661,6 +1051,7 @@ class LightMemoPlugin {
             return text.split(/\s+/)
                 .map(w => w.toLowerCase().trim())
                 .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
+                .filter(w => this._isBM25TokenLikeWord(w))
                 .filter(w => !this.stopWords.has(w));
         }
 
@@ -669,173 +1060,13 @@ class LightMemoPlugin {
         return words
             .map(w => w.toLowerCase().trim())
             .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
+            .filter(w => this._isBM25TokenLikeWord(w))
             .filter(w => !this.stopWords.has(w))
             .filter(w => w.length > 0);
     }
     /**
      * 从所有相关日记本中收集chunks（带署名过滤）
      * 适配 KnowledgeBaseManager (SQLite)
-     */
-    async _gatherCandidateChunks({ maid, folder, searchAll, ignoreExcludedFolders = false, timeRange = null }) {
-        const db = this.vectorDBManager.db;
-        if (!db) {
-            console.error('[LightMemo] Database not initialized in KnowledgeBaseManager.');
-            return [];
-        }
-
-        const candidates = [];
-        const targetFolders = folder ? folder.split(/[,，]/).map(f => f.trim()).filter(Boolean) : [];
-
-        try {
-            // 🚀 优化：使用 SQL 过滤减少 JS 端的处理压力
-            let sql = `
-                SELECT c.id, c.content, f.diary_name, f.path
-                FROM chunks c
-                JOIN files f ON c.file_id = f.id
-                WHERE 1=1
-            `;
-            const params = [];
-
-            // 1. 排除文件夹
-            let currentExcludedFolders = this.excludedFolders;
-            if (ignoreExcludedFolders && targetFolders.length > 0) {
-                currentExcludedFolders = currentExcludedFolders.filter(f => !targetFolders.includes(f));
-            }
-
-            if (currentExcludedFolders.length > 0) {
-                sql += ` AND f.diary_name NOT IN (${currentExcludedFolders.map(() => '?').join(',')})`;
-                params.push(...currentExcludedFolders);
-            }
-            sql += ` AND f.diary_name NOT LIKE '已整理%' AND f.diary_name NOT LIKE '%簇'`;
-
-            // 2. 目标范围过滤
-            if (!searchAll) {
-                if (targetFolders.length > 0) {
-                    sql += ` AND (${targetFolders.map(() => "f.diary_name LIKE ?").join(" OR ")})`;
-                    targetFolders.forEach(f => params.push(`%${f}%`));
-                } else if (maid) {
-                    sql += ` AND f.diary_name LIKE ?`;
-                    params.push(`%${maid}%`);
-                }
-            }
-
-            const stmt = db.prepare(sql);
-
-            // 流式遍历过滤后的 chunks
-            for (const row of stmt.iterate(...params)) {
-                const text = row.content || '';
-
-                // --- 2.5 时间范围过滤 ---
-                if (timeRange) {
-                    const header = text.substring(0, 100);
-                    const chunkTimeMatch = header.match(/\[?(20\d{2}[-./]\d{1,2}(?:[-./]\d{1,2})?)\]?/);
-                    if (!chunkTimeMatch) {
-                        continue; // 无时间戳，被时间约束丢弃
-                    }
-                    const parts = chunkTimeMatch[1].split(/[-./]/);
-                    const y = parts[0];
-                    const m = (parts[1] || '01').padStart(2, '0');
-                    const d = (parts[2] || '01').padStart(2, '0');
-                    const chunkDateNum = parseInt(`${y}${m}${d}`, 10);
-
-                    if (chunkDateNum < timeRange.start || chunkDateNum > timeRange.end) {
-                        continue;
-                    }
-                }
-
-                // 3. 署名过滤 (如果不是搜索全部且没有指定文件夹)
-                if (!searchAll && targetFolders.length === 0 && maid) {
-                    if (!this._checkSignature(text, maid)) continue;
-                }
-
-                // 4. 分词 (仅对通过初步过滤的进行分词)
-                // 音乐检索不使用关键词，可以跳过分词以提高性能，返回空数组
-                const tokens = ignoreExcludedFolders ? [] : this._tokenize(text);
-
-                candidates.push({
-                    dbName: row.diary_name,
-                    label: row.id,
-                    text: text,
-                    tokens: tokens,
-                    sourceFile: row.path
-                });
-            }
-        } catch (error) {
-            console.error('[LightMemo] Error gathering chunks from DB:', error);
-        }
-
-        return candidates;
-    }
-
-    /**
-     * 检查文本中是否包含特定署名
-     */
-    _checkSignature(text, maid) {
-        if (!text || !maid) return false;
-
-        // 提取第一行
-        const firstLine = text.split('\n')[0].trim();
-
-        // 检查第一行是否包含署名
-        return firstLine.includes(maid);
-    }
-
-    /**
-     * 为候选chunks计算向量相似度
-     * 适配 KnowledgeBaseManager (SQLite)
-     */
-    async _scoreByVectorSimilarity(candidates, queryVector) {
-        const db = this.vectorDBManager.db;
-        if (!db) return [];
-
-        const scored = [];
-        const stmt = db.prepare('SELECT vector FROM chunks WHERE id = ?');
-        const dim = this.vectorDBManager.config.dimension;
-
-        for (const candidate of candidates) {
-            try {
-                const row = stmt.get(candidate.label); // label is chunk.id
-                if (!row || !row.vector) continue;
-
-                // 转换 BLOB 为 Float32Array
-                // 注意：Buffer 是 Node.js 的 Buffer，可以直接作为 ArrayBuffer 使用，但需要注意 offset
-                const chunkVector = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
-
-                const similarity = this._cosineSimilarity(queryVector, chunkVector);
-
-                scored.push({
-                    ...candidate,
-                    vectorScore: similarity
-                });
-            } catch (error) {
-                console.warn(`[LightMemo] Error calculating similarity for chunk ${candidate.label}:`, error.message);
-                continue;
-            }
-        }
-
-        return scored;
-    }
-
-    _cosineSimilarity(vecA, vecB) {
-        if (!vecA || !vecB || vecA.length !== vecB.length) {
-            return 0;
-        }
-        let dotProduct = 0;
-        let normA = 0;
-        let normB = 0;
-        for (let i = 0; i < vecA.length; i++) {
-            dotProduct += vecA[i] * vecB[i];
-            normA += vecA[i] * vecA[i];
-            normB += vecB[i] * vecB[i];
-        }
-        if (normA === 0 || normB === 0) {
-            return 0;
-        }
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    }
-
-    /**
-     * 基于语义组扩展查询词
      */
     _expandQueryTokens(queryTokens) {
         if (this.wordToGroupMap.size === 0) {
@@ -863,6 +1094,25 @@ class LightMemoPlugin {
         return Array.from(expandedTokens);
     }
 
+    /**
+     * _tokenize looks group words up by jieba tokens, so a group word missing from jieba's
+     * dictionary (coined names, slang such as "塔罗会" or "源堡") is split and never matches.
+     * Register such words with jieba so they stay whole tokens.
+     */
+    _registerGroupWords(words) {
+        if (!this.jiebaInstance) return;
+        const lines = [];
+        for (const word of words) {
+            if (typeof word !== 'string') continue;
+            for (const form of new Set([word.trim(), word.trim().toLowerCase()])) {
+                if (form && !/\s/.test(form) && this.jiebaInstance.cut(form, false).length > 1) {
+                    lines.push(`${form} 1000 n`);
+                }
+            }
+        }
+        if (lines.length > 0) this.jiebaInstance.loadDict(Buffer.from(lines.join('\n'), 'utf-8'));
+    }
+
     async loadSemanticGroups() {
         const semanticGroupsPath = path.join(this.projectBasePath, 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
         try {
@@ -877,6 +1127,7 @@ class LightMemoPlugin {
                         for (const word of lowercasedWords) {
                             this.wordToGroupMap.set(word, lowercasedWords);
                         }
+                        this._registerGroupWords(group.words);
                     }
                 }
             }

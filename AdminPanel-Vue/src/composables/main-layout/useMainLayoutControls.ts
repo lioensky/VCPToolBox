@@ -1,17 +1,19 @@
 import { computed, ref } from "vue";
 import { useAppStore } from "@/stores/app";
+import { useLocalStorage } from "@/composables/useLocalStorage";
 
 export function useMainLayoutControls() {
   const appStore = useAppStore();
   const isMobileMenuOpen = ref(false);
   const isImmersiveMode = computed(() => appStore.isImmersiveMode);
-  const isSidebarCollapsed = ref(false);
+  const isSidebarCollapsed = useLocalStorage<boolean>("sidebarCollapsed", false);
   const isHoveringSidebar = ref(false);
   const isHoverEnabled = ref(false);
   const isCommandPaletteOpen = ref(false);
   const isSystemMenuOpen = ref(false);
   const isUserMenuOpen = ref(false);
   const hasNotifications = ref(false);
+  const sidebarSearchQuery = ref("");
 
   function openCommandPalette() {
     isCommandPaletteOpen.value = true;
@@ -57,6 +59,7 @@ export function useMainLayoutControls() {
     closeCommandPalette();
     closeMobileMenu();
     closeAllMenus();
+    sidebarSearchQuery.value = "";
   }
 
   function enterImmersiveMode() {
@@ -77,6 +80,7 @@ export function useMainLayoutControls() {
     isSystemMenuOpen,
     isUserMenuOpen,
     hasNotifications,
+    sidebarSearchQuery,
     openCommandPalette,
     closeCommandPalette,
     toggleMobileMenu,

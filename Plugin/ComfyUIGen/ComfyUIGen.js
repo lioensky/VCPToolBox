@@ -2,6 +2,7 @@
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
+const { fileURLToPath } = require('url');
 const { v4: uuidv4 } = require('uuid');
 
 // --- Configuration Loading System ---
@@ -61,9 +62,10 @@ function debugLog(...args) {
 }
 
 // Helper to validate input arguments
-function isValidComfyUIGenArgs(args) {
-    if (!args || typeof args !== 'object') return false;
-    if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
+function isValidComfyUIGenArgs(args, requiresPrompt = true) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+    if (requiresPrompt && (typeof args.prompt !== 'string' || !args.prompt.trim())) return false;
+    if (!requiresPrompt && args.prompt !== undefined && typeof args.prompt !== 'string') return false;
     return true;
 }
 
@@ -99,11 +101,34 @@ function resolveSeed(seedCandidate) {
    return s;
 }
 
+// 将调用参数转换为有限数值；未传或非法时回退到配置值
+function resolveNumericArg(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
 // 纯粹的数据替换 - 直接替换占位符为具体值（含种子自动处理）
 function fillWorkflowParameters(workflow, args, config) {
     const settings = config.userSettings || {};
     const userPrompt = args.prompt || '';
+
+    // 含缩放占位符的模板使用各自默认倍率；拒绝非法输入。
+    let resizeScale;
+    if (JSON.stringify(workflow).includes('{{RESIZE_SCALE}}')) {
+        const candidate = args.resize_scale ?? settings.defaultResizeScale ?? 2;
+        resizeScale = Number(candidate);
+        if ((typeof candidate !== 'number' && typeof candidate !== 'string') ||
+            String(candidate).trim() === '' || !Number.isFinite(resizeScale) || resizeScale <= 0) {
+            throw new Error('resize_scale must be a finite number greater than 0.');
+        }
+    }
     
+    const facePrompt = args.face_prompt ?? settings.facePrompt ?? '';
+    if (JSON.stringify(workflow).includes('{{FACE_PROMPT}}') && typeof facePrompt !== 'string') {
+        throw new Error('face_prompt must be a string.');
+    }
+
     // 构建LoRA字符串
     const lorasString = buildLoRAsString(settings.loras || []);
     
@@ -115,8 +140,8 @@ function fillWorkflowParameters(workflow, args, config) {
     ].filter(part => part && String(part).trim());
     const positivePrompt = positivePromptParts.join(', ');
     
-    // 先解析种子：当配置默认种子为 -1 或非法时，运行时自动改为随机合法值（不透传 -1）
-    const resolvedSeed = resolveSeed(settings.defaultSeed);
+    // 调用参数优先；seed=-1 或非法时在运行时生成随机合法种子
+    const resolvedSeed = resolveSeed(args.seed ?? settings.defaultSeed);
 
     // 构建负面提示词
     const negativePromptParts = [
@@ -127,23 +152,29 @@ function fillWorkflowParameters(workflow, args, config) {
     
     // 构建替换映射
     const replacements = {
-        // 基础参数 - 优先使用args传入的值
-        '{{MODEL}}': settings.defaultModel || 'sd_xl_base_1.0.safetensors',
-        '{{WIDTH}}': args.width || settings.defaultWidth || 1024,
-        '{{HEIGHT}}': args.height || settings.defaultHeight || 1024,
-        '{{STEPS}}': settings.defaultSteps || 30,
-        '{{CFG}}': settings.defaultCfg || 7.5,
-        '{{SAMPLER}}': settings.defaultSampler || 'dpmpp_2m',
-        '{{SCHEDULER}}': settings.defaultScheduler || 'normal',
-        '{{SEED}}': resolvedSeed, // 使用运行时解析后的合法种子
-        '{{DENOISE}}': settings.defaultDenoise || 1.0,
-        '{{BATCH_SIZE}}': settings.defaultBatchSize || 1,
+        // 基础参数 - 调用参数优先于用户配置
+        '{{IMAGE}}': args.image || '',
+        '{{IMAGE_2}}': args.image_2 || '',
+        '{{RESOLUTION}}': resolveNumericArg(args.resolution, settings.defaultResolution ?? 0),
+        '{{RESIZE_SCALE}}': resizeScale,
+        '{{MODEL}}': args.model || settings.defaultModel || 'sd_xl_base_1.0.safetensors',
+        '{{WIDTH}}': resolveNumericArg(args.width, settings.defaultWidth || 1024),
+        '{{HEIGHT}}': resolveNumericArg(args.height, settings.defaultHeight || 1024),
+        '{{STEPS}}': resolveNumericArg(args.steps, settings.defaultSteps || 30),
+        '{{CFG}}': resolveNumericArg(args.cfg, settings.defaultCfg || 7.5),
+        '{{SAMPLER}}': args.sampler || settings.defaultSampler || 'dpmpp_2m',
+        '{{SCHEDULER}}': args.scheduler || settings.defaultScheduler || 'normal',
+        '{{SEED}}': resolvedSeed,
+        '{{DENOISE}}': resolveNumericArg(args.denoise, settings.defaultDenoise ?? 1.0),
+        '{{BATCH_SIZE}}': resolveNumericArg(args.batch_size, settings.defaultBatchSize || 1),
         
         // 提示词相关
         '{{POSITIVE_PROMPT}}': positivePrompt,
         '{{NEGATIVE_PROMPT}}': negativePrompt,
         '{{USER_PROMPT}}': userPrompt || '',
         '{{PROMPT_INPUT}}': userPrompt || '', // 独立提示词输入
+        '{{LORA_PROMPT}}': args.lora_prompt || '',
+        '{{FACE_PROMPT}}': facePrompt,
         
         // 组件字符串
         '{{LORAS}}': lorasString,
@@ -166,10 +197,13 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512
     };
     
-    // 安全的JSON替换 - 先解析为对象，然后递归替换
+    // 安全的JSON替换 - 精确匹配时保留数值/布尔类型，嵌入字符串时再转为文本
     function replaceInObject(obj, replacements) {
         if (typeof obj === 'string') {
-            // 对字符串值进行占位符替换
+            if (Object.prototype.hasOwnProperty.call(replacements, obj)) {
+                return replacements[obj];
+            }
+
             let result = obj;
             for (const [placeholder, value] of Object.entries(replacements)) {
                 if (result.includes(placeholder)) {
@@ -196,6 +230,40 @@ function fillWorkflowParameters(workflow, args, config) {
     return replaceInObject(workflow, replacements);
 }
 
+// 根据单次调用配置节点式 LoRA。lora_name 显式留空时绕过并移除所有 LoraLoader。
+function configureWorkflowLora(workflow, args) {
+    if (!Object.prototype.hasOwnProperty.call(args, 'lora_name')) return workflow;
+
+    const loraName = typeof args.lora_name === 'string' ? args.lora_name.trim() : '';
+    const loraNodes = Object.entries(workflow)
+        .filter(([, node]) => node && node.class_type === 'LoraLoader');
+
+    for (const [nodeId, node] of loraNodes) {
+        if (loraName) {
+            node.inputs.lora_name = loraName;
+            node.inputs.strength_model = resolveNumericArg(args.lora_strength, node.inputs.strength_model ?? 1);
+            node.inputs.strength_clip = resolveNumericArg(args.lora_clip_strength, node.inputs.strength_clip ?? node.inputs.strength_model ?? 1);
+            continue;
+        }
+
+        const modelSource = node.inputs.model;
+        const clipSource = node.inputs.clip;
+
+        for (const otherNode of Object.values(workflow)) {
+            if (!otherNode || !otherNode.inputs) continue;
+            for (const [inputName, inputValue] of Object.entries(otherNode.inputs)) {
+                if (!Array.isArray(inputValue) || String(inputValue[0]) !== String(nodeId)) continue;
+                if (inputValue[1] === 0 && modelSource) otherNode.inputs[inputName] = modelSource;
+                if (inputValue[1] === 1 && clipSource) otherNode.inputs[inputName] = clipSource;
+            }
+        }
+
+        delete workflow[nodeId];
+    }
+
+    return workflow;
+}
+
 // 构建LoRA字符串
 function buildLoRAsString(loras) {
     if (!Array.isArray(loras)) return '';
@@ -210,6 +278,93 @@ function buildLoRAsString(loras) {
         .join(', ');
 }
 
+// URL 在插件宿主下载；允许庄园内网图床。每张最多 20 MiB。
+async function prepareWorkflowImages(args, requiredInputs, config) {
+    const prepared = { ...args };
+    const limit = 20 * 1024 * 1024;
+    for (const inputName of requiredInputs) {
+        const value = args[inputName];
+        if (typeof value !== 'string' || !value.trim()) {
+            throw new Error(`Workflow requires '${inputName}' (HTTP/file image URL or ComfyUI uploaded filename).`);
+        }
+        const source = value.trim();
+        if (!/^(?:https?:\/\/|file:\/\/)/i.test(source)) {
+            if (/^(?:[A-Za-z]+:|\/|\\)/.test(source) || source.split(/[\\/]/).includes('..')) {
+                throw new Error(`'${inputName}' must be an HTTP/file image URL or ComfyUI uploaded filename.`);
+            }
+            prepared[inputName] = source;
+            continue;
+        }
+        let bytes;
+        if (/^file:\/\//i.test(source)) {
+            // PluginManager 已完成跨节点追踪；这里只读宿主可用的文件，不再次追踪。
+            const url = new URL(source);
+            if (url.hostname && url.hostname !== 'localhost') {
+                throw new Error(`'${inputName}' file URL must reference a local file, not a network share.`);
+            }
+            const localPath = fileURLToPath(url);
+            let handle;
+            try {
+                handle = await fs.open(localPath, 'r');
+                const stat = await handle.stat();
+                if (!stat.isFile() || stat.size > limit) {
+                    throw new Error('Expected a regular image file at most 20 MiB.');
+                }
+                // 最多读取 limit+1，避免 stat 后文件增长导致无界内存分配。
+                const buffer = Buffer.alloc(Math.min(stat.size + 1, limit + 1));
+                let offset = 0;
+                while (offset < buffer.length) {
+                    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+                    if (!bytesRead) break;
+                    offset += bytesRead;
+                }
+                bytes = buffer.subarray(0, offset);
+            } catch (error) {
+                throw new Error(`Cannot read '${inputName}' file URL on plugin host; verify VCP file tracing completed: ${error.message}`);
+            } finally {
+                if (handle) await handle.close();
+            }
+        } else {
+            const response = await axios.get(source, {
+                responseType: 'arraybuffer',
+                timeout: 30000,
+                maxContentLength: limit,
+                maxBodyLength: limit,
+                maxRedirects: 3
+            });
+            bytes = Buffer.from(response.data);
+        }
+        // 验证签名而非信任服务器 Content-Type，拒绝 HTML / SVG 等非位图内容。
+        let extension;
+        if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) extension = 'png';
+        else if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) extension = 'jpg';
+        else if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString())) extension = 'gif';
+        else if (bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP') extension = 'webp';
+        if (!extension || bytes.length > limit) {
+            throw new Error(`'${inputName}' must be PNG, JPEG, GIF or WebP, at most 20 MiB.`);
+        }
+        const form = new FormData();
+        const mime = extension === 'jpg' ? 'image/jpeg' : `image/${extension}`;
+        form.append('image', new Blob([bytes], { type: mime }), `vcp-${uuidv4()}.${extension}`);
+        form.append('type', 'input');
+        form.append('overwrite', 'false');
+        const upload = await axios.post(
+            `${config.COMFYUI_BASE_URL.replace(/\/$/, '')}/upload/image`,
+            form,
+            {
+                headers: config.COMFYUI_API_KEY ? { Authorization: `Bearer ${config.COMFYUI_API_KEY}` } : {},
+                timeout: 30000,
+                maxBodyLength: limit + 65536
+            }
+        );
+        const result = upload.data;
+        if (!result || typeof result.name !== 'string' || !result.name) {
+            throw new Error(`ComfyUI upload failed for '${inputName}': missing filename.`);
+        }
+        prepared[inputName] = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+    }
+    return prepared;
+}
 // 提交工作流到ComfyUI队列
 async function queuePrompt(workflow, config) {
     const comfyuiAxios = axios.create({
@@ -328,6 +483,9 @@ async function saveImagesToLocal(images, config) {
 
 // 主要生成函数
 async function generateImageAndSave(args) {
+    // 解析 showbase64 参数，默认为 false
+    const showBase64 = args.showbase64 === 'true' || args.showbase64 === true;
+
     // 加载配置
     const config = await loadConfiguration();
     
@@ -354,8 +512,8 @@ async function generateImageAndSave(args) {
         throw new Error(`ComfyUI Plugin Error: Missing environment variables: ${missing.join(', ')}. Available env vars: ${Object.keys(process.env).filter(k => k.includes('HTTP') || k.includes('PORT') || k.includes('IMAGE')).join(', ')}`);
     }
 
-    if (!isValidComfyUIGenArgs(args)) {
-        throw new Error(`ComfyUI Plugin Error: Invalid arguments. Required: prompt (string). Received: ${JSON.stringify(args)}`);
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new Error('ComfyUI Plugin Error: Invalid arguments. Expected an object.');
     }
 
     debugLog('Starting image generation with args:', args);
@@ -376,6 +534,7 @@ async function generateImageAndSave(args) {
     let lastError = null;
     let savedImages = null;
     let usedWorkflow = null;
+    let strictWorkflow = false;
 
     for (const wfName of tryWorkflows) {
         try {
@@ -384,8 +543,20 @@ async function generateImageAndSave(args) {
             
             // 兼容旧格式（直接是工作流）和新格式（包含元数据和 workflow 键）
             const workflowObject = wfTemplate.workflow || wfTemplate;
-
-            const updated = fillWorkflowParameters(workflowObject, args, config);
+            strictWorkflow = wfTemplate.requiresPrompt === false ||
+                (Array.isArray(wfTemplate.requiredInputs) && wfTemplate.requiredInputs.length > 0);
+            if (!isValidComfyUIGenArgs(args, wfTemplate.requiresPrompt !== false)) {
+                throw new Error('ComfyUI Plugin Error: Invalid arguments. Required: prompt (string), except for workflows with requiresPrompt=false.');
+            }
+            const preparedArgs = await prepareWorkflowImages(args, wfTemplate.requiredInputs || [], config);
+            const workflowConfig = {
+                ...config,
+                userSettings: { ...config.userSettings, ...wfTemplate.defaults }
+            };
+            const updated = configureWorkflowLora(
+                fillWorkflowParameters(workflowObject, preparedArgs, workflowConfig),
+                preparedArgs
+            );
             const queueResult = await queuePrompt(updated, config);
             debugLog('Queued with prompt_id:', queueResult.prompt_id);
 
@@ -400,38 +571,83 @@ async function generateImageAndSave(args) {
             break; // 成功，退出回退序列
         } catch (e) {
             lastError = e;
-            debugLog(`Workflow ${wfName} failed:`, e && (e.message || e.toString()));
+            // [芙铃诊断补丁 2026-09-06 / 2026-10-15] 捕获ComfyUI 400响应体原文，终结“替身演员顶包”黑箱
+            let respBody = '';
+            try {
+                if (e && e.response && e.response.data) {
+                    respBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data);
+                }
+            } catch (_) {}
+            const diagnosticMsg = (e && e.message ? e.message : String(e)) + (respBody ? ' | ComfyUI-400-body: ' + respBody.substring(0, 2048) : '');
+            e.diagnosticMessage = diagnosticMsg;
+            if (respBody) {
+                e.message = diagnosticMsg;
+            }
+            if (strictWorkflow) throw e;
+            debugLog(`Workflow ${wfName} failed:`, diagnosticMsg);
             // 继续下一回退候选
         }
     }
 
     if (!savedImages) {
         // 所有回退均失败
-        throw new Error(`All workflow attempts failed. Primary: ${primaryWorkflowName}. Last error: ${lastError && lastError.message ? lastError.message : String(lastError)}`);
+        throw new Error(`All workflow attempts failed. Primary: ${primaryWorkflowName}. Last error: ${lastError && (lastError.diagnosticMessage || lastError.message) ? (lastError.diagnosticMessage || lastError.message) : String(lastError)}`);
     }
     
-    // 7. 构建返回结果 - 分离“日志文本”和“Agent HTML”
-    const altText = args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "");
+    // 7. 构建返回结果 - 结构化格式
+    const altPrompt = args.prompt || usedWorkflow || 'ComfyUI';
+    const altText = altPrompt.substring(0, 80) + (altPrompt.length > 80 ? "..." : "");
     
-    // A) 日志文本（供 VCPTookBox 记录与调试）
-    let logs = `ComfyUI 图片生成成功！共生成 ${savedImages.length} 张图片\n\n`;
-    logs += `详细信息：\n`;
+    let textContent = `ComfyUI 图片生成成功！共生成 ${savedImages.length} 张图片\n\n`;
+    textContent += `详细信息：\n`;
     savedImages.forEach((image, index) => {
-        logs += `图片 ${index + 1}:\n`;
-        logs += `- 图片URL: ${image.url}\n`;
-        logs += `- 服务器路径: image/comfyuigen/${image.filename}\n`;
-        logs += `- 文件名: ${image.filename}\n\n`;
+        textContent += `图片 ${index + 1}:\n`;
+        textContent += `- 图片URL: ${image.url}\n`;
+        textContent += `- 服务器路径: image/comfyuigen/${image.filename}\n`;
+        textContent += `- 文件名: ${image.filename}\n\n`;
     });
-    
-    // B) Agent 展示的 HTML 片段（直接用于渲染）
-    let agentHtml = `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n`;
+    textContent += `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n`;
     savedImages.forEach((image, index) => {
-        agentHtml += `<img src="${image.url}" alt="${altText} ${index + 1}" width="300">\n`;
+        textContent += `<img src="${image.url}" alt="${altText} ${index + 1}" width="300">\n`;
     });
 
-    // 返回一个统一字符串（向后兼容），供 main() 分离；同时为未来改造保留结构化返回的可能
-    const combined = `${logs}${agentHtml}`;
-    return combined;
+    const content = [
+        {
+            type: 'text',
+            text: textContent
+        }
+    ];
+
+    // 只有当 showbase64 为 true 时才添加 base64 图片数据
+    if (showBase64) {
+        for (const image of savedImages) {
+            const imageData = await fs.readFile(image.localPath);
+            const base64Image = imageData.toString('base64');
+            const ext = path.extname(image.filename).replace('.', '') || 'png';
+            const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+            content.push({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${mimeType};base64,${base64Image}`
+                }
+            });
+        }
+    }
+
+    return {
+        content: content,
+        details: {
+            workflow: usedWorkflow,
+            prompt: args.prompt || '',
+            imageCount: savedImages.length,
+            images: savedImages.map(img => ({
+                serverPath: `image/comfyuigen/${img.filename}`,
+                fileName: img.filename,
+                imageUrl: img.url
+            })),
+            showBase64: showBase64
+        }
+    };
 }
 
 // 主函数
@@ -471,4 +687,15 @@ async function main() {
     }
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    isValidComfyUIGenArgs,
+    fillWorkflowParameters,
+    configureWorkflowLora,
+    resolveSeed,
+    resolveNumericArg,
+    prepareWorkflowImages
+};

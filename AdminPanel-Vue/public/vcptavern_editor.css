@@ -84,6 +84,20 @@ html[data-theme='light'] .preset-manager button {
     box-sizing: border-box;
 }
 
+.preset-meta label {
+    display: block;
+    margin: 4px 0 5px;
+    color: var(--secondary-text);
+    font-size: 12px;
+}
+
+.field-hint {
+    display: block;
+    margin: -4px 0 10px;
+    color: var(--secondary-text);
+    font-size: 12px;
+}
+
 #rules-list {
     margin-top: 20px;
 }

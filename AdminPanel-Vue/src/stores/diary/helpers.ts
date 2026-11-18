@@ -4,12 +4,14 @@ export interface RagTagsConfig {
   thresholdEnabled: boolean;
   threshold: number;
   tags: string[];
+  description?: string;
 }
 
 export const DEFAULT_RAG_TAGS_CONFIG: RagTagsConfig = {
   thresholdEnabled: false,
   threshold: 0.7,
   tags: [],
+  description: "",
 };
 
 const COMMON_RAG_TAGS = [

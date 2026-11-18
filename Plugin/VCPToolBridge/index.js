@@ -192,6 +192,7 @@ class VCPToolBridge {
                     name: plugin.name,
                     displayName: plugin.displayName || plugin.name,
                     description: plugin.description || "",
+                    version: plugin.version || "1.0.0",
                     capabilities: {
                         invocationCommands: plugin.capabilities.invocationCommands
                     }

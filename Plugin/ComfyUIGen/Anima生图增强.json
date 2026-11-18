@@ -1,0 +1,265 @@
+{
+  "77": {
+    "inputs": {
+      "clip_name": "waiANIMA_v10Base10_txt.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "78": {
+    "inputs": {
+      "vae_name": "qwenImage_qwenImageVAE.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "79": {
+    "inputs": {
+      "samples": [
+        "82",
+        0
+      ],
+      "vae": [
+        "78",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "80": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "81": {
+    "inputs": {
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
+      "clip": [
+        "86",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "82": {
+    "inputs": {
+      "seed": 875817230929465,
+      "steps": 24,
+      "cfg": 4,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "86",
+        0
+      ],
+      "positive": [
+        "83",
+        0
+      ],
+      "negative": [
+        "81",
+        0
+      ],
+      "latent_image": [
+        "80",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "83": {
+    "inputs": {
+      "text": "masterpiece, best quality,score_7,\n1girl, phoebe \\(wuthering waves\\), tacet mark \\(wuthering waves\\), blonde hair, outdoors, white dress, long sleeves, hat, ocean, day, looking at viewer, upper body, fence\nA portrait illustration of phoebe from wuthering waves in anime style, standing on a balcony overlooking the ocean. She is surrounded by a railing, buildings, and a hill in the background. The image giving it a lively and vibrant feel.",
+      "clip": [
+        "86",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "84": {
+    "inputs": {
+      "unet_name": "waiANIMA_v10Base10.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "85": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "87",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "86": {
+    "inputs": {
+      "lora_name": "anima_rendering_detailer_base10.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 1,
+      "model": [
+        "84",
+        0
+      ],
+      "clip": [
+        "77",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "加载LoRA"
+    }
+  },
+  "87": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 765383580477274,
+      "steps": 18,
+      "cfg": 8,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.38,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": [
+        "94",
+        0
+      ],
+      "model": [
+        "86",
+        0
+      ],
+      "clip": [
+        "86",
+        1
+      ],
+      "vae": [
+        "78",
+        0
+      ],
+      "positive": [
+        "91",
+        0
+      ],
+      "negative": [
+        "92",
+        0
+      ],
+      "bbox_detector": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "FaceDetailer"
+    }
+  },
+  "89": {
+    "inputs": {
+      "model_name": "bbox/face_yolov8m.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "UltralyticsDetectorProvider"
+    }
+  },
+  "91": {
+    "inputs": {
+      "text": "detailed glassy eyes, smooth porcelain skin"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "面部优化提示词"
+    }
+  },
+  "92": {
+    "inputs": {
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts,"
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "94": {
+    "inputs": {
+      "resize_scale": 2,
+      "resize_method": "lanczos",
+      "upscale_model": [
+        "95",
+        0
+      ],
+      "image": [
+        "79",
+        0
+      ]
+    },
+    "class_type": "UpscaleImageByModelThenResize",
+    "_meta": {
+      "title": "Upscale Image By Model Then Resize"
+    }
+  },
+  "95": {
+    "inputs": {
+      "model_name": "4x-AnimeSharp.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "加载放大模型"
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DeedPage",
+  "displayName": "deed.page 网页发布",
+  "version": "1.0.0",
+  "description": "通过 deed.page MCP 把 Agent 生成的 HTML 发布为公开的 *.deed.page 网页，无需账号或 API 密钥。",
+  "author": "deed.page",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node DeedPage.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "publish_site",
+        "description": "command=publish_site：html 为完整的 HTML 文档（作为 index.html 发布）。可选 slug（小写字母、数字和连字符，1–63 字符；省略则随机生成）、ttl_seconds（正整数秒，省略则永久保留）、token（本次操作使用的 deed_tok_ 令牌）。新建无需 token，返回公开 url、slug 和 token，请提醒用户按站点妥善保存令牌。编辑已有网站仍使用此命令，必须显式传入原 slug、对应 token 和新 html。不同网站可分别传入各自的 token，不读取环境变量。网页对任何持有链接的人公开，不要发布密钥或隐私内容。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeedPage「末」,\ncommand:「始」publish_site「末」,\nhtml:「始」<!doctype html><meta charset=\"utf-8\"><title>周报</title><h1>本周进展</h1>「末」,\nttl_seconds:「始」86400「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "get_site",
+        "description": "command=get_site：slug 为站点名。返回站点的公开信息，例如 url、版本和到期时间。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeedPage「末」,\ncommand:「始」get_site「末」,\nslug:「始」weekly-report「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "delete_site",
+        "description": "command=delete_site：必须显式传入 slug（要删除的站点）和 token（拥有该站点的 deed_tok_ 令牌）。不读取环境变量。删除前请先征得用户确认。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeedPage「末」,\ncommand:「始」delete_site「末」,\nslug:「始」weekly-report「末」,\ntoken:「始」deed_tok_example「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

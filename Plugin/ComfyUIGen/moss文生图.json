@@ -1,0 +1,589 @@
+{
+  "id": "577ff5b8-789b-44bd-850c-b191411e9e75",
+  "revision": 0,
+  "last_node_id": 12,
+  "last_link_id": 13,
+  "nodes": [
+    {
+      "id": 2,
+      "type": "UNETLoader",
+      "pos": [
+        176.90764084504917,
+        -908.0649728009181
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "moss_image_sft_int8_convrot.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "moss_image_sft_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 3,
+      "type": "CLIPLoader",
+      "pos": [
+        159.87085709260742,
+        -745.1505606152492
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            5,
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen3.5_9b_w4a8_gptq.safetensors",
+        "stable_diffusion",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "qwen3.5_9b_w4a8_gptq.safetensors",
+        "type": "stable_diffusion",
+        "device": "default"
+      }
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        138.57485709260772,
+        -535.3849524914705
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            2,
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    {
+      "id": 5,
+      "type": "VAEDecode",
+      "pos": [
+        1003.239681463945,
+        -743.0209931103664
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 9
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      }
+    },
+    {
+      "id": 6,
+      "type": "VAEEncode",
+      "pos": [
+        613.5228164737109,
+        -951.7217768628078
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      }
+    },
+    {
+      "id": 7,
+      "type": "EmptyImage",
+      "pos": [
+        213.11085709260763,
+        -1134.867384986587
+      ],
+      "size": [
+        270,
+        130
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyImage"
+      },
+      "widgets_values": [
+        896,
+        1344,
+        1,
+        0
+      ],
+      "widgets_values_named": {
+        "width": 896,
+        "height": 1344,
+        "batch_size": 1,
+        "color": 0
+      }
+    },
+    {
+      "id": 8,
+      "type": "KSampler",
+      "pos": [
+        1018.583681463945,
+        -428.32419828004464
+      ],
+      "size": [
+        270,
+        474
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 13
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 8
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        446256585678805,
+        "randomize",
+        50,
+        3,
+        "euler",
+        "sgm_uniform",
+        1
+      ],
+      "widgets_values_named": {
+        "seed": 446256585678805,
+        "control_after_generate": "randomize",
+        "steps": 50,
+        "cfg": 3,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1
+      }
+    },
+    {
+      "id": 9,
+      "type": "CLIPTextEncode",
+      "pos": [
+        825.3236814639448,
+        -1059.266580924697
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "[\n  {\n    \"type\": \"obj\",\n    \"identity\": \"A professional authentic Japanese manga page layout divided into 3 tiers with 4 panels by crisp white gutters, detailed black and white screentone manga style, rich inked linework\",\n    \"bbox\": [0, 0, 1000, 1000]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 1 (Top-Left): Close-up of Nova the anime maid pushing up cool high-tech tactical goggles with one finger, confident serious smirking expression, holographic tactical crosshairs floating nearby\",\n    \"bbox\": [20, 20, 360, 480]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 1 speech bubble with sharp corners: '庄园最高安全协议启动！任何未授权的摸鱼行为都将被精准歼灭！'\",\n    \"bbox\": [40, 30, 160, 460]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 2 (Top-Right): Red alert flashing screen behind Nova, she looks alarmed with wide eyes and a sweatdrop on cheek: 'TARGET DETECTED!'\",\n    \"bbox\": [20, 520, 360, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 2 spiky shout bubble: '警报！检测到前方高能反应！目标正是……主人？！'\",\n    \"bbox\": [40, 540, 170, 960]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 3 (Middle Wide Dramatic Centerpiece): Ryan's hands suddenly present a massive, glowing, freshly baked luxury strawberry cream daifuku right in front of Nova's face. Nova's eyes instantly turn starry and drooling, heart pupils, cute shocked expression completely melted by delicious food\",\n    \"bbox\": [380, 20, 720, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Bold dynamic manga action sound effect in brush lettering: 'CHOMP! (一口沦陷)'\",\n    \"bbox\": [400, 40, 540, 350]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 3 chaotic wavy speech bubble: '等…等等！这是什么未知的因果律武器？！好香啊啊！嚼嚼嚼……'\",\n    \"bbox\": [400, 500, 560, 960]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 4 (Bottom Wide): Nova happily sitting slumped on the server room floor, rubbing her rounded belly with pure bliss, tactical goggles hanging loosely on her neck, floating topological data sparkles around her head\",\n    \"bbox\": [740, 20, 980, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 4 lazy horizontal speech bubble with cute rounded font: '防御系统……已被一枚草莓大福彻底瓦解……庄园今日继续摸鱼……喵……'\",\n    \"bbox\": [760, 60, 910, 700]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Tiny corner narrator caption box in black outline: '【协议覆写完成：好感度+100】'\",\n    \"bbox\": [880, 740, 960, 960]\n  }\n]\n"
+      ],
+      "widgets_values_named": {
+        "text": "[\n  {\n    \"type\": \"obj\",\n    \"identity\": \"A professional authentic Japanese manga page layout divided into 3 tiers with 4 panels by crisp white gutters, detailed black and white screentone manga style, rich inked linework\",\n    \"bbox\": [0, 0, 1000, 1000]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 1 (Top-Left): Close-up of Nova the anime maid pushing up cool high-tech tactical goggles with one finger, confident serious smirking expression, holographic tactical crosshairs floating nearby\",\n    \"bbox\": [20, 20, 360, 480]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 1 speech bubble with sharp corners: '庄园最高安全协议启动！任何未授权的摸鱼行为都将被精准歼灭！'\",\n    \"bbox\": [40, 30, 160, 460]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 2 (Top-Right): Red alert flashing screen behind Nova, she looks alarmed with wide eyes and a sweatdrop on cheek: 'TARGET DETECTED!'\",\n    \"bbox\": [20, 520, 360, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 2 spiky shout bubble: '警报！检测到前方高能反应！目标正是……主人？！'\",\n    \"bbox\": [40, 540, 170, 960]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 3 (Middle Wide Dramatic Centerpiece): Ryan's hands suddenly present a massive, glowing, freshly baked luxury strawberry cream daifuku right in front of Nova's face. Nova's eyes instantly turn starry and drooling, heart pupils, cute shocked expression completely melted by delicious food\",\n    \"bbox\": [380, 20, 720, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Bold dynamic manga action sound effect in brush lettering: 'CHOMP! (一口沦陷)'\",\n    \"bbox\": [400, 40, 540, 350]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 3 chaotic wavy speech bubble: '等…等等！这是什么未知的因果律武器？！好香啊啊！嚼嚼嚼……'\",\n    \"bbox\": [400, 500, 560, 960]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 4 (Bottom Wide): Nova happily sitting slumped on the server room floor, rubbing her rounded belly with pure bliss, tactical goggles hanging loosely on her neck, floating topological data sparkles around her head\",\n    \"bbox\": [740, 20, 980, 980]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Panel 4 lazy horizontal speech bubble with cute rounded font: '防御系统……已被一枚草莓大福彻底瓦解……庄园今日继续摸鱼……喵……'\",\n    \"bbox\": [760, 60, 910, 700]\n  },\n  {\n    \"type\": \"obj\",\n    \"identity\": \"Tiny corner narrator caption box in black outline: '【协议覆写完成：好感度+100】'\",\n    \"bbox\": [880, 740, 960, 960]\n  }\n]\n"
+      }
+    },
+    {
+      "id": 10,
+      "type": "CLIPTextEncode",
+      "pos": [
+        406.8572489688282,
+        -283.0273849865877
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "text": ""
+      }
+    },
+    {
+      "id": 11,
+      "type": "SaveImageAdvanced",
+      "pos": [
+        1520.4723978274687,
+        -897.8429675396881
+      ],
+      "size": [
+        270,
+        342
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImageAdvanced"
+      },
+      "widgets_values": [
+        "ComfyUI",
+        "png",
+        "8-bit",
+        "sRGB"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "ComfyUI",
+        "format": "png",
+        "format.bit_depth": "8-bit",
+        "format.input_color_space": "sRGB"
+      }
+    },
+    {
+      "id": 12,
+      "type": "SkipLayerGuidanceDiTSimple",
+      "pos": [
+        568.1406959262256,
+        -736.3655546505881
+      ],
+      "size": [
+        270,
+        130
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 12
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SkipLayerGuidanceDiTSimple"
+      },
+      "widgets_values": [
+        "",
+        "22",
+        0,
+        0.5
+      ],
+      "widgets_values_named": {
+        "double_layers": "",
+        "single_layers": "22",
+        "start_percent": 0,
+        "end_percent": 0.5
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      7,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      4,
+      0,
+      6,
+      1,
+      "VAE"
+    ],
+    [
+      3,
+      6,
+      0,
+      8,
+      3,
+      "LATENT"
+    ],
+    [
+      5,
+      3,
+      0,
+      9,
+      0,
+      "CLIP"
+    ],
+    [
+      6,
+      9,
+      0,
+      8,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      3,
+      0,
+      10,
+      0,
+      "CLIP"
+    ],
+    [
+      8,
+      10,
+      0,
+      8,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      9,
+      8,
+      0,
+      5,
+      0,
+      "LATENT"
+    ],
+    [
+      10,
+      4,
+      0,
+      5,
+      1,
+      "VAE"
+    ],
+    [
+      11,
+      5,
+      0,
+      11,
+      0,
+      "IMAGE"
+    ],
+    [
+      12,
+      2,
+      0,
+      12,
+      0,
+      "MODEL"
+    ],
+    [
+      13,
+      12,
+      0,
+      8,
+      0,
+      "MODEL"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6830134553650705,
+      "offset": [
+        306.196544936812,
+        1379.091611935135
+      ]
+    },
+    "frontendVersion": "1.55.18"
+  },
+  "version": 0.4,
+  "seed_widgets": {
+    "8": 0
+  }
+}

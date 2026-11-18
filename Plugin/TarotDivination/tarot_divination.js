@@ -4,6 +4,17 @@ const fs = require('fs').promises;
 const path = require('path');
 const lunarCalendar = require('chinese-lunar-calendar');
 
+const PLANET_TRANSLATIONS = {
+  mercury: '水星',
+  venus: '金星',
+  earth: '地球',
+  mars: '火星',
+  jupiter: '木星',
+  saturn: '土星',
+  uranus: '天王星',
+  neptune: '海王星',
+};
+
 // --- Configuration (from environment variables set by Plugin.js) ---
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
@@ -209,6 +220,62 @@ function calculateOriginCelestialModifiers(originType, celestialFactors) {
   return modifiers;
 }
 
+function normalizeCelestialSnapshot(celestialData, sampledAt, smallestDiffMs = null) {
+  const planets = Object.entries(celestialData || {}).map(([planet, coords]) => {
+    const x = Number(coords.x_au) || 0;
+    const y = Number(coords.y_au) || 0;
+    const z = Number(coords.z_au) || 0;
+    const rawAngle = Math.atan2(y, x) * 180 / Math.PI;
+    const angle = (rawAngle + 450) % 360;
+    const distanceAu = Math.sqrt(x * x + y * y + z * z);
+
+    return {
+      planet,
+      name_cn: PLANET_TRANSLATIONS[planet] || planet,
+      x_au: x,
+      y_au: y,
+      z_au: z,
+      angle_deg: Number(angle.toFixed(2)),
+      distance_au: Number(distanceAu.toFixed(6)),
+    };
+  });
+
+  return {
+    sampled_at: sampledAt,
+    diff_ms: smallestDiffMs,
+    planets,
+  };
+}
+
+async function getClosestCelestialSnapshot() {
+  const celestialDBPath = path.join(__dirname, 'celestial_database.json');
+  const celestialDBContent = await fs.readFile(celestialDBPath, 'utf-8');
+  const celestialDatabase = JSON.parse(celestialDBContent);
+  const nowUTC = new Date();
+
+  let closestTimestampKey = null;
+  let smallestDiff = Infinity;
+
+  for (const timestampKey in celestialDatabase) {
+    const timestamp = new Date(timestampKey);
+    const diff = Math.abs(nowUTC - timestamp);
+    if (diff < smallestDiff) {
+      smallestDiff = diff;
+      closestTimestampKey = timestampKey;
+    }
+  }
+
+  if (!closestTimestampKey) {
+    return null;
+  }
+
+  return normalizeCelestialSnapshot(
+    celestialDatabase[closestTimestampKey],
+    closestTimestampKey,
+    smallestDiff,
+  );
+}
+
 /**
  * Gathers various environmental and temporal factors to create a unique seed for divination.
  * @returns {Promise<object>} A promise that resolves to an object containing the random generator, a summary of factors, and the factors themselves.
@@ -344,17 +411,6 @@ async function getDivinationFactors(fateCheckNumber = null, originInput = null) 
         timeZone: DEFAULT_TIMEZONE,
       })}):\n`;
 
-      const planetTranslations = {
-        mercury: '水星',
-        venus: '金星',
-        earth: '地球',
-        mars: '火星',
-        jupiter: '木星',
-        saturn: '土星',
-        uranus: '天王星',
-        neptune: '海王星',
-      };
-
       // Apply origin-specific descriptions
       let celestialDetails = [];
       const originModifiers = calculateOriginCelestialModifiers(origin.type, celestialFactors);
@@ -367,7 +423,7 @@ async function getDivinationFactors(fateCheckNumber = null, originInput = null) 
         let y_desc = coords.y_au > 0 ? '黄道的"左侧"' : '黄道的"右侧"';
         let z_desc = Math.abs(coords.z_au) < 0.05 ? '贴近黄道面' : coords.z_au > 0 ? '升于黄道之上' : '潜于黄道之下';
         celestialDetails.push(
-          `    - ${planetTranslations[planet] || planet}: ${z_desc}，位于${x_desc}与${y_desc}的象限${influenceDesc}`,
+          `    - ${PLANET_TRANSLATIONS[planet] || planet}: ${z_desc}，位于${x_desc}与${y_desc}的象限${influenceDesc}`,
         );
       }
       factorsSummary += celestialDetails.join('\n') + '\n';
@@ -895,14 +951,40 @@ async function processDrawnCard(card, random, divinationFactors, origin) {
 
 // --- Main Logic ---
 
+function createCardMeaning(card, position) {
+  const direction = card.reversed ? '逆位' : '正位';
+  const focusMap = {
+    过去: '回看已经完成的命运线索，辨认它如何塑造当下。',
+    现在: '凝视此刻正在显形的主题，选择最清明的回应方式。',
+    未来: '观察趋势的微光，提前为即将抵达的变化预留空间。',
+    结果: '将今日的核心启示收束为一个可执行的优雅动作。',
+  };
+  const baseFocus = focusMap[position] || '让牌面成为问题与星轨之间的翻译器。';
+
+  return `${card.name_cn}${direction}提示你：${baseFocus}${card.reversed ? ' 逆位并非否定，而是提醒先整理阻滞、误差与未被聆听的感受。' : ' 正位代表能量较顺畅，可以把灵感落实到清晰的下一步。'}`;
+}
+
 async function handleRequest(args) {
+  const { command, fate_check_number = null, origin = null } = args;
+
+  // --- Command: Get Celestial Snapshot ---
+  if (command === 'get_celestial_snapshot') {
+    const snapshot = await getClosestCelestialSnapshot();
+    if (!snapshot) {
+      throw new Error('No celestial snapshot available.');
+    }
+
+    return {
+      status: 'success',
+      result: snapshot,
+    };
+  }
+
   if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
     throw new Error(
       'One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl) are not set.',
     );
   }
-
-  const { command, fate_check_number = null, origin = null } = args;
 
   // --- Command: Get Celestial Data ---
   if (command === 'get_celestial_data') {
@@ -1060,10 +1142,19 @@ async function handleRequest(args) {
     status: 'success',
     result: {
       content: contentForAI,
+      summary: summaryText.trim(),
+      spread: {
+        command,
+        name: spreadName,
+        positions,
+        origin: originData,
+      },
       details: processedCards.map((pCard, index) => {
         const { image_base64, ...rest } = pCard; // Exclude base64 from details
+        const position = positions[index] || `Card ${index + 1}`;
         return {
-          position: positions[index] || `Card ${index + 1}`,
+          position,
+          meaning: createCardMeaning(pCard, position),
           ...rest,
         };
       }),

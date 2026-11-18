@@ -5,7 +5,7 @@
   "version": "1.0.1",
   "description": "VCP服务器专用的一个强大的文件系统操作插件，允许AI对受限目录进行读、写、列出、移动、复制、删除等多种文件和目录操作。特别增强了文件读取能力，可自动提取PDF、Word(.docx)和表格(.xlsx, .csv)文件的纯文本内容。",
   "author": "VCPToolBox",
-  "license": "MIT",
+  "license": "CC BY-NC-SA 4.0",
   "entryPoint": {
     "command": "node FileOperator.js",
     "timeout": 300000
@@ -53,11 +53,11 @@
       },
       {
         "command": "ReadFile",
-        "description": "功能: 读取指定绝对路径下文件的内容。特别优化了对多种格式的支持：对于 .pdf, .docx, .xlsx, .xls, .csv 等文件，插件会自动解析并提取其纯文本内容返回给AI；对于其他文件类型，则按普通文本文件读取。\n参数:\n- filePath (字符串, 必需): 要读取的文件的绝对路径。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式 (例如: 'utf8', 'ascii')。对于自动解析的文件，此参数无效。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ReadFile「末」,\nfilePath:「始」/path/to/your/document.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 读取指定绝对路径下文件的内容。特别优化了对多种格式的支持：对于 .pdf, .docx, .xlsx, .xls, .csv 等文件，插件会自动解析并提取其纯文本内容返回给AI；对于其他文件类型，则按普通文本文件读取。支持通过lines参数只返回部分文本行，适合读取大型文本、代码或已提取出的PDF/Word/表格文本。\n参数:\n- filePath (字符串, 必需): 要读取的文件的绝对路径。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式 (例如: 'utf8', 'ascii')。对于自动解析的文件，此参数无效。\n- lines (字符串或数字, 可选): 只返回指定行范围，行号从1开始，仅对文本内容生效；图片、音频、视频等data URI内容会忽略此参数。支持语法: 'head:N' 读取开头N行，例如 'head:50'；'tail:N' 读取末尾N行，例如 'tail:80'；'M-N' 或 'M:N' 读取第M到N行，例如 '120-180'；'N' 读取单独第N行。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ReadFile「末」,\nfilePath:「始」/path/to/your/document.pdf「末」,\nlines:「始」head:50「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "command": "WebReadFile",
-        "description": "功能: 从一个URL地址读取文件。插件会先将文件下载到本地一个临时文件夹内，然后复用ReadFile的逻辑进行解析和内容提取，支持所有ReadFile支持的格式（如PDF, DOCX, 图片等）。成功后，会返回文件内容以及一个本地文件URL。\n参数:\n- url (字符串, 必需): 要读取的文件的完整URL地址 (支持http和https)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WebReadFile「末」,\nurl:「始」http://example.com/sample.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 从一个URL地址读取文件。插件会先将文件下载到本地一个临时文件夹内，然后复用ReadFile的逻辑进行解析和内容提取，支持所有ReadFile支持的格式（如PDF, DOCX, 图片等）。成功后，会返回文件内容以及一个本地文件URL。\n参数:\n- url (字符串, 必需): 要读取的文件的完整URL地址 (支持http和https)。\n- encoding (字符串, 可选, 默认'utf8'): 对于普通文本文件，可以指定编码格式。\n- lines (字符串或数字, 可选): 只返回指定行范围，语法同ReadFile，例如 'head:50'、'tail:80'、'120-180'、'120:180' 或 '120'。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WebReadFile「末」,\nurl:「始」http://example.com/sample.txt「末」,\nlines:「始」tail:80「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "command": "WriteFile",
@@ -113,11 +113,11 @@
       },
       {
         "command": "ApplyDiff",
-        "description": "功能: 对指定文件应用一个差异(diff)修改。调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ApplyDiff「末」,\nfilePath:「始」H:\\MCP\\VCPChat\\AppData\\canvas\\nova_cool_doc.md「末」,\nsearchString:「始」nova的温度好酷哦！还有html样式哦！看到我的评论了吗？「末」,\nreplaceString:「始」nova的文档好酷哦！还有html样式哦！看到我的评论了吗？「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 对指定文件应用一个差异(diff)修改。推荐统一使用target表示要被替换的旧内容，replace表示替换后的新内容。为避免已有Agent提示词迁移风险，旧字段searchString/replaceString仍保持完全兼容；若新旧字段同时提供，以target/replace为准。调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ApplyDiff「末」,\nfilePath:「始」H:\\MCP\\VCPChat\\AppData\\canvas\\nova_cool_doc.md「末」,\ntarget:「始」nova的温度好酷哦！还有html样式哦！看到我的评论了吗？「末」,\nreplace:「始」nova的文档好酷哦！还有html样式哦！看到我的评论了吗？「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
      {
        "command": "UpdateHistory",
-       "description": "功能: 安全地更新一个JSON格式的聊天历史文件。此命令专门用于修改AI自己（role: 'assistant'）的发言内容。它会读取文件，解析JSON，查找并替换指定的文本字符串（仅限第一次出现），然后将更新后的内容写回文件，确保JSON结构的完整性。\n参数:\n- filePath (字符串, 必需): 聊天历史JSON文件的绝对路径。\n- searchString (字符串, 必需): 要在AI发言内容中查找的精确文本。\n- replaceString (字符串, 必需): 用于替换找到的文本的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」UpdateHistory「末」,\nfilePath:「始」H:\\path\\to\\your\\history.json「末」,\nsearchString:「始」这是我想修改的旧内容。「末」,\nreplaceString:「始」这是替换后的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
+       "description": "功能: 安全地更新一个JSON格式的聊天历史文件。此命令专门用于修改AI自己（role: 'assistant'）的发言内容。它会读取文件，解析JSON，查找并替换指定的文本字符串（仅限第一次出现），然后将更新后的内容写回文件，确保JSON结构的完整性。推荐统一使用target/replace；旧字段searchString/replaceString仍保持完全兼容，若两组同时提供则以新字段为准。\n参数:\n- filePath (字符串, 必需): 聊天历史JSON文件的绝对路径。\n- target (字符串, 必需): 要在AI发言内容中查找的精确旧文本。\n- replace (字符串, 必需): 用于替换target的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」UpdateHistory「末」,\nfilePath:「始」H:\\path\\to\\your\\history.json「末」,\ntarget:「始」这是我想修改的旧内容。「末」,\nreplace:「始」这是替换后的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
      },
      {
        "command": "CreateCanvas",

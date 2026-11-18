@@ -4,9 +4,52 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
+// 多模态配置真相源（JSON 优先 > config.env），支持热更新
+let multiModalConfigStore = null;
+try {
+    multiModalConfigStore = require('../../modules/multiModalConfigStore.js');
+} catch (storeError) {
+    console.warn('[MultiModalProcessor] multiModalConfigStore unavailable, will fall back to env config:', storeError.message);
+}
+
 let db = null;
-let pluginConfig = {}; 
+let pluginConfig = {};
 let fetchInstance = null; // Cache fetch instance
+
+/**
+ * 将 plugin manifest 解析得到的 config（基于 ENV）与 multimodal-config.json 真相源合并。
+ * 真相源的字段会覆盖同名 ENV 字段；其它字段（API_URL/API_Key/DebugMode 等）保持不变。
+ */
+function mergeWithJsonStore(baseConfig) {
+    if (!multiModalConfigStore) return baseConfig;
+    try {
+        const jsonConfig = multiModalConfigStore.getConfig();
+        const merged = { ...baseConfig };
+        // 字符串/数字字段：JSON 中存在且非空才覆盖，避免空字符串污染
+        const overrideKeys = [
+            'MultiModalModel',
+            'MultiModalPrompt',
+            'MediaInsertPrompt',
+            'MultiModalModelOutputMaxTokens',
+            'MultiModalModelContent',
+            'MultiModalModelThinkingBudget',
+            'MultiModalModelAsynchronousLimit'
+        ];
+        for (const key of overrideKeys) {
+            const val = jsonConfig[key];
+            if (val === undefined || val === null) continue;
+            if (typeof val === 'string' && val === '' && (key === 'MultiModalModel' || key === 'MultiModalPrompt')) {
+                // 关键字段为空时不覆盖（避免清空导致插件不可用）
+                continue;
+            }
+            merged[key] = val;
+        }
+        return merged;
+    } catch (mergeErr) {
+        console.error('[MultiModalProcessor] mergeWithJsonStore failed, use base config:', mergeErr);
+        return baseConfig;
+    }
+}
 
 async function getFetch() {
     if (!fetchInstance) {
@@ -176,7 +219,9 @@ module.exports = {
     },
 
     async processMessages(messages, requestConfig = {}) {
-        const currentConfig = { ...pluginConfig, ...requestConfig };
+        // 优先级：multimodal-config.json (运行时 hot reload) > requestConfig > pluginConfig (基于 ENV 启动快照)
+        const baseConfig = { ...pluginConfig, ...requestConfig };
+        const currentConfig = mergeWithJsonStore(baseConfig);
         let globalMediaIndexForLabel = 0;
         const processedMessages = JSON.parse(JSON.stringify(messages));
 

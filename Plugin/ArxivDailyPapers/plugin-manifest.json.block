@@ -1,0 +1,58 @@
+{
+  "name": "ArxivDailyPapers",
+  "displayName": "ArxivDailyPapers",
+  "version": "1.0.0",
+  "description": "Fetches daily research papers from the Arxiv API and provides them as a placeholder.",
+  "author": "Gemini",
+  "pluginType": "static",
+  "entryPoint": {
+    "command": "node ArxivDailyPapers.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "refreshIntervalCron": "*/30 * * * *",
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{ArxivDailyPapersData}}",
+        "description": "Daily research papers from Arxiv, updated every 30 minutes."
+      }
+    ]
+  },
+  "configSchema": {
+    "ARXIV_SEARCH_TERMS": {
+      "type": "string",
+      "required": true,
+      "default": "all:(\"Large Language Models\" OR \"Retrieval Augmented Generation\")",
+      "description": "The search terms for Arxiv API (e.g., all:(\"machine learning\" OR ai) AND cat:cs.AI). Date range is added automatically."
+    },
+    "ARXIV_MAX_RESULTS": {
+      "type": "number",
+      "required": true,
+      "default": 100,
+      "description": "Maximum number of results to fetch from Arxiv API."
+    },
+    "ARXIV_DAYS_RANGE": {
+      "type": "number",
+      "required": false,
+      "default": 1,
+      "description": "Number of past days to fetch papers from, including today (e.g., 1 for today, 2 for today and yesterday)."
+    },
+    "ARXIV_DEBUG_MODE": {
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "Enable debug mode for more verbose logging."
+    }
+  },
+  "permissions": [
+    "fetch_data_from_url",
+    "write_to_file_system",
+    "read_from_file_system"
+  ],
+  "cacheFiles": [
+    "arxiv_papers.json"
+  ],
+  "logLevel": "info"
+} 

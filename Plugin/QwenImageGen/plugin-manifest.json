@@ -21,13 +21,73 @@
     "invocationCommands": [
       {
         "commandIdentifier": "GenerateImage",
-        "description": "【文生图】调用此工具使用 Qwen/Qwen-Image 模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词。「末」,\nnegative_prompt:「始」(可选) 负向提示词。「末」,\nimage_size:「始」(可选) 图片分辨率，格式为“宽x高”。推荐值: \"1328x1328\"(1:1), \"1664x928\"(16:9), \"928x1664\"(9:16), \"1472x1140\"(4:3), \"1140x1472\"(3:4), \"1584x1056\"(3:2), \"1056x1584\"(2:3)。「末」,\ncfg:「始」(可选) 范围0.1-20，控制与提示词的匹配度，官方推荐4.0。「末」,\nseed:「始」(可选) 整数种子。「末」,\nnum_inference_steps:「始」(可选) 范围1-100，推理步数，默认20。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
+        "description": "【文生图】调用此工具使用 Qwen/Qwen-Image 模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一只戴着宇航员头盔的猫，背景是太空「末」,\nimage_size:「始」1328x1328「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "EditImage",
-        "description": "【图生图/修图】调用此工具使用 Qwen/Qwen-Image-Edit-2509 模型修改现有图片。请在您的回复中，使用以下精确格式来请求图片修改，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」EditImage「末」,\nprompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,\nimage:「始」(必需) 用于图生图的图片来源，可以是公网可访问的 https URL，或者是分布式服务器的本地文件路径 (格式为 file:///...)。「末」,\nimage2:「始」(可选) 第2张参考图片。「末」,\nimage3:「始」(可选) 第3张参考图片。「末」,\nnegative_prompt:「始」(可选) 负向提示词。「末」,\nseed:「始」(可选) 整数种子。「末」,\nnum_inference_steps:「始」(可选) 范围1-100，推理步数，默认20。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
+        "description": "【图生图/修图】调用此工具使用 Qwen/Qwen-Image-Edit-2509 模型修改现有图片。请在您的回复中，使用以下精确格式来请求图片修改，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」EditImage「末」,\nprompt:「始」给这只猫戴上墨镜「末」,\nimage:「始」https://example.com/cat.png「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "使用阿里通义千问 Qwen-Image 模型生成高审美图像，或使用 Qwen-Image-Edit 修改现有图片。",
+    "jevPrompt": "用户仅提供文本要求生成新图片时选 GenerateImage；提供参考图要求修改细节时选 EditImage（默认 GenerateImage）。在 GenerateImage 中，正方形选 1328x1328，横屏选 1664x928，竖屏选 928x1664。",
+    "agentPrompt": "当需要使用通义千问图像模型文生图或修图时，使用 {媒体娱乐} 中的 `QwenImageGen`，描述放入【主要内容】，画幅或参考图放入 []（[方图]、[横屏]、[竖屏]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `QwenImageGen`，生成图片【一只戴着宇航员头盔的猫咪在太空漫步】[方图]。「末」",
+    "defaultCommand": "GenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "使用 Qwen-Image 模型文生图",
+        "aliases": ["文生图", "千问生图", "生成图片", "画图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "画面描述提示词"
+          },
+          "image_size": {
+            "type": "enum",
+            "required": false,
+            "description": "通义千问输出画幅尺寸",
+            "values": {
+              "1328x1328": "1:1 超清正方形画幅",
+              "1664x928": "16:9 超清横屏画幅",
+              "928x1664": "9:16 超清竖屏画幅"
+            },
+            "aliases": {
+              "1328x1328": ["方图", "正方形", "1:1", "1328x1328"],
+              "1664x928": ["横屏", "横版", "16:9", "1664x928"],
+              "928x1664": ["竖屏", "竖版", "9:16", "928x1664"]
+            },
+            "default": "1328x1328"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "EditImage",
+        "description": "使用 Qwen-Image-Edit 修改现有图片",
+        "aliases": ["修图", "编辑图片", "修改图片", "图生图"],
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000
+          },
+          "image": {
+            "type": "text",
+            "required": true,
+            "source": "url",
+            "maxLength": 500
+          }
+        }
       }
     ]
   }

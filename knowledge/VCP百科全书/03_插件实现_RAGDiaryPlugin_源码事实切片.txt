@@ -1,0 +1,24 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件实现——RAGDiaryPlugin（源码事实切片）
+
+一、源码锚点
+- manifest: Plugin/RAGDiaryPlugin/plugin-manifest.json
+- entry: Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js
+- 核心链路: processMessages() -> _processRAGPlaceholder() -> vectorDBManager.search()
+- 关键增强: _calculateDynamicParams(), _truncateCoreTags(), _rerankDocuments()
+
+二、行为事实（代码级）
+- 支持查询缓存 queryResultCache（可开关、TTL、最大容量）。
+- TagMemo 路径会调用 applyTagBoost 感应 matchedTags，再做截断降噪。
+- Time-Aware 模式使用“语义路 + 时间路”平衡召回（代码注释为 60/40）。
+- V4/V5 路径包含 historySegments 分段检索与 deduplicateResults 去重。
+
+三、排序与稳定性
+- rerank 配置齐全时调用外部 rerank；支持 token 截断与批次化。
+- 内置 rerank 熔断统计，连续失败会短期跳过 rerank。
+- 最终排序优先 rerank_score，其次回退 score。
+
+四、触发示例（混合服务）
+触发示例：在系统提示词内放置 RAG 占位符，聊天流程进入 processMessages 后自动执行向量检索、TagBoost、去重与重排。
+
+Tag: RAGDiaryPlugin, RAGDiaryPlugin.js, processMessages, _processRAGPlaceholder, applyTagBoost, historySegments, deduplicateResults, rerank, 查询缓存, 混合服务

@@ -1,6 +1,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ragApi } from '@/api'
 import { usePointerDragSession } from '@/composables/usePointerDragSession'
+import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 import { createLogger } from '@/utils/logger'
 import { reorderByDragIndex } from './reorderClusters'
@@ -15,11 +16,13 @@ interface ThinkingChain {
   theme: string
   clusters: string[]
   kSequence: number[]
+  description: string
 }
 
 interface ThinkingChainRecord {
   clusters?: string[]
   kSequence?: number[]
+  description?: string
 }
 
 type ThinkingChainConfig = string[] | ThinkingChainRecord
@@ -93,6 +96,7 @@ function normalizeThinkingChain(
     theme,
     clusters,
     kSequence: buildNormalizedKSequence(clusters, sourceKSequence),
+    description: Array.isArray(config) ? '' : (config?.description ?? ''),
   }
 }
 
@@ -157,6 +161,7 @@ export function useThinkingChainsEditor() {
         chainsObj[normalizedTheme] = {
           clusters: [...chain.clusters],
           kSequence: [...normalizedKSequence],
+          ...(chain.description ? { description: chain.description } : {}),
         }
       })
 
@@ -183,13 +188,20 @@ export function useThinkingChainsEditor() {
       theme: '新主题',
       clusters: [],
       kSequence: [],
+      description: '',
     })
   }
 
-  function removeChain(index: number) {
-    if (confirm('确定要删除这个思维链主题吗？')) {
-      thinkingChains.value.splice(index, 1)
+  async function removeChain(index: number) {
+    if (!(await askConfirm({
+      message: '确定要删除这个思维链主题吗？',
+      danger: true,
+      confirmText: '删除',
+    }))) {
+      return
     }
+
+    thinkingChains.value.splice(index, 1)
   }
 
   function removeCluster(chainIndex: number, clusterIndex: number) {
@@ -215,13 +227,24 @@ export function useThinkingChainsEditor() {
   }
 
   function addCluster(chainIndex: number, clusterName: string) {
+    addClusters(chainIndex, [clusterName])
+  }
+
+  function addClusters(chainIndex: number, clusterNames: readonly string[]) {
     const chain = thinkingChains.value[chainIndex]
-    if (!chain || chain.clusters.includes(clusterName)) {
+    if (!chain) {
       return
     }
 
-    chain.clusters.push(clusterName)
-    chain.kSequence.push(1)
+    for (const rawClusterName of clusterNames) {
+      const clusterName = rawClusterName.trim()
+      if (!clusterName || chain.clusters.includes(clusterName)) {
+        continue
+      }
+
+      chain.clusters.push(clusterName)
+      chain.kSequence.push(1)
+    }
   }
 
   function createChainSnapshot(chainIndex: number): ChainPreviewState | null {
@@ -649,6 +672,7 @@ export function useThinkingChainsEditor() {
     removeCluster,
     removeClusterByName,
     addCluster,
+    addClusters,
     getRenderedClusters,
     getRenderedKValue,
     updateClusterKValue,

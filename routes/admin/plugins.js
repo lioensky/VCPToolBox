@@ -2,9 +2,26 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const { readPluginDashboardCards } = require('./lib/dashboardCards');
+const { assertSafePath } = require('../../modules/safeFilePath');
 
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
+const maxReadmeSizeBytes = 2 * 1024 * 1024;
+
+async function findPluginReadmePath(pluginPath) {
+    try {
+        const entries = await fs.readdir(pluginPath, { withFileTypes: true });
+        const readmeEntry = entries.find(entry =>
+            entry.isFile() && entry.name.toLowerCase() === 'readme.md'
+        );
+        return readmeEntry ? path.join(pluginPath, readmeEntry.name) : null;
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.warn(`[AdminPanelRoutes] Error checking README in ${pluginPath}:`, error);
+        }
+        return null;
+    }
+}
 
 module.exports = function(options) {
     const router = express.Router();
@@ -30,12 +47,16 @@ module.exports = function(options) {
                         }
                     }
                 }
+                const readmePath = !p.isDistributed && p.basePath
+                    ? await findPluginReadmePath(p.basePath)
+                    : null;
                 pluginDataMap.set(p.name, {
                     name: p.name,
                     manifest: p,
                     dashboardCards: readPluginDashboardCards(p.name, p),
                     enabled: true,
                     configEnvContent: configEnvContent,
+                    hasReadme: Boolean(readmePath),
                     isDistributed: p.isDistributed || false,
                     serverId: p.serverId || null
                 });
@@ -63,12 +84,14 @@ module.exports = function(options) {
                                 }
                             }
                             manifest.basePath = pluginPath;
+                            const readmePath = await findPluginReadmePath(pluginPath);
                             pluginDataMap.set(manifest.name, {
                                 name: manifest.name,
                                 manifest: manifest,
                                 dashboardCards: readPluginDashboardCards(manifest.name, manifest),
                                 enabled: false,
                                 configEnvContent: configEnvContent,
+                                hasReadme: Boolean(readmePath),
                                 isDistributed: false,
                                 serverId: null
                             });
@@ -86,6 +109,70 @@ module.exports = function(options) {
         } catch (error) {
             console.error('[AdminPanelRoutes] Error listing plugins:', error);
             res.status(500).json({ error: 'Failed to list plugins', details: error.message });
+        }
+    });
+
+    // Read a plugin README (README.md match is case-insensitive)
+    router.get('/plugins/:pluginName/readme', async (req, res) => {
+        const pluginName = req.params.pluginName;
+        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
+
+        try {
+            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+            let targetPluginPath = null;
+
+            for (const folder of pluginFolders) {
+                if (!folder.isDirectory()) {
+                    continue;
+                }
+
+                const pluginPath = path.join(PLUGIN_DIR, folder.name);
+                const manifestPaths = [
+                    path.join(pluginPath, manifestFileName),
+                    path.join(pluginPath, manifestFileName + blockedManifestExtension)
+                ];
+
+                for (const manifestPath of manifestPaths) {
+                    try {
+                        const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+                        if (manifest.name === pluginName) {
+                            targetPluginPath = pluginPath;
+                            break;
+                        }
+                    } catch (error) {
+                        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+                            console.warn(`[AdminPanelRoutes] Error checking manifest ${manifestPath}:`, error);
+                        }
+                    }
+                }
+
+                if (targetPluginPath) {
+                    break;
+                }
+            }
+
+            if (!targetPluginPath) {
+                return res.status(404).json({ error: `Plugin '${pluginName}' not found.` });
+            }
+
+            const readmePath = await findPluginReadmePath(targetPluginPath);
+            if (!readmePath) {
+                return res.status(404).json({ error: `Plugin '${pluginName}' does not provide a README.md file.` });
+            }
+
+            const readmeStat = await fs.stat(readmePath);
+            if (!readmeStat.isFile() || readmeStat.size > maxReadmeSizeBytes) {
+                return res.status(413).json({ error: 'Plugin README is too large to display.' });
+            }
+
+            const content = await fs.readFile(readmePath, 'utf-8');
+            res.json({
+                fileName: path.basename(readmePath),
+                content
+            });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes] Error reading README for plugin ${pluginName}:`, error);
+            res.status(500).json({ error: `读取插件 ${pluginName} README 时出错`, details: error.message });
         }
     });
 
@@ -139,6 +226,8 @@ module.exports = function(options) {
             const manifestPathToUse = path.join(targetPluginPath, manifestFileName);
             const blockedManifestPathToUse = manifestPathToUse + blockedManifestExtension;
 
+            await assertSafePath(PLUGIN_DIR, manifestPathToUse);
+            await assertSafePath(PLUGIN_DIR, blockedManifestPathToUse);
             if (enable) {
                 try {
                     await fs.rename(blockedManifestPathToUse, manifestPathToUse);
@@ -233,9 +322,14 @@ module.exports = function(options) {
             }
 
             manifest.description = description;
+            await assertSafePath(PLUGIN_DIR, targetManifestPath);
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
-            await pluginManager.loadPlugins();
-            res.json({ message: `插件 ${pluginName} 的描述已更新并重新加载。` });
+            const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
+            res.json({
+                message: refreshResult.refreshed
+                    ? `插件 ${pluginName} 的描述已更新并刷新到内存。`
+                    : `插件 ${pluginName} 的描述已保存。`
+            });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating description for plugin ${pluginName}:`, error);
             res.status(500).json({ error: `更新插件 ${pluginName} 描述时出错`, details: error.message });
@@ -285,6 +379,7 @@ module.exports = function(options) {
             }
 
             const configPath = path.join(targetPluginPath, 'config.env');
+            await assertSafePath(PLUGIN_DIR, configPath);
             await fs.writeFile(configPath, content, 'utf-8');
             await pluginManager.loadPlugins();
             res.json({ message: `插件 ${pluginName} 的配置已保存并已重新加载。` });
@@ -294,14 +389,23 @@ module.exports = function(options) {
         }
     });
 
-    // Update command description
-    router.post('/plugins/:pluginName/commands/:commandIdentifier/description', async (req, res) => {
+    // Omitted fields remain unchanged, including for legacy description requests.
+    router.post([
+        '/plugins/:pluginName/commands/:commandIdentifier/description',
+        '/plugins/:pluginName/commands/:commandIdentifier/metadata'
+    ], async (req, res) => {
         const { pluginName, commandIdentifier } = req.params;
-        const { description } = req.body;
+        const body = req.body || {};
+        const hasDescription = Object.prototype.hasOwnProperty.call(body, 'description');
+        const hasExample = Object.prototype.hasOwnProperty.call(body, 'example');
+        const { description, example } = body;
         const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
 
-        if (typeof description !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
+        if ((!hasDescription && !hasExample) ||
+            (hasDescription && typeof description !== 'string') ||
+            (hasExample && example !== null && typeof example !== 'string') ||
+            (req.path.endsWith('/description') && !hasDescription)) {
+            return res.status(400).json({ error: 'Expected description: string and/or example: string | null (null removes the example).' });
         }
 
         try {
@@ -353,7 +457,12 @@ module.exports = function(options) {
             if (manifest.capabilities && manifest.capabilities.invocationCommands && Array.isArray(manifest.capabilities.invocationCommands)) {
                 const commandIndex = manifest.capabilities.invocationCommands.findIndex(cmd => cmd.commandIdentifier === commandIdentifier || cmd.command === commandIdentifier);
                 if (commandIndex !== -1) {
-                    manifest.capabilities.invocationCommands[commandIndex].description = description;
+                    const command = manifest.capabilities.invocationCommands[commandIndex];
+                    if (hasDescription) command.description = description;
+                    if (hasExample) {
+                        if (example === null) delete command.example;
+                        else command.example = example;
+                    }
                     commandUpdated = true;
                 }
             }
@@ -362,9 +471,14 @@ module.exports = function(options) {
                 return res.status(404).json({ error: `Command '${commandIdentifier}' not found in plugin '${pluginName}'.` });
             }
 
+            await assertSafePath(PLUGIN_DIR, targetManifestPath);
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
-            await pluginManager.loadPlugins();
-            res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新并重新加载。` });
+            const refreshResult = await pluginManager.refreshPluginManifestMetadata(targetManifestPath);
+            res.json({
+                message: refreshResult.refreshed
+                    ? `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的元数据已更新并刷新到内存。`
+                    : `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的元数据已保存。`
+            });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating command description for plugin ${pluginName}, command ${commandIdentifier}:`, error);
             res.status(500).json({ error: `更新指令描述时出错`, details: error.message });

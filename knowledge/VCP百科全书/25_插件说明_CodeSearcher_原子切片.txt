@@ -1,0 +1,112 @@
+[2026-03-03] - Agent-A
+[VCP百科全书] CodeSearcher - 高性能代码搜索插件
+
+一、插件基本信息
+1. 插件名称：CodeSearcher / 代码搜索器 (Rust)
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：Rust编写的高性能代码搜索工具，支持正则表达式和精准匹配
+
+二、功能定位
+CodeSearcher是一个使用Rust编写的高性能代码搜索插件，可在指定工作区目录中进行快速、精准的代码内容搜索。支持正则表达式、全词匹配、大小写敏感搜索等高级功能，并可配置忽略文件夹和允许的文件扩展名。适用于AI需要在大型代码库中快速定位特定代码片段、函数定义、配置项等场景。
+
+三、配置参数
+
+1. MAX_RESULTS (integer, 可选)
+   - 单次搜索返回的最大结果数量
+   - 默认值：50
+
+2. IGNORED_FOLDERS (string, 可选)
+   - 搜索时需要忽略的文件夹列表，用逗号分隔
+   - 默认值：node_modules,.git,target,VectorStore,DebugLog
+
+3. ALLOWED_EXTENSIONS (string, 可选)
+   - 允许搜索的文件扩展名白名单，用逗号分隔
+   - 默认值：.js,.json,.md,.txt,.py,.rs,.html,.css
+
+四、调用命令列表
+
+1. SearchCode - 在代码库中搜索代码片段
+   功能描述：在指定路径或整个项目中搜索匹配的代码内容，支持正则表达式和多种搜索选项
+   参数列表：
+   - query (string, 必需): 需要搜索的关键词、代码片段或正则表达式
+   - search_path (string, 可选): 指定要搜索的相对路径，如不提供则搜索整个项目工作区
+   - case_sensitive (boolean, 可选, 默认false): 是否区分大小写搜索
+   - whole_word (boolean, 可选, 默认false): 是否进行全词匹配
+   - context_lines (integer, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」CodeSearcher「末」,
+   query:「始」关键词或正则表达式「末」,
+   search_path:「始」modules「末」,
+   case_sensitive:「始」false「末」,
+   whole_word:「始」false「末」,
+   context_lines:「始」3「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回匹配结果列表，包含文件路径、行号、匹配内容及上下文
+
+五、使用示例
+
+示例1：搜索函数定义（使用正则表达式）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」CodeSearcher「末」,
+query:「始」function\s+processToolCall\(「末」,
+search_path:「始」modules「末」,
+case_sensitive:「始」false「末」,
+context_lines:「始」3「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：全词匹配搜索特定变量
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」CodeSearcher「末」,
+query:「始」MAX_RESULTS「末」,
+whole_word:「始」true「末」,
+case_sensitive:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：在特定目录搜索配置项
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」CodeSearcher「末」,
+query:「始」TENCENTCLOUD_SECRET「末」,
+search_path:「始」config「末」,
+context_lines:「始」2「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：搜索特定文件类型中的内容
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」CodeSearcher「末」,
+query:「始」export\s+class\s+\w+「末」,
+case_sensitive:「始」false「末」,
+context_lines:「始」5「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 搜索范围限制：
+   - 默认忽略node_modules、.git、target、VectorStore、DebugLog等文件夹
+   - 只搜索ALLOWED_EXTENSIONS中列出的文件扩展名
+   - 可通过config.env修改这些限制
+
+2. 结果数量限制：
+   - 单次搜索最多返回MAX_RESULTS条结果（默认50条）
+   - 如果实际匹配数超过限制，返回结果会被截断
+
+3. 正则表达式支持：
+   - 支持Rust正则表达式语法
+   - 需要对特殊字符进行转义（如\s、\w、\(等）
+
+4. 性能考虑：
+   - 大型代码库搜索可能需要数秒时间
+   - 建议使用search_path参数限制搜索范围以提高速度
+   - 避免过于宽泛的正则表达式
+
+5. 上下文行数：
+   - context_lines参数控制返回结果前后的代码行数
+   - 设置过大可能导致返回内容过多
+
+七、关联插件
+- FileOperator：文件操作，可用于读取搜索结果对应的完整文件
+- PowerShellExecutor：命令执行，可配合搜索结果进行批量操作
+
+Tag: 代码搜索, 正则表达式, 高性能, Rust, 代码库分析, 全词匹配, 大小写敏感

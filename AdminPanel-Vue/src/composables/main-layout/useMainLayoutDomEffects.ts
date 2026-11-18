@@ -51,6 +51,23 @@ export function useMainLayoutDomEffects({
     showBackToTop.value = (contentRef.value?.scrollTop || 0) > 300;
   }
 
+  function preventOuterScroll(): void {
+    if (typeof window !== "undefined" && (window.scrollY !== 0 || window.scrollX !== 0)) {
+      window.scrollTo(0, 0);
+    }
+    if (typeof document !== "undefined") {
+      const adminLayout = document.querySelector<HTMLElement>(".admin-layout");
+      if (adminLayout && (adminLayout.scrollTop !== 0 || adminLayout.scrollLeft !== 0)) {
+        adminLayout.scrollTop = 0;
+        adminLayout.scrollLeft = 0;
+      }
+      if (document.documentElement.scrollTop !== 0 || document.documentElement.scrollLeft !== 0) {
+        document.documentElement.scrollTop = 0;
+        document.documentElement.scrollLeft = 0;
+      }
+    }
+  }
+
   function clearLogoClickTimer(): void {
     if (logoClickTimer !== null) {
       globalThis.clearTimeout(logoClickTimer);
@@ -164,6 +181,11 @@ export function useMainLayoutDomEffects({
 
     originalBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    window.addEventListener("scroll", preventOuterScroll, { passive: true });
+    const adminLayout = document.querySelector<HTMLElement>(".admin-layout");
+    adminLayout?.addEventListener("scroll", preventOuterScroll, { passive: true });
 
     document.addEventListener("click", handleClickOutside);
     document.addEventListener("keydown", handleKeydown);
@@ -213,10 +235,17 @@ export function useMainLayoutDomEffects({
   onUnmounted(() => {
     contentRef.value?.removeEventListener("scroll", handleScroll);
 
+    if (typeof window !== "undefined") {
+      window.removeEventListener("scroll", preventOuterScroll);
+    }
+
     if (typeof document !== "undefined") {
+      const adminLayout = document.querySelector<HTMLElement>(".admin-layout");
+      adminLayout?.removeEventListener("scroll", preventOuterScroll);
       document.removeEventListener("click", handleClickOutside);
       document.removeEventListener("keydown", handleKeydown);
       document.body.style.overflow = originalBodyOverflow;
+      document.documentElement.style.overflow = "";
       syncImmersiveDomState(false);
     }
 

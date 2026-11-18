@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { safeFilePath, resolveSafePath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
@@ -68,36 +69,35 @@ module.exports = function(options) {
         if (!fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
             finalFileName = `${fileName}.txt`;
         }
-        let targetDir = AGENT_FILES_DIR;
-        if (folderPath && typeof folderPath === 'string') {
-            targetDir = path.join(AGENT_FILES_DIR, folderPath);
-        }
-        const filePath = path.join(targetDir, finalFileName);
         try {
+            resolveSafePath(AGENT_FILES_DIR, finalFileName, { singleSegment: true });
+            const targetDir = resolveSafePath(AGENT_FILES_DIR, folderPath ?? '', { allowRoot: true });
+            const relativePath = path.relative(AGENT_FILES_DIR, path.join(targetDir, finalFileName));
+            const filePath = await safeFilePath(AGENT_FILES_DIR, relativePath);
             await fs.mkdir(targetDir, { recursive: true });
             await fs.writeFile(filePath, '', { flag: 'wx' });
             await agentManager.scanAgentFiles();
             res.json({ message: `File '${finalFileName}' created successfully.` });
         } catch (error) {
             if (error.code === 'EEXIST') res.status(409).json({ error: `File '${finalFileName}' already exists.` });
-            else res.status(500).json({ error: `Failed to create agent file ${finalFileName}`, details: error.message });
+            else res.status(error.status || 500).json({ error: `Failed to create agent file ${finalFileName}`, details: error.message });
         }
     });
 
     // GET specific agent file content
     router.get('/agents/:fileName', async (req, res) => {
         try {
-            const decodedFileName = decodeURIComponent(req.params.fileName);
+            const decodedFileName = req.params.fileName;
             if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
                 return res.status(400).json({ error: 'Invalid file name.' });
             }
-            const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
+            const filePath = await safeFilePath(AGENT_FILES_DIR, decodedFileName);
             await fs.access(filePath);
             const content = await fs.readFile(filePath, 'utf-8');
             res.json({ content });
         } catch (error) {
             if (error.code === 'ENOENT') res.status(404).json({ error: 'Agent file not found.' });
-            else res.status(500).json({ error: 'Failed to read agent file', details: error.message });
+            else res.status(error.status || 500).json({ error: 'Failed to read agent file', details: error.message });
         }
     });
 
@@ -105,17 +105,17 @@ module.exports = function(options) {
     router.post('/agents/:fileName', async (req, res) => {
         const { content } = req.body;
         try {
-            const decodedFileName = decodeURIComponent(req.params.fileName);
+            const decodedFileName = req.params.fileName;
             if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
                 return res.status(400).json({ error: 'Invalid file name.' });
             }
             if (typeof content !== 'string') return res.status(400).json({ error: 'Invalid request body.' });
-            const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
+            const filePath = await safeFilePath(AGENT_FILES_DIR, decodedFileName);
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             await fs.writeFile(filePath, content, 'utf-8');
             res.json({ message: `Agent file '${decodedFileName}' saved successfully.` });
         } catch (error) {
-            res.status(500).json({ error: 'Failed to save agent file', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to save agent file', details: error.message });
         }
     });
 

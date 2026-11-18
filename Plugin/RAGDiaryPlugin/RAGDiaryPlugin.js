@@ -6,8 +6,6 @@ const path = require('path');
 const chokidar = require('chokidar');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
-const cheerio = require('cheerio');
-const mime = require('mime-types');
 const TimeExpressionParser = require('./TimeExpressionParser.js');
 const MetaThinkingManager = require('./MetaThinkingManager.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
@@ -15,7 +13,22 @@ const AIMemoHandler = require('./AIMemoHandler.js');
 const ContextVectorManager = require('./ContextVectorManager.js');
 const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷你数据库
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
-const { chunkText } = require('../../TextChunker.js');
+const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
+const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js'); // 📝 纯文本日记占位符处理器（{{...日记本...}}）
+const TimelinePlaceholderProcessor = require('./TimelinePlaceholderProcessor.js');
+const MessageContentUtils = require('./MessageContentUtils.js');
+const TextSanitizer = require('./TextSanitizer.js');
+const VectorMathUtils = require('./VectorMathUtils.js');
+const AttachmentMemoUtils = require('./AttachmentMemoUtils.js');
+const RAGResultFormatter = require('./RAGResultFormatter.js');
+const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
+const { chunkText, getTokenCount } = require('../../TextChunker.js');
+const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
+const {
+    findLastRealUserMessage,
+    isBetaSystemUserText,
+    isSystemNotificationText
+} = require('../../modules/messageProcessor.js');
 
 
 const dayjs = require('dayjs');
@@ -25,6 +38,17 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+// 日记日期在配置时区的零点只取决于日期字符串，按字符串复用，
+// 避免 ::Time 每次请求对日记本里的每篇日记重做一次时区换算。
+const diaryDayStartMs = new Map();
+function diaryDayStart(dateStr) {
+    let ms = diaryDayStartMs.get(dateStr);
+    if (ms === undefined) {
+        ms = dayjs.tz(dateStr, DEFAULT_TIMEZONE).startOf('day').valueOf();
+        diaryDayStartMs.set(dateStr, ms);
+    }
+    return new Date(ms);
+}
 // 从 DailyNoteGet 插件借鉴的常量和路径逻辑
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
@@ -42,6 +66,7 @@ class RAGDiaryPlugin {
         this.vectorDBManager = null;
         this.ragConfig = {};
         this.rerankConfig = {};
+        this.jevClient = null;
         this.pushVcpInfo = null;
         this.enhancedVectorCache = {};
         this.timeParser = new TimeExpressionParser('zh-CN', DEFAULT_TIMEZONE);
@@ -53,13 +78,41 @@ class RAGDiaryPlugin {
         this.lastConfigHash = null;
         this.ragParams = {};
         this.ragParamsWatcher = null;
+        this.ragTagsWatcher = null;
+        this.ragParamsReloadTimer = null;
+        this.ragTagsReloadTimer = null;
+        this.ragParamsReloadPromise = Promise.resolve();
+        this.ragTagsReloadPromise = Promise.resolve();
 
         // 🌟 统一缓存管理器
         this.cacheManager = new CacheManager();
         this.queryCacheEnabled = true;
 
+        // 🌟 Embedding 并发去重：同一文本在同一时间只允许一个 API 请求飞行
+        this.pendingEmbeddingRequests = new Map();
+
+        // 🌟 Embedding 文本索引：供 ContextBridge / ContextFoldingV2 做高阈值近似复用
+        // 注意：RAG 主链路不会自动 fuzzy 复用，避免影响主检索精度；只暴露只读查询能力给折叠链路按需使用。
+        this.embeddingTextIndex = new Map();
+        this.embeddingTextIndexMaxSize = parseInt(process.env.EMBEDDING_TEXT_INDEX_MAX_SIZE, 10) || 500;
+
         // 🌟 V2折叠：FoldingStore 迷你数据库
         this.foldingStore = null;
+
+        // 🧊 冷知识库占位符适配层（[[xx知识库]] / 《《xx知识库》》）
+        this.tdbProcessor = new TDBPlaceholderProcessor(this);
+
+        // 📝 纯文本日记占位符处理器（{{xx日记本}} / {{xx日记本::LastN}}）
+        // 该管线不依赖向量库、不调用 Embedding API，用于直接文本引入和后续纯文本匹配扩展。
+        this.directDiaryTextProcessor = new DirectDiaryTextProcessor({
+            dailyNoteRootPath,
+            logger: console
+        });
+
+        // 🔎 BM25 查询优化器：实体词提升、AI 主题漂移门控、查询 token 限频
+        this.bm25QueryOptimizer = new BM25QueryOptimizer({ logger: console });
+        this.timelineProcessor = new TimelinePlaceholderProcessor(this);
+        this.getTimelineService = null;
     }
 
     async loadConfig() {
@@ -67,9 +120,24 @@ class RAGDiaryPlugin {
         const envPath = path.join(__dirname, 'config.env');
         dotenv.config({ path: envPath });
 
+        // 元思考扩散构链配置仅属于本插件，不修改全局 rag_params。
+        const riverNumber = (name, fallback, min, max) => {
+            const raw = process.env[name];
+            const value = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+            return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+        };
+        this.riverThinkingConfig = Object.freeze({
+            enabled: String(process.env.RAG_RIVER_THINKING_ENABLED || 'false').trim().toLowerCase() === 'true',
+            candidateK: Math.floor(riverNumber('RAG_RIVER_THINKING_CANDIDATE_K', 48, 1, 256)),
+            maxTransitionRecords: Math.floor(riverNumber('RAG_RIVER_THINKING_MAX_TRANSITIONS', 8000, 1, 16000)),
+            minClosure: riverNumber('RAG_RIVER_THINKING_MIN_CLOSURE', 0.2, 0, 1)
+        });
+
         // 🌟 初始化缓存系统
         this.queryCacheEnabled = (process.env.RAG_QUERY_CACHE_ENABLED || 'true').toLowerCase() === 'true';
         this.contextVectorAllowApi = (process.env.CONTEXT_VECTOR_ALLOW_API_HISTORY || 'false').toLowerCase() === 'true';
+        this.shotgunHistoryEnabled = String(process.env.RAG_SHOTGUN_HISTORY_ENABLED || 'true')
+            .trim().toLowerCase() !== 'false';
 
         if (this.queryCacheEnabled) {
             this.cacheManager.createCache('query', {
@@ -89,21 +157,68 @@ class RAGDiaryPlugin {
         });
 
         // --- 加载 Rerank 配置 ---
+        // 单次最多 25 个 documents 可保持在服务商的小批量免费档。
+        // 环境变量允许进一步调低，但硬上限固定为 25，避免误配置进入按 Token 计费的大批量档。
+        const configuredRerankMaxDocuments = parseInt(process.env.RerankMaxDocumentsPerRequest, 10);
+        const rerankMaxDocuments = Number.isFinite(configuredRerankMaxDocuments)
+            ? Math.max(1, Math.min(25, configuredRerankMaxDocuments))
+            : 25;
+        const configuredRerankConcurrency = parseInt(process.env.RerankMaxConcurrentRequests, 10);
+        const rerankMaxConcurrentRequests = Number.isFinite(configuredRerankConcurrency)
+            ? Math.max(1, Math.min(10, configuredRerankConcurrency))
+            : 3;
+        const jevAdvancedRerank = String(
+            process.env.JevAdvancedRerank || 'false'
+        ).toLowerCase() === 'true';
+        const configuredJevMaxChoices = parseInt(
+            process.env.JevRerankMaxChoices,
+            10
+        );
+        const configuredJevMaxDocumentChars = parseInt(
+            process.env.JevRerankMaxDocumentChars,
+            10
+        );
         this.rerankConfig = {
             url: process.env.RerankUrl || '',
             apiKey: process.env.RerankApi || '',
             model: process.env.RerankModel || '',
             multiplier: parseFloat(process.env.RerankMultiplier) || 2.0,
-            maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000
+            maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000,
+            maxDocumentsPerRequest: rerankMaxDocuments,
+            maxConcurrentRequests: rerankMaxConcurrentRequests,
+            useJev: jevAdvancedRerank,
+            jevPrompt: process.env.JevRerankPrompt
+                || '请选择最值得用于回答当前查询的记忆。请从逻辑关联、记忆叙事连续性、信息解释力三个层面综合判断；优先保留能直接解释当前问题、补足关键背景或维持人物与事件连续性的内容，压低仅有表面词汇重合、重复、跑题或缺乏上下文价值的内容。',
+            jevPrompts: Object.fromEntries([1, 2, 3, 4].map(number => [
+                number, String(process.env[`JevRerankPrompt${number}`] || '').trim()
+            ])),
+            jevMaxChoices: Number.isFinite(configuredJevMaxChoices)
+                ? Math.max(2, Math.min(255, configuredJevMaxChoices))
+                : 255,
+            jevMaxDocumentChars: Number.isFinite(configuredJevMaxDocumentChars)
+                ? Math.max(200, Math.min(50000, configuredJevMaxDocumentChars))
+                : 6000
         };
         // 移除启动时检查，改为在调用时实时检查
-        if (this.rerankConfig.url && this.rerankConfig.apiKey && this.rerankConfig.model) {
+        if (this.rerankConfig.useJev) {
+            const jevConfigured = this.jevClient?.isConfigured?.() === true;
+            console.log(
+                `[RAGDiaryPlugin] Jev advanced rerank is enabled ` +
+                `(configured=${jevConfigured}, maxChoices=${this.rerankConfig.jevMaxChoices}).`
+            );
+        } else if (
+            this.rerankConfig.url
+            && this.rerankConfig.apiKey
+            && this.rerankConfig.model
+        ) {
             console.log('[RAGDiaryPlugin] Rerank feature is configured.');
         }
 
         // --- 初始化并加载 AIMemo 配置 ---
         console.log('[RAGDiaryPlugin] Initializing AIMemo handler...');
-        this.aiMemoHandler = new AIMemoHandler(this, this.cacheManager.caches.get('aimemo').data);
+        // 注意：传入完整的 CacheManager 实例（不是其内部的 Map），
+        // 因为 AIMemoHandler 需要调用 cacheManager.get/set/generateKey 等方法。
+        this.aiMemoHandler = new AIMemoHandler(this, this.cacheManager);
         await this.aiMemoHandler.loadConfig();
         console.log('[RAGDiaryPlugin] AIMemo handler initialized.');
 
@@ -128,8 +243,11 @@ class RAGDiaryPlugin {
             } else {
                 let cache = null;
                 try {
-                    const cacheData = await fs.readFile(cachePath, 'utf-8');
-                    cache = JSON.parse(cacheData);
+                    cache = await this._readJsonFileStable(cachePath, null, {
+                        label: 'vector_cache.json',
+                        maxAttempts: 3,
+                        retryDelayMs: 100
+                    });
                 } catch (e) {
                     console.log('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。');
                 }
@@ -137,7 +255,7 @@ class RAGDiaryPlugin {
                 if (cache && cache.sourceHash === currentConfigHash) {
                     // --- 缓存命中 ---
                     console.log('[RAGDiaryPlugin] 缓存有效，从磁盘加载向量...');
-                    this.ragConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+                    this.ragConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
                     this.enhancedVectorCache = cache.vectors;
                     console.log(`[RAGDiaryPlugin] 成功从缓存加载 ${Object.keys(this.enhancedVectorCache).length} 个向量。`);
                 } else {
@@ -148,8 +266,7 @@ class RAGDiaryPlugin {
                         console.log('[RAGDiaryPlugin] 未找到有效缓存，首次构建向量缓存...');
                     }
 
-                    const configData = await fs.readFile(configPath, 'utf-8');
-                    this.ragConfig = JSON.parse(configData);
+                    this.ragConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
 
                     // 调用 _buildAndSaveCache 来生成向量
                     await this._buildAndSaveCache(currentConfigHash, cachePath);
@@ -217,12 +334,26 @@ class RAGDiaryPlugin {
     async loadRagParams() {
         const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
         try {
-            const data = await fs.readFile(paramsPath, 'utf-8');
-            this.ragParams = JSON.parse(data);
+            const previousParams = JSON.stringify(this.ragParams || {});
+            const nextParams = await this._readJsonFileStable(
+                paramsPath,
+                { RAGDiaryPlugin: {} },
+                { label: 'rag_params.json' }
+            );
+            this.ragParams = nextParams;
+            if (
+                previousParams !== JSON.stringify(nextParams)
+                && this.queryCacheEnabled
+            ) {
+                this.cacheManager.clear('query');
+                console.log('[RAGDiaryPlugin] RAG 热调控参数已变更，查询缓存已清空。');
+            }
             console.log('[RAGDiaryPlugin] ✅ RAG 热调控参数已加载');
         } catch (e) {
             console.error('[RAGDiaryPlugin] ❌ 加载 rag_params.json 失败:', e.message);
-            this.ragParams = { RAGDiaryPlugin: {} };
+            this.ragParams = this.ragParams && Object.keys(this.ragParams).length > 0
+                ? this.ragParams
+                : { RAGDiaryPlugin: {} };
         }
     }
 
@@ -233,10 +364,41 @@ class RAGDiaryPlugin {
         const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
         if (this.ragParamsWatcher) return;
 
-        this.ragParamsWatcher = chokidar.watch(paramsPath);
-        this.ragParamsWatcher.on('change', async () => {
-            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_params.json 变更，正在重新加载...');
-            await this.loadRagParams();
+        this.ragParamsWatcher = chokidar.watch(paramsPath, {
+            ignoreInitial: true,
+            awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 }
+        });
+        this.ragParamsWatcher.on('change', () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_params.json 变更，准备防抖重新加载...');
+            clearTimeout(this.ragParamsReloadTimer);
+            this.ragParamsReloadTimer = setTimeout(() => {
+                this.ragParamsReloadPromise = this.ragParamsReloadPromise
+                    .catch(() => { })
+                    .then(() => this.loadRagParams());
+            }, 250);
+        });
+    }
+
+    /**
+     * ✅ 新增：启动 rag_tags.json 热更新监听器
+     * 文件变更时自动重新加载配置并重建向量缓存
+     */
+    _startRagTagsWatcher() {
+        const configPath = path.join(__dirname, 'rag_tags.json');
+        if (this.ragTagsWatcher) return;
+
+        this.ragTagsWatcher = chokidar.watch(configPath, {
+            ignoreInitial: true,
+            awaitWriteFinish: { stabilityThreshold: 700, pollInterval: 100 }
+        });
+        this.ragTagsWatcher.on('change', () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_tags.json 变更，准备防抖热重载配置与向量缓存...');
+            clearTimeout(this.ragTagsReloadTimer);
+            this.ragTagsReloadTimer = setTimeout(() => {
+                this.ragTagsReloadPromise = this.ragTagsReloadPromise
+                    .catch(() => { })
+                    .then(() => this._reloadRagTagsConfig(configPath));
+            }, 300);
         });
     }
 
@@ -294,7 +456,7 @@ class RAGDiaryPlugin {
         };
 
         try {
-            await fs.writeFile(cachePath, JSON.stringify(newCache, null, 2), 'utf-8');
+            await this._writeJsonFileAtomic(cachePath, newCache);
             console.log(`[RAGDiaryPlugin] 向量缓存已成功写入到 ${cachePath}`);
         } catch (writeError) {
             console.error('[RAGDiaryPlugin] 写入缓存文件失败:', writeError);
@@ -304,17 +466,150 @@ class RAGDiaryPlugin {
 
     async _getFileHash(filePath) {
         try {
-            const fileContent = await fs.readFile(filePath, 'utf-8');
+            const fileContent = await this._readTextFileStable(filePath, {
+                label: path.basename(filePath),
+                maxAttempts: 3,
+                retryDelayMs: 100,
+                allowEmpty: false
+            });
             return crypto.createHash('sha256').update(fileContent).digest('hex');
         } catch (error) {
-            if (error.code === 'ENOENT') {
-                return null; // 文件不存在则没有哈希
+            if (error.code === 'ENOENT' || error.code === 'EMPTY_FILE') {
+                return null; // 文件不存在或写入暂态空文件则没有哈希
             }
             throw error; // 其他错误则抛出
         }
     }
 
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async _readTextFileStable(filePath, options = {}) {
+        const {
+            label = path.basename(filePath),
+            maxAttempts = 6,
+            retryDelayMs = 150,
+            allowEmpty = false
+        } = options;
+
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                if (!allowEmpty && content.trim().length === 0) {
+                    const emptyError = new Error(`${label} is empty while being written`);
+                    emptyError.code = 'EMPTY_FILE';
+                    throw emptyError;
+                }
+                return content;
+            } catch (error) {
+                lastError = error;
+                if (error.code === 'ENOENT') throw error;
+
+                if (attempt < maxAttempts) {
+                    console.warn(`[RAGDiaryPlugin] ${label} 读取暂不可用 (${error.message})，${retryDelayMs}ms 后重试 ${attempt}/${maxAttempts}...`);
+                    await this._sleep(retryDelayMs);
+                    continue;
+                }
+            }
+        }
+
+        throw lastError;
+    }
+
+    async _readJsonFileStable(filePath, fallback = null, options = {}) {
+        const {
+            label = path.basename(filePath),
+            maxAttempts = 6,
+            retryDelayMs = 150
+        } = options;
+
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const content = await this._readTextFileStable(filePath, {
+                    label,
+                    maxAttempts: 1,
+                    retryDelayMs,
+                    allowEmpty: false
+                });
+                return JSON.parse(content);
+            } catch (error) {
+                lastError = error;
+                if (error.code === 'ENOENT') {
+                    if (fallback !== null) return fallback;
+                    throw error;
+                }
+
+                if (attempt < maxAttempts) {
+                    console.warn(`[RAGDiaryPlugin] ${label} JSON 解析暂失败 (${error.message})，${retryDelayMs}ms 后重试 ${attempt}/${maxAttempts}...`);
+                    await this._sleep(retryDelayMs);
+                    continue;
+                }
+            }
+        }
+
+        if (fallback !== null) return fallback;
+        throw lastError;
+    }
+
+    async _writeJsonFileAtomic(filePath, data) {
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
+        const tempPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+        const json = JSON.stringify(data, null, 2);
+
+        await fs.writeFile(tempPath, json, 'utf-8');
+        await fs.rename(tempPath, filePath);
+    }
+
+    async _reloadRagTagsConfig(configPath) {
+        console.log('[RAGDiaryPlugin] 🔄 正在热重载 rag_tags.json 配置与向量缓存...');
+        try {
+            const cachePath = path.join(__dirname, 'vector_cache.json');
+            const nextConfig = await this._readJsonFileStable(configPath, {}, { label: 'rag_tags.json' });
+            const currentConfigHash = crypto.createHash('sha256')
+                .update(JSON.stringify(nextConfig, null, 2))
+                .digest('hex');
+
+            if (!currentConfigHash) {
+                console.warn('[RAGDiaryPlugin] 热重载: rag_tags.json 文件不存在或为空，跳过。');
+                return;
+            }
+
+            // 哈希未变则跳过（防止编辑器保存但内容未变的情况）
+            if (this.lastConfigHash === currentConfigHash) {
+                console.log('[RAGDiaryPlugin] 热重载: 文件哈希未变，跳过重建。');
+                return;
+            }
+
+            this.lastConfigHash = currentConfigHash;
+            this.ragConfig = nextConfig;
+
+            // 重建向量缓存
+            await this._buildAndSaveCache(currentConfigHash, cachePath);
+
+            // 清空查询缓存（配置变了，旧缓存结果可能不准确）
+            if (this.queryCacheEnabled) {
+                this.cacheManager.clear('query');
+                console.log('[RAGDiaryPlugin] 热重载: 查询缓存已清空。');
+            }
+
+            console.log('[RAGDiaryPlugin] ✅ rag_tags.json 热重载完成。');
+        } catch (error) {
+            console.error('[RAGDiaryPlugin] ❌ rag_tags.json 热重载失败:', error.message);
+        }
+    }
+
     async initialize(config, dependencies) {
+        // 惰性解析运行时实例，避免初始化顺序和热重载造成实例快照失效。
+        this.getTimelineService = dependencies?.getTimelineService || null;
+        this.jevClient = dependencies?.jevClient || null;
+        if (this.jevClient) {
+            console.log('[RAGDiaryPlugin] JevClient 通用决策服务已注入。');
+        }
+
         if (dependencies.vectorDBManager) {
             this.vectorDBManager = dependencies.vectorDBManager;
             console.log('[RAGDiaryPlugin] VectorDBManager 依赖已注入。');
@@ -326,11 +621,21 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] 警告：pushVcpInfo 依赖注入失败或未提供。');
         }
 
+        // 🧊 注入冷知识库管理器（用于 [[xx知识库]] / 《《xx知识库》》 占位符）
+        if (dependencies.tdbKnowledgeManager) {
+            this.tdbProcessor.setTdbKnowledgeManager(dependencies.tdbKnowledgeManager);
+            console.log('[RAGDiaryPlugin] 🧊 TDBKnowledgeManager 依赖已注入，冷知识库占位符已启用。');
+        } else {
+            console.log('[RAGDiaryPlugin] 未注入 TDBKnowledgeManager，[[xx知识库]] 占位符将不可用。');
+        }
+
         // ✅ 关键修复：确保配置加载完成后再处理消息
         console.log('[RAGDiaryPlugin] 开始加载配置...');
         await this.loadConfig();
         await this.loadRagParams();
+        await this.tdbProcessor.loadConfig(); // 🧊 加载 tdb_tags.json（可选）
         this._startRagParamsWatcher();
+        this._startRagTagsWatcher();
 
         // 启动缓存清理任务
         if (this.queryCacheEnabled) {
@@ -350,23 +655,34 @@ class RAGDiaryPlugin {
         const ghostTags = [];
         if (!tags || tags.length === 0) return ghostTags;
 
-        const db = this.vectorDBManager?.db;
-        const checkStmt = db ? db.prepare('SELECT vector FROM tags WHERE name = ?') : null;
-        const dim = this.vectorDBManager?.config?.dimension || 3072;
+        const getTagVector = typeof this.vectorDBManager?.getTagVectorByName === 'function'
+            ? this.vectorDBManager.getTagVectorByName.bind(this.vectorDBManager)
+            : null;
 
         const tagsToEmbed = [];
         const tagResults = new Array(tags.length).fill(null);
 
-        // 1. 先查数据库（看是否是已有正规军）
-        tags.forEach((tagName, index) => {
-            if (checkStmt) {
-                try {
-                    const row = checkStmt.get(tagName);
-                    if (row && row.vector) {
-                        tagResults[index] = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+        // 1. 通过 Rust 高层接口读取已有 Tag 向量。
+        if (getTagVector) {
+            const nativeVectors = await Promise.all(
+                tags.map(async (tagName) => {
+                    try {
+                        return await getTagVector(tagName);
+                    } catch (_) {
+                        return null;
                     }
-                } catch (e) { /* ignore */ }
-            }
+                })
+            );
+            nativeVectors.forEach((vector, index) => {
+                if (vector) {
+                    tagResults[index] = vector instanceof Float32Array
+                        ? vector
+                        : new Float32Array(vector);
+                }
+            });
+        }
+
+        tags.forEach((tagName, index) => {
             if (!tagResults[index]) {
                 tagsToEmbed.push({ name: tagName, index });
             }
@@ -398,123 +714,300 @@ class RAGDiaryPlugin {
     }
 
     cosineSimilarity(vecA, vecB) {
-        if (!vecA || !vecB || vecA.length !== vecB.length) {
-            return 0;
-        }
-        let dotProduct = 0;
-        let normA = 0;
-        let normB = 0;
-        for (let i = 0; i < vecA.length; i++) {
-            dotProduct += vecA[i] * vecB[i];
-            normA += vecA[i] * vecA[i];
-            normB += vecB[i] * vecB[i];
-        }
-        if (normA === 0 || normB === 0) {
-            return 0;
-        }
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        return VectorMathUtils.cosineSimilarity(vecA, vecB);
     }
 
     _getWeightedAverageVector(vectors, weights) {
-        // 1. 过滤掉无效的向量及其对应的权重
-        const validVectors = [];
-        const validWeights = [];
-        for (let i = 0; i < vectors.length; i++) {
-            if (vectors[i] && vectors[i].length > 0) {
-                validVectors.push(vectors[i]);
-                validWeights.push(weights[i] || 0);
-            }
-        }
-
-        if (validVectors.length === 0) return null;
-        if (validVectors.length === 1) return validVectors[0];
-
-        // 2. 归一化权重
-        let weightSum = validWeights.reduce((sum, w) => sum + w, 0);
-        if (weightSum === 0) {
-            console.warn('[RAGDiaryPlugin] Weight sum is zero, using equal weights.');
-            validWeights.fill(1 / validVectors.length);
-            weightSum = 1;
-        }
-
-        const normalizedWeights = validWeights.map(w => w / weightSum);
-        const dimension = validVectors[0].length;
-        const result = new Array(dimension).fill(0);
-
-        // 3. 计算加权平均值
-        for (let i = 0; i < validVectors.length; i++) {
-            const vector = validVectors[i];
-            const weight = normalizedWeights[i];
-            if (vector.length !== dimension) {
-                console.error('[RAGDiaryPlugin] Vector dimensions do not match. Skipping mismatched vector.');
-                continue;
-            }
-            for (let j = 0; j < dimension; j++) {
-                result[j] += vector[j] * weight;
-            }
-        }
-
-        return result;
+        return VectorMathUtils.getWeightedAverageVector(vectors, weights, { logger: console });
     }
 
     /**
      * 计算多个向量的平均值
      */
     _getAverageVector(vectors) {
-        if (!vectors || vectors.length === 0) return null;
-        if (vectors.length === 1) return vectors[0];
-
-        const dimension = vectors[0].length;
-        const result = new Array(dimension).fill(0);
-
-        for (const vector of vectors) {
-            if (!vector || vector.length !== dimension) continue;
-            for (let i = 0; i < dimension; i++) {
-                result[i] += vector[i];
-            }
-        }
-
-        for (let i = 0; i < dimension; i++) {
-            result[i] /= vectors.length;
-        }
-
-        return result;
+        return VectorMathUtils.getAverageVector(vectors);
     }
 
     async getDiaryContent(characterName) {
-        const characterDirPath = path.join(dailyNoteRootPath, characterName);
-        let characterDiaryContent = `[${characterName}日记本内容为空]`;
-        try {
-            const files = await fs.readdir(characterDirPath);
-            const relevantFiles = files.filter(file => {
-                const lowerCaseFile = file.toLowerCase();
-                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
-            }).sort();
+        return this.directDiaryTextProcessor.getDiaryContent(characterName);
+    }
 
-            if (relevantFiles.length > 0) {
-                const fileContents = await Promise.all(
-                    relevantFiles.map(async (file) => {
-                        const filePath = path.join(characterDirPath, file);
-                        try {
-                            return await fs.readFile(filePath, 'utf-8');
-                        } catch (readErr) {
-                            return `[Error reading file: ${file}]`;
-                        }
-                    })
-                );
-                characterDiaryContent = fileContents.join('\n\n---\n\n');
-            }
-        } catch (charDirError) {
-            if (charDirError.code !== 'ENOENT') {
-                console.error(`[RAGDiaryPlugin] Error reading character directory ${characterDirPath}:`, charDirError.message);
-            }
-            characterDiaryContent = `[无法读取“${characterName}”的日记本，可能不存在]`;
+    _buildWeightedBM25QueryText(userContent, aiContent) {
+        const config = this.ragParams?.RAGDiaryPlugin || {};
+        const weights = Array.isArray(config.mainSearchWeights) ? config.mainSearchWeights : [0.7, 0.3];
+
+        const optimized = this.bm25QueryOptimizer.createQueryText({
+            userText: userContent,
+            aiText: aiContent,
+            baseWeights: weights,
+            normalize: (text) => this.directDiaryTextProcessor.normalizeBM25QueryInput(String(text || '')),
+            tokenize: (text) => this.directDiaryTextProcessor.tokenize(text),
+            options: config.bm25QueryOptimizer || {}
+        });
+
+        if (optimized.queryText) {
+            console.log(
+                `[RAGDiaryPlugin] BM25 query optimized: ` +
+                `tokens=${optimized.queryTokens.length}, terms=${optimized.selectedTerms.length}, ` +
+                `userRatio=${optimized.userRatio.toFixed(2)}, aiRatio=${optimized.aiRatio.toFixed(2)}, ` +
+                `aiGate=${optimized.aiTopicGate.toFixed(2)}, overlap=${optimized.topicOverlap.toFixed(3)}`
+            );
         }
-        return characterDiaryContent;
+
+        return optimized.queryText;
+    }
+
+    async _getBM25FileCandidates(dbName, userContent, aiContent, limit, mode, bm25Weight = 0.6) {
+        const diaryNames = Array.isArray(dbName)
+            ? [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))]
+            : [String(dbName || '').trim()].filter(Boolean);
+        const weightedQueryText = this._buildWeightedBM25QueryText(
+            userContent,
+            aiContent
+        );
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+        const sparseWeight = Math.max(
+            0,
+            Math.min(
+                1,
+                Number.isFinite(Number(bm25Weight))
+                    ? Number(bm25Weight)
+                    : 0.6
+            )
+        );
+        const perDiaryResults = await Promise.all(
+            diaryNames.map(async diaryName => {
+                const result =
+                    await this.directDiaryTextProcessor.getBM25DiaryCandidates(
+                        diaryName,
+                        weightedQueryText,
+                        safeLimit,
+                        mode
+                    );
+                const entries = Array.isArray(result.entries)
+                    ? result.entries
+                    : [];
+                const maxScore = entries.reduce(
+                    (maximum, entry) =>
+                        Math.max(maximum, Number(entry.bm25Score) || 0),
+                    0
+                ) || 1;
+                return {
+                    diaryName,
+                    result,
+                    files: entries.map(entry => ({
+                        path: entry.relativePath
+                            || path.join(diaryName, entry.file),
+                        bm25Score: Math.max(
+                            0,
+                            Number(entry.bm25Score) || 0
+                        ),
+                        normalizedBM25Score: Math.max(
+                            0,
+                            Math.min(
+                                1,
+                                (Number(entry.bm25Score) || 0) / maxScore
+                            )
+                        ),
+                        source: mode === 'body'
+                            ? 'bm25_body'
+                            : 'bm25_tag'
+                    }))
+                };
+            })
+        );
+        const byPath = new Map();
+        for (const item of perDiaryResults) {
+            for (const file of item.files) {
+                const existing = byPath.get(file.path);
+                if (
+                    !existing
+                    || file.normalizedBM25Score
+                        > existing.normalizedBM25Score
+                ) {
+                    byPath.set(file.path, file);
+                }
+            }
+        }
+        const files = Array.from(byPath.values())
+            .sort((left, right) =>
+                right.normalizedBM25Score - left.normalizedBM25Score
+                || left.path.localeCompare(right.path)
+            )
+            .slice(0, safeLimit * Math.max(1, diaryNames.length));
+        return {
+            matched: files.length > 0,
+            files,
+            queryTokens: [...new Set(
+                perDiaryResults.flatMap(item =>
+                    item.result.queryTokens || []
+                )
+            )],
+            matchedCount: perDiaryResults.reduce(
+                (sum, item) =>
+                    sum + (Number(item.result.matchedCount) || 0),
+                0
+            ),
+            weightedQueryText,
+            bm25Weight: sparseWeight,
+            vectorWeight: 1 - sparseWeight
+        };
+    }
+
+    async _getBM25RagCandidates(dbName, userContent, aiContent, limit, mode, queryVector, contextDiaryPrefixes = new Set(), requestCache = null, bm25Weight = 0.6) {
+        // 虚拟联合索引的稀疏召回：各成员按自身语料统计归一化 BM25，
+        // 再合并为一个候选池。最终 K、Rerank、Truncate 仍只在上层执行一次。
+        if (Array.isArray(dbName)) {
+            const diaryNames = [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))];
+            const perDiaryResults = await Promise.all(diaryNames.map(name =>
+                this._getBM25RagCandidates(
+                    name, userContent, aiContent, limit, mode, queryVector,
+                    contextDiaryPrefixes, requestCache, bm25Weight
+                )
+            ));
+            const merged = perDiaryResults.flatMap(result => result.results || []);
+            const byChunk = new Map();
+            for (const result of merged) {
+                const key = result.chunkId || `${result.fullPath || result.sourceFile || ''}|${result.text || ''}`;
+                const existing = byChunk.get(key);
+                if (!existing || (result.score || 0) > (existing.score || 0)) byChunk.set(key, result);
+            }
+            const results = Array.from(byChunk.values())
+                .sort((a, b) => (b.score || 0) - (a.score || 0))
+                .slice(0, Math.max(1, parseInt(limit, 10) || 10));
+            return {
+                matched: results.length > 0,
+                results,
+                queryTokens: [...new Set(perDiaryResults.flatMap(result => result.queryTokens || []))],
+                matchedCount: perDiaryResults.reduce((sum, result) => sum + (result.matchedCount || 0), 0),
+                weightedQueryText: perDiaryResults[0]?.weightedQueryText || '',
+                bm25Weight: Math.max(0, Math.min(1, Number(bm25Weight) || 0.6)),
+                vectorWeight: 1 - Math.max(0, Math.min(1, Number(bm25Weight) || 0.6))
+            };
+        }
+
+        const weightedQueryText = this._buildWeightedBM25QueryText(userContent, aiContent);
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+        const sparseWeight = Math.max(0, Math.min(1, Number.isFinite(Number(bm25Weight)) ? Number(bm25Weight) : 0.6));
+        const vectorWeight = 1 - sparseWeight;
+        const bm25Candidates = await this.directDiaryTextProcessor.getBM25DiaryCandidates(
+            dbName,
+            weightedQueryText,
+            safeLimit,
+            mode
+        );
+
+        if (!bm25Candidates.matched || !Array.isArray(bm25Candidates.entries) || bm25Candidates.entries.length === 0) {
+            return {
+                matched: false,
+                results: [],
+                queryTokens: bm25Candidates.queryTokens || [],
+                matchedCount: 0,
+                weightedQueryText
+            };
+        }
+
+        const maxBm25Score = bm25Candidates.entries.reduce((max, entry) => Math.max(max, entry.bm25Score || 0), 0) || 1;
+        const scoreByPath = new Map();
+        for (const entry of bm25Candidates.entries) {
+            const relativePath = entry.relativePath || path.join(dbName, entry.file);
+            scoreByPath.set(relativePath, {
+                bm25Score: entry.bm25Score || 0,
+                normalizedBM25Score: Math.min(1, (entry.bm25Score || 0) / maxBm25Score),
+                matchText: entry.matchText || ''
+            });
+        }
+
+        let chunks = [];
+        try {
+            chunks = await this._getChunksByFilePathsCached(Array.from(scoreByPath.keys()), requestCache);
+        } catch (error) {
+            console.warn(`[RAGDiaryPlugin] BM25 getChunksByFilePaths failed for "${dbName}":`, error.message);
+            chunks = [];
+        }
+
+        let results = chunks.map(chunk => {
+            const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+            const bm25Info = scoreByPath.get(chunkPath) || { bm25Score: 0, normalizedBM25Score: 0, matchText: '' };
+            const vectorScore = queryVector && chunk.vector
+                ? this.cosineSimilarity(queryVector, chunk.vector)
+                : 0;
+            const hybridScore = (bm25Info.normalizedBM25Score * sparseWeight) + (vectorScore * vectorWeight);
+
+            return {
+                ...chunk,
+                score: hybridScore,
+                original_score: vectorScore,
+                bm25Score: bm25Info.bm25Score,
+                normalizedBM25Score: bm25Info.normalizedBM25Score,
+                bm25MatchText: bm25Info.matchText,
+                source: mode === 'body' ? 'bm25_body' : 'bm25_tag'
+            };
+        });
+
+        results = this._filterContextDuplicates(results, contextDiaryPrefixes);
+        results.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+        return {
+            matched: results.length > 0,
+            results,
+            queryTokens: bm25Candidates.queryTokens || [],
+            matchedCount: bm25Candidates.matchedCount || results.length,
+            weightedQueryText,
+            bm25Weight: sparseWeight,
+            vectorWeight
+        };
+    }
+
+    /**
+     * 解析全量召回专用的 ::Last 后缀。
+     * 支持 ::Last（默认10）、::Last5、::Last20。
+     * 仅由 <<...>> 与 {{...}} 两类全量召回入口调用。
+     */
+    _extractLastLimit(modifiers) {
+        return this.directDiaryTextProcessor.extractLastLimit(modifiers);
+    }
+
+    /**
+     * 获取指定日记本内最近创建/编辑的 N 个日记文件内容。
+     * 排序依据为文件系统时间：max(mtimeMs, birthtimeMs, ctimeMs)，不读取文件名和内容做判定。
+     */
+    async getLastDiaryContent(characterName, limit = 10) {
+        return this.directDiaryTextProcessor.getLastDiaryContent(characterName, limit);
     }
 
     _sigmoid(x) {
-        return 1 / (1 + Math.exp(-x));
+        return VectorMathUtils.sigmoid(x);
+    }
+
+    _extractTextFromContent(content) {
+        return MessageContentUtils.extractTextFromContent(content);
+    }
+
+    _replaceTextInContent(content, replacer) {
+        return MessageContentUtils.replaceTextInContent(content, replacer);
+    }
+
+    /**
+     * 对消息数组执行 copy-on-write：只克隆即将修改的消息对象。
+     * content 的文本替换由 MessageContentUtils 以纯函数方式返回新值，
+     * 因此无需复制未修改的历史正文、多模态数据或 Base64 payload。
+     */
+    _cloneMessagesAtIndices(messages, indices = []) {
+        const cloned = Array.isArray(messages) ? messages.slice() : [];
+        for (const rawIndex of new Set(indices)) {
+            const index = Number(rawIndex);
+            if (
+                Number.isInteger(index)
+                && index >= 0
+                && index < cloned.length
+                && cloned[index]
+                && typeof cloned[index] === 'object'
+            ) {
+                cloned[index] = { ...cloned[index] };
+            }
+        }
+        return cloned;
     }
 
     /**
@@ -575,6 +1068,38 @@ class RAGDiaryPlugin {
         };
     }
 
+    _getFreshConversationKMultiplier() {
+        const rawMultiplier = parseFloat(process.env.RAG_FRESH_CONVERSATION_K_MULTIPLIER);
+        if (!Number.isFinite(rawMultiplier) || rawMultiplier <= 0) return 1.2;
+        return rawMultiplier;
+    }
+
+    _applyFreshConversationKCompensation(baseK, assistantMessageCount, hasValidUserMessage) {
+        const safeBaseK = Math.max(1, Math.round(Number(baseK) || 1));
+        const isFreshConversationStart = hasValidUserMessage && assistantMessageCount < 2;
+
+        if (!isFreshConversationStart) {
+            return {
+                k: safeBaseK,
+                applied: false,
+                multiplier: 1.0
+            };
+        }
+
+        const multiplier = this._getFreshConversationKMultiplier();
+        const compensatedK = Math.max(safeBaseK, Math.round(safeBaseK * multiplier));
+
+        if (compensatedK > safeBaseK) {
+            console.log(`[RAGDiaryPlugin] Fresh conversation K compensation: assistantCount=${assistantMessageCount}, K=${safeBaseK} -> ${compensatedK} (x${multiplier})`);
+        }
+
+        return {
+            k: compensatedK,
+            applied: compensatedK > safeBaseK,
+            multiplier
+        };
+    }
+
     // 保留旧方法作为回退或基础参考
     _calculateDynamicK(userText, aiText = null) {
         const userLen = userText ? userText.length : 0;
@@ -609,49 +1134,11 @@ class RAGDiaryPlugin {
     }
 
     _stripHtml(html) {
-        if (!html) return ''; // 确保返回空字符串而不是 null/undefined
-
-        // 如果不是字符串，尝试强制转换，避免 cheerio 或后续 trim 报错
-        if (typeof html !== 'string') {
-            return String(html);
-        }
-
-        // 1. 使用 cheerio 加载 HTML 并提取纯文本
-        try {
-            const $ = cheerio.load(html);
-            // 关键修复：在提取文本之前，显式移除 style 和 script 标签
-            $('style, script').remove();
-            const plainText = $.text();
-
-            // 3. 移除每行开头的空格，并将多个连续换行符压缩为最多两个
-            return plainText
-                .replace(/^[ \t]+/gm, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trim();
-        } catch (e) {
-            console.error('[RAGDiaryPlugin] _stripHtml error:', e);
-            return html; // 解析失败则返回原始内容
-        }
+        return TextSanitizer.stripHtml(html);
     }
 
     _stripEmoji(text) {
-        if (!text || typeof text !== 'string') {
-            return text;
-        }
-        // 移除所有 emoji 和特殊符号
-        // 这个正则表达式匹配大部分 emoji 范围
-        return text.replace(/[\u{1F600}-\u{1F64F}]/gu, '') // 表情符号
-            .replace(/[\u{1F300}-\u{1F5FF}]/gu, '') // 杂项符号和象形文字
-            .replace(/[\u{1F680}-\u{1F6FF}]/gu, '') // 交通和地图符号
-            .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, '') // 旗帜
-            .replace(/[\u{2600}-\u{26FF}]/gu, '')   // 杂项符号
-            .replace(/[\u{2700}-\u{27BF}]/gu, '')   // 装饰符号
-            .replace(/[\u{1F900}-\u{1F9FF}]/gu, '') // 补充符号和象形文字
-            .replace(/[\u{1FA00}-\u{1FA6F}]/gu, '') // 扩展-A
-            .replace(/[\u{1FA70}-\u{1FAFF}]/gu, '') // 扩展-B
-            .replace(/[\u{FE00}-\u{FE0F}]/gu, '')   // 变体选择器
-            .replace(/[\u{200D}]/gu, '')            // 零宽连接符
-            .trim();
+        return TextSanitizer.stripEmoji(text);
     }
 
     /**
@@ -659,66 +1146,14 @@ class RAGDiaryPlugin {
      * 移除 AI 工具调用的技术标记，防止其作为“英文偏好”噪音干扰向量搜索
      */
     _stripToolMarkers(text) {
-        if (!text || typeof text !== 'string') return text;
-
-        // 1. 识别完整的工具调用块 <<<[TOOL_REQUEST]>>> ... <<<[END_TOOL_REQUEST]>>>
-        let processed = text.replace(/<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi, (match, block) => {
-            // 2. 提取并过滤键值对，支持 key:「始」value「末」 格式
-            const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
-            const blacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
-
-            const results = [];
-            // 🌟 关键修复：匹配完整的 「始」...「末」 容器，防止内容截断
-            const regex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
-            let m;
-            while ((m = regex.exec(block)) !== null) {
-                const key = m[1].toLowerCase();
-                const val = m[2].trim();
-                const valLower = val.toLowerCase();
-
-                const isTechKey = blacklistedKeys.includes(key);
-                const isTechVal = blacklistedValues.some(bv => valLower.includes(bv));
-
-                if (!isTechKey && !isTechVal && val.length > 1) {
-                    results.push(val);
-                }
-            }
-
-            // 如果正则没匹配到（可能是旧格式或非标准格式），回退到行处理
-            if (results.length === 0) {
-                return block.split('\n')
-                    .map(line => {
-                        const cleanLine = line.replace(/\w+:\s*[「『]始[」』]/g, '').replace(/[「『]末[」』]/g, '').trim();
-                        const lower = cleanLine.toLowerCase();
-                        if (blacklistedValues.some(bv => lower.includes(bv))) return '';
-                        return cleanLine;
-                    })
-                    .filter(l => l.length > 0)
-                    .join('\n');
-            }
-
-            return results.join('\n');
-        });
-
-        // 3. 移除起止符和残余标记
-        return processed
-            .replace(/<<<\[?TOOL_REQUEST\]?>>>/gi, '')
-            .replace(/<<<\[?END_TOOL_REQUEST\]?>>>/gi, '')
-            .replace(/[「」『』]始[「」『』]/g, '')
-            .replace(/[「」『』]末[「」『』]/g, '')
-            .replace(/[「」『』]/g, '')
-            .replace(/[ \t]+/g, ' ') // 仅压缩水平空格，保留换行
-            .replace(/\n{3,}/g, '\n\n') // 压缩过多换行
-            .trim();
+        return TextSanitizer.stripToolMarkers(text);
     }
 
     /**
      * 移除系统追加在用户消息末尾的“系统通知”部分，避免将其混入向量化。
      */
     _stripSystemNotification(text) {
-        if (!text || typeof text !== 'string') return text;
-        // 匹配从[系统通知]到[系统通知结束]的整个块，可能包含前后空白
-        return text.replace(/\[系统通知\][\s\S]*?\[系统通知结束\]/g, '').trim();
+        return TextSanitizer.stripSystemNotification(text);
     }
 
     /**
@@ -728,25 +1163,7 @@ class RAGDiaryPlugin {
      * @returns {string} 净化后的文本
      */
     sanitizeForEmbedding(content, role) {
-        if (!content || typeof content !== 'string') return '';
-
-        let processed = content;
-
-        // 1. 角色特定预处理
-        if (role === 'user') {
-            processed = this._stripSystemNotification(processed);
-        } else if (role === 'assistant') {
-            // 🌟 V4.3 修改：不再从向量化文本中剔除 @tag，将其视为正常上下文语义的一部分
-            // const anchorRegex = /\[@(!)?([^\]]+)\]/g;
-            // processed = processed.replace(anchorRegex, '');
-        }
-
-        // 2. 通用净化流程 (顺序必须严格一致)
-        processed = this._stripHtml(processed);
-        processed = this._stripEmoji(processed);
-        processed = this._stripToolMarkers(processed);
-
-        return processed.trim();
+        return TextSanitizer.sanitizeForEmbedding(content, role);
     }
 
     /**
@@ -763,31 +1180,71 @@ class RAGDiaryPlugin {
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractTextFromContent(msg.content);
 
             if (!content.includes('TOOL_REQUEST')) continue;
 
-            // 匹配所有工具调用块
-            const blockRegex = /<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi;
+            // 匹配普通和 ESCAPE 形式的工具调用块。
+            // ESCAPE 形式常见于工具调用 Content 内可能包含「始」/「末」时，
+            // 例如：Content:「始ESCAPE」...「末」。
+            const blockRegex = /(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi;
             let blockMatch;
             while ((blockMatch = blockRegex.exec(content)) !== null) {
-                const block = blockMatch[1];
+                const block = blockMatch[1] ?? blockMatch[2];
 
-                // 提取键值对（「始」...「末」格式）
-                const kvRegex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
-                const fields = {};
-                let kvMatch;
-                while ((kvMatch = kvRegex.exec(block)) !== null) {
-                    fields[kvMatch[1].toLowerCase()] = kvMatch[2].trim();
-                }
+                // 这里只做最小识别：
+                // 1. 已经位于 TOOL_REQUEST 块内；
+                // 2. 块内包含 tool_name 与 DailyNote；
+                // 3. 直接定位 Content 的前 80 个字符。
+                // 不再解析 command，也不要求字段前必须有逗号或换行。
+                const lowerBlock = block.toLowerCase();
+                if (!lowerBlock.includes('tool_name')) continue;
+                if (!lowerBlock.includes('dailynote')) continue;
 
-                // 仅处理 DailyNote create 指令
-                if (fields.tool_name?.toLowerCase() === 'dailynote' &&
-                    fields.command?.toLowerCase() === 'create' &&
-                    fields.content) {
-                    const prefix = fields.content.substring(0, PREFIX_LEN).trim();
+                const extractContent = () => {
+                    const markers = [
+                        ['Content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['Content:「始」', '「末」'],
+                        ['content:「始ESCAPE」', '「末ESCAPE」'],
+                        ['content:「始」', '「末」']
+                    ];
+
+                    for (const [opening, closing] of markers) {
+                        const start = block.indexOf(opening);
+                        if (start === -1) continue;
+
+                        const valueStart = start + opening.length;
+                        const valueEnd = block.indexOf(closing, valueStart);
+                        if (valueEnd === -1) continue;
+
+                        return block.substring(valueStart, valueEnd).trim();
+                    }
+
+                    // 字段名大小写兼容，但仍保持简单的直接定位逻辑。
+                    const contentLabelMatch = block.match(/content\s*:/i);
+                    if (!contentLabelMatch) return '';
+
+                    const tail = block.substring(contentLabelMatch.index + contentLabelMatch[0].length);
+                    const escapedOpening = tail.indexOf('「始ESCAPE」');
+                    if (escapedOpening !== -1) {
+                        const valueStart = escapedOpening + '「始ESCAPE」'.length;
+                        const valueEnd = tail.indexOf('「末ESCAPE」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    const normalOpening = tail.indexOf('「始」');
+                    if (normalOpening !== -1) {
+                        const valueStart = normalOpening + '「始」'.length;
+                        const valueEnd = tail.indexOf('「末」', valueStart);
+                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    }
+
+                    return '';
+                };
+
+                const diaryContent = extractContent();
+                if (diaryContent) {
+                    const prefix = diaryContent.substring(0, PREFIX_LEN).trim();
                     if (prefix.length > 0) {
                         prefixes.add(prefix);
                     }
@@ -818,23 +1275,36 @@ class RAGDiaryPlugin {
         const filtered = results.filter(r => {
             if (!r.text) return true;
 
-            // 日记条目格式: "[2026-02-15] - 角色名\n[14:00] 内容..."
-            // 需要跳过日期头 "[yyyy-MM-dd] - name\n" 来匹配 Content 字段
+            // 日记条目格式:
+            // "[2026-02-15] - 角色名\n[14:00]\n内容..."
+            // 先跳过日期头。时间行不能无条件跳过：
+            // DailyNote 会把 Content 以 [HH:mm] 开头的情况视为 AI 时间前缀，
+            // 此时该时间本身就是 Content 的一部分；普通 Content 则会由 DailyNote
+            // 自动追加一个独立时间行。因此下面同时比较两种正文视图。
             let body = r.text.trim();
-            const headerMatch = body.match(/^\[\d{4}-\d{2}-\d{2}\]\s*-\s*.*?\n/);
+            const headerMatch = body.match(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*.*?(?:\r?\n|$)/);
             if (headerMatch) {
                 body = body.substring(headerMatch[0].length);
             }
 
-            const resultPrefix = body.substring(0, PREFIX_LEN).trim();
-            if (resultPrefix.length === 0) return true;
+            const resultBodies = [body];
+            const timeHeaderMatch = body.match(/^\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\s*(?:\r?\n|$)/);
+            if (timeHeaderMatch) {
+                resultBodies.push(body.substring(timeHeaderMatch[0].length));
+            }
 
-            // 前缀匹配：检查 resultPrefix 是否与任一上下文前缀的开头相同
-            for (const ctxPrefix of prefixes) {
-                // 取两者较短长度进行比较
-                const compareLen = Math.min(resultPrefix.length, ctxPrefix.length);
-                if (compareLen > 10 && resultPrefix.substring(0, compareLen) === ctxPrefix.substring(0, compareLen)) {
-                    return false; // 命中去重，过滤掉
+            const resultPrefixes = resultBodies
+                .map(candidateBody => candidateBody.substring(0, PREFIX_LEN).trim())
+                .filter(Boolean);
+            if (resultPrefixes.length === 0) return true;
+
+            // 前缀匹配：检查任一正文视图是否与任一上下文前缀相同
+            for (const resultPrefix of resultPrefixes) {
+                for (const ctxPrefix of prefixes) {
+                    const compareLen = Math.min(resultPrefix.length, ctxPrefix.length);
+                    if (compareLen > 10 && resultPrefix.substring(0, compareLen) === ctxPrefix.substring(0, compareLen)) {
+                        return false; // 命中去重，过滤掉
+                    }
                 }
             }
             return true;
@@ -853,23 +1323,7 @@ class RAGDiaryPlugin {
      * @returns {boolean} 是否可能是 Base64 数据
      */
     _isLikelyBase64(str) {
-        if (!str || str.length < 100) return false;
-
-        // Base64 特征检测
-        const sample = str.substring(0, 200);
-
-        // 1. 检查是否只包含 Base64 字符
-        if (!/^[A-Za-z0-9+/=]+$/.test(sample)) return false;
-
-        // 2. 检查长度是否合理（Base64 通常是 4 的倍数）
-        if (str.length % 4 !== 0 && str.length % 4 !== 2 && str.length % 4 !== 3) return false;
-
-        // 3. 检查字符多样性（真正的文本不太可能有这么高的字符密度）
-        const uniqueChars = new Set(sample).size;
-        if (uniqueChars > 50) return true; // Base64 通常有 60+ 种不同字符
-
-        // 4. 长度超过 500 且符合格式，大概率是 Base64
-        return str.length > 500;
+        return TextSanitizer.isLikelyBase64(str);
     }
 
     /**
@@ -879,108 +1333,7 @@ class RAGDiaryPlugin {
      * @returns {string}
      */
     _jsonToMarkdown(obj, depth = 0) {
-        if (obj === null || obj === undefined) return '';
-        if (typeof obj !== 'object') return String(obj);
-
-        let md = '';
-        const indent = '  '.repeat(depth);
-
-        if (Array.isArray(obj)) {
-            for (const item of obj) {
-                // 特殊处理 VCP 的 content part 格式: [{"type":"text", "text":"..."}]
-                if (item && typeof item === 'object' && item.type === 'text' && item.text) {
-                    // ✅ 新增：检查 text 内容是否包含嵌套 JSON
-                    let textContent = item.text;
-
-                    // 尝试提取并解析嵌套的 JSON - 改进的正则表达式
-                    const jsonMatch = textContent.match(/:\s*\n(\{[\s\S]*?\}|\[[\s\S]*?\])\s*$/);
-                    if (jsonMatch) {
-                        try {
-                            const nestedJson = JSON.parse(jsonMatch[1]);
-                            // 将前缀文字 + 递归解析的 JSON 内容合并
-                            const prefix = textContent.substring(0, jsonMatch.index + 1).trim();
-                            const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
-                            md += `${prefix}\n${nestedMd}\n`;
-                            continue;
-                        } catch (e) {
-                            // 解析失败，使用原始文本
-                            console.debug('[RAGDiaryPlugin] Failed to parse nested JSON in text content:', e.message);
-                        }
-                    }
-
-                    // ✅ 新增：检查是否有内联 JSON（不在行尾的情况）
-                    const inlineJsonMatch = textContent.match(/(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])/);
-                    if (inlineJsonMatch && inlineJsonMatch[0].length > 50) {
-                        try {
-                            const inlineJson = JSON.parse(inlineJsonMatch[0]);
-                            const beforeJson = textContent.substring(0, inlineJsonMatch.index).trim();
-                            const afterJson = textContent.substring(inlineJsonMatch.index + inlineJsonMatch[0].length).trim();
-                            const inlineMd = this._jsonToMarkdown(inlineJson, depth + 1);
-
-                            md += `${beforeJson}\n${inlineMd}`;
-                            if (afterJson) md += `\n${afterJson}`;
-                            md += '\n';
-                            continue;
-                        } catch (e) {
-                            // 解析失败，使用原始文本
-                            console.debug('[RAGDiaryPlugin] Failed to parse inline JSON in text content:', e.message);
-                        }
-                    }
-
-                    md += `${textContent}\n`;
-                } else if (typeof item !== 'object') {
-                    md += `${indent}- ${item}\n`;
-                } else {
-                    md += `${this._jsonToMarkdown(item, depth)}\n`;
-                }
-            }
-        } else {
-            for (const [key, value] of Object.entries(obj)) {
-                if (value === null || value === undefined) continue;
-
-                if (typeof value === 'object') {
-                    const subContent = this._jsonToMarkdown(value, depth + 1);
-                    if (subContent.trim()) {
-                        md += `${indent}# ${key}:\n${subContent}`;
-                    }
-                } else {
-                    // ✅ 改进：检查字符串值是否包含嵌套 JSON
-                    const valStr = String(value);
-
-                    // 先检查是否是 Base64 数据
-                    if (valStr.length > 200 && (valStr.includes('base64') || this._isLikelyBase64(valStr))) {
-                        md += `${indent}* **${key}**: [Data Omitted]\n`;
-                        continue;
-                    }
-
-                    // 检查是否包含 JSON 结构
-                    if (valStr.length > 100 && (valStr.includes('{') || valStr.includes('['))) {
-                        const nestedJsonMatch = valStr.match(/^(.*?)(\{[\s\S]*\}|\[[\s\S]*\])(.*)$/);
-                        if (nestedJsonMatch) {
-                            try {
-                                const nestedJson = JSON.parse(nestedJsonMatch[2]);
-                                const prefix = nestedJsonMatch[1].trim();
-                                const suffix = nestedJsonMatch[3].trim();
-                                const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
-
-                                md += `${indent}* **${key}**: `;
-                                if (prefix) md += `${prefix} `;
-                                md += `\n${nestedMd}`;
-                                if (suffix) md += `${indent}  ${suffix}\n`;
-                                continue;
-                            } catch (e) {
-                                // 解析失败，使用原始文本
-                                console.debug(`[RAGDiaryPlugin] Failed to parse nested JSON in field "${key}":`, e.message);
-                            }
-                        }
-                    }
-
-                    // 默认处理
-                    md += `${indent}* **${key}**: ${valStr}\n`;
-                }
-            }
-        }
-        return md;
+        return TextSanitizer.jsonToMarkdown(obj, depth);
     }
 
     /**
@@ -1040,88 +1393,157 @@ class RAGDiaryPlugin {
         });
     }
 
+    _isRagPlaceholderCarrierUserText(text) {
+        const normalizedText = String(text || '');
+        if (!normalizedText) return false;
+        return isBetaSystemUserText(normalizedText) || isSystemNotificationText(normalizedText);
+    }
+
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
-        try {
-            // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
-            // 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
-            await this.contextVectorManager.updateContext(messages, { allowApi: this.contextVectorAllowApi });
+        const run = () => this.timelineProcessor.processMessages(
+            messages,
+            workingMessages => this._processMessagesWithMemoScope(workingMessages, pluginConfig)
+        );
+        return typeof this.vectorDBManager?.withMemoObservationScope === 'function'
+            ? this.vectorDBManager.withMemoObservationScope(run)
+            : run();
+    }
 
-            // 🌟 V2折叠：将上下文中的消息 hash+vector 同步写入 FoldingStore
-            if (this.foldingStore) {
-                this._syncContextToFoldingStore(messages);
+    async _processMessagesWithMemoScope(messages, pluginConfig) {
+        const signal = pluginConfig?.signal || null;
+        const throwIfRagAborted = () => {
+            if (signal?.aborted) {
+                const abortErr = new Error('RAGDiaryPlugin preprocessing aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
+        };
+        throwIfRagAborted();
+        const ownedMemoObservations = new Set();
+        let systemMessageTasks = [];
+        try {
+            // 📝 纯文本快速路径：
+            // 当虚拟 system 消息仅包含 {{xx日记本}} / {{xx日记本::LastN}} / {{xx日记本::BM25}} 直接引入占位符时，
+            // 直接由底层纯文本处理器接管，避免进入上下文向量更新、查询向量化、EPA/TagMemo 等语义管线。
+            // ::BM25 的查询输入严格使用“最新真实 user 发言 + sanitizeForEmbedding 净化后”的文本，
+            // 与主 RAG 链路中的 userContent 口径保持一致，不拼接历史 user 消息。
+            const directLatestUserMessage = findLastRealUserMessage(messages, {
+                sanitize: this.sanitizeForEmbedding.bind(this)
+            });
+            const directTextResult = await this.directDiaryTextProcessor.tryProcessMessages(messages, {
+                extractTextFromContent: this._extractTextFromContent.bind(this),
+                replaceTextInContent: this._replaceTextInContent.bind(this),
+                isVirtualSystemUser: this._isRagPlaceholderCarrierUserText.bind(this),
+                sanitizedUserInput: directLatestUserMessage.sanitizedContent || '',
+                evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                pushVcpInfo: this.pushVcpInfo
+            });
+            if (directTextResult.processed) {
+                return directTextResult.messages;
             }
 
             const collectedAttachments = []; // 🌟 V7: 用于收集 ::Base64Memo 触发的附件
 
             // V3.0: 支持多system消息处理
             // 1. 识别所有需要处理的 system 消息（包括日记本、元思考和全局AIMemo开关）
+            // 🧪 BETA: 同时支持 role==='user' 且以 [系统xxx] 开头的消息承载占位符
+            //          目的是允许把日记本/元思考/AIMemo 占位符放在 user 楼层（例如系统提示注入或前置提示词）
+            //          注意：识别为 BETA-system 的 user 消息将被同时排除在"真实用户查询"之外，避免污染向量化输入
+            //
+            // ✅ [系统通知] 作为独立 user 块时同样允许承载占位符。
+            //    findLastRealUserMessage / sanitizeForEmbedding 仍会把它排除在真实用户查询之外，
+            //    因此只恢复替换能力，不把通知内容混入向量化输入。
+            const SYSTEM_PREFIX_REGEX = /^\s*\[系统[^\]]*\]/;
+            const isRagPlaceholderCarrierUser = this._isRagPlaceholderCarrierUserText.bind(this);
+
             let isAIMemoLicensed = false; // <--- AIMemo许可证 [[AIMemo=True]] 检测标志
             const targetSystemMessageIndices = messages.reduce((acc, m, index) => {
-                if (m.role === 'system' && typeof m.content === 'string') {
+                let isVirtualSystem = false;
+                if (m.role === 'system') {
+                    isVirtualSystem = true;
+                } else if (m.role === 'user') {
+                    // 🧪 BETA 通道：user 消息以 [系统xxx] 开头但不是 [系统通知]
+                    const userText = this._extractTextFromContent(m.content);
+                    if (isRagPlaceholderCarrierUser(userText)) {
+                        isVirtualSystem = true;
+                    }
+                }
+
+                if (isVirtualSystem) {
+                    const text = this._extractTextFromContent(m.content);
+                    if (!text) return acc;
+
                     // 检查全局 AIMemo 开关
-                    if (m.content.includes('[[AIMemo=True]]')) {
+                    if (text.includes('[[AIMemo=True]]')) {
                         isAIMemoLicensed = true;
-                        console.log('[RAGDiaryPlugin] AIMemo license [[AIMemo=True]] detected. ::AIMemo modifier is now active.');
+                        console.log(`[RAGDiaryPlugin] AIMemo license [[AIMemo=True]] detected (role=${m.role}). ::AIMemo modifier is now active.`);
                     }
 
-                    // 检查 RAG/Meta/AIMemo 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
-                        // 确保每个包含占位符的 system 消息都被处理
+                    // 检查 RAG/Meta/AIMemo/冷知识库 占位符
+                      if (/\[\[[^\]]*日记本[^\]]*\]\]|<<[^>]*日记本[^>]*>>|《《[^》]*日记本[^》]*》》|\{\{[^}]*日记本[^}]*\}\}|\[\[[^\]]*知识库[^\]]*\]\]|《《[^》]*知识库[^》]*》》|\[\[[^\]]*VCP元思考[^\]]*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
                         if (!acc.includes(index)) {
                             acc.push(index);
+                            if (m.role === 'user') {
+                                const prefixSample = (text.match(SYSTEM_PREFIX_REGEX) || [''])[0].trim();
+                                console.log(`[RAGDiaryPlugin] 🧪 [BETA] 在 user 消息 (index=${index}) 中识别到系统占位符承载体，前缀="${prefixSample}"`);
+                            }
                         }
                     }
                 }
                 return acc;
             }, []);
 
-            // 如果没有找到任何需要处理的 system 消息，则直接返回
+            // 如果没有找到任何需要处理的 system 消息，则直接返回。
+            // 常规对话/编程请求不消费历史上下文向量，因此不应扫描、哈希或模糊匹配整段历史。
             if (targetSystemMessageIndices.length === 0) {
                 return messages;
+            }
+
+            // 仅在确实存在 RAG / 记忆 / 元思考占位符时构建上下文向量。
+            // CONTEXT_VECTOR_ALLOW_API_HISTORY=false 只禁止 API 请求，并不会自动省略缓存扫描，
+            // 因此该门控必须放在调用方，才能让普通请求真正走零开销快速路径。
+            throwIfRagAborted();
+            await this.contextVectorManager.updateContext(messages, {
+                allowApi: this.contextVectorAllowApi,
+                signal
+            });
+
+            // V2 折叠同步同样只服务于记忆链路，避免普通请求重复扫描全部 assistant 历史。
+            if (this.foldingStore) {
+                this._syncContextToFoldingStore(messages);
             }
 
             // 2. 准备共享资源 (V3.3: 精准上下文提取)
             // 始终寻找最后一个用户消息和最后一个AI消息，以避免注入污染。
             // V3.4: 跳过特殊的 "系统邀请指令" user 消息
-            const lastUserMessageIndex = messages.findLastIndex(m => {
-                if (m.role !== 'user') {
-                    return false;
-                }
-                const content = typeof m.content === 'string'
-                    ? m.content
-                    : (Array.isArray(m.content) ? m.content.find(p => p.type === 'text')?.text : '') || '';
-                return !content.startsWith('[系统邀请指令:]') && !content.trim().startsWith('[系统提示:]无内容');
+            // 🧪 BETA: 同时跳过通过 BETA 通道识别为占位符承载体的 user 消息（[系统xxx]，但 [系统通知] 除外）
+            // ✅ 统一修复：如果独立 [系统通知] 块清理后为空，继续向前寻找真正 user 输入。
+            const lastUserMessage = findLastRealUserMessage(messages, {
+                sanitize: this.sanitizeForEmbedding.bind(this)
             });
+            const lastUserMessageIndex = lastUserMessage.index;
             const lastAiMessageIndex = messages.findLastIndex(m => m.role === 'assistant');
+            const assistantMessageCount = messages.filter(m => m.role === 'assistant').length;
 
-            let userContent = '';
+            let userContent = lastUserMessage.sanitizedContent || '';
             let aiContent = null;
-
-            if (lastUserMessageIndex > -1) {
-                const lastUserMessage = messages[lastUserMessageIndex];
-                userContent = typeof lastUserMessage.content === 'string'
-                    ? lastUserMessage.content
-                    : (Array.isArray(lastUserMessage.content) ? lastUserMessage.content.find(p => p.type === 'text')?.text : '') || '';
-            }
 
             if (lastAiMessageIndex > -1) {
                 const lastAiMessage = messages[lastAiMessageIndex];
-                aiContent = typeof lastAiMessage.content === 'string'
-                    ? lastAiMessage.content
-                    : (Array.isArray(lastAiMessage.content) ? lastAiMessage.content.find(p => p.type === 'text')?.text : '') || '';
+                aiContent = this._extractTextFromContent(lastAiMessage.content);
             }
 
-            // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签和emoji
-            if (userContent) {
-                const originalUserContent = userContent;
-                userContent = this.sanitizeForEmbedding(userContent, 'user');
-                if (originalUserContent.length !== userContent.length) {
-                    console.log('[RAGDiaryPlugin] User content was sanitized (SystemNotification + HTML + Emoji removed).');
-                }
-            }
+            // 🌟 新增：Time 语法新对话判定
+            // 条件：存在有效用户发言，且当前上下文中的 assistant 消息数量小于 3
+            // 含义：这通常代表一个较新的对话阶段，允许在 ::Time 模式下补充最近时间 chunk 以增强连续性
+            const hasValidUserMessage = lastUserMessageIndex > -1 && !!userContent?.trim();
+            const isFreshTimeConversationStart = hasValidUserMessage && assistantMessageCount < 3;
+
+            // V3.1: userContent 已由 findLastRealUserMessage 通过统一 sanitizer 净化；
+            // 这里仅保留 assistant 净化，避免重复处理并确保独立 [系统通知] 空块不会被误当作查询。
             // 🌟 V6: 解析并剥离 AI 锚点 (Ghost Nodes)
-            const anchorRegex = /\[@(!)?([^\]]+)\]/g;
+            const anchorRegex = /(?:\[@(!)?([^\]】]+)\]|【@(!)?([^\]】]+)】)/g;
             const hardTagNames = [];
             const softTagNames = [];
             let anchorMatch;
@@ -1130,13 +1552,13 @@ class RAGDiaryPlugin {
                 // 在净化之前提取锚点信息
                 let tempAiContent = aiContent;
                 while ((anchorMatch = anchorRegex.exec(tempAiContent)) !== null) {
-                    const tagName = anchorMatch[2].trim();
+                    const tagName = (anchorMatch[2] ?? anchorMatch[4]).trim();
                     if (Array.from(tagName).length > 25) continue; // 防幻觉截断
 
                     // 🌟 屏蔽示例标签
                     if (tagName === 'tag' || tagName === 'tag名称') continue;
 
-                    if (anchorMatch[1]) hardTagNames.push(tagName);
+                    if (anchorMatch[1] || anchorMatch[3]) hardTagNames.push(tagName);
                     else softTagNames.push(tagName);
                 }
 
@@ -1177,10 +1599,12 @@ class RAGDiaryPlugin {
             const config = this.ragParams?.RAGDiaryPlugin || {};
             const mainWeights = config.mainSearchWeights || [0.7, 0.3]; // 默认 用户0.7 : AI 0.3
 
+            throwIfRagAborted();
             const [userVector, aiVector] = await Promise.all([
-                userContent ? this.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
-                aiContent ? this.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+                userContent ? this.getSingleEmbeddingCached(userContent, { signal }) : Promise.resolve(null),
+                aiContent ? this.getSingleEmbeddingCached(aiContent, { signal }) : Promise.resolve(null)
             ]);
+            throwIfRagAborted();
 
             const queryVector = this._getWeightedAverageVector([userVector, aiVector], mainWeights);
 
@@ -1195,12 +1619,23 @@ class RAGDiaryPlugin {
                     console.error('[RAGDiaryPlugin] aiContent length:', aiContent?.length);
                 }
                 // 安全起见，移除所有占位符
-                const newMessages = JSON.parse(JSON.stringify(messages));
+                // 🧪 BETA: 使用 _replaceTextInContent 兼容 string / array / object 三种 content 形态
+                //          （user 消息更可能是 array 形式的多模态 content）
+                const newMessages = this._cloneMessagesAtIndices(
+                    messages,
+                    targetSystemMessageIndices
+                );
                 for (const index of targetSystemMessageIndices) {
-                    newMessages[index].content = newMessages[index].content
-                        .replace(/\[\[.*日记本.*\]\]/g, '')
-                        .replace(/<<.*日记本>>/g, '')
-                        .replace(/《《.*日记本.*》》/g, '');
+                    newMessages[index].content = this._replaceTextInContent(
+                        newMessages[index].content,
+                        (text) => text
+                            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '')
+                            .replace(/<<[^>]*日记本[^>]*>>/g, '')
+                            .replace(/《《[^》]*日记本[^》]*》》/g, '')
+                            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '')
+                            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '')
+                            .replace(/《《[^》]*知识库[^》]*》》/g, '')
+                    );
                 }
                 return newMessages;
             }
@@ -1208,35 +1643,65 @@ class RAGDiaryPlugin {
             // 🌟 V3 增强：计算动态参数 (K, TagWeight)
             const dynamicParams = await this._calculateDynamicParams(queryVector, userContent, aiContent);
 
+            // 🌟 新对话 K 补偿：当 assistant 块 < 2 时，适度放大所有后续 RAG K，补足全新对话早期背景
+            const freshKCompensation = this._applyFreshConversationKCompensation(
+                dynamicParams.k,
+                assistantMessageCount,
+                hasValidUserMessage
+            );
+            const effectiveDynamicK = freshKCompensation.k;
+
             // 🌟 Tagmemo V4: 获取上下文分段 (Segments)
             // 结合当前查询向量和历史主题分段，形成"霰弹枪"查询阵列
-            const historySegments = this.contextVectorManager.segmentContext(messages);
+            const historySegments = this.shotgunHistoryEnabled === false
+                ? [] : this.contextVectorManager.segmentContext(messages);
             if (historySegments.length > 0) {
                 console.log(`[RAGDiaryPlugin] Tagmemo V4: Detected ${historySegments.length} history segments.`);
             }
 
-            const combinedTextForTimeParsing = [userContent, aiContent].filter(Boolean).join('\n');
-            const timeRanges = this.timeParser.parse(combinedTextForTimeParsing);
+            // Time 语法只解析最新真实用户发言；不再读取 AI 输出中的时间范围词，避免 AI 叙述反向约束日记召回范围。
+            const timeRanges = this.timeParser.parse(userContent || '');
 
             // 🌟 V4.1: 上下文日记去重 - 提取当前上下文中所有 DailyNote create 的 Content 前缀
             const contextDiaryPrefixes = this._extractContextDiaryPrefixes(messages);
 
             // 3. 循环处理每个识别到的 system 消息
-            const newMessages = JSON.parse(JSON.stringify(messages));
+            const newMessages = this._cloneMessagesAtIndices(
+                messages,
+                targetSystemMessageIndices
+            );
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
+            const requestCache = this._createRequestCache(); // 🌟 单轮请求级缓存：chunks/time/fullDoc/diaryScore/tagBoost
+            requestCache.ownedMemoObservations = ownedMemoObservations;
+            if (this.riverThinkingConfig?.enabled && targetSystemMessageIndices.some(index =>
+                /\[\[VCP元思考[^\]]*\]\]/.test(this._extractTextFromContent(messages[index].content))
+            )) {
+                const ready = [false, true].map(() => {
+                    let resolve;
+                    const promise = new Promise(done => { resolve = done; });
+                    return { promise, resolve };
+                });
+                requestCache.riverThinking = {
+                    config: this.riverThinkingConfig,
+                    observations: [],
+                    deferred: [],
+                    ready
+                };
+            }
             // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
-            await Promise.all(targetSystemMessageIndices.map(async (index) => {
+            systemMessageTasks = targetSystemMessageIndices.map(async (index) => {
+                throwIfRagAborted();
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
                 const systemMessage = newMessages[index];
 
                 // 调用新的辅助函数处理单个消息
                 const processedContent = await this._processSingleSystemMessage(
-                    systemMessage.content,
+                    this._extractTextFromContent(systemMessage.content),
                     queryVector,
                     userContent, // 传递 userContent 用于语义组和时间解析
                     aiContent, // 传递 aiContent 用于 AIMemo
                     combinedQueryForDisplay, // V3.5: 传递组合后的查询字符串用于广播
-                    dynamicParams.k,
+                    effectiveDynamicK,
                     timeRanges,
                     globalProcessedDiaries, // 传递全局 Set
                     isAIMemoLicensed, // 新增：AIMemo许可证
@@ -1247,11 +1712,40 @@ class RAGDiaryPlugin {
                     contextDiaryPrefixes, // 🌟 V4.1: 传递上下文日记去重前缀
                     messages, // 🌟 V4.2: 传递完整消息用于 RoleValve
                     ghostTags, // 🌟 V6: 传递幽灵节点
-                    collectedAttachments // 🌟 V7: 传递附件收集器
+                    collectedAttachments, // 🌟 V7: 传递附件收集器
+                    isFreshTimeConversationStart, // 🌟 Time 新对话补充召回开关
+                    requestCache // 🌟 单轮请求级缓存
                 );
 
-                newMessages[index].content = processedContent;
-            }));
+                newMessages[index].content = this._replaceTextInContent(
+                    systemMessage.content,
+                    () => processedContent
+                );
+            });
+            // 元思考只等待同类查询的感应就绪，而非 RiverMemo 读出完成。
+            // 独立快照只含日记任务，禁止元思考等待自身造成死锁。
+            let deferredTasks = [];
+            if (requestCache.riverThinking) {
+                requestCache.riverThinking.diaryTasks = Promise.allSettled(systemMessageTasks.slice());
+                deferredTasks = requestCache.riverThinking.deferred.map(async task => ({
+                    token: task.token,
+                    result: await task.run()
+                }));
+                systemMessageTasks.push(...deferredTasks);
+            }
+            await Promise.all(systemMessageTasks);
+
+            if (requestCache.riverThinking) {
+                const deferredResults = await Promise.all(deferredTasks);
+                for (const { token, result } of deferredResults) {
+                    for (const index of targetSystemMessageIndices) {
+                        newMessages[index].content = this._replaceTextInContent(
+                            newMessages[index].content,
+                            text => text.replace(token, () => String(result.content || ''))
+                        );
+                    }
+                }
+            }
 
             // 🌟 V7: 处理收集到的多模态附件
             if (collectedAttachments.length > 0) {
@@ -1270,9 +1764,16 @@ class RAGDiaryPlugin {
                 }
 
                 if (base64DataArray.length > 0) {
-                    // 找到第一个用户消息（楼层最上面那个）
-                    const firstUserMsg = newMessages.find(m => m.role === 'user');
-                    if (firstUserMsg) {
+                    // 找到第一个用户消息（楼层最上面那个）。若它此前未因占位符
+                    // 处理而克隆，此处按需克隆，保持输入 messages 完全不可变。
+                    const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
+                    if (firstUserIndex >= 0) {
+                        if (newMessages[firstUserIndex] === messages[firstUserIndex]) {
+                            newMessages[firstUserIndex] = {
+                                ...newMessages[firstUserIndex]
+                            };
+                        }
+                        const firstUserMsg = newMessages[firstUserIndex];
                         const note = `[召回${base64DataArray.length}个日记多模态数据]`;
 
                         if (typeof firstUserMsg.content === 'string') {
@@ -1281,12 +1782,10 @@ class RAGDiaryPlugin {
                                 { type: 'text', text: originalText + ' ' + note }
                             ];
                         } else if (Array.isArray(firstUserMsg.content)) {
-                            const textPart = firstUserMsg.content.find(p => p.type === 'text');
-                            if (textPart) {
-                                textPart.text += ' ' + note;
-                            } else {
-                                firstUserMsg.content.push({ type: 'text', text: note });
-                            }
+                            firstUserMsg.content = this._replaceTextInContent(firstUserMsg.content, (text) => {
+                                const trimmed = (text || '').trim();
+                                return trimmed ? `${trimmed} ${note}` : note;
+                            });
                         }
 
                         // 添加 base64 数据到 content 数组
@@ -1301,29 +1800,54 @@ class RAGDiaryPlugin {
                 }
             }
 
+            throwIfRagAborted();
             return newMessages;
         } catch (error) {
+            if (error?.name === 'AbortError' || signal?.aborted) {
+                throwIfRagAborted();
+                throw error;
+            }
             console.error('[RAGDiaryPlugin] processMessages 发生严重错误:', error);
             console.error('[RAGDiaryPlugin] Error stack:', error.stack);
             console.error('[RAGDiaryPlugin] Error name:', error.name);
             console.error('[RAGDiaryPlugin] Error message:', error.message);
             // 返回原始消息，移除占位符以避免二次错误
-            const safeMessages = JSON.parse(JSON.stringify(messages));
-            safeMessages.forEach(msg => {
-                if (msg.role === 'system' && typeof msg.content === 'string') {
-                    msg.content = msg.content
-                        .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
-                        .replace(/<<.*日记本>>/g, '[RAG处理失败]')
-                        .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]');
+            // 🧪 BETA: 同时清理 BETA 占位符承载体与独立 [系统通知] 承载体。
+            const safeMessages = Array.isArray(messages) ? messages.slice() : [];
+            safeMessages.forEach((message, index) => {
+                let shouldClean = message.role === 'system';
+                if (!shouldClean && message.role === 'user') {
+                    const text = this._extractTextFromContent(message.content);
+                    if (this._isRagPlaceholderCarrierUserText(text)) {
+                        shouldClean = true;
+                    }
+                }
+                if (shouldClean) {
+                    const clonedMessage = { ...message };
+                    clonedMessage.content = this._replaceTextInContent(
+                        message.content,
+                        (text) => text
+                            .replace(/\[\[[^\]]*日记本[^\]]*\]\]/g, '[RAG处理失败]')
+                            .replace(/<<[^>]*日记本[^>]*>>/g, '[RAG处理失败]')
+                            .replace(/《《[^》]*日记本[^》]*》》/g, '[RAG处理失败]')
+                            .replace(/\{\{[^}]*日记本[^}]*\}\}/g, '[RAG处理失败]')
+                            .replace(/\[\[[^\]]*知识库[^\]]*\]\]/g, '[冷知识库处理失败]')
+                            .replace(/《《[^》]*知识库[^》]*》》/g, '[冷知识库处理失败]')
+                    );
+                    safeMessages[index] = clonedMessage;
                 }
             });
             return safeMessages;
+        } finally {
+            await Promise.allSettled(systemMessageTasks);
+            for (const prepared of ownedMemoObservations) {
+                this.vectorDBManager?.releaseMemoObservation?.(prepared);
+            }
         }
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = []) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = [], isFreshTimeConversationStart = false, requestCache = null) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -1332,89 +1856,149 @@ class RAGDiaryPlugin {
         // 移除全局 AIMemo 开关占位符，因为它只作为许可证，不应出现在最终输出中
         processedContent = processedContent.replace(/\[\[AIMemo=True\]\]/g, '');
 
-        const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
-        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本(.*?)>>/g)];
-        const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
-        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
-        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+        const ragDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)日记本([^\]]*?)\]\]/g)];
+        const fullTextDeclarations = [...processedContent.matchAll(/<<([^>]*?)日记本([^>]*?)>>/g)];
+        const hybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)日记本([^》]*?)》》/g)];
+        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考([^\]]*?)\]\]/g)];
+        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{([^}]*?)日记本([^}]*?)\}\}/g)];
+        // 🧊 冷知识库占位符：[[xx知识库]] 直接检索 / 《《xx知识库》》 门控检索。
+        // "xx知识库日记本"是合法的日记本名称；宽松的知识库正则也会命中它，因此必须让日记本语法优先。
+        // 例如 [[vcp知识库日记本]] 只能指向 dailynote/vcp知识库，不能再被解释为 knowledge/vcp。
+        const isUnambiguousTdbDeclaration = (match) =>
+            !this.tdbProcessor?.isDiaryPlaceholderAmbiguity(match[1], match[2]);
+        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[([^\]]*?)知识库([^\]]*?)\]\]/g)]
+            .filter(isUnambiguousTdbDeclaration);
+        const tdbHybridDeclarations = [...processedContent.matchAll(/《《([^》]*?)知识库([^》]*?)》》/g)]
+            .filter(isUnambiguousTdbDeclaration);
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
+
+        // --- 收集所有占位符处理任务：元思考 / RAG / AIMemo / 冷知识库 最后统一合并注入 ---
+        const aiMemoRequests = [];
+        const processingPromises = [];
+
         // --- 1. 处理 [[VCP元思考...]] 元思考链 ---
+        // 🌟 性能优化：元思考不再阻塞后续日记/RAG任务收集，而是加入同一批 processingPromises 并发执行。
         for (const match of metaThinkingDeclarations) {
             const placeholder = match[0];
             const modifiersAndParams = match[1] || '';
 
-            // 静默处理元思考占位符
+            const runMetaThinking = async () => {
+                // 静默处理元思考占位符
 
-            // 解析参数：链名称和修饰符
-            // 格式: [[VCP元思考:<链名称>::<修饰符>]]
-            // 示例: [[VCP元思考:creative_writing::Group]]
-            //      [[VCP元思考::Group]]  (使用默认链)
-            //      [[VCP元思考::Auto::Group]]  (自动模式)
+                // 解析参数：链名称和修饰符
+                // 格式: [[VCP元思考:<链名称>::<修饰符>]]
+                // 示例: [[VCP元思考:creative_writing::Group]]
+                //      [[VCP元思考::Group]]  (使用默认链)
+                //      [[VCP元思考::Auto::Group]]  (自动模式)
 
-            let chainName = 'default';
-            let useGroup = false;
-            let isAutoMode = false;
-            let autoThreshold = 0.65; // 默认自动切换阈值
+                let chainName = 'default';
+                let useGroup = false;
+                let isAutoMode = false;
+                let autoThreshold = 0.65; // 默认自动切换阈值
+                let autoWhitelist = null; // 🌟 auto 白名单
+                let autoBlacklist = null; // 🌟 auto 黑名单
 
-            // 分析修饰符字符串
-            if (modifiersAndParams) {
-                // 移除开头的所有冒号，然后按 :: 分割
-                const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
+                // 分析修饰符字符串
+                if (modifiersAndParams) {
+                    // 移除开头的所有冒号，然后按 :: 分割
+                    const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
 
-                for (const part of parts) {
-                    const lowerPart = part.toLowerCase();
+                    for (const part of parts) {
+                        const lowerPart = part.toLowerCase();
 
-                    if (lowerPart.startsWith('auto')) {
-                        isAutoMode = true;
-                        const thresholdMatch = part.match(/:(\d+\.?\d*)/);
-                        if (thresholdMatch) {
-                            const parsedThreshold = parseFloat(thresholdMatch[1]);
-                            if (!isNaN(parsedThreshold)) {
-                                autoThreshold = parsedThreshold;
+                        if (lowerPart.startsWith('auto')) {
+                            isAutoMode = true;
+                            // 🌟 新语法: auto[:阈值][:范围]
+                            // 示例: auto:0.65:Coding,investigation (白名单)
+                            //       auto:0.65:!disco (黑名单)
+                            //       auto:!disco (黑名单+默认阈值)
+                            const autoMatch = part.match(/^auto(?::([\d.]+))?(?::(.+))?$/i);
+                            if (autoMatch) {
+                                if (autoMatch[1]) {
+                                    const parsedThreshold = parseFloat(autoMatch[1]);
+                                    if (!isNaN(parsedThreshold)) {
+                                        autoThreshold = parsedThreshold;
+                                    }
+                                }
+                                if (autoMatch[2]) {
+                                    const scopePart = autoMatch[2];
+                                    if (scopePart.startsWith('!')) {
+                                        autoBlacklist = scopePart.slice(1).split(',').map(s => s.trim()).filter(Boolean);
+                                        console.log(`[RAGDiaryPlugin] Auto 黑名单: ${autoBlacklist.join(', ')}`);
+                                    } else {
+                                        autoWhitelist = scopePart.split(',').map(s => s.trim()).filter(Boolean);
+                                        console.log(`[RAGDiaryPlugin] Auto 白名单: ${autoWhitelist.join(', ')}`);
+                                    }
+                                }
                             }
-                        }
-                        // 在自动模式下，链名称将由auto逻辑决定
-                        chainName = 'default';
-                    } else if (lowerPart === 'group') {
-                        useGroup = true;
-                    } else if (part) {
-                        // 如果不是 Auto 模式，才接受指定的链名称
-                        if (!isAutoMode) {
-                            chainName = part;
+                            // 在自动模式下，链名称将由auto逻辑决定
+                            chainName = 'default';
+                        } else if (lowerPart === 'group') {
+                            useGroup = true;
+                        } else if (part) {
+                            // 如果不是 Auto 模式，才接受指定的链名称
+                            if (!isAutoMode) {
+                                chainName = part;
+                            }
                         }
                     }
                 }
-            }
 
-            // 参数已解析，开始处理
+                // 参数已解析，开始处理
 
-            try {
-                const metaResult = await this.metaThinkingManager.processMetaThinkingChain(
-                    chainName,
-                    queryVector,
-                    userContent,
-                    aiContent,
-                    combinedQueryForDisplay,
-                    null, // kSequence现在从JSON配置中获取，不再从占位符传递
-                    useGroup,
-                    isAutoMode,
-                    autoThreshold
-                );
+                try {
+                    const metaResult = await this.metaThinkingManager.processMetaThinkingChain(
+                        chainName,
+                        queryVector,
+                        userContent,
+                        aiContent,
+                        combinedQueryForDisplay,
+                        null, // kSequence现在从JSON配置中获取，不再从占位符传递
+                        useGroup,
+                        isAutoMode,
+                        autoThreshold,
+                        autoWhitelist,
+                        autoBlacklist,
+                        requestCache?.riverThinking ? {
+                            config: requestCache.riverThinking.config,
+                            getObservation: async () => {
+                                const thinking = requestCache.riverThinking;
+                                await Promise.race([
+                                    thinking.ready[Number(useGroup)].promise,
+                                    thinking.diaryTasks
+                                ]);
+                                const eligible = thinking.observations
+                                    .filter(entry => entry.useGroup === useGroup)
+                                    .sort((a, b) => a.scope.localeCompare(b.scope));
+                                return eligible[0]?.prepared || null;
+                            },
+                            searchNativeCandidates: async (diaryName, vector, options) =>
+                                this.vectorDBManager.searchNativeDiaryCandidates(
+                                    diaryName,
+                                    vector,
+                                    options
+                                )
+                        } : null
+                    );
 
-                processedContent = processedContent.replace(placeholder, metaResult);
-                // 元思考链处理完成（静默）
-            } catch (error) {
-                console.error(`[RAGDiaryPlugin] 处理VCP元思考链时发生错误:`, error);
-                processedContent = processedContent.replace(
-                    placeholder,
-                    `[VCP元思考链处理失败: ${error.message}]`
-                );
+                    // 元思考链处理完成（静默），等待最后统一替换注入
+                    return { placeholder, content: metaResult };
+                } catch (error) {
+                    console.error(`[RAGDiaryPlugin] 处理VCP元思考链时发生错误:`, error);
+                    return {
+                        placeholder,
+                        content: `[VCP元思考链处理失败: ${error.message}]`
+                    };
+                }
+            };
+            if (requestCache?.riverThinking) {
+                const token = `__VCP_META_PENDING_${crypto.randomUUID()}__`;
+                processedContent = processedContent.replace(placeholder, () => token);
+                requestCache.riverThinking.deferred.push({ token, run: runMetaThinking });
+            } else {
+                processingPromises.push(runMetaThinking());
             }
         }
-
-        // --- 收集所有 AIMemo 请求以便聚合处理 ---
-        const aiMemoRequests = [];
-        const processingPromises = [];
 
         // --- 1. 收集 [[...]] 中的 AIMemo 请求 ---
         for (const match of ragDeclarations) {
@@ -1427,10 +2011,11 @@ class RAGDiaryPlugin {
 
             if (aggregateInfo.isAggregate) {
                 // --- 聚合模式 ---
-                // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-                const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                // 核心逻辑：只有在许可证存在的情况下，::AIMemo / ::AIMemo+ 才生效
+                const aiMemoMatch = modifiers.match(/::AIMemo(\+)?(?::([\w-]+))?/);
                 const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
-                const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
+                const isAIMemoPlus = shouldUseAIMemo && !!(aiMemoMatch && aiMemoMatch[1]);
+                const presetName = aiMemoMatch ? aiMemoMatch[2] : null;
 
                 // 🌟 V4.2: RoleValve 检查
                 if (!this._evaluateRoleValve(modifiers, messages)) {
@@ -1441,10 +2026,10 @@ class RAGDiaryPlugin {
 
                 if (shouldUseAIMemo) {
                     // AIMemo 聚合模式：将所有日记本名收集到 aiMemoRequests
-                    console.log(`[RAGDiaryPlugin] 🌟 聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
+                    console.log(`[RAGDiaryPlugin] 🌟 聚合AIMemo${isAIMemoPlus ? '+' : ''}模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                     for (const name of aggregateInfo.diaryNames) {
                         if (!processedDiaries.has(name)) {
-                            aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName });
+                            aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus, modifiers });
                         }
                     }
                 } else {
@@ -1463,7 +2048,9 @@ class RAGDiaryPlugin {
                                 processedDiaries: processedDiaries,
                                 contextDiaryPrefixes, // 🌟 V4.1
                                 ghostTags, // 🌟 修复 3：补齐漏传的幽灵节点参数！
-                                collectedAttachments // 🌟 V7
+                                collectedAttachments, // 🌟 V7
+                                isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                                requestCache
                             });
                             return { placeholder, content: retrievedContent };
                         } catch (error) {
@@ -1485,10 +2072,11 @@ class RAGDiaryPlugin {
             }
             processedDiaries.add(dbName);
 
-            // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-            const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+            // 核心逻辑：只有在许可证存在的情况下，::AIMemo / ::AIMemo+ 才生效
+            const aiMemoMatch = modifiers.match(/::AIMemo(\+)?(?::([\w-]+))?/);
             const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
-            const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
+            const isAIMemoPlus = shouldUseAIMemo && !!(aiMemoMatch && aiMemoMatch[1]);
+            const presetName = aiMemoMatch ? aiMemoMatch[2] : null;
 
             // 🌟 V4.2: RoleValve 检查
             if (!this._evaluateRoleValve(modifiers, messages)) {
@@ -1498,8 +2086,8 @@ class RAGDiaryPlugin {
             }
 
             if (shouldUseAIMemo) {
-                console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}"${presetName ? ` (预设: ${presetName})` : ''}. Overriding other RAG modes.`);
-                aiMemoRequests.push({ placeholder, dbName, presetName });
+                console.log(`[RAGDiaryPlugin] AIMemo${isAIMemoPlus ? '+' : ''} licensed and activated for "${dbName}"${presetName ? ` (预设: ${presetName})` : ''}. Overriding other RAG modes.`);
+                aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus, modifiers });
             } else {
                 // 标准 RAG 立即处理
                 processingPromises.push((async () => {
@@ -1513,7 +2101,9 @@ class RAGDiaryPlugin {
                             historySegments: historySegments, // 🌟 传入历史分段
                             contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
                             ghostTags, // 🌟 V6: 传入幽灵节点
-                            collectedAttachments // 🌟 V7
+                            collectedAttachments, // 🌟 V7
+                            isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                            requestCache
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1545,12 +2135,14 @@ class RAGDiaryPlugin {
             }
             processedDiaries.add(dbName);
 
+            const lastLimit = this._extractLastLimit(modifiers);
+
             // ✅ 新增：为<<>>模式生成缓存键
             const cacheKey = this._generateCacheKey({
                 userContent,
                 aiContent: aiContent || '',
                 dbName,
-                modifiers: '', // 全文模式无修饰符
+                modifiers,
                 dynamicK
             });
 
@@ -1564,39 +2156,33 @@ class RAGDiaryPlugin {
             processingPromises.push((async () => {
                 const diaryConfig = this.ragConfig[dbName] || {};
                 const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                const dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName); // <--- 使用缓存
-                if (!dbNameVector) {
+                const diarySimilarity = await this._getDiarySimilarityCached(dbName, queryVector, requestCache);
+                if (!diarySimilarity) {
                     console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
                     const emptyResult = '';
                     this._setCachedResult(cacheKey, { content: emptyResult }); // ✅ 缓存空结果
                     return { placeholder, content: emptyResult };
                 }
 
-                const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
-                const enhancedVector = this.enhancedVectorCache[dbName];
-                const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
-                const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
+                const finalSimilarity = diarySimilarity.finalSimilarity;
 
                 if (finalSimilarity >= localThreshold) {
-                    const diaryContent = await this.getDiaryContent(dbName);
-                    const safeContent = diaryContent
-                        .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
-                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
-
-                    if (this.pushVcpInfo) {
-                        this.pushVcpInfo({
-                            type: 'DailyNote',
-                            action: 'FullTextRecall',
-                            dbName: dbName,
-                            message: `[RAGDiary] 已全文召回日记本：${dbName}，共 1 条全量记录`
-                        });
-                    }
+                    // <<...>> 仅负责相似度触发/门控；门控通过后的文本读取统一复用 {{...}} 纯文本管线。
+                    // 这样 <<xx日记本::LastN / ::RandomN / ::BM25 / ::BM25+>> 会自动继承
+                    // DirectDiaryTextProcessor 中持续迭代的纯文本能力。
+                    const directPlaceholder = `{{${dbName}日记本${modifiers}}}`;
+                    const directContent = await this.directDiaryTextProcessor.processContent(directPlaceholder, {
+                        processedDiaries: new Set(),
+                        messages,
+                        sanitizedUserInput: userContent,
+                        evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                        pushVcpInfo: this.pushVcpInfo,
+                        requestCache
+                    });
 
                     // ✅ 缓存结果
-                    this._setCachedResult(cacheKey, { content: safeContent });
-                    return { placeholder, content: safeContent };
+                    this._setCachedResult(cacheKey, { content: directContent });
+                    return { placeholder, content: directContent };
                 }
 
                 // ✅ 缓存空结果（阈值不匹配）
@@ -1632,13 +2218,9 @@ class RAGDiaryPlugin {
 
                         for (const name of aggregateInfo.diaryNames) {
                             try {
-                                let diaryVec = this.enhancedVectorCache[name] || null;
-                                if (!diaryVec) {
-                                    diaryVec = await this.vectorDBManager.getDiaryNameVector(name);
-                                }
-                                if (diaryVec) {
-                                    const sim = this.cosineSimilarity(queryVector, diaryVec);
-                                    maxSimilarity = Math.max(maxSimilarity, sim);
+                                const diarySimilarity = await this._getDiarySimilarityCached(name, queryVector, requestCache);
+                                if (diarySimilarity) {
+                                    maxSimilarity = Math.max(maxSimilarity, diarySimilarity.finalSimilarity);
                                 }
                             } catch (e) {
                                 console.warn(`[RAGDiaryPlugin] 《《》》聚合阈值检查: "${name}" 向量获取失败, 跳过`);
@@ -1660,15 +2242,16 @@ class RAGDiaryPlugin {
                         console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合模式: 通过阈值 (${maxSimilarity.toFixed(4)} >= ${Math.max(avgThreshold, truncateThreshold).toFixed(4)})，开始检索...`);
 
                         // AIMemo 检查
-                        const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                        const aiMemoMatch = modifiers.match(/::AIMemo(\+)?(?::([\w-]+))?/);
                         const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
-                        const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
+                        const isAIMemoPlus = shouldUseAIMemo && !!(aiMemoMatch && aiMemoMatch[1]);
+                        const presetName = aiMemoMatch ? aiMemoMatch[2] : null;
 
                         if (shouldUseAIMemo) {
-                            console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
+                            console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合AIMemo${isAIMemoPlus ? '+' : ''}模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                             for (const name of aggregateInfo.diaryNames) {
                                 if (!processedDiaries.has(name)) {
-                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName });
+                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus, modifiers });
                                 }
                             }
                             return { placeholder, content: '' };
@@ -1687,7 +2270,9 @@ class RAGDiaryPlugin {
                             processedDiaries: processedDiaries,
                             contextDiaryPrefixes, // 🌟 V4.1
                             ghostTags, // 🌟 修复 3：补齐漏传的幽灵节点参数！
-                            collectedAttachments // 🌟 V7
+                            collectedAttachments, // 🌟 V7
+                            isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                            requestCache
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1718,7 +2303,8 @@ class RAGDiaryPlugin {
             });
 
             // ✅ 尝试从缓存获取
-            const cachedResult = this._getCachedResult(cacheKey);
+            const cachedResult = requestCache?.riverThinking && /::RiverMemo(?=$|::|:\d+(?:\.\d+)?$)/i.test(modifiers)
+                ? null : this._getCachedResult(cacheKey);
             if (cachedResult) {
                 processingPromises.push(Promise.resolve({ placeholder, content: cachedResult.content }));
                 continue; // ⭐ 跳过后续的阈值判断
@@ -1728,27 +2314,25 @@ class RAGDiaryPlugin {
                 try {
                     const diaryConfig = this.ragConfig[dbName] || {};
                     const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                    const dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName);
-                    if (!dbNameVector) {
+                    const diarySimilarity = await this._getDiarySimilarityCached(dbName, queryVector, requestCache);
+                    if (!diarySimilarity) {
                         console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
                         const emptyResult = '';
                         this._setCachedResult(cacheKey, { content: emptyResult });
                         return { placeholder, content: emptyResult };
                     }
 
-                    const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
-                    const enhancedVector = this.enhancedVectorCache[dbName];
-                    const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
-                    const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
+                    const finalSimilarity = diarySimilarity.finalSimilarity;
 
                     // 🌟 解析 Truncate 阈值
                     const truncateThreshold = this._extractTruncateThreshold(modifiers);
 
                     if (finalSimilarity >= localThreshold && finalSimilarity >= truncateThreshold) {
-                        // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-                        const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                        // 核心逻辑：只有在许可证存在的情况下，::AIMemo / ::AIMemo+ 才生效
+                        const aiMemoMatch = modifiers.match(/::AIMemo(\+)?(?::([\w-]+))?/);
                         const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
-                        const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
+                        const isAIMemoPlus = shouldUseAIMemo && !!(aiMemoMatch && aiMemoMatch[1]);
+                        const presetName = aiMemoMatch ? aiMemoMatch[2] : null;
 
                         // 🌟 V4.2: RoleValve 检查
                         if (!this._evaluateRoleValve(modifiers, messages)) {
@@ -1757,9 +2341,9 @@ class RAGDiaryPlugin {
                         }
 
                         if (shouldUseAIMemo) {
-                            console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}" in hybrid mode${presetName ? ` (预设: ${presetName})` : ''}. Similarity: ${finalSimilarity.toFixed(4)} >= ${localThreshold}`);
+                            console.log(`[RAGDiaryPlugin] AIMemo${isAIMemoPlus ? '+' : ''} licensed and activated for "${dbName}" in hybrid mode${presetName ? ` (预设: ${presetName})` : ''}. Similarity: ${finalSimilarity.toFixed(4)} >= ${localThreshold}`);
                             // ✅ 修复：只有在阈值匹配时才收集 AIMemo 请求
-                            aiMemoRequests.push({ placeholder, dbName, presetName });
+                            aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus, modifiers });
                             return { placeholder, content: '' }; // ⚠️ AIMemo不缓存，因为聚合处理
                         } else {
                             // ✅ 混合模式也传递TagMemo参数
@@ -1772,7 +2356,9 @@ class RAGDiaryPlugin {
                                 historySegments: historySegments, // 🌟 传入历史分段
                                 contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
                                 ghostTags, // 🌟 V6: 传入幽灵节点
-                                collectedAttachments // 🌟 V7
+                                collectedAttachments, // 🌟 V7
+                                isFreshTimeConversationStart, // 🌟 Time 新对话补充召回
+                                requestCache
                             });
 
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -1795,7 +2381,7 @@ class RAGDiaryPlugin {
             })());
         }
 
-        // --- 4. 聚合处理所有 AIMemo 请求 ---
+        // --- 4. 聚合处理所有 AIMemo / AIMemo+ 请求 ---
         if (aiMemoRequests.length > 0) {
             console.log(`[RAGDiaryPlugin] 检测到 ${aiMemoRequests.length} 个 AIMemo 请求，开始聚合处理...`);
 
@@ -1808,97 +2394,169 @@ class RAGDiaryPlugin {
                     }));
                 });
             } else {
-                try {
-                    // 聚合所有日记本名称
-                    const dbNames = aiMemoRequests.map(r => r.dbName);
-                    // 提取预设名称（假设同一批次使用相同的预设，或者取第一个）
-                    const presetName = aiMemoRequests[0].presetName;
-                    console.log(`[RAGDiaryPlugin] 聚合处理日记本: ${dbNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
+                // 按 isPlus 分组：Plus 复用后缀候选或 RiverMemo 初筛，标准模式走整本日记。
+                const plusRequests = aiMemoRequests.filter(r => r.isPlus);
+                const normalRequests = aiMemoRequests.filter(r => !r.isPlus);
 
-                    // 调用聚合处理方法
-                    const aggregatedResult = await this.aiMemoHandler.processAIMemoAggregated(
-                        dbNames, userContent, aiContent, combinedQueryForDisplay, presetName
-                    );
+                const runGroup = async (group, isPlus) => {
+                    if (group.length === 0) return;
+                    const dbNames = group.map(r => r.dbName);
+                    const presetName = group[0].presetName;
+                    const label = isPlus ? 'AIMemo+' : 'AIMemo';
+                    console.log(`[RAGDiaryPlugin] ${label} 聚合处理日记本: ${dbNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
 
-                    // 第一个返回完整结果，后续返回引用提示
-                    aiMemoRequests.forEach((req, index) => {
-                        if (index === 0) {
-                            processingPromises.push(Promise.resolve({
-                                placeholder: req.placeholder,
-                                content: aggregatedResult
-                            }));
+                    try {
+                        let aggregatedResult;
+                        if (isPlus) {
+                            const sourceFiles = await this._collectAIMemoPlusSourceFiles(group, {
+                                queryVector, userContent, aiContent, combinedQueryForDisplay,
+                                dynamicK, timeRanges,
+                                defaultTagWeight: dynamicTagWeight,
+                                tagTruncationRatio,
+                                metrics,
+                                historySegments,
+                                contextDiaryPrefixes,
+                                ghostTags,
+                                collectedAttachments,
+                                isFreshTimeConversationStart,
+                                requestCache
+                            });
+
+                            aggregatedResult = await this.aiMemoHandler.processAIMemoPlusAggregated(
+                                dbNames, userContent, aiContent, combinedQueryForDisplay, presetName,
+                                {
+                                    queryVector,
+                                    baseK: dynamicK,
+                                    tagWeight: dynamicTagWeight,
+                                    tagTruncationRatio,
+                                    metrics,
+                                    ghostTags,
+                                    sourceFiles,
+                                    cacheSalt: group.map(req => `${req.dbName}:${req.modifiers || ''}`).sort().join('|')
+                                }
+                            );
                         } else {
+                            aggregatedResult = await this.aiMemoHandler.processAIMemoAggregated(
+                                dbNames, userContent, aiContent, combinedQueryForDisplay, presetName
+                            );
+                        }
+
+                        // 🌟 按 placeholder 去重：聚合 AIMemo 已将所有子日记本合并成一份递归总结，
+                        // 同一个聚合占位符（如 [[A|B日记本::AIMemo]]）会拆成多个 dbName 请求，
+                        // 但只对应一个 placeholder，必须只生成一次替换结果，否则 replace 会因占位符
+                        // 已被首次替换吃掉而抛出 "Placeholder not found" 告警。
+                        const uniquePlaceholders = [];
+                        const seenPlaceholders = new Set();
+                        for (const req of group) {
+                            if (!seenPlaceholders.has(req.placeholder)) {
+                                seenPlaceholders.add(req.placeholder);
+                                uniquePlaceholders.push(req.placeholder);
+                            }
+                        }
+
+                        // 第一个唯一占位符返回完整结果，后续唯一占位符返回引用提示
+                        uniquePlaceholders.forEach((placeholder, index) => {
+                            if (index === 0) {
+                                processingPromises.push(Promise.resolve({
+                                    placeholder,
+                                    content: aggregatedResult
+                                }));
+                            } else {
+                                processingPromises.push(Promise.resolve({
+                                    placeholder,
+                                    content: `[${label}语义推理检索模式] 检索结果已在"${dbNames[0]}"日记本中合并展示，本次为跨库联合检索。`
+                                }));
+                            }
+                        });
+                    } catch (error) {
+                        console.error(`[RAGDiaryPlugin] ${label} 聚合处理失败:`, error?.message || error);
+                        if (error?.stack) console.error(`[RAGDiaryPlugin] Stack:`, error.stack);
+                        // 🌟 错误路径同样按 placeholder 去重
+                        const seenErrPlaceholders = new Set();
+                        for (const req of group) {
+                            if (seenErrPlaceholders.has(req.placeholder)) continue;
+                            seenErrPlaceholders.add(req.placeholder);
                             processingPromises.push(Promise.resolve({
                                 placeholder: req.placeholder,
-                                content: `[AIMemo语义推理检索模式] 检索结果已在"${dbNames[0]}"日记本中合并展示，本次为跨库联合检索。`
+                                content: `[${label}处理失败: ${error?.message || '未知错误'}]`
                             }));
                         }
-                    });
-                } catch (error) {
-                    console.error(`[RAGDiaryPlugin] AIMemo聚合处理失败:`, error);
-                    aiMemoRequests.forEach(req => {
-                        processingPromises.push(Promise.resolve({
-                            placeholder: req.placeholder,
-                            content: `[AIMemo处理失败: ${error.message}]`
-                        }));
-                    });
-                }
+                    }
+                };
+
+                // 两组并行执行（互不影响）
+                await Promise.all([
+                    runGroup(plusRequests, true),
+                    runGroup(normalRequests, false)
+                ]);
             }
         }
 
         // --- 5. 处理 {{...日记本}} 直接引入模式 ---
+        // 注意：仅 {{...}} 的场景已在 processMessages 顶部由 DirectDiaryTextProcessor 快速路径接管，
+        // 不会进入向量化流程。这里保留混合占位符场景下的兼容处理（例如同一 system 同时含 [[...]] 与 {{...}}）。
         for (const match of directDiariesDeclarations) {
             const placeholder = match[0];
-            const dbName = match[1];
+            const dbName = (match[1] || '').trim();
             const modifiers = match[2] || '';
 
-            console.log(`[RAGDiaryPlugin] Processing {{...}} placeholder: "${placeholder}", dbName: "${dbName}", modifiers: "${modifiers}"`);
-
-            // 🌟 V4.2: RoleValve 检查 - 必须在所有其他检查之前执行
-            const roleValveResult = this._evaluateRoleValve(modifiers, messages);
-            console.log(`[RAGDiaryPlugin] RoleValve result for {{${dbName}}}: ${roleValveResult}`);
-
-            if (!roleValveResult) {
-                console.log(`[RAGDiaryPlugin] RoleValve blocked {{${dbName}}} retrieval. Adding empty content to processing queue.`);
-                // 关键修复：将空内容加入处理队列，确保占位符被替换
-                processingPromises.push(Promise.resolve({ placeholder, content: '' }));
-                console.log(`[RAGDiaryPlugin] processingPromises length after adding: ${processingPromises.length}`);
-                continue;
-            }
-
-            if (processedDiaries.has(dbName)) {
-                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in {{...}}. Skipping.`);
-                processingPromises.push(Promise.resolve({ placeholder, content: `[检测到循环引用，已跳过"${dbName}日记本"的解析]` }));
-                continue;
-            }
-            // 标记以防其他模式循环
-            processedDiaries.add(dbName);
-
-            // 直接获取内容，跳过阈值判断
             processingPromises.push((async () => {
-                try {
-                    const diaryContent = await this.getDiaryContent(dbName);
-                    const safeContent = diaryContent
-                        .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
-                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
-
-                    if (this.pushVcpInfo) {
-                        this.pushVcpInfo({
-                            type: 'DailyNote',
-                            action: 'DirectRecall',
-                            dbName: dbName,
-                            message: `[RAGDiary] 已直接引入日记本：${dbName}，共 1 条全量记录`
-                        });
-                    }
-
-                    return { placeholder, content: safeContent };
-                } catch (error) {
-                    console.error(`[RAGDiaryPlugin] 处理 {{...日记本}} 直接引入模式出错 (${dbName}):`, error);
-                    return { placeholder, content: `[处理失败: ${error.message}]` };
-                }
+                const content = await this.directDiaryTextProcessor.processContent(placeholder, {
+                    processedDiaries,
+                    messages,
+                    sanitizedUserInput: userContent,
+                    evaluateRoleValve: this._evaluateRoleValve.bind(this),
+                    pushVcpInfo: this.pushVcpInfo,
+                    requestCache
+                });
+                return { placeholder, content };
             })());
+        }
+
+        // --- 6. 🧊 处理冷知识库占位符 [[xx知识库]] / 《《xx知识库》》 ---
+        // 复用 host 的向量化 / Rerank / VCPInfo 广播能力；VCPInfo 沿用 RAG_RETRIEVAL_DETAILS 格式（前端二次兼容）。
+        if (this.tdbProcessor && this.tdbProcessor.isEnabled()) {
+            // 6.1 [[xx知识库]] 直接检索
+            for (const match of tdbDirectDeclarations) {
+                const placeholder = match[0];
+                const rawName = match[1];
+                const modifiers = match[2] || '';
+                processingPromises.push((async () => {
+                    try {
+                        const content = await this.tdbProcessor.processDirect(
+                            rawName, modifiers, queryVector, combinedQueryForDisplay, dynamicK
+                        );
+                        return { placeholder, content };
+                    } catch (error) {
+                        console.error(`[RAGDiaryPlugin] 冷知识库 [[${rawName}知识库]] 处理失败:`, error);
+                        return { placeholder, content: `[冷知识库检索失败: ${error.message}]` };
+                    }
+                })());
+            }
+
+            // 6.2 《《xx知识库》》 门控检索
+            for (const match of tdbHybridDeclarations) {
+                const placeholder = match[0];
+                const rawName = match[1];
+                const modifiers = match[2] || '';
+                processingPromises.push((async () => {
+                    try {
+                        const content = await this.tdbProcessor.processHybrid(
+                            rawName, modifiers, queryVector, combinedQueryForDisplay, dynamicK
+                        );
+                        return { placeholder, content };
+                    } catch (error) {
+                        console.error(`[RAGDiaryPlugin] 冷知识库 《《${rawName}知识库》》 处理失败:`, error);
+                        return { placeholder, content: `[冷知识库检索失败: ${error.message}]` };
+                    }
+                })());
+            }
+        } else if (tdbDirectDeclarations.length > 0 || tdbHybridDeclarations.length > 0) {
+            // 未启用冷知识库时，安全移除占位符避免残留
+            console.warn('[RAGDiaryPlugin] 检测到知识库占位符，但 TDB 冷知识库未启用，将清空占位符。');
+            for (const match of [...tdbDirectDeclarations, ...tdbHybridDeclarations]) {
+                processingPromises.push(Promise.resolve({ placeholder: match[0], content: '' }));
+            }
         }
 
         // --- 执行所有任务并替换内容 ---
@@ -1907,14 +2565,19 @@ class RAGDiaryPlugin {
         console.log(`[RAGDiaryPlugin] Total results to replace: ${results.length}`);
 
         for (const result of results) {
+            const placeholder = typeof result?.placeholder === 'string' ? result.placeholder : '';
+            const replacementContent = result?.content === undefined || result?.content === null
+                ? ''
+                : String(result.content);
+
             const beforeLength = processedContent.length;
-            processedContent = processedContent.replace(result.placeholder, result.content);
+            processedContent = processedContent.replace(placeholder, () => replacementContent);
             const afterLength = processedContent.length;
 
-            if (beforeLength === afterLength && result.placeholder.length > 0) {
-                console.warn(`[RAGDiaryPlugin] ⚠️ Placeholder not found in content: "${result.placeholder.substring(0, 50)}..."`);
+            if (beforeLength === afterLength && placeholder.length > 0) {
+                console.warn(`[RAGDiaryPlugin] ⚠️ Placeholder not found in content: "${placeholder.substring(0, 50)}..."`);
             } else {
-                console.log(`[RAGDiaryPlugin] ✓ Replaced placeholder: "${result.placeholder.substring(0, 50)}..." with ${result.content.length} chars`);
+                console.log(`[RAGDiaryPlugin] ✓ Replaced placeholder: "${placeholder.substring(0, 50)}..." with ${replacementContent.length} chars`);
             }
         }
 
@@ -1925,6 +2588,57 @@ class RAGDiaryPlugin {
         if (!modifiers) return 0;
         const truncateMatch = modifiers.match(/::Truncate(\d+\.?\d*)/);
         return truncateMatch ? parseFloat(truncateMatch[1]) : 0;
+    }
+
+    _extractBM25Weight(modifiers) {
+        if (!modifiers || typeof modifiers !== 'string') return 0.6;
+        const bm25WeightMatch = modifiers.match(/::BM25\+?(\d*\.?\d+)?(?=$|::|[^\d.])/i);
+        if (!bm25WeightMatch || bm25WeightMatch[1] === undefined) return 0.6;
+
+        const parsedWeight = parseFloat(bm25WeightMatch[1]);
+        if (!Number.isFinite(parsedWeight)) return 0.6;
+        return Math.max(0, Math.min(1, parsedWeight));
+    }
+
+    // ::TimeDecay 是独立修饰符，不能被识别为 ::Time
+    _hasTimeModifier(modifiers) {
+        return typeof modifiers === 'string'
+            && /::Time(?!Decay)(?:\d*\.?\d+)?(?=$|::|[^\d.])/i.test(modifiers);
+    }
+
+    _extractTimeRatio(modifiers) {
+        if (!modifiers || typeof modifiers !== 'string') return 0.2;
+        const timeRatioMatch = modifiers.match(/::Time(?!Decay)(\d*\.?\d+)?(?=$|::|[^\d.])/i);
+        if (!timeRatioMatch || timeRatioMatch[1] === undefined) return 0.2;
+
+        const parsedRatio = parseFloat(timeRatioMatch[1]);
+        if (!Number.isFinite(parsedRatio)) return 0.2;
+        return Math.max(0, Math.min(1, parsedRatio));
+    }
+
+    /**
+     * 显式 Jev 优先于 Rerank；所有选项均为请求局部值，禁止修改共享配置。
+     * Jev2 中的 2 是提示词编号，+ 后的数值才是外部精排的 RRF 权重。
+     */
+    _parseRerankModifiers(modifiers = '') {
+        const jevMatch = modifiers.match(/::Jev([1-4])?(\+(?:\d*\.?\d+)?)?(?=$|::|:\d+(?:\.\d+)?$)/i);
+        const rerankMatch = modifiers.match(/::Rerank(\+(?:\d*\.?\d+)?)?(?=$|::|:\d+(?:\.\d+)?$)/i);
+        const match = jevMatch || rerankMatch;
+        const plus = jevMatch ? jevMatch[2] : rerankMatch?.[1];
+        const useJev = !!jevMatch || this.rerankConfig.useJev === true;
+        const preset = jevMatch?.[1] || null;
+        const configuredPrompt = preset ? this.rerankConfig.jevPrompts?.[preset] : null;
+        return {
+            useRerank: !!match,
+            useRerankPlus: !!plus,
+            autoRrfAlpha: plus === '+',
+            rrfAlpha: plus ? (plus.length > 1
+                ? Math.max(0, Math.min(1, Number(plus.slice(1)))) : 0.5) : null,
+            useJev,
+            jevPreset: preset,
+            jevPrompt: configuredPrompt || this.rerankConfig.jevPrompt,
+            missingPreset: !!preset && !configuredPrompt
+        };
     }
 
     _extractKMultiplier(modifiers) {
@@ -1981,12 +2695,100 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 🌟 AIMemo+ 召回源构建器：复用完整后缀语法管线
+     * AIMemo+ 不再只做固定 TagMemo 初筛，而是先按原占位符后缀执行标准 RAG 管线
+     * （::Time / ::Group / ::Rerank / ::TagMemo+ / ::TimeDecay / ::Expand / ::Associate / ::Truncate 等），
+     * 并把最终候选结果作为 5x K 的知识源交给 AIMemo LLM 总结。
+     */
+    async _collectAIMemoPlusSourceFiles(requests, options) {
+        const {
+            queryVector,
+            userContent,
+            aiContent,
+            combinedQueryForDisplay,
+            dynamicK,
+            timeRanges,
+            defaultTagWeight,
+            tagTruncationRatio,
+            metrics,
+            historySegments,
+            contextDiaryPrefixes = new Set(),
+            ghostTags = [],
+            collectedAttachments = [],
+            isFreshTimeConversationStart = false,
+            requestCache = null
+        } = options;
+
+        const seenRequestKeys = new Set();
+        const allFiles = [];
+
+        for (const req of requests) {
+            const requestKey = `${req.dbName}::${req.modifiers || ''}`;
+            if (seenRequestKeys.has(requestKey)) continue;
+            seenRequestKeys.add(requestKey);
+
+            const cleanedModifiers = (req.modifiers || '').replace(/::AIMemo\+?(?::[\w-]+)?/g, '');
+
+            try {
+                const rawResults = await this._processRAGPlaceholder({
+                    dbName: req.dbName,
+                    modifiers: cleanedModifiers,
+                    queryVector,
+                    userContent,
+                    aiContent,
+                    combinedQueryForDisplay,
+                    dynamicK: Math.max(1, dynamicK * 5),
+                    timeRanges,
+                    allowTimeAndGroup: true,
+                    defaultTagWeight,
+                    tagTruncationRatio,
+                    metrics,
+                    historySegments,
+                    contextDiaryPrefixes,
+                    ghostTags,
+                    collectedAttachments,
+                    isFreshTimeConversationStart,
+                    returnRawResults: true,
+                    requestCache
+                });
+
+                const resultFiles = (rawResults || [])
+                    .filter(r => r && r.text && r.text.trim())
+                    .map((r, idx) => ({
+                        name: `${req.dbName}_aimemo_plus_${idx}`,
+                        content: r.text,
+                        text: r.text,
+                        tokens: this._estimateTokens(r.text),
+                        dbName: req.dbName,
+                        score: r.rerank_score ?? r.score ?? 0,
+                        source: r.source || 'rag'
+                    }));
+
+                allFiles.push(...resultFiles);
+                console.log(`[RAGDiaryPlugin] AIMemo+ suffix pipeline: "${req.dbName}" ${cleanedModifiers || '(default)'} -> ${resultFiles.length} candidates`);
+            } catch (error) {
+                console.error(`[RAGDiaryPlugin] AIMemo+ suffix pipeline failed for "${req.dbName}":`, error?.message || error);
+            }
+        }
+
+        allFiles.sort((a, b) => (b.score || 0) - (a.score || 0));
+        const seenTexts = new Set();
+        const uniqueFiles = [];
+        for (const file of allFiles) {
+            const key = file.text.trim();
+            if (!key || seenTexts.has(key)) continue;
+            seenTexts.add(key);
+            uniqueFiles.push(file);
+        }
+
+        console.log(`[RAGDiaryPlugin] AIMemo+ suffix pipeline collected ${uniqueFiles.length}/${allFiles.length} unique candidates.`);
+        return uniqueFiles;
+    }
+
+    /**
      * 🌟 聚合检索核心调度器
-     * 根据上下文向量与各日记本向量的余弦相似度，通过 Softmax 归一化动态分配 K 值，
-     * 然后并行调用各子日记本的 _processRAGPlaceholder，最后聚合结果。
-     *
-     * @param {object} options - 包含所有必要参数
-     * @returns {Promise<string>} 聚合后的检索结果
+     * 多个物理日记本在请求期被视作一个虚拟联合索引：共享一个全局 K 和一条完整后处理管线。
+     * 子索引不再按名称向量 Softmax 分配配额，信息可以自然集中于任意成员索引。
      */
     async _processAggregateRetrieval(options) {
         const {
@@ -2003,135 +2805,60 @@ class RAGDiaryPlugin {
             tagTruncationRatio,
             metrics,
             historySegments,
-            processedDiaries, // 🛡️ 循环引用检测
-            contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
-            ghostTags = [], // 🌟 修复 4.1：接收幽灵节点
-            collectedAttachments = [] // 🌟 V7
+            processedDiaries,
+            contextDiaryPrefixes = new Set(),
+            ghostTags = [],
+            collectedAttachments = [],
+            isFreshTimeConversationStart = false,
+            requestCache = null
         } = options;
 
+        const selectedDiaries = [...new Set(
+            (diaryNames || []).map(name => String(name || '').trim()).filter(Boolean)
+        )].filter(name => !processedDiaries?.has(name));
+
+        if (selectedDiaries.length === 0) {
+            console.warn('[RAGDiaryPlugin] 虚拟联合索引: 没有未处理的有效日记本。');
+            return '';
+        }
+
+        for (const name of selectedDiaries) processedDiaries?.add(name);
+
         const totalK = Math.max(1, Math.round(dynamicK * kMultiplier));
-        const config = this.ragParams?.RAGDiaryPlugin || {};
-        const temperature = config.aggregateTemperature ?? 3.0;
-        const minKPerDiary = config.aggregateMinK ?? 1;
-
-        // 🌟 解析 Truncate 阈值
-        const truncateThreshold = this._extractTruncateThreshold(modifiers);
-
-        console.log(`[RAGDiaryPlugin] 🌟 聚合检索启动: ${diaryNames.length} 个日记本, 总K=${totalK}, 温度=${temperature}${truncateThreshold > 0 ? `, Truncate=${truncateThreshold}` : ''}`);
-
-        // --- Step 1: 获取各日记本的代表向量并计算相似度 ---
-        const diaryScores = [];
-        for (const name of diaryNames) {
-            // 循环引用检测
-            if (processedDiaries && processedDiaries.has(name)) {
-                console.warn(`[RAGDiaryPlugin] 聚合模式: 检测到循环引用 "${name}"，跳过`);
-                continue;
-            }
-
-            try {
-                // 优先使用标签组网向量 (enhancedVectorCache)，回退到纯名字向量
-                let diaryVec = this.enhancedVectorCache[name] || null;
-                if (!diaryVec) {
-                    diaryVec = await this.vectorDBManager.getDiaryNameVector(name);
-                }
-
-                if (!diaryVec) {
-                    console.warn(`[RAGDiaryPlugin] 聚合模式: 无法获取 "${name}" 的向量，跳过`);
-                    continue;
-                }
-
-                const sim = this.cosineSimilarity(queryVector, diaryVec);
-                diaryScores.push({ name, similarity: sim });
-            } catch (e) {
-                console.error(`[RAGDiaryPlugin] 聚合模式: 获取 "${name}" 向量时出错:`, e.message);
-                // 不崩溃，继续处理其他日记本
-            }
-        }
-
-        // 🛡️ 如果没有任何有效的日记本，返回空
-        if (diaryScores.length === 0) {
-            console.warn('[RAGDiaryPlugin] 聚合检索: 没有有效的日记本可供检索。');
-            return '';
-        }
-
-        // --- Step 2: Softmax 归一化分配 K 值 ---
-        // 计算 exp(sim * temperature) 用于 softmax
-        const expScores = diaryScores.map(d => Math.exp(d.similarity * temperature));
-        const expSum = expScores.reduce((sum, v) => sum + v, 0);
-        const weights = expScores.map(v => v / expSum);
-
-        // 分配 K 值，确保每个日记本至少获得 minKPerDiary
-        const reservedK = minKPerDiary * diaryScores.length;
-        const distributableK = Math.max(0, totalK - reservedK);
-
-        const kAllocations = weights.map((w, i) => {
-            const allocated = minKPerDiary + Math.round(distributableK * w);
-            return {
-                name: diaryScores[i].name,
-                similarity: diaryScores[i].similarity,
-                weight: w,
-                k: Math.max(minKPerDiary, allocated)
-            };
-        });
-
-        // 日志输出分配结果（简化）
-        console.log(`[RAGDiaryPlugin] K分配: ${kAllocations.map(a => `"${a.name}"(k=${a.k})`).join(', ')}`);
-
-
-        // --- Step 3: 并行调用各日记本的检索 ---
-        // 🛡️ 去除 modifiers 中的 kMultiplier，防止 _processRAGPlaceholder 内部再次乘以 kMultiplier
+        // 聚合倍率已在此处作用于唯一的全局 K，移除前导倍率，防止底层再次相乘。
         const cleanedModifiers = modifiers.replace(/^:\d+\.?\d*/, '');
+        console.log(
+            `[RAGDiaryPlugin] 🔗 虚拟联合索引启动: [${selectedDiaries.join(', ')}], ` +
+            `globalK=${totalK}, suffixes=${cleanedModifiers || '(default)'}`
+        );
 
-        const retrievalPromises = kAllocations.map(async (allocation) => {
-            // 标记为已处理，防止循环引用
-            if (processedDiaries) processedDiaries.add(allocation.name);
-
-            try {
-                const content = await this._processRAGPlaceholder({
-                    dbName: allocation.name,
-                    modifiers: cleanedModifiers,
-                    queryVector,
-                    userContent,
-                    aiContent,
-                    combinedQueryForDisplay,
-                    dynamicK: allocation.k, // 🌟 使用分配后的 K 值（直接作为 dynamicK，kMultiplier 在聚合层已经处理）
-                    timeRanges,
-                    allowTimeAndGroup: true,
-                    defaultTagWeight,
-                    tagTruncationRatio,
-                    metrics,
-                    historySegments,
-                    contextDiaryPrefixes, // 🌟 V4.1: 透传上下文日记去重前缀
-                    ghostTags, // 🌟 修复 4.2：透传给底层具体执行的日记本！
-                    collectedAttachments, // 🌟 V7
-                    associateDiaries: diaryNames // 🌟 V10: 聚合模式下传入所有日记本名，实现跨索引联想共现
-                });
-                return { name: allocation.name, content, k: allocation.k, success: true };
-            } catch (e) {
-                console.error(`[RAGDiaryPlugin] 聚合模式: "${allocation.name}" 检索失败:`, e.message);
-                return { name: allocation.name, content: '', k: allocation.k, success: false };
-            }
+        const content = await this._processRAGPlaceholder({
+            dbName: selectedDiaries,
+            modifiers: cleanedModifiers,
+            queryVector,
+            userContent,
+            aiContent,
+            combinedQueryForDisplay,
+            dynamicK: totalK,
+            timeRanges,
+            allowTimeAndGroup: true,
+            defaultTagWeight,
+            tagTruncationRatio,
+            metrics,
+            historySegments,
+            contextDiaryPrefixes,
+            ghostTags,
+            collectedAttachments,
+            associateDiaries: selectedDiaries,
+            isFreshTimeConversationStart,
+            requestCache
         });
 
-        const results = await Promise.all(retrievalPromises);
-
-        // --- Step 4: 聚合各日记本的检索结果 ---
-        // 保持与现有多日记本显示格式一致：每个日记本独立展示
-        const aggregatedContent = results
-            .filter(r => r.content && r.content.trim().length > 0)
-            .map(r => r.content)
-            .join('\n');
-
-        if (!aggregatedContent) {
-            console.log('[RAGDiaryPlugin] 聚合检索: 所有日记本均未返回结果。');
-            return '';
-        }
-
-        // 🛡️ 再一次全局截断检查（如果聚合结果的分数在底层已经被过滤，这里 aggregatedContent 已经会受影响）
-        // 但聚合结果是由多个单日记本检索组成的，单日记本内部已经应用了 Truncate
-
-        console.log(`[RAGDiaryPlugin] 🌟 聚合检索完成: ${results.filter(r => r.success && r.content).length}/${diaryNames.length} 个日记本返回了结果`);
-        return aggregatedContent;
+        console.log(
+            `[RAGDiaryPlugin] 🔗 虚拟联合索引完成: members=${selectedDiaries.length}, ` +
+            `globalK=${totalK}, contentLength=${content?.length || 0}`
+        );
+        return content || '';
     }
 
     /**
@@ -2217,9 +2944,15 @@ class RAGDiaryPlugin {
         // 4. 准备用于日志记录和时间解析的组合文本
         const combinedSanitizedContext = `[User]: ${sanitizedUserContent}\n[AI]: ${sanitizedAiContent}\n[Tool]: ${sanitizedToolContent}`;
 
-        // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
+        // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容。
+        // 联合索引区块优先使用结构化 diaryNames；兼容旧元数据时再从 dbName 的 | 语法恢复。
+        const refreshDbScope = Array.isArray(metadata.diaryNames) && metadata.diaryNames.length > 0
+            ? metadata.diaryNames
+            : (metadata.virtualIndex && typeof metadata.dbName === 'string'
+                ? metadata.dbName.split('|').map(name => name.trim()).filter(Boolean)
+                : metadata.dbName);
         const refreshedContent = await this._processRAGPlaceholder({
-            dbName: metadata.dbName,
+            dbName: refreshDbScope,
             modifiers: metadata.modifiers,
             queryVector: queryVector, // ✅ 使用加权后的向量
             userContent: combinedSanitizedContext, // ✅ 使用组合后的上下文进行内容处理
@@ -2251,21 +2984,41 @@ class RAGDiaryPlugin {
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
             ghostTags = [], // 🌟 V6: 幽灵节点
             collectedAttachments = [], // 🌟 V7
-            associateDiaries = [] // 🌟 V10: Associate 联想共现搜索范围（聚合模式传入所有日记本名）
+            associateDiaries = [], // 🌟 V10: Associate 联想共现搜索范围（聚合模式传入所有日记本名）
+            isFreshTimeConversationStart = false, // 🌟 Time 新对话补充召回
+            returnRawResults = false, // 🌟 AIMemo+: 返回完整后缀管线处理后的候选结果，供 LLM 总结
+            requestCache = null
         } = options;
+
+        const effectiveHistorySegments = this.shotgunHistoryEnabled === false ? [] : historySegments;
+        const diaryNames = Array.isArray(dbName)
+            ? [...new Set(dbName.map(name => String(name || '').trim()).filter(Boolean))]
+            : [String(dbName || '').trim()].filter(Boolean);
+        if (diaryNames.length === 0) return returnRawResults ? [] : '';
+        const isVirtualIndex = diaryNames.length > 1;
+        const dbScopeKey = diaryNames.join('|');
 
         // 1️⃣ 生成缓存键
         const cacheKey = this._generateCacheKey({
             userContent,
             aiContent: aiContent || '',
-            dbName,
+            dbName: dbScopeKey,
             modifiers,
             dynamicK,
-            ghostTags // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
+            ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
+            isFreshTimeConversationStart,
+            shotgunDecayFactor: this.ragParams?.RAGDiaryPlugin?.shotgunDecayFactor,
+            shotgunHistorySegmentLimit: this.ragParams?.RAGDiaryPlugin?.shotgunHistorySegmentLimit,
+            nativeTimePerDiaryLimit: this.ragParams?.RAGDiaryPlugin
+                ?.nativeTimeCandidates?.perDiaryLimit,
+            nativeTimeGlobalLimit: this.ragParams?.RAGDiaryPlugin
+                ?.nativeTimeCandidates?.globalLimit
         });
 
         // 2️⃣ 尝试从缓存获取
-        const cachedResult = this._getCachedResult(cacheKey);
+        // River 元思考需要本轮原生观测，不能把历史正文缓存当作有效 Sense。
+        const cachedResult = requestCache?.riverThinking && /::RiverMemo(?=$|::|:\d+(?:\.\d+)?$)/i.test(modifiers)
+            ? null : this._getCachedResult(cacheKey);
         if (cachedResult) {
             // 缓存命中时，仍需广播VCP Info（可选）
             if (this.pushVcpInfo && cachedResult.vcpInfo) {
@@ -2284,37 +3037,36 @@ class RAGDiaryPlugin {
         // 3️⃣ 缓存未命中，执行原有逻辑
 
         const kMultiplier = this._extractKMultiplier(modifiers);
-        const useTime = allowTimeAndGroup && modifiers.includes('::Time');
+        const useTime = allowTimeAndGroup && this._hasTimeModifier(modifiers);
+        const timeRatio = useTime ? this._extractTimeRatio(modifiers) : null;
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
-        // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
-        // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
-        const rerankPlusMatch = modifiers.match(/::Rerank\+(\d+\.?\d*)?/);
-        const useRerankPlus = !!rerankPlusMatch;
-        const rrfAlpha = useRerankPlus ? (rerankPlusMatch[1] ? Math.min(1.0, Math.max(0.0, parseFloat(rerankPlusMatch[1]))) : 0.5) : null;
-        const useRerank = modifiers.includes('::Rerank'); // 匹配 ::Rerank 和 ::Rerank+
+        if (/::TagMemo/i.test(modifiers)) {
+            throw Object.assign(new Error('TagMemo 后缀已退休，请迁移为 ::RiverMemo'), {
+                code: 'TAGMEMO_RETRIEVAL_RETIRED'
+            });
+        }
+        const useRiverMemo = true;
+
+        const rankOptions = this._parseRerankModifiers(modifiers);
+        const { useRerank, useRerankPlus, useJev, jevPrompt, jevPreset } = rankOptions;
+        let rrfAlpha = rankOptions.rrfAlpha;
+        let fusionOmega = null;
+        if (rankOptions.missingPreset) {
+            console.warn(`[RAGDiaryPlugin] JevRerankPrompt${jevPreset} 未配置，使用默认 Jev 提示词。`);
+        }
+
+        const bm25Mode = this.directDiaryTextProcessor.getBM25Mode(modifiers);
+        const useBM25 = bm25Mode !== null;
+        const bm25Weight = useBM25 ? this._extractBM25Weight(modifiers) : null;
 
         // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]/[minScore]/[whitelistTags]
         // 示例：::TimeDecay30/0.5/box归档
         // 统一使用 / 分隔符
-        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([\w,]+))?/);
+        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([^:]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
-        // 🌟 V8: 解析 TagMemo/TagMemo+ 修饰符
-        // ::TagMemo+  → 激活 TagMemo + 测地线重排（动态权重）
-        // ::TagMemo+0.3 → 激活 TagMemo(权重0.3) + 测地线重排
-        // ::TagMemo0.3 → 激活 TagMemo(权重0.3)，无测地线
-        // ::TagMemo → 激活 TagMemo（动态权重），无测地线
-        const useGeodesicRerank = /::TagMemo\+/.test(modifiers);
-        const tagMemoWeightMatch = modifiers.match(/::TagMemo\+?([\d.]+)/);
-        let tagWeight = tagMemoWeightMatch ? parseFloat(tagMemoWeightMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
-
-        // 🌟 V8: 构建 geodesicRerank 选项（传递给 search 的第 7 参数）
-        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
-        const geoOptions = useGeodesicRerank ? {
-            geodesicRerank: true,
-            geoAlpha: geoConfig.alpha ?? 0.3,
-            minGeoSamples: geoConfig.minGeoSamples ?? 4
-        } : undefined;
+        const tagWeight = null;
+        const searchOptions = undefined;
 
         // 🌟 解析 Truncate 阈值
         const truncateThreshold = this._extractTruncateThreshold(modifiers);
@@ -2327,19 +3079,39 @@ class RAGDiaryPlugin {
 
         // TagMemo修饰符检测（静默）
 
-        const displayName = dbName + '日记本';
+        const displayName = isVirtualIndex
+            ? `${diaryNames.join('|')}联合日记本`
+            : `${diaryNames[0]}日记本`;
         const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
         // 🧹 V4.1: 多取 contextDiaryPrefixes.size 条作为去重补偿缓冲
         const dedupBuffer = contextDiaryPrefixes.size;
-        const kForSearch = useRerank
+        const postEngineCandidateK = useRerank
             ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier) + dedupBuffer)
             : finalK + dedupBuffer;
+        // RiverMemo 的六路候选超集只能在调用方提供的候选域内工作，因此初始 KNN
+        // 需要覆盖其 union 上限；RiverMemo 自身完成收缩后，外部 Rerank 仍只消费小窗口。
+        const riverCandidateConfig = this.ragParams?.KnowledgeBaseManager?.riverMemo?.candidateSuperset || {};
+        const riverOfferK = useRiverMemo
+            ? Math.max(
+                postEngineCandidateK,
+                parseInt(riverCandidateConfig.maxUnionCandidates, 10) || 300,
+                parseInt(riverCandidateConfig.queryK, 10) || 100
+            )
+            : postEngineCandidateK;
+        const kForSearch = riverOfferK;
 
         // 准备元数据用于生成自描述区块
         const metadata = {
-            dbName: dbName,
+            dbName: dbScopeKey,
+            diaryNames: isVirtualIndex ? diaryNames : undefined,
+            virtualIndex: isVirtualIndex || undefined,
             modifiers: modifiers,
-            k: finalK
+            k: finalK,
+            engine: useRiverMemo ? 'RiverMemo V5' : '双曲 ANN',
+            retrievalEngine: 'warped_ann',
+            bm25: useBM25 ? bm25Mode : undefined,
+            bm25Weight: useBM25 ? bm25Weight : undefined,
+            timeRatio: useTime ? timeRatio : undefined
             // V4.0: originalQuery has been removed to save tokens.
         };
 
@@ -2347,6 +3119,8 @@ class RAGDiaryPlugin {
         let finalQueryVector = queryVector;
         let activatedGroups = null;
         let finalResultsForBroadcast = null;
+        let extraContinuityResults = [];
+        let bm25InfoForBroadcast = null;
         let vcpInfoData = null;
 
         if (useGroup) {
@@ -2357,103 +3131,434 @@ class RAGDiaryPlugin {
             }
         }
 
-        // ✅ 🌟 原子级复刻 LightMemo 流程：利用 applyTagBoost 预先感应语义 Tag
-        // 逻辑：不再使用 Jieba 提取关键词，也不使用简单的 searchSimilarTags。
-        // 而是直接调用 V6 (Spike) 引擎的 applyTagBoost，让残差金字塔（ResidualPyramid）从向量中感应出最匹配的标签。
-        // 这才是 LightMemo 能够返回“完美标签”的真正原因。
-        let coreTagsForSearch = [];
-        if (tagWeight !== null && this.vectorDBManager.applyTagBoost) {
-            try {
-                // 🌟 V6: 巧妙合并：把字符串和幽灵对象全塞进同一个 coreTagsForSearch 数组里！
-                // 底层引擎会自动把它们分流
-                const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
-                if (ghostTags.length > 0) {
-                    console.log(`[RAGDiaryPlugin] 注入幽灵节点: ${ghostTags.length} 个`);
+        // Core 锚点只在最终共享感应阶段注入，候选检索不增强。
+
+        let candidates = [];
+        let riverMemoInfoForBroadcast = null;
+        let riverMemoAlreadyRanked = false;
+        let nativeParallelRanked = false;
+        const useGreenLane = useRerankPlus
+            && this.vectorDBManager?.config?.nativeRiverQueryEnabled === true
+            && typeof this.vectorDBManager?.executeExternalRerank === 'function'
+            && typeof this.vectorDBManager?.nativeKnowledgeRuntime?.executeExternalRerank === 'function';
+        // Start HTTP preparation before Time plans and shared Sense. Catch immediately
+        // so a slow River branch cannot leave a rejected external task unobserved.
+        const greenStartedAt = Date.now();
+        const sharedSparsePlan = useGreenLane && useBM25
+            ? this._getBM25FileCandidates(
+                diaryNames, userContent, aiContent,
+                Math.max(kForSearch, finalK * (useRerank ? 5 : 3)),
+                bm25Mode, bm25Weight
+            ) : null;
+        const greenTask = useGreenLane ? (async () => {
+            const sparse = sharedSparsePlan ? await sharedSparsePlan : null;
+            return this.vectorDBManager.executeExternalRerank(
+                { text: String(userContent || ''), vector: finalQueryVector },
+                {
+                    diaryNames, topK: finalK, candidateK: Math.max(postEngineCandidateK * 2, 16),
+                    externalK: postEngineCandidateK, useJev, jevPrompt,
+                    contextDiaryPrefixes, fileCandidates: sparse?.files || [],
+                    bm25Weight: bm25Weight ?? 0.6
                 }
+            );
+        })().then(value => ({ value }), error => ({ error })) : null;
+        const useNativeParallelRank = !useGreenLane && useRerankPlus
+            && !useTime && !useBM25 && !useTimeDecay
+            && !requestCache?.riverThinking
+            && typeof this.vectorDBManager?.executeParallelRerank === 'function'
+            && typeof this.vectorDBManager?.nativeKnowledgeRuntime?.executeParallelRerank === 'function';
 
-                // 模拟 LightMemo 的第一次“感应”过程，获取 ResidualPyramid 识别出的语义标签
-                const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
-                if (boostResult && boostResult.info && boostResult.info.matchedTags) {
-                    const rawTags = boostResult.info.matchedTags;
-                    // 🌟 应用截断技术规避尾部噪音
-                    coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
+        // Native Query Plan V2：RiverMemo 的当前查询、历史 Shotgun 多向量、
+        // Time 文件约束及 BM25 文件级稀疏分数统一交给 Rust。JS 只保留
+        // DSL/时间表达式/BM25 分词控制面，不再构造高维 Chunk 候选池。
+        const canUseNativeRiverFullPath = Boolean(
+            useRiverMemo
+            && this.vectorDBManager?.config?.nativeRiverQueryEnabled === true
+            && typeof this.vectorDBManager.executeNativeRiverQuery === 'function'
+        );
+        if (canUseNativeRiverFullPath) {
+            // BM25 在 JS 仅保留分词、IDF 与文件级打分控制面。必须在进入
+            // 原生联合调用前完成；Chunk 展开、向量融合与去重全部由 Rust 执行。
+            if (useBM25) {
+                const bm25Limit = Math.max(
+                    kForSearch,
+                    finalK * (useRerank ? 5 : 3)
+                );
+                bm25InfoForBroadcast = await (sharedSparsePlan || this._getBM25FileCandidates(
+                    diaryNames,
+                    userContent,
+                    aiContent,
+                    bm25Limit,
+                    bm25Mode,
+                    bm25Weight
+                ));
+                console.log(
+                    `[RAGDiaryPlugin] BM25 file plan: ` +
+                    `mode=${bm25Mode}, files=${bm25InfoForBroadcast.files.length}, ` +
+                    `matched=${bm25InfoForBroadcast.matchedCount}.`
+                );
+            }
 
-                    // 重新混入幽灵节点（因为 _truncateCoreTags 可能会把它们择出去，或者它们本身就是 Object）
-                    // 实际上 applyTagBoost 返回的 matchedTags 主要是字符串 ID。
-                    // 我们需要确保 ghostTags 始终在 coreTagsForSearch 中。
-                    if (ghostTags.length > 0) {
-                        coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
+            const nativeFileCandidates = new Map();
+            const mergeNativeFileCandidate = candidate => {
+                const candidatePath = String(candidate?.path || '').trim();
+                if (!candidatePath) return;
+                const existing = nativeFileCandidates.get(candidatePath) || {
+                    path: candidatePath,
+                    bm25Score: 0,
+                    normalizedBM25Score: 0,
+                    timeScore: 0,
+                    source: ''
+                };
+                existing.bm25Score = Math.max(
+                    existing.bm25Score,
+                    Number(candidate?.bm25Score) || 0
+                );
+                existing.normalizedBM25Score = Math.max(
+                    existing.normalizedBM25Score,
+                    Number(candidate?.normalizedBM25Score) || 0
+                );
+                existing.timeScore = Math.max(
+                    existing.timeScore,
+                    Number(candidate?.timeScore) || 0
+                );
+                const nextSource = String(candidate?.source || '');
+                if (
+                    nextSource === 'time'
+                    || !existing.source
+                    || existing.source === 'rag'
+                ) {
+                    existing.source = nextSource;
+                }
+                nativeFileCandidates.set(candidatePath, existing);
+            };
+
+            for (const file of bm25InfoForBroadcast?.files || []) {
+                mergeNativeFileCandidate(file);
+            }
+
+            if (useTime && timeRanges && timeRanges.length > 0) {
+                for (const timeRange of timeRanges) {
+                    for (const diaryName of diaryNames) {
+                        const filePaths = await this._getTimeRangeFilePathsCached(
+                            diaryName,
+                            timeRange,
+                            requestCache
+                        );
+                        for (const filePath of filePaths) {
+                            mergeNativeFileCandidate({
+                                path: filePath,
+                                timeScore: 1,
+                                source: 'time'
+                            });
+                        }
                     }
-
-                    console.log(`[RAGDiaryPlugin] TagBoost: ${coreTagsForSearch.length}个核心Tag (含${ghostTags.length}个幽灵)`);
-                } else if (ghostTags.length > 0) {
-                    // 如果 boost 没结果，至少保留幽灵节点
-                    coreTagsForSearch = ghostTags;
                 }
-            } catch (e) {
-                console.warn('[RAGDiaryPlugin] Failed to sense tags via applyTagBoost:', e.message);
-                if (ghostTags.length > 0) coreTagsForSearch = ghostTags;
+            }
+
+            const shotgunConfig = this.ragParams?.RAGDiaryPlugin || {};
+            const historySegmentLimit = Math.max(
+                0,
+                parseInt(shotgunConfig.shotgunHistorySegmentLimit, 10) || 3
+            );
+            const rawDecayFactor = Number(shotgunConfig.shotgunDecayFactor);
+            const decayFactor = Number.isFinite(rawDecayFactor)
+                ? Math.max(0, Math.min(1, rawDecayFactor))
+                : 0.85;
+            const nativeHistorySegments = (effectiveHistorySegments || [])
+                .slice(-historySegmentLimit)
+                .map((segment, index, selected) => ({
+                    vector: segment.vector,
+                    weight: Math.pow(
+                        decayFactor,
+                        selected.length - index
+                    )
+                }))
+                .filter(segment =>
+                    segment.vector
+                    && typeof segment.vector.length === 'number'
+                );
+
+            const nativeHybridRequired = (
+                nativeHistorySegments.length > 0
+                || nativeFileCandidates.size > 0
+            );
+            const nativeTimeConfig =
+                this.ragParams?.RAGDiaryPlugin?.nativeTimeCandidates || {};
+            const timePerDiaryLimit = Math.max(
+                1,
+                Math.min(
+                    50,
+                    Math.floor(Number(nativeTimeConfig.perDiaryLimit) || 10)
+                )
+            );
+            const timeGlobalLimit = Math.max(
+                1,
+                Math.min(
+                    500,
+                    Math.floor(Number(nativeTimeConfig.globalLimit) || 50)
+                )
+            );
+            const boundedTimeOffer = useTime
+                && timeRanges
+                && timeRanges.length > 0
+                ? Math.min(
+                    timeGlobalLimit,
+                    timePerDiaryLimit * diaryNames.length
+                )
+                : 0;
+            // Time 最终仍由 JS 按 ::Time ratio 做强制双路配额。原生输出窗口
+            // 必须覆盖受限 Time 池，否则 Topology 小 topK 可能在配额执行前
+            // 淘汰全部时间候选。
+            const riverTopK = Math.max(
+                finalK + boundedTimeOffer,
+                useRerank
+                    ? Math.round(finalK * this.rerankConfig.multiplier)
+                    : finalK
+            ) + dedupBuffer;
+            let thinkingObservation = null;
+            if (requestCache?.riverThinking
+                && typeof this.vectorDBManager.prepareUnifiedMemoObservation === 'function'
+                && typeof this.vectorDBManager.tagIndex?.planMemoThinking === 'function') {
+                try {
+                    thinkingObservation = await this.vectorDBManager.prepareUnifiedMemoObservation(
+                        { text: String(userContent || ''), vector: finalQueryVector },
+                        {
+                            coreTags: ghostTags,
+                            sourceObservationConfig: {
+                                baseTagBoost: Math.max(0, Number(defaultTagWeight) || 0),
+                                coreBoostFactor: 1.33
+                            },
+                            maxTransitionRecords: requestCache.riverThinking.config.maxTransitionRecords
+                        }
+                    );
+                    requestCache.ownedMemoObservations?.add(thinkingObservation);
+                } catch (error) {
+                    console.warn('[RAGDiaryPlugin] River thinking observation unavailable:', error.message);
+                }
+            }
+            if (thinkingObservation) {
+                requestCache.riverThinking.observations.push({
+                    scope: `${dbScopeKey}:${modifiers}`,
+                    useGroup,
+                    prepared: thinkingObservation
+                });
+                requestCache.riverThinking.ready?.[Number(useGroup)]?.resolve();
+            }
+            const nativeResult =
+                await (useNativeParallelRank
+                    ? this.vectorDBManager.executeParallelRerank.bind(this.vectorDBManager)
+                    : this.vectorDBManager.executeNativeRiverQuery.bind(this.vectorDBManager))(
+                    {
+                        text: String(userContent || ''),
+                        vector: finalQueryVector
+                    },
+                    {
+                        diaryNames,
+                        alpha: rrfAlpha,
+                        autoRrfAlpha: rankOptions.autoRrfAlpha && canUseNativeRiverFullPath,
+                        useJev,
+                        jevPrompt,
+                        externalK: postEngineCandidateK,
+                        contextDiaryPrefixes,
+                        preparedMemoObservation: thinkingObservation || undefined,
+                        enhancedAnn: useGreenLane,
+                        topK: riverTopK,
+                        candidateK: riverOfferK,
+                        coreTags: Array.isArray(ghostTags) ? ghostTags : [],
+                        supplementalQueryVectors: nativeHistorySegments,
+                        hybridPlan: nativeHybridRequired ? {
+                            supplemental: {
+                                perIndexK: Math.max(
+                                    2,
+                                    Math.round(riverOfferK / 2)
+                                )
+                            },
+                            fileCandidates: Array.from(
+                                nativeFileCandidates.values()
+                            ),
+                            bm25Weight: bm25Weight ?? 0.6,
+                            bm25Mode,
+                            timePerDiaryLimit,
+                            timeGlobalLimit
+                        } : null,
+                        sourceObservationConfig: {
+                            baseTagBoost:
+                                Math.max(0, Number(defaultTagWeight) || 0),
+                            coreBoostFactor: 1.33
+                        },
+                        enabled: true
+                    }
+                );
+            nativeParallelRanked = useNativeParallelRank;
+            // Preserve missing/invalid Omega rather than coercing it to zero.
+            fusionOmega = nativeResult.omega?.omega;
+            if (rankOptions.autoRrfAlpha) {
+                rrfAlpha = nativeParallelRanked
+                    ? (nativeResult.diagnostics?.nativeRerank?.alpha ?? rrfAlpha)
+                    : this._omegaRrfAlpha(fusionOmega);
+            }
+            // 观测在原生读出前发布，元思考与 RiverMemo 均只读借用。
+            candidates = this._filterContextDuplicates(
+                (nativeResult.results || []).map(item => ({
+                    ...item,
+                    score: Number(item.score) || 0,
+                    original_score: Number(item.originalScore) || 0,
+                    // 只有显式 Time 来源需要穿透到后置 80/20 配额；
+                    // BM25 已参与 RiverMemo 候选超集，后续仍属于统一语义路。
+                    source: item.source === 'time' ? 'time' : 'rag',
+                    riverMemoSource: item.source || 'rag',
+                    riverMemo: {
+                        artifactSig: nativeResult.artifactSig || null,
+                        queryId: nativeResult.queryId || null,
+                        omega: Number(item.omega) || 0,
+                        regime:
+                            item.riverRegime
+                            || nativeResult.omega?.regime
+                            || null,
+                        role: item.role || null,
+                        topologyBonus: Number(item.topologyBonus) || 0,
+                        anchorBonus: Number(item.anchorBonus) || 0
+                    }
+                })),
+                contextDiaryPrefixes
+            );
+            riverMemoAlreadyRanked = true;
+            metadata.retrievalEngine = nativeResult.diagnostics?.degraded ? 'warped_ann' : 'rivermemo_v5';
+            metadata.engine = metadata.retrievalEngine === 'warped_ann' ? '双曲 ANN' : 'RiverMemo V5';
+            riverMemoInfoForBroadcast = {
+                version: 'rivermemo_v5',
+                retrievalEngine: metadata.retrievalEngine,
+                artifactSig: nativeResult.artifactSig || null,
+                queryId: nativeResult.queryId || null,
+                omega: Number(nativeResult.omega?.omega) || 0,
+                regime: nativeResult.omega?.regime || null,
+                queryTags: nativeResult.queryTags || {
+                    matchedTags: [],
+                    coreTagsMatched: [],
+                    sourceMode: null
+                },
+                offeredCandidates:
+                    nativeResult.diagnostics?.offeredCandidates || 0,
+                rankedCandidates:
+                    nativeResult.diagnostics?.rankedCandidates || 0,
+                returnedCandidates: candidates.length,
+                nativeJointQuery: true,
+                nativeRerank: nativeResult.diagnostics?.nativeRerank || null,
+                nativeDiagnostics:
+                    nativeResult.diagnostics?.nativeTopologyV3 || null
+            };
+            console.log(
+                `[RAGDiaryPlugin] 🌊 Native River full path V2: ` +
+                `diaries=${diaryNames.join('|')}, returned=${candidates.length}, ` +
+                `historyVectors=${nativeHistorySegments.length}, ` +
+                `fileCandidates=${nativeFileCandidates.size}, ` +
+                `jointUsed=${nativeResult.diagnostics?.nativeTopologyV3
+                    ?.jointUsed === true}, ` +
+                `hybridPlanUsed=${nativeResult.diagnostics?.nativeTopologyV3
+                    ?.hybridPlanUsed === true}.`
+            );
+        }
+
+        // 🌟 Time 连续性补充准备：只要启用 ::Time 且命中新对话判定，就预先准备最近 3 条
+        // 注意：不依赖 timeRanges 是否解析成功，最终仍在主召回完成后做 K 外追加
+        if (useTime && isFreshTimeConversationStart) {
+            extraContinuityResults = await this._getRecentDiaryChunks(diaryNames, 3, finalQueryVector, contextDiaryPrefixes, requestCache);
+            if (extraContinuityResults.length > 0) {
+                console.log(`[RAGDiaryPlugin] Time continuity recall: Prepared ${extraContinuityResults.length} extra recent chunks for fresh conversation start.`);
+            } else {
+                console.log('[RAGDiaryPlugin] Time continuity recall: No extra recent chunks found for fresh conversation start.');
             }
         }
 
-        // 🌟 修复：将混合了对象和字符串的数组“脱水”为纯字符串，防止 VCP Info 爆出 [object Object]
-        const coreTagsForDisplay = coreTagsForSearch.map(tag => {
-            if (typeof tag === 'string') return tag;
-            if (tag && tag.name) return tag.isCore ? `!${tag.name}` : tag.name; // 还原出带感叹号的核心标识
-            return String(tag);
-        });
+        if (useBM25 && !riverMemoAlreadyRanked) {
+            const bm25Limit = Math.max(kForSearch, finalK * (useRerank ? 5 : 3));
+            bm25InfoForBroadcast = await this._getBM25RagCandidates(
+                diaryNames,
+                userContent,
+                aiContent,
+                bm25Limit,
+                bm25Mode,
+                finalQueryVector,
+                contextDiaryPrefixes,
+                requestCache,
+                bm25Weight
+            );
 
-        let candidates = [];
+            if (bm25InfoForBroadcast.results.length > 0) {
+                console.log(`[RAGDiaryPlugin] BM25 ${bm25Mode === 'body' ? '正文' : 'Tag行'} sparse recall: ${bm25InfoForBroadcast.results.length} chunks from ${bm25InfoForBroadcast.matchedCount} files.`);
+            } else {
+                console.log(`[RAGDiaryPlugin] BM25 ${bm25Mode === 'body' ? '正文' : 'Tag行'} sparse recall: no positive match, keep vector pipeline only.`);
+            }
+        }
 
-        if (useTime && timeRanges && timeRanges.length > 0) {
+        if (!riverMemoAlreadyRanked && useTime && timeRanges && timeRanges.length > 0) {
             // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
-            // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
-            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
-            const kTime = Math.max(1, finalK - kSemantic);
+            // 目标：默认语义召回占 80%，时间召回占 20%，且时间召回也进行相关性排序。
+            // 可用 ::Time0.1 / ::Time0.3 显式控制时间路比例。
+            const kTime = Math.max(1, Math.round(finalK * timeRatio));
+            const kSemantic = Math.max(1, finalK - kTime);
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
-            const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, geoOptions);
+            const standardSearchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
+            const searchK = useRiverMemo
+                ? Math.max(standardSearchK, riverOfferK)
+                : standardSearchK;
+            let ragResults = await this.vectorDBManager.searchKnn(diaryNames, finalQueryVector, searchK + dedupBuffer);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
             ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
 
             // 2. 时间路召回 (带相关性排序)
             let timeFilePaths = [];
             for (const timeRange of timeRanges) {
-                const files = await this._getTimeRangeFilePaths(dbName, timeRange);
-                timeFilePaths.push(...files);
+                for (const diaryName of diaryNames) {
+                    const files = await this._getTimeRangeFilePathsCached(diaryName, timeRange, requestCache);
+                    timeFilePaths.push(...files);
+                }
             }
             timeFilePaths = [...new Set(timeFilePaths)];
 
             let timeResults = [];
             if (timeFilePaths.length > 0) {
-                const timeChunks = await this.vectorDBManager.getChunksByFilePaths(timeFilePaths);
+                const timeChunks = await this._getChunksByFilePathsCached(timeFilePaths, requestCache);
                 timeResults = timeChunks.map(chunk => {
-                    const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, Array.from(chunk.vector)) : 0;
+                    const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, chunk.vector) : 0;
                     return { ...chunk, score: sim, source: 'time' };
                 });
                 console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range.`);
             }
 
-            // 3. 合并与初步去重
-            const allEntries = new Map();
-            ragResults.forEach(r => allEntries.set(r.text.trim(), r));
-            timeResults.forEach(r => {
-                const trimmedText = r.text.trim();
-                if (!allEntries.has(trimmedText)) {
-                    allEntries.set(trimmedText, r);
+            // 3. 合并候选。统一去重器会处理 chunkId、规范化正文及语义近重复；
+            // 这里不再自行用原始正文 Map 去重，避免不同换行/空白格式绕过去重。
+            candidates = [
+                ...ragResults,
+                ...timeResults,
+                ...(bm25InfoForBroadcast?.results || [])
+            ];
+            candidates = await this.vectorDBManager.deduplicateResults(
+                candidates,
+                finalQueryVector,
+                {
+                    stage: 'time-candidate-pool',
+                    semantic: true,
+                    semanticThreshold: this.ragParams?.KnowledgeBaseManager
+                        ?.resultDeduplication?.semanticThreshold
                 }
-            });
-            candidates = Array.from(allEntries.values());
+            );
 
-        } else {
-            // --- Standard path (no time filter) ---
+        } else if (!riverMemoAlreadyRanked) {
+            // --- Standard path (no time filter / no parsed time range) ---
             // 🌟 Tagmemo V4: Shotgun Query Implementation
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
-            if (historySegments && historySegments.length > 0) {
-                const recentSegments = historySegments.slice(-3);
-                const decayFactor = 0.85;
+            if (effectiveHistorySegments && effectiveHistorySegments.length > 0) {
+                const config = this.ragParams?.RAGDiaryPlugin || {};
+                const historySegmentLimit = Math.max(0, parseInt(config.shotgunHistorySegmentLimit, 10) || 3);
+                const rawDecayFactor = Number(config.shotgunDecayFactor);
+                const decayFactor = Number.isFinite(rawDecayFactor)
+                    ? Math.max(0, Math.min(1, rawDecayFactor))
+                    : 0.85;
+                const recentSegments = effectiveHistorySegments.slice(-historySegmentLimit);
                 recentSegments.forEach((seg, idx) => {
                     const distance = recentSegments.length - idx;
                     const weightMultiplier = Math.pow(decayFactor, distance);
@@ -2461,12 +3566,12 @@ class RAGDiaryPlugin {
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches (historyLimit=${Math.max(0, searchVectors.length - 1)}, decay=${searchVectors.length > 1 ? (searchVectors[1].weight ** (1 / Math.max(1, searchVectors.length - 1))).toFixed(3) : 'n/a'}).`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
-                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch, undefined, geoOptions);
+                    let results = await this.vectorDBManager.searchKnn(diaryNames, qv.vector, k);
                     if (qv.weight !== 1.0) {
                         results = results.map(r => ({ ...r, score: r.score * qv.weight, original_score: r.score }));
                     }
@@ -2479,8 +3584,53 @@ class RAGDiaryPlugin {
 
             const resultsArrays = await Promise.all(searchPromises);
             let flattenedResults = resultsArrays.flat();
+            if (bm25InfoForBroadcast?.results?.length > 0) {
+                flattenedResults.push(...bm25InfoForBroadcast.results);
+            }
             flattenedResults = this._filterContextDuplicates(flattenedResults, contextDiaryPrefixes);
-            candidates = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
+            candidates = await this.vectorDBManager.deduplicateResults(
+                flattenedResults,
+                finalQueryVector,
+                {
+                    stage: 'shotgun-candidate-pool',
+                    semantic: true,
+                    semanticThreshold: this.ragParams?.KnowledgeBaseManager
+                        ?.resultDeduplication?.semanticThreshold
+                }
+            );
+        }
+
+        // 🌊 RiverMemo 独立引擎重排。
+        // 时间路结果是显式日期约束，不交给 RiverMemo 改写；其余语义/BM25 候选统一进入
+        // Topology V3。@ 语法产生的 ghostTags 原样作为 coreTags 传给 V9 源观测。
+        // 纯原生联合路径已完成 Topology V3 时不得再次重排。
+        if (useRiverMemo && !riverMemoAlreadyRanked && candidates.length > 0) {
+            const timeOnlyCandidates = candidates.filter(candidate => candidate.source === 'time');
+            const riverCandidates = candidates.filter(candidate => candidate.source !== 'time');
+            const riverTopK = Math.max(
+                finalK,
+                useRerank
+                    ? Math.round(finalK * this.rerankConfig.multiplier)
+                    : finalK
+            ) + dedupBuffer;
+
+            if (riverCandidates.length > 0) {
+                const riverResult = await this._rerankRAGCandidatesWithRiverMemo({
+                    queryVector: finalQueryVector,
+                    queryText: userContent,
+                    candidates: riverCandidates,
+                    diaryNames,
+                    topK: riverTopK,
+                    coreTags: ghostTags,
+                    baseTagBoost: defaultTagWeight
+                });
+                candidates = [...riverResult.results, ...timeOnlyCandidates];
+                riverMemoInfoForBroadcast = riverResult.meta;
+                metadata.retrievalEngine = 'rivermemo_v5';
+                metadata.engine = 'RiverMemo V5';
+            } else {
+                candidates = timeOnlyCandidates;
+            }
         }
 
         // --- 🌟 统一后置处理 (TimeDecay -> Rerank -> Truncate) ---
@@ -2492,10 +3642,14 @@ class RAGDiaryPlugin {
         }
 
         // 2. Rerank & Merge: 对处理后的结果进行最终精排与合并
-        if (useTime && timeRanges && timeRanges.length > 0) {
-            // 🌟 V5.4: 在 Time 模式下，强制执行 60/40 分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
-            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
-            const kTime = Math.max(1, finalK - kSemantic);
+        if (nativeParallelRanked) {
+            finalResultsForBroadcast = candidates.slice(0, finalK);
+        } else if (useTime && timeRanges && timeRanges.length > 0) {
+            // 🌟 V5.4: 在 Time 模式下，强制执行语义/时间双路分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
+            // 默认 80/20；可用 ::Time0.1 / ::Time0.3 显式控制时间路比例。
+            const riverWindow = useGreenLane ? postEngineCandidateK : finalK;
+            const kTime = Math.max(1, Math.round(riverWindow * timeRatio));
+            const kSemantic = Math.max(1, riverWindow - kTime);
 
             const semanticCandidates = candidates.filter(c => c.source === 'rag');
             const timeCandidates = candidates.filter(c => c.source === 'time');
@@ -2503,16 +3657,19 @@ class RAGDiaryPlugin {
             let finalSemantic = [];
             let finalTime = [];
 
-            if (useRerank) {
+            if (useRerank && !useGreenLane) {
                 // 分别对两路进行 Rerank（如果样本足够）
+                // Rerank+ 需要每一路在进入外部精排前保留当前引擎的检索排位。
+                semanticCandidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+                timeCandidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
                 const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
                 // 语义路重排
                 if (semanticCandidates.length > 0) {
-                    finalSemantic = await this._rerankDocuments(userContent, semanticCandidates, kSemantic, rrfOpts);
+                    finalSemantic = await this._rerankDocuments(userContent, semanticCandidates, kSemantic, rrfOpts, rankOptions);
                 }
                 // 时间路重排（时间路通常较少，如果不足 kTime 则全取）
                 if (timeCandidates.length > 0) {
-                    finalTime = await this._rerankDocuments(userContent, timeCandidates, kTime, rrfOpts);
+                    finalTime = await this._rerankDocuments(userContent, timeCandidates, kTime, rrfOpts, rankOptions);
                 }
             } else {
                 semanticCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -2521,24 +3678,86 @@ class RAGDiaryPlugin {
                 finalTime = timeCandidates.slice(0, kTime);
             }
             finalResultsForBroadcast = [...finalSemantic, ...finalTime];
-        } else if (useRerank && candidates.length > 0) {
+        } else if (useRerank && !useGreenLane && candidates.length > 0) {
             candidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
             const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
-            finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts);
+            finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts, rankOptions);
         } else {
             // 默认按 score 排序并截断
             candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
-            finalResultsForBroadcast = candidates.slice(0, finalK);
+            finalResultsForBroadcast = candidates.slice(0, useGreenLane ? postEngineCandidateK : finalK);
         }
 
-        // 统一添加 source 标识并格式化
-        finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
+        if (greenTask) {
+            const external = await greenTask;
+            const timeQuota = useTime ? Math.max(1, Math.round(finalK * timeRatio)) : 0;
+            if (external.error) {
+                console.warn(`[RAGDiaryPlugin] Green lane failed; keeping River order: ${external.error.message}`);
+                finalResultsForBroadcast = this._applyTimeQuota(
+                    finalResultsForBroadcast, finalResultsForBroadcast, finalK, timeQuota
+                );
+            } else {
+                finalResultsForBroadcast = this._fuseIndependentRankings(
+                    finalResultsForBroadcast, external.value.results, rrfAlpha, finalK, timeQuota
+                );
+            }
+            const diagnostics = {
+                ...external.value?.diagnostics?.nativeRerank,
+                parallel: true, independentPools: true,
+                error: external.error?.message || null,
+                totalMs: Date.now() - greenStartedAt,
+                alpha: rrfAlpha,
+                riverWeight: 1 - rrfAlpha,
+                weightMode: rankOptions.autoRrfAlpha && canUseNativeRiverFullPath ? 'omega-v1' : 'fixed',
+                omega: typeof fusionOmega === 'number' && Number.isFinite(fusionOmega) ? fusionOmega : null
+            };
+            riverMemoInfoForBroadcast = { ...riverMemoInfoForBroadcast, nativeRerank: diagnostics };
+            console.log(`[RAGDiaryPlugin] Green lane RRF: diaries=${dbScopeKey}, backend=${useJev ? 'jev' : 'rerank'}, httpReadyMs=${diagnostics.httpReadyMs ?? 'n/a'}, totalMs=${diagnostics.totalMs}, returned=${finalResultsForBroadcast.length}, degraded=${!!external.error}.`);
+        }
 
-        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，跨目标索引搜索，提取共现结果（额外追加，不影响原始 K）
+        // 统一添加 source 标识并格式化；时间路 chunk 缺 date 时从本请求已加载的日期索引补上。
+        const diaryDates = new Map(diaryNames
+            .flatMap(name => requestCache?.diaryDateIndex?.get(name) || [])
+            .map(meta => [meta.relativePath, meta.date]));
+        finalResultsForBroadcast = finalResultsForBroadcast.map(r => {
+            const date = r.source === 'time' && !r.date && diaryDates.get(r.fullPath || r.sourceFile);
+            return date ? { ...r, date } : { ...r, source: r.source || 'rag' };
+        });
+
+        // 🌟 Time 连续性补充：主召回完成后，额外追加最近 3 条，不占用 K，并与主结果去重
+        if (extraContinuityResults.length > 0) {
+            const existingTexts = new Set(
+                finalResultsForBroadcast
+                    .map(r => r.text?.trim())
+                    .filter(Boolean)
+            );
+
+            const dedupedContinuityResults = extraContinuityResults.filter(r => {
+                const textKey = r.text?.trim();
+                if (!textKey || existingTexts.has(textKey)) return false;
+                existingTexts.add(textKey);
+                return true;
+            });
+
+            if (dedupedContinuityResults.length > 0) {
+                finalResultsForBroadcast = [...finalResultsForBroadcast, ...dedupedContinuityResults];
+                console.log(`[RAGDiaryPlugin] Time continuity recall: Appended ${dedupedContinuityResults.length} extra recent chunks outside K=${finalK}.`);
+            }
+        }
+
+        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，在同一虚拟索引范围内搜索并提取共现结果。
+        // 所有 ::Associate 二次联想统一进入 RiverMemo，保留跨种子共现和合并规则。
         if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
-            const targetDiaries = associateDiaries.length > 0 ? associateDiaries : [dbName];
+            const targetDiaries = associateDiaries.length > 0 ? associateDiaries : diaryNames;
             const associateResults = await this._applyAssociativeDiscovery(
-                finalResultsForBroadcast, targetDiaries, finalK, tagWeight ?? defaultTagWeight
+                finalResultsForBroadcast,
+                targetDiaries,
+                finalK,
+                useRiverMemo ? null : (tagWeight ?? defaultTagWeight),
+                {
+                    useRiverMemo,
+                    riverBaseTagBoost: defaultTagWeight
+                }
             );
             if (associateResults.length > 0) {
                 finalResultsForBroadcast = [...finalResultsForBroadcast, ...associateResults];
@@ -2547,11 +3766,27 @@ class RAGDiaryPlugin {
 
         // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）— 始终在最后执行
         if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
-            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName);
+            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbScopeKey, requestCache);
+        }
+
+        // 🧹 最终输出去重：在 Time 连续性、Associate 与 Expand 全部完成后统一收口。
+        // 使用比候选池更高的语义阈值，只消除几乎相同的结果；异常由 KBM 门面安全回退到硬去重。
+        if (finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
+            const finalDedupConfig = this.ragParams?.KnowledgeBaseManager?.resultDeduplication || {};
+            finalResultsForBroadcast = await this.vectorDBManager.deduplicateResults(
+                finalResultsForBroadcast,
+                finalQueryVector,
+                {
+                    stage: 'final-output',
+                    semantic: true,
+                    semanticThreshold: finalDedupConfig.finalSemanticThreshold ?? 0.97,
+                    maxResults: Math.max(1, finalResultsForBroadcast.length)
+                }
+            );
         }
 
         if (useTime && timeRanges && timeRanges.length > 0) {
-            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
+            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbScopeKey, metadata);
         } else if (useGroup) {
             retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
         } else {
@@ -2573,12 +3808,18 @@ class RAGDiaryPlugin {
                 // 如果过滤后变为空，且原本有内容，需要重新生成内容
                 if (afterCount === 0) {
                     retrievedContent = '';
+                } else if (useTime && timeRanges && timeRanges.length > 0) {
+                    retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbScopeKey, metadata);
                 } else if (useGroup) {
                     retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
                 } else {
                     retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
                 }
             }
+        }
+
+        if (returnRawResults) {
+            return finalResultsForBroadcast || [];
         }
 
         // 🌟 V7: Base64Memo 附件提取逻辑
@@ -2598,30 +3839,39 @@ class RAGDiaryPlugin {
                     const aIsAssociate = a.source === 'associate' ? 1 : 0;
                     const bIsAssociate = b.source === 'associate' ? 1 : 0;
                     if (aIsAssociate !== bIsAssociate) return aIsAssociate - bIsAssociate; // rag/time 排前
-                    const scoreA = a.rerank_score ?? a.score ?? -1;
-                    const scoreB = b.rerank_score ?? b.score ?? -1;
+                    const scoreA = a.rrf_score ?? a.rerank_score ?? a.score ?? -1;
+                    const scoreB = b.rrf_score ?? b.rerank_score ?? b.score ?? -1;
                     return scoreB - scoreA;
                 });
 
                 const cleanedResults = this._cleanResultsForBroadcast(finalResultsForBroadcast);
                 vcpInfoData = {
                     type: 'RAG_RETRIEVAL_DETAILS',
-                    dbName: dbName,
+                    dbName: dbScopeKey,
+                    diaryNames: isVirtualIndex ? diaryNames : undefined,
+                    virtualIndex: isVirtualIndex,
                     query: combinedQueryForDisplay,
                     k: finalK,
                     useTime: useTime,
                     useGroup: useGroup,
+                    useRiverMemo: useRiverMemo,
+                    riverMemo: riverMemoInfoForBroadcast,
                     useRerank: useRerank,
+                    useJevRerank: useRerank && useJev,
+                    jevPreset: useRerank && useJev ? jevPreset : undefined,
                     useRerankPlus: useRerankPlus, // 🌟 Rerank+ (RRF) 模式标识
                     rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
-                    useGeodesicRerank: useGeodesicRerank, // 🌟 V8: 测地线重排标识
-                    geoAlpha: geoOptions?.geoAlpha, // 🌟 V8: 测地线混合权重
                     useExpand: useExpand, // 🌟 V9: 父文档展开标识
                     useAssociate: useAssociate, // 🌟 V10: 联想共现标识
+                    useBM25: useBM25,
+                    bm25Mode: bm25Mode,
+                    bm25QueryTokens: bm25InfoForBroadcast?.queryTokens,
+                    bm25MatchedCount: bm25InfoForBroadcast?.matchedCount,
+                    bm25Weight: bm25InfoForBroadcast?.bm25Weight,
+                    bm25VectorWeight: bm25InfoForBroadcast?.vectorWeight,
                     associateCount: useAssociate ? (finalResultsForBroadcast?.filter(r => r.source === 'associate').length || 0) : undefined,
-                    useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
-                    tagWeight: tagWeight, // ✅ 添加Tag权重
-                    coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
+                    coreTags: ghostTags.map(tag => tag?.name || String(tag)),
+                    timeRatio: useTime ? timeRatio : undefined,
                     timeRanges: (useTime && Array.isArray(timeRanges)) ? timeRanges.map(r => {
                         try {
                             return {
@@ -2634,8 +3884,11 @@ class RAGDiaryPlugin {
                     }) : undefined,
                     // 🌟 限制广播结果数量和长度，防止 payload 过大导致广播失败
                     results: cleanedResults.slice(0, 20),
-                    // ✅ 新增：汇总Tag统计信息
-                    tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
+                    // RiverMemo 直接透传曲线投影阶段已有的 per-chunk Tag，
+                    // 与 TagMemo 一样生成统计，但不触发任何额外 Tag 查询。
+                    tagStats: (useRiverMemo || tagWeight !== null)
+                        ? this._aggregateTagStats(cleanedResults)
+                        : undefined
                 };
 
                 // 🛡️ 优化：移除冗余的 JSON 序列化，直接推送对象以减少 CPU 阻塞
@@ -2647,7 +3900,7 @@ class RAGDiaryPlugin {
                     try {
                         this.pushVcpInfo({
                             type: 'RAG_RETRIEVAL_DETAILS',
-                            dbName: dbName,
+                            dbName: dbScopeKey,
                             error: 'Detailed stats broadcast failed: ' + (innerError.message || 'Unknown error')
                         });
                     } catch (e) { }
@@ -2666,6 +3919,191 @@ class RAGDiaryPlugin {
         return retrievedContent;
     }
 
+    /**
+     * 将限定日记本作用域内的候选交给 RiverMemo Topology V3。
+     * 不做静默引擎回退：RiverMemo 不可用或返回坏结果时抛错，由占位符外层生成明确失败信息。
+     */
+    _omegaRrfAlpha(omega) {
+        if (typeof omega !== 'number' || !Number.isFinite(omega) || omega < 0 || omega > 1) return 0.5;
+        // Alpha is the EXTERNAL weight: Omega .4 => RM .3; Omega .9 => RM .7.
+        return 1 - Math.max(0.3, Math.min(0.7, 0.5 + 0.8 * (omega - 0.65)));
+    }
+
+    // timeQuota > 0 keeps the best River-order Time entries (the ::Time route quota);
+    // the remaining slots come from the fused ranking of non-Time entries.
+    _fuseIndependentRankings(river, external, alpha = 0.5, limit = 10, timeQuota = 0) {
+        const weight = Math.max(0, Math.min(1, Number(alpha ?? 0.5)));
+        const merged = new Map();
+        const identity = doc => {
+            const id = Number(doc.chunkId ?? doc.id);
+            return Number.isSafeInteger(id) && id > 0 ? `id:${id}` : `text:${String(doc.text || '').trim()}`;
+        };
+        for (const [items, contribution, rankField] of [
+            [river, 1 - weight, 'retrieval_rank'],
+            [external, weight, 'rerank_rank']
+        ]) {
+            const seen = new Set();
+            for (const doc of items || []) {
+                const key = identity(doc);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const rank = seen.size;
+                const previous = merged.get(key);
+                const result = previous || { ...doc, rrf_score: 0 };
+                if (rankField === 'rerank_rank' && doc.rerank_score !== undefined) {
+                    result.rerank_score = doc.rerank_score;
+                }
+                result[rankField] = rank;
+                result.rrf_score += contribution / (60 + rank);
+                merged.set(key, result);
+            }
+        }
+        const ranked = [...merged.values()].filter(doc => doc.rrf_score > 0)
+            .sort((a, b) => b.rrf_score - a.rrf_score
+                || identity(a).localeCompare(identity(b)));
+        return this._applyTimeQuota(ranked, [...merged.values()], limit, timeQuota);
+    }
+
+    // ::Time 路名额：语义路按 ordered 的顺序，时间路取 river 顺序里最靠前的 timeQuota 条；
+    // 名额规则与非 GreenLane 路径相同（语义路至少 1 条）。没有时间条目时等同于截断到 limit。
+    _applyTimeQuota(ordered, river, limit, timeQuota) {
+        const time = timeQuota > 0 ? river.filter(doc => doc.source === 'time').slice(0, timeQuota) : [];
+        if (time.length === 0) return ordered.slice(0, limit);
+        const semantic = ordered.filter(doc => doc.source !== 'time')
+            .slice(0, Math.max(1, limit - time.length));
+        return [...semantic, ...time];
+    }
+
+    async _rerankRAGCandidatesWithRiverMemo({
+        queryVector,
+        queryText,
+        candidates,
+        diaryNames,
+        topK,
+        coreTags = [],
+        baseTagBoost = 0.6
+    }) {
+        if (!this.vectorDBManager || typeof this.vectorDBManager.rerankWithRiverMemoAsync !== 'function') {
+            const error = new Error('RiverMemo 异步生产接口不可用');
+            error.code = 'RIVERMEMO_ASYNC_INTERFACE_UNAVAILABLE';
+            throw error;
+        }
+
+        const normalizedCandidates = (Array.isArray(candidates) ? candidates : [])
+            .map(candidate => {
+                const id = Number(candidate?.chunkId ?? candidate?.id ?? candidate?.label);
+                if (!Number.isFinite(id) || id <= 0 || !candidate?.text) return null;
+                return {
+                    ...candidate,
+                    id,
+                    chunkId: id,
+                    bm25Score: Math.max(0, Number(candidate.bm25Score) || 0)
+                };
+            })
+            .filter(Boolean);
+        if (normalizedCandidates.length === 0) {
+            return { results: [], meta: null };
+        }
+
+        const normalizedDiaryNames = [...new Set(
+            (Array.isArray(diaryNames) ? diaryNames : [diaryNames])
+                .map(name => String(name || '').trim())
+                .filter(Boolean)
+        )];
+        const allowedFileIds = normalizedDiaryNames.length > 0
+            && typeof this.vectorDBManager.getFileIdsByDiaries === 'function'
+            ? await this.vectorDBManager.getFileIdsByDiaries(normalizedDiaryNames)
+            : [];
+        if (allowedFileIds.length === 0) {
+            const error = new Error('RiverMemo 无法建立显式日记本文件权限作用域');
+            error.code = 'RIVERMEMO_EMPTY_PERMISSION_SCOPE';
+            throw error;
+        }
+
+        const result = await this.vectorDBManager.rerankWithRiverMemoAsync(
+            {
+                text: String(queryText || ''),
+                vector: queryVector instanceof Float32Array
+                    ? queryVector
+                    : new Float32Array(queryVector)
+            },
+            normalizedCandidates,
+            {
+                agentId: null,
+                diaryNames: normalizedDiaryNames,
+                allowedFileIds,
+                deniedFileIds: [],
+                visibilityMode: 'explicit_sql_scope',
+                permissions: {
+                    allowPublic: false,
+                    allowOwn: false,
+                    allowAuthorized: true,
+                    allowOtherAgentPublic: false,
+                    allowUnknownProvenance: false
+                }
+            },
+            {
+                topK: Math.max(1, Math.floor(Number(topK) || 1)),
+                coreTags: Array.isArray(coreTags) ? coreTags : [],
+                sourceObservationConfig: {
+                    baseTagBoost: Math.max(0, Number(baseTagBoost) || 0),
+                    coreBoostFactor: 1.33
+                },
+                includeTrace: false
+            }
+        );
+
+        if (!result || !Array.isArray(result.results)) {
+            const error = new Error('RiverMemo 返回了无效结果');
+            error.code = 'RIVERMEMO_INVALID_RESULT';
+            throw error;
+        }
+
+        const results = result.results.map(item => ({
+            ...item,
+            score: Number(item.score) || 0,
+            original_score: Number(item.originalScore ?? item.original_score) || 0,
+            // RiverMemo 已将 KNN/BM25 等语义候选统一成一个拓扑排序结果；
+            // 对上层 Time 双路分配而言它们都属于语义路。原来源保留在诊断字段。
+            source: 'rag',
+            riverMemoSource: item.source || 'rag',
+            riverMemo: {
+                artifactSig: result.artifactSig || null,
+                queryId: result.queryId || null,
+                omega: Number(item.omega) || 0,
+                regime: item.riverRegime || result.omega?.regime || null,
+                role: item.role || null,
+                topologyBonus: Number(item.topologyBonus) || 0,
+                anchorBonus: Number(item.anchorBonus) || 0
+            }
+        }));
+
+        console.log(
+            `[RAGDiaryPlugin] 🌊 RiverMemo: offered=${normalizedCandidates.length}, ` +
+            `ranked=${result.diagnostics?.rankedCandidates || 0}, returned=${results.length}, ` +
+            `Ω=${Number(result.omega?.omega || 0).toFixed(4)}, ` +
+            `regime=${result.omega?.regime || 'unknown'}`
+        );
+
+        return {
+            results,
+            meta: {
+                artifactSig: result.artifactSig || null,
+                queryId: result.queryId || null,
+                omega: Number(result.omega?.omega) || 0,
+                regime: result.omega?.regime || null,
+                queryTags: result.queryTags || {
+                    matchedTags: [],
+                    coreTagsMatched: [],
+                    sourceMode: null
+                },
+                offeredCandidates: normalizedCandidates.length,
+                rankedCandidates: result.diagnostics?.rankedCandidates || 0,
+                returnedCandidates: results.length
+            }
+        };
+    }
+
 
     //####################################################################################
     //## 🌟 V9: Parent Document Expansion - 父文档展开
@@ -2680,7 +4118,7 @@ class RAGDiaryPlugin {
      * @param {string} dbName - 日记本名称
      * @returns {Promise<Array>} 展开后的结果数组（每个元素的 text 为完整文件内容）
      */
-    async _expandChunksToFullDocuments(results, dbName) {
+    async _expandChunksToFullDocuments(results, dbName, requestCache = null) {
         if (!results || results.length === 0) return results;
 
         // 1. 按 fullPath 分组，保留每个文件的最高分和元数据
@@ -2696,14 +4134,14 @@ class RAGDiaryPlugin {
 
             if (!fileMap.has(filePath)) {
                 fileMap.set(filePath, {
-                    bestScore: r.rerank_score ?? r.score ?? 0,
+                    bestScore: r.rrf_score ?? r.rerank_score ?? r.score ?? 0,
                     bestResult: r,
                     chunkCount: 1
                 });
             } else {
                 const existing = fileMap.get(filePath);
                 existing.chunkCount++;
-                const currentScore = r.rerank_score ?? r.score ?? 0;
+                const currentScore = r.rrf_score ?? r.rerank_score ?? r.score ?? 0;
                 // 🌟 V10.1 修复：Expand 去重时，rag/time 身份优先于 associate
                 // 防止同一文件的 associate chunk（可能分数更高）覆盖原始 rag 的 source 标记
                 const existingIsOriginal = existing.bestResult.source !== 'associate';
@@ -2724,33 +4162,46 @@ class RAGDiaryPlugin {
         let expandedFileCount = 0;
         let totalChunksCollapsed = 0;
 
-        for (const [filePath, info] of fileMap) {
-            try {
-                const absolutePath = path.join(dailyNoteRootPath, filePath);
-                const fullContent = await fs.readFile(absolutePath, 'utf-8');
+        const expandedEntries = await Promise.allSettled(
+            Array.from(fileMap.entries()).map(async ([filePath, info]) => {
+                try {
+                    const absolutePath = path.join(dailyNoteRootPath, filePath);
+                    let fullContent = requestCache?.fullDocumentCache?.get(filePath);
+                    if (!fullContent) {
+                        fullContent = await fs.readFile(absolutePath, 'utf-8');
+                        requestCache?.fullDocumentCache?.set(filePath, fullContent);
+                    }
 
-                // 用完整文件内容替换 chunk 文本，保留原始结果的其他元数据
-                expandedResults.push({
-                    ...info.bestResult,
-                    text: fullContent,
-                    score: info.bestScore,
-                    _expanded: true,
-                    _originalChunkCount: info.chunkCount
-                });
+                    return {
+                        ...info.bestResult,
+                        text: fullContent,
+                        score: info.bestScore,
+                        _expanded: true,
+                        _originalChunkCount: info.chunkCount,
+                        _expandedFilePath: filePath
+                    };
+                } catch (e) {
+                    console.warn(`[RAGDiaryPlugin] Expand: 文件读取失败 "${filePath}": ${e.message}，回退到原始 chunk`);
+                    return info.bestResult;
+                }
+            })
+        );
+
+        for (const entry of expandedEntries) {
+            if (entry.status !== 'fulfilled') continue;
+            const result = entry.value;
+            expandedResults.push(result);
+            if (result?._expanded) {
                 expandedFileCount++;
-                totalChunksCollapsed += info.chunkCount;
-            } catch (e) {
-                // 文件读取失败时回退到原始 chunk
-                console.warn(`[RAGDiaryPlugin] Expand: 文件读取失败 "${filePath}": ${e.message}，回退到原始 chunk`);
-                expandedResults.push(info.bestResult);
+                totalChunksCollapsed += result._originalChunkCount || 0;
             }
         }
 
         // 3. 合并无路径结果并按分数排序
         expandedResults.push(...noPathResults);
         expandedResults.sort((a, b) => {
-            const scoreA = a.rerank_score ?? a.score ?? 0;
-            const scoreB = b.rerank_score ?? b.score ?? 0;
+            const scoreA = a.rrf_score ?? a.rerank_score ?? a.score ?? 0;
+            const scoreB = b.rrf_score ?? b.rerank_score ?? b.score ?? 0;
             return scoreB - scoreA;
         });
 
@@ -2764,8 +4215,12 @@ class RAGDiaryPlugin {
 
     /**
      * 🌟 V10: 联想共现发现 (Associative Co-occurrence Discovery)
-     * 将已召回的 n 个 chunk 作为种子，每个种子以当前动态 K 在目标索引中执行纯语义搜索，
-     * 产生 n 组联想结果。从中提取在 ≥2 组中共现的结果，作为"潜在认知共现"额外追加。
+     * 将已召回的 n 个 chunk 作为种子，每个种子在目标索引中执行联想搜索，
+     * 产生 n 组结果。从中提取在 ≥2 组中共现的结果，作为"潜在认知共现"额外追加。
+     *
+     * ::RiverMemo::Associate 使用 Rust Native Query Plan + RiverMemo Topology V3；
+     * 普通 ::Associate 保留既有 KNN/TagMemo 搜索。两条路径共享相同的跨种子
+     * 共现判定、原始结果排除和最终排序规则。
      *
      * 聚合模式下，种子会跨所有聚合日记本索引搜索，实现真正的跨域认知关联。
      * 结果为额外追加，不占用原始 K 配额。
@@ -2773,10 +4228,17 @@ class RAGDiaryPlugin {
      * @param {Array} seedResults - 原始召回结果（每个需包含 text 字段）
      * @param {string[]} targetDiaries - 联想搜索的目标日记本列表
      * @param {number} dynamicK - 每个种子的联想搜索深度
-     * @param {number|null} associateTagWeight - 联想搜索的 TagMemo 权重（动态计算值，null 则无 Tag 增强）
+     * @param {number|null} associateTagWeight - 旧路径的 TagMemo 权重
+     * @param {{useRiverMemo?: boolean, riverBaseTagBoost?: number}} options - 联想引擎配置
      * @returns {Promise<Array>} 共现结果数组（source='associate'）
      */
-    async _applyAssociativeDiscovery(seedResults, targetDiaries, dynamicK, associateTagWeight = null) {
+    async _applyAssociativeDiscovery(
+        seedResults,
+        targetDiaries,
+        dynamicK,
+        associateTagWeight = null,
+        options = {}
+    ) {
         if (!seedResults || seedResults.length === 0 || !targetDiaries || targetDiaries.length === 0) {
             return [];
         }
@@ -2786,9 +4248,20 @@ class RAGDiaryPlugin {
         for (const r of seedResults) {
             if (!r.text) continue;
             try {
-                const vec = await this.vectorDBManager.getVectorByText(null, r.text);
+                let vec = null;
+                if (r.vector) {
+                    vec = r.vector;
+                } else if (r.chunkId && typeof this.vectorDBManager.getVectorByChunkId === 'function') {
+                    vec = await this.vectorDBManager.getVectorByChunkId(r.chunkId);
+                }
+
+                // 兼容旧结果对象：没有 chunkId 时才回退到全文精确匹配。
+                if (!vec) {
+                    vec = await this.vectorDBManager.getVectorByText(null, r.text);
+                }
+
                 if (vec) {
-                    seedChunks.push({ text: r.text.trim(), vector: vec, fullPath: r.fullPath });
+                    seedChunks.push({ text: r.text.trim(), vector: vec, fullPath: r.fullPath, chunkId: r.chunkId });
                 }
             } catch (e) {
                 // 向量获取失败，跳过该种子
@@ -2805,24 +4278,103 @@ class RAGDiaryPlugin {
         const originalTextSet = new Set(seedResults.map(r => r.text?.trim()).filter(Boolean));
         const originalPathSet = new Set(seedResults.map(r => r.fullPath).filter(Boolean));
 
-        // 3. 每个种子跨所有目标索引执行纯语义搜索（无 TagMemo 偏置）
+        // 3. 每个种子在同一个虚拟联合索引范围内执行搜索。
+        // RiverMemo 分支将 ANN、候选合并、hydrate、语义去重及 Topology V3
+        // 收敛到 Rust；旧路径仍由 KnowledgeBaseManager 执行联合索引搜索。
+        const selectedDiaries = [...new Set(
+            targetDiaries.map(name => String(name || '').trim()).filter(Boolean)
+        )];
+        const useRiverMemo = true;
+        const canUseNativeRiverMemo = useRiverMemo
+            && typeof this.vectorDBManager?.executeNativeRiverQuery === 'function';
+        if (useRiverMemo && !canUseNativeRiverMemo) {
+            const error = new Error('RiverMemo 联想需要原生联合查询接口');
+            error.code = 'RIVERMEMO_ASSOCIATE_UNAVAILABLE';
+            throw error;
+        }
+
+        const safeSearchK = Math.max(
+            1,
+            Math.min(1000, Math.floor(Number(dynamicK) || 10))
+        );
+        const riverConfig =
+            this.ragParams?.KnowledgeBaseManager?.riverMemo?.candidateSuperset || {};
+        const riverCandidateK = Math.max(
+            safeSearchK,
+            Math.min(
+                5000,
+                Math.max(
+                    safeSearchK * 3,
+                    Math.floor(Number(riverConfig.queryK) || 100),
+                    Math.floor(Number(riverConfig.maxUnionCandidates) || 300)
+                )
+            )
+        );
+        const riverBaseTagBoost = Math.max(
+            0,
+            Math.min(
+                1,
+                Number.isFinite(Number(options.riverBaseTagBoost))
+                    ? Number(options.riverBaseTagBoost)
+                    : 0.6
+            )
+        );
         const coOccurrenceMap = new Map(); // textKey → { count, bestScore, result }
 
         for (let seedIdx = 0; seedIdx < seedChunks.length; seedIdx++) {
             const seed = seedChunks[seedIdx];
             const thisGroupHits = new Set(); // 本组去重：同一种子不重复计数同一结果
 
-            const searchPromises = targetDiaries.map(async (diaryName) => {
-                try {
-                    // 🌟 V10.2: 使用动态计算的 TagMemo 权重参与联想发现（替代硬编码 0.33）
-                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, associateTagWeight);
-                } catch (e) {
-                    return [];
+            let allResults = [];
+            try {
+                if (canUseNativeRiverMemo) {
+                    const riverResult =
+                        await this.vectorDBManager.executeNativeRiverQuery(
+                            {
+                                text: seed.text,
+                                vector: seed.vector instanceof Float32Array
+                                    ? seed.vector
+                                    : new Float32Array(seed.vector)
+                            },
+                            {
+                                diaryNames: selectedDiaries,
+                                topK: safeSearchK,
+                                candidateK: riverCandidateK,
+                                sourceObservationConfig: {
+                                    baseTagBoost: riverBaseTagBoost,
+                                    coreBoostFactor: 1.33
+                                },
+                                enabled: true,
+                                fallbackToLegacy: true
+                            }
+                        );
+                    allResults = Array.isArray(riverResult?.results)
+                        ? riverResult.results.map(result => ({
+                            ...result,
+                            _associateEngine: 'rivermemo',
+                            _associateRiverMemo: {
+                                artifactSig: riverResult.artifactSig || null,
+                                queryId: riverResult.queryId || null,
+                                omega: Number(result.omega) || 0,
+                                regime:
+                                    result.riverRegime
+                                    || riverResult.omega?.regime
+                                    || null,
+                                topologyBonus:
+                                    Number(result.topologyBonus) || 0,
+                                anchorBonus:
+                                    Number(result.anchorBonus) || 0
+                            }
+                        }))
+                        : [];
                 }
-            });
-
-            const resultsPerDiary = await Promise.all(searchPromises);
-            const allResults = resultsPerDiary.flat();
+            } catch (e) {
+                console.warn(
+                    `[RAGDiaryPlugin] Associate seed ${seedIdx + 1}/${seedChunks.length} ` +
+                    `${canUseNativeRiverMemo ? 'RiverMemo' : 'legacy'} search failed: ${e.message}`
+                );
+                allResults = [];
+            }
 
             for (const r of allResults) {
                 const key = r.text?.trim();
@@ -2855,6 +4407,9 @@ class RAGDiaryPlugin {
                     ...data.result,
                     source: 'associate',
                     _associateCoCount: data.count,
+                    _associateEngine:
+                        data.result._associateEngine
+                        || (canUseNativeRiverMemo ? 'rivermemo' : 'legacy'),
                     score: data.bestScore
                 });
             }
@@ -2868,7 +4423,16 @@ class RAGDiaryPlugin {
             return (b.score || 0) - (a.score || 0);
         });
 
-        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${targetDiaries.length} 索引 → ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 (tagWeight=${associateTagWeight?.toFixed(3) ?? 'null'})`);
+        console.log(
+            `[RAGDiaryPlugin] 🌟 Associate [${canUseNativeRiverMemo
+                ? 'RiverMemo V5 · 黎曼双曲 Rust/Rayon'
+                : 'Legacy KNN/TagMemo'}]: ` +
+            `${seedChunks.length} 种子 × ${selectedDiaries.length} 索引（联合搜索）` +
+            `→ ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 ` +
+            `(tagWeight=${canUseNativeRiverMemo
+                ? riverBaseTagBoost.toFixed(3)
+                : (associateTagWeight?.toFixed(3) ?? 'null')})`
+        );
 
         return associateResults;
     }
@@ -2878,45 +4442,243 @@ class RAGDiaryPlugin {
     //####################################################################################
 
     /**
-     * 🌟 新增：仅获取时间范围内的文件路径列表
-     * 用于 V5 平衡召回逻辑
+     * 🌟 新增：获取某个日记本中时间最近的 chunk
+     * 用于 ::Time 场景下，在“新对话起点”补充最近记忆，增强连续性
+     * @param {string} dbName
+     * @param {number} limit
+     * @param {Array<number>|Float32Array|null} queryVector
+     * @param {Set<string>} contextDiaryPrefixes
+     * @returns {Promise<Array>}
      */
-    async _getTimeRangeFilePaths(dbName, timeRange) {
-        const characterDirPath = path.join(dailyNoteRootPath, dbName);
-        let filePathsInRange = [];
+    async _getRecentDiaryChunks(dbName, limit = 3, queryVector = null, contextDiaryPrefixes = new Set(), requestCache = null) {
+        if (!dbName || limit <= 0) return [];
 
-        if (!timeRange || !timeRange.start || !timeRange.end) return filePathsInRange;
+        const diaryNames = Array.isArray(dbName) ? dbName : [dbName];
+        const metaGroups = await Promise.all(
+            diaryNames.map(name => this._getDiaryDateIndexCached(name, requestCache))
+        );
+        // 连续性唤起是 K 外极小补充，不应先 hydrate 整个日记日期索引。
+        // 每本的日期索引已按新到旧排序；联合日记本先各取最近 limit 个再按日期合并。
+        const fileMetas = metaGroups.length === 1 ? metaGroups[0] : metaGroups
+            .flatMap(metas => metas.slice(0, Math.max(1, limit)))
+            .sort((a, b) => b.diaryDate.getTime() - a.diaryDate.getTime()
+                || a.relativePath.localeCompare(b.relativePath));
+
+        if (fileMetas.length === 0) return [];
+        const recentFileMetas = fileMetas.slice(0, Math.max(1, limit));
+        const recentFilePaths = recentFileMetas.map(meta => meta.relativePath);
+        const fileDateMap = new Map(
+            recentFileMetas.map(meta => [meta.relativePath, meta.date])
+        );
+
+        try {
+            const chunks = await this._getChunksByFilePathsCached(recentFilePaths, requestCache);
+            if (!chunks || chunks.length === 0) return [];
+
+            let recentResults = chunks.map((chunk, index) => {
+                const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+                const date = fileDateMap.get(chunkPath) || null;
+                const sim = queryVector && chunk.vector
+                    ? this.cosineSimilarity(queryVector, chunk.vector)
+                    : 0;
+
+                return {
+                    ...chunk,
+                    score: sim,
+                    source: 'time',
+                    date,
+                    _recentIndex: index,
+                    _isContinuityExtra: true
+                };
+            });
+
+            recentResults = this._filterContextDuplicates(recentResults, contextDiaryPrefixes);
+            recentResults.sort((a, b) => {
+                const dateA = a.date ? diaryDayStart(a.date).getTime() : 0;
+                const dateB = b.date ? diaryDayStart(b.date).getTime() : 0;
+                if (dateB !== dateA) return dateB - dateA;
+                return (b.score || 0) - (a.score || 0);
+            });
+
+            return recentResults.slice(0, limit);
+        } catch (e) {
+            console.error(`[RAGDiaryPlugin] Recent chunk recall failed for "${diaryNames.join('|')}":`, e.message);
+            return [];
+        }
+    }
+
+    _createRequestCache() {
+        return {
+            chunksByFilePath: new Map(),
+            fullDocumentCache: new Map(),
+            timeRangeFilePaths: new Map(),
+            diarySimilarity: new Map(),
+            diaryDateIndex: new Map()
+        };
+    }
+
+    _getQueryVectorCacheKey(queryVector) {
+        if (!queryVector || typeof queryVector.length !== 'number') return 'no-vector';
+        const dim = queryVector.length;
+        const sampleCount = Math.min(16, dim);
+        const sample = [];
+        for (let i = 0; i < sampleCount; i++) {
+            const idx = Math.floor(i * dim / sampleCount);
+            sample.push(Number(queryVector[idx] || 0).toFixed(6));
+        }
+        return `${dim}:${sample.join(',')}`;
+    }
+
+    async _getDiaryDateIndexCached(dbName, requestCache = null) {
+        if (!dbName) return [];
+        if (requestCache?.diaryDateIndex?.has(dbName)) {
+            return requestCache.diaryDateIndex.get(dbName);
+        }
+
+        const normalizeMetas = (metas) => (Array.isArray(metas) ? metas : [])
+            .filter(meta => meta && meta.relativePath && meta.date)
+            .map(meta => ({
+                relativePath: meta.relativePath,
+                date: meta.date,
+                diaryDate: meta.diaryDate || diaryDayStart(meta.date)
+            }))
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        if (typeof this.vectorDBManager?.getDiaryDateIndex === 'function') {
+            const indexedMetas = normalizeMetas(
+                await this.vectorDBManager.getDiaryDateIndex(dbName)
+            );
+            requestCache?.diaryDateIndex?.set(dbName, indexedMetas);
+            return indexedMetas;
+        }
+
+        const characterDirPath = path.join(dailyNoteRootPath, dbName);
+        const fileMetas = [];
 
         try {
             const files = await fs.readdir(characterDirPath);
             const diaryFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
 
-            for (const file of diaryFiles) {
+            await Promise.all(diaryFiles.map(async (file) => {
                 const filePath = path.join(characterDirPath, file);
                 try {
-                    // 优化：只读取前 100 个字符来解析日期，不读取全文
                     const fd = await fs.open(filePath, 'r');
-                    const buffer = Buffer.alloc(100);
-                    await fd.read(buffer, 0, 100, 0);
-                    await fd.close();
+                    try {
+                        const buffer = Buffer.alloc(100);
+                        await fd.read(buffer, 0, 100, 0);
 
-                    const content = buffer.toString('utf-8');
-                    const firstLine = content.split('\n')[0];
-                    const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
+                        const content = buffer.toString('utf-8');
+                        const firstLine = content.split('\n')[0];
+                        const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
 
-                    if (match) {
-                        const dateStr = match[1];
-                        const normalizedDateStr = dateStr.replace(/\./g, '-');
-                        const diaryDate = dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate();
-
-                        if (diaryDate >= timeRange.start && diaryDate <= timeRange.end) {
-                            // 存储相对于知识库根目录的路径，以便 KnowledgeBaseManager 查询
-                            filePathsInRange.push(path.join(dbName, file));
+                        if (match) {
+                            const normalizedDateStr = match[1].replace(/\./g, '-');
+                            fileMetas.push({
+                                relativePath: path.join(dbName, file),
+                                date: normalizedDateStr,
+                                diaryDate: diaryDayStart(normalizedDateStr)
+                            });
                         }
+                    } finally {
+                        await fd.close();
                     }
                 } catch (readErr) { }
+            }));
+        } catch (dirError) {
+            if (dirError.code !== 'ENOENT') {
+                console.error(`[RAGDiaryPlugin] Diary date index failed while scanning ${characterDirPath}:`, dirError.message);
             }
-        } catch (dirError) { }
+        }
+
+        const normalizedFileMetas = normalizeMetas(fileMetas);
+        requestCache?.diaryDateIndex?.set(dbName, normalizedFileMetas);
+        return normalizedFileMetas;
+    }
+
+    async _getChunksByFilePathsCached(filePaths, requestCache = null) {
+        if (!filePaths || filePaths.length === 0) return [];
+
+        const uniquePaths = [...new Set(filePaths.filter(Boolean))];
+        if (!requestCache?.chunksByFilePath) {
+            return await this.vectorDBManager.getChunksByFilePaths(uniquePaths);
+        }
+
+        const missingPaths = uniquePaths.filter(filePath => !requestCache.chunksByFilePath.has(filePath));
+        if (missingPaths.length > 0) {
+            const chunks = await this.vectorDBManager.getChunksByFilePaths(missingPaths);
+            const grouped = new Map(missingPaths.map(filePath => [filePath, []]));
+            for (const chunk of chunks) {
+                const chunkPath = chunk.fullPath || chunk.sourceFile || '';
+                if (!grouped.has(chunkPath)) grouped.set(chunkPath, []);
+                grouped.get(chunkPath).push(chunk);
+            }
+            for (const filePath of missingPaths) {
+                requestCache.chunksByFilePath.set(filePath, grouped.get(filePath) || []);
+            }
+        }
+
+        return uniquePaths.flatMap(filePath => requestCache.chunksByFilePath.get(filePath) || []);
+    }
+
+    async _getDiarySimilarityCached(dbName, queryVector, requestCache = null) {
+        if (!dbName || !queryVector) return null;
+
+        const cacheKey = `${dbName}|${this._getQueryVectorCacheKey(queryVector)}`;
+        if (requestCache?.diarySimilarity?.has(cacheKey)) {
+            return requestCache.diarySimilarity.get(cacheKey);
+        }
+
+        let dbNameVector = null;
+        try {
+            dbNameVector = await this.vectorDBManager.getDiaryNameVector(dbName);
+        } catch (e) {
+            dbNameVector = null;
+        }
+
+        const enhancedVector = this.enhancedVectorCache[dbName];
+        if (!dbNameVector && !enhancedVector) return null;
+
+        const baseSimilarity = dbNameVector ? this.cosineSimilarity(queryVector, dbNameVector) : 0;
+        const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
+        const result = {
+            baseSimilarity,
+            enhancedSimilarity,
+            finalSimilarity: Math.max(baseSimilarity, enhancedSimilarity)
+        };
+
+        requestCache?.diarySimilarity?.set(cacheKey, result);
+        return result;
+    }
+
+    async _getTimeRangeFilePathsCached(dbName, timeRange, requestCache = null) {
+        if (!timeRange || !timeRange.start || !timeRange.end) return [];
+        const startKey = timeRange.start instanceof Date ? timeRange.start.toISOString() : String(timeRange.start);
+        const endKey = timeRange.end instanceof Date ? timeRange.end.toISOString() : String(timeRange.end);
+        const cacheKey = `${dbName}|${startKey}|${endKey}`;
+
+        if (requestCache?.timeRangeFilePaths?.has(cacheKey)) {
+            return requestCache.timeRangeFilePaths.get(cacheKey);
+        }
+
+        const paths = await this._getTimeRangeFilePaths(dbName, timeRange, requestCache);
+        requestCache?.timeRangeFilePaths?.set(cacheKey, paths);
+        return paths;
+    }
+
+    /**
+     * 🌟 新增：仅获取时间范围内的文件路径列表
+     * 用于 V5 平衡召回逻辑
+     */
+    async _getTimeRangeFilePaths(dbName, timeRange, requestCache = null) {
+        let filePathsInRange = [];
+
+        if (!timeRange || !timeRange.start || !timeRange.end) return filePathsInRange;
+
+        const fileMetas = await this._getDiaryDateIndexCached(dbName, requestCache);
+        filePathsInRange = fileMetas
+            .filter(meta => meta.diaryDate >= timeRange.start && meta.diaryDate <= timeRange.end)
+            .map(meta => meta.relativePath);
+
         return filePathsInRange;
     }
 
@@ -2970,102 +4732,24 @@ class RAGDiaryPlugin {
         return diariesInRange;
     }
 
+    _formatResultPathLine(result) {
+        return RAGResultFormatter.formatResultPathLine(result);
+    }
+
+    _formatMemoryEntry(result, { prefix = '* ', text = null } = {}) {
+        return RAGResultFormatter.formatMemoryEntry(result, { prefix, text });
+    }
+
     formatStandardResults(searchResults, displayName, metadata) {
-        const mainResults = searchResults ? searchResults.filter(r => r.source !== 'associate') : [];
-        const associateResults = searchResults ? searchResults.filter(r => r.source === 'associate') : [];
-
-        let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
-        if (mainResults.length > 0) {
-            innerContent += mainResults.map(r => `* ${r.text.trim()}`).join('\n');
-        } else {
-            innerContent += "没有找到直接相关的记忆片段。";
-        }
-
-        if (associateResults.length > 0) {
-            innerContent += `\n\n【联想共现记忆 (${associateResults.length}条, 多条记忆交叉关联)】\n`;
-            innerContent += associateResults.map(r => `* ${r.text.trim()}`).join('\n');
-        }
-
-        innerContent += `\n[--- 记忆片段结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatStandardResults(searchResults, displayName, metadata);
     }
 
     formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata) {
-        const displayName = dbName + '日记本';
-        const formatDate = (date) => {
-            const d = new Date(date);
-            return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-        }
-
-        let innerContent = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
-
-        const formattedRanges = timeRanges.map(tr => `"${formatDate(tr.start)} ~ ${formatDate(tr.end)}"`).join(' 和 ');
-        innerContent += `[合并查询的时间范围: ${formattedRanges}]\n`;
-
-        const ragEntries = results.filter(e => e.source === 'rag');
-        const timeEntries = results.filter(e => e.source === 'time');
-        const associateEntries = results.filter(e => e.source === 'associate');
-
-        innerContent += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条${associateEntries.length > 0 ? `, 联想共现 ${associateEntries.length}条` : ''})]\n\n`;
-
-        if (ragEntries.length > 0) {
-            innerContent += '【语义相关记忆】\n';
-            ragEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
-                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
-            });
-        }
-
-        if (timeEntries.length > 0) {
-            innerContent += '\n【时间范围记忆】\n';
-            // 按日期从新到旧排序
-            timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
-            timeEntries.forEach(entry => {
-                innerContent += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
-            });
-        }
-
-        if (associateEntries.length > 0) {
-            innerContent += '\n【联想共现记忆】\n';
-            associateEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
-                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
-            });
-        }
-
-        innerContent += `[--- 检索结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata);
     }
 
     formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata) {
-        let innerContent = `\n[--- "${displayName}" 语义组增强检索结果 ---]\n`;
-
-        if (activatedGroups && activatedGroups.size > 0) {
-            innerContent += `[激活的语义组:]\n`;
-            for (const [groupName, data] of activatedGroups) {
-                innerContent += `  • ${groupName} (${(data.strength * 100).toFixed(0)}%激活): 匹配到 "${data.matchedWords.join(', ')}"\n`;
-            }
-            innerContent += '\n';
-        } else {
-            innerContent += `[未激活特定语义组]\n\n`;
-        }
-
-        innerContent += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
-        if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
-        } else {
-            innerContent += "没有找到直接相关的记忆片段。";
-        }
-        innerContent += `\n[--- 检索结束 ---]\n`;
-
-        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
-        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
+        return RAGResultFormatter.formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata);
     }
 
     /**
@@ -3212,7 +4896,144 @@ class RAGDiaryPlugin {
         return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
     }
 
-    async _rerankDocuments(query, documents, originalK, rrfOptions = null) {
+    async _rerankDocumentsWithJev(query, documents, originalK, rrfOptions = null, rankOptions = {}) {
+        if (
+            !this.jevClient
+            || typeof this.jevClient.decide !== 'function'
+            || this.jevClient.isConfigured?.() !== true
+        ) {
+            console.warn(
+                '[RAGDiaryPlugin] Jev advanced rerank is enabled, but the shared JevClient is not configured. Keeping retrieval order.'
+            );
+            return documents.slice(0, originalK);
+        }
+
+        if (!Array.isArray(documents) || documents.length <= 1) {
+            return (documents || []).slice(0, originalK);
+        }
+
+        const maxChoices = Math.max(
+            2,
+            Math.min(255, Number(this.rerankConfig.jevMaxChoices) || 255)
+        );
+        const maxDocumentChars = Math.max(
+            200,
+            Number(this.rerankConfig.jevMaxDocumentChars) || 6000
+        );
+        const eligibleDocuments = documents.slice(0, maxChoices);
+        if (documents.length > eligibleDocuments.length) {
+            console.warn(
+                `[RAGDiaryPlugin] Jev rerank candidates truncated: ` +
+                `${documents.length} -> ${eligibleDocuments.length} (Choice hard limit).`
+            );
+        }
+
+        const criteria = {};
+        const documentByChoice = new Map();
+        eligibleDocuments.forEach((document, index) => {
+            const choiceId = `doc_${String(index).padStart(3, '0')}`;
+            const text = String(document?.text || '').trim();
+            const boundedText = text.length > maxDocumentChars
+                ? `${text.substring(0, maxDocumentChars)}…`
+                : text;
+            criteria[choiceId] = [
+                `候选记忆 ${index + 1}`,
+                document?.source ? `来源类型: ${document.source}` : null,
+                document?.fullPath ? `路径: ${document.fullPath}` : null,
+                `内容:\n${boundedText}`
+            ].filter(Boolean).join('\n');
+            documentByChoice.set(choiceId, document);
+        });
+
+        try {
+            const response = await this.jevClient.decide(
+                {
+                    task: 'rag_memory_rerank',
+                    query: String(query || ''),
+                    candidate_count: eligibleDocuments.length
+                },
+                {
+                    best_memory: {
+                        type: 'choice',
+                        instructions: rankOptions.jevPrompt || this.rerankConfig.jevPrompt,
+                        criteria
+                    }
+                }
+            );
+            const answer = response?.answers?.best_memory;
+            const probabilities = answer?.probabilities;
+            if (
+                !answer
+                || answer.type !== 'choice'
+                || !probabilities
+                || typeof probabilities !== 'object'
+            ) {
+                throw new Error('Jev choice response is missing probabilities.');
+            }
+
+            const rerankedDocuments = Array.from(documentByChoice.entries())
+                .map(([choiceId, document], index) => ({
+                    ...document,
+                    rerank_score: Number(probabilities[choiceId]) || 0,
+                    jev_choice: choiceId,
+                    jev_selected: answer.choice === choiceId,
+                    jev_confidence: Number(answer.confidence) || 0,
+                    _jevStableIndex: index
+                }))
+                .sort((left, right) =>
+                    (right.rerank_score - left.rerank_score)
+                    || (Number(right.jev_selected) - Number(left.jev_selected))
+                    || (left._jevStableIndex - right._jevStableIndex)
+                );
+
+            rerankedDocuments.forEach((document, index) => {
+                document.rerank_rank = index + 1;
+                delete document._jevStableIndex;
+            });
+
+            if (rrfOptions) {
+                const RRF_K = 60;
+                const alpha = rrfOptions.alpha ?? 0.5;
+                rerankedDocuments.forEach(document => {
+                    const retrievalRank = document.retrieval_rank
+                        || rerankedDocuments.length;
+                    document.rrf_score =
+                        alpha * (1 / (RRF_K + document.rerank_rank))
+                        + (1 - alpha) * (1 / (RRF_K + retrievalRank));
+                });
+                rerankedDocuments.sort((left, right) =>
+                    right.rrf_score - left.rrf_score
+                );
+            }
+
+            const finalDocuments = rerankedDocuments.slice(0, originalK);
+            console.log(
+                `[RAGDiaryPlugin] Jev${rrfOptions ? '+(RRF)' : ''} rerank completed: ` +
+                `${eligibleDocuments.length} candidates -> ${finalDocuments.length}, ` +
+                `selected=${answer.choice || 'unknown'}, ` +
+                `confidence=${Number(answer.confidence || 0).toFixed(4)}.`
+            );
+            return finalDocuments;
+        } catch (error) {
+            console.error(
+                '[RAGDiaryPlugin] Jev advanced rerank failed; keeping retrieval order:',
+                error.message
+            );
+            return documents.slice(0, originalK);
+        }
+    }
+
+    async _rerankDocuments(query, documents, originalK, rrfOptions = null, rankOptions = {}) {
+        if ((rankOptions.useJev ?? this.rerankConfig.useJev) === true) {
+            return this._rerankDocumentsWithJev(
+                query,
+                documents,
+                originalK,
+                rrfOptions,
+                rankOptions
+            );
+        }
+
         // JIT (Just-In-Time) check for configuration instead of relying on a startup flag
         if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
             console.warn('[RAGDiaryPlugin] Rerank called, but is not configured. Skipping.');
@@ -3257,8 +5078,18 @@ class RAGDiaryPlugin {
             'Content-Type': 'application/json',
         };
         const maxTokens = this.rerankConfig.maxTokens;
+        const maxDocumentsPerRequest = Math.max(
+            1,
+            Math.min(25, parseInt(this.rerankConfig.maxDocumentsPerRequest, 10) || 25)
+        );
+        const maxConcurrentRequests = Math.max(
+            1,
+            Math.min(10, parseInt(this.rerankConfig.maxConcurrentRequests, 10) || 3)
+        );
 
-        // ✅ 优化批次处理逻辑
+        // ✅ 双重批次限制：
+        // 1. documents 数量不超过 25，保持服务商的小批量免费档；
+        // 2. 同时遵守 Token 上限，避免超长文档导致请求失败。
         let batches = [];
         let currentBatch = [];
         let currentTokens = queryTokens;
@@ -3274,7 +5105,9 @@ class RAGDiaryPlugin {
                 continue;
             }
 
-            if (currentTokens + docTokens > maxBatchTokens && currentBatch.length >= minBatchSize) {
+            const exceedsDocumentLimit = currentBatch.length >= maxDocumentsPerRequest;
+            const exceedsTokenLimit = currentTokens + docTokens > maxBatchTokens;
+            if ((exceedsDocumentLimit || exceedsTokenLimit) && currentBatch.length >= minBatchSize) {
                 // Current batch is full, push it and start a new one
                 batches.push(currentBatch);
                 currentBatch = [doc];
@@ -3291,6 +5124,12 @@ class RAGDiaryPlugin {
             batches.push(currentBatch);
         }
 
+        console.log(
+            `[RAGDiaryPlugin] Rerank split into ${batches.length} free-tier batches ` +
+            `(max ${maxDocumentsPerRequest} documents/request, token limit ${maxTokens}, ` +
+            `concurrency ${Math.min(maxConcurrentRequests, batches.length)}).`
+        );
+
         // 如果没有有效批次，直接返回原始文档
         if (batches.length === 0) {
             console.warn('[RAGDiaryPlugin] No valid batches for reranking, returning original documents');
@@ -3298,11 +5137,11 @@ class RAGDiaryPlugin {
         }
 
 
-        let allRerankedDocs = [];
+        const batchResults = new Array(batches.length);
         let failedBatches = 0;
+        let nextBatchIndex = 0;
 
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
+        const rerankBatch = async (batch, batchIndex) => {
             const docTexts = batch.map(d => d.text);
 
             try {
@@ -3313,7 +5152,6 @@ class RAGDiaryPlugin {
                     top_n: docTexts.length // Rerank all documents within the batch
                 };
 
-                // ✅ 添加请求超时和重试机制
                 const response = await axios.post(rerankUrl, body, {
                     headers,
                     timeout: 30000, // 30秒超时
@@ -3321,24 +5159,22 @@ class RAGDiaryPlugin {
                 });
 
                 if (response.data && Array.isArray(response.data.results)) {
-                    const rerankedResults = response.data.results;
-                    const orderedBatch = rerankedResults
+                    return response.data.results
                         .map(result => {
                             const originalDoc = batch[result.index];
-                            // 关键：将 rerank score 赋给原始文档
-                            return { ...originalDoc, rerank_score: result.relevance_score };
+                            return originalDoc
+                                ? { ...originalDoc, rerank_score: result.relevance_score }
+                                : null;
                         })
                         .filter(Boolean);
-
-                    allRerankedDocs.push(...orderedBatch);
-                } else {
-                    console.warn(`[RAGDiaryPlugin] Rerank for batch ${i + 1} returned invalid data. Appending original batch documents.`);
-                    allRerankedDocs.push(...batch); // Fallback: use original order for this batch
-                    failedBatches++;
                 }
+
+                failedBatches++;
+                console.warn(`[RAGDiaryPlugin] Rerank for batch ${batchIndex + 1} returned invalid data. Appending original batch documents.`);
+                return batch;
             } catch (error) {
                 failedBatches++;
-                console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${i + 1}. Appending original batch documents.`);
+                console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${batchIndex + 1}. Appending original batch documents.`);
 
                 // ✅ 详细错误分析和断路器触发
                 if (error.response) {
@@ -3346,35 +5182,37 @@ class RAGDiaryPlugin {
                     const errorData = error.response.data;
                     console.error(`[RAGDiaryPlugin] Rerank API Error - Status: ${status}, Data: ${JSON.stringify(errorData)}`);
 
-                    // 特定错误处理
                     if (status === 400 && errorData?.error?.message?.includes('Query is too long')) {
                         console.error('[RAGDiaryPlugin] Query still too long after truncation, adding to circuit breaker');
-                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                     } else if (status >= 500) {
-                        // 服务器错误，添加到断路器
-                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                     }
                 } else if (error.code === 'ECONNABORTED') {
                     console.error('[RAGDiaryPlugin] Rerank API timeout');
-                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                 } else {
                     console.error('[RAGDiaryPlugin] Rerank API Error - Message:', error.message);
-                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${batchIndex}`, now);
                 }
 
-                allRerankedDocs.push(...batch); // Fallback: use original order for this batch
-
-                // ✅ 如果失败率过高，提前终止
-                if (failedBatches / (i + 1) > 0.5 && i > 2) {
-                    console.warn('[RAGDiaryPlugin] Too many rerank failures, terminating early');
-                    // 添加剩余批次的原始文档
-                    for (let j = i + 1; j < batches.length; j++) {
-                        allRerankedDocs.push(...batches[j]);
-                    }
-                    break;
-                }
+                return batch;
             }
-        }
+        };
+
+        // 有界 worker pool：并发发送小批量请求，避免无上限 Promise.all 压垮服务商。
+        const workerCount = Math.min(maxConcurrentRequests, batches.length);
+        const workers = Array.from({ length: workerCount }, async () => {
+            while (true) {
+                const batchIndex = nextBatchIndex++;
+                if (batchIndex >= batches.length) return;
+                batchResults[batchIndex] = await rerankBatch(batches[batchIndex], batchIndex);
+            }
+        });
+        await Promise.all(workers);
+
+        // 始终按原批次序合并，保证并发完成时序不会影响后续稳定排序。
+        const allRerankedDocs = batchResults.flatMap(result => result || []);
 
         // ✅ 清理过期的断路器记录
         for (const [key, timestamp] of this.rerankCircuitBreaker.entries()) {
@@ -3430,76 +5268,22 @@ class RAGDiaryPlugin {
     }
 
     _cleanResultsForBroadcast(results) {
-        if (!Array.isArray(results)) return [];
-        return results.map(r => {
-            // 仅保留可序列化的关键属性
-            const cleaned = {
-                text: r.text || '',
-                score: r.score || undefined,
-                source: r.source || undefined,
-                date: r.date || undefined,
-            };
-
-            // ✅ 新增：包含Tag相关信息（如果存在）
-            if (r.originalScore !== undefined) cleaned.originalScore = r.originalScore;
-            if (r.tagMatchScore !== undefined) cleaned.tagMatchScore = r.tagMatchScore;
-            
-            let finalTags = [];
-            if (r.matchedTags && Array.isArray(r.matchedTags)) {
-                finalTags = r.matchedTags.map(t => {
-                    if (typeof t === 'string') return t;
-                    if (t && t.name) return t.name;
-                    return String(t);
-                });
-            }
-            if (r.source === 'time' && !finalTags.includes('time')) {
-                finalTags.push('time');
-            }
-            if (finalTags.length > 0) {
-                cleaned.matchedTags = finalTags;
-            }
-            
-            if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
-            if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
-            if (r._associateCoCount !== undefined) cleaned.associateCoCount = r._associateCoCount; // 🌟 V10
-            // 🛡️ 确保 coreTagsMatched 是纯字符串数组 (脱水处理)
-            if (r.coreTagsMatched && Array.isArray(r.coreTagsMatched)) {
-                cleaned.coreTagsMatched = r.coreTagsMatched.map(t => {
-                    if (typeof t === 'string') return t;
-                    if (t && t.name) return t.isCore ? `!${t.name}` : t.name;
-                    return String(t);
-                });
-            }
-
-            return cleaned;
-        });
+        return RAGResultFormatter.cleanResultsForBroadcast(results);
     }
 
     /**
      * ✅ 新增：汇总Tag统计信息
      */
     _aggregateTagStats(results) {
-        const allMatchedTags = new Set();
-        let totalBoostFactor = 0;
-        let resultsWithTags = 0;
-
-        for (const r of results) {
-            if (r.matchedTags && r.matchedTags.length > 0) {
-                r.matchedTags.forEach(tag => allMatchedTags.add(tag));
-                resultsWithTags++;
-                if (r.boostFactor) totalBoostFactor += r.boostFactor;
-            }
-        }
-
-        return {
-            uniqueMatchedTags: Array.from(allMatchedTags),
-            totalTagMatches: allMatchedTags.size,
-            resultsWithTags: resultsWithTags,
-            avgBoostFactor: resultsWithTags > 0 ? (totalBoostFactor / resultsWithTags).toFixed(3) : 1.0
-        };
+        return RAGResultFormatter.aggregateTagStats(results);
     }
 
-    async getSingleEmbedding(text) {
+    async getSingleEmbedding(text, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!text) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
             return null;
@@ -3507,76 +5291,55 @@ class RAGDiaryPlugin {
 
         const apiKey = process.env.API_Key;
         const apiUrl = process.env.API_URL;
-        const embeddingModel = process.env.WhitelistEmbeddingModel;
 
-        if (!apiKey || !apiUrl || !embeddingModel) {
-            console.error('[RAGDiaryPlugin] Embedding API credentials or model is not configured in environment variables.');
+        if (!apiKey || !apiUrl) {
+            console.error('[RAGDiaryPlugin] Embedding API credentials not configured (API_Key / API_URL).');
             return null;
         }
 
-        // 1. 使用 TextChunker 分割文本以避免超长
-        const textChunks = chunkText(text);
-        if (!textChunks || textChunks.length === 0) {
-            console.log('[RAGDiaryPlugin] Text chunking resulted in no chunks.');
-            return null;
-        }
-
-        if (textChunks.length > 1) {
-            console.log(`[RAGDiaryPlugin] Text is too long, split into ${textChunks.length} chunks for embedding.`);
-        }
-
-        const maxRetries = 3;
-        const retryDelay = 1000; // 1 second
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const response = await axios.post(`${apiUrl}/v1/embeddings`, {
-                    model: embeddingModel,
-                    input: textChunks // 传入所有文本块
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                const embeddings = response.data?.data;
-                if (!embeddings || embeddings.length === 0) {
-                    console.error('[RAGDiaryPlugin] No embeddings found in the API response.');
-                    return null;
-                }
-
-                const vectors = embeddings.map(e => e.embedding).filter(Boolean);
-                if (vectors.length === 0) {
-                    console.error('[RAGDiaryPlugin] No valid embedding vectors in the API response data.');
-                    return null;
-                }
-
-                // 如果只有一个向量，直接返回；否则，计算平均向量
-                if (vectors.length === 1) {
-                    return vectors[0];
-                } else {
-                    console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one.`);
-                    return this._getAverageVector(vectors);
-                }
-            } catch (error) {
-                const status = error.response ? error.response.status : null;
-
-                if ((status === 500 || status === 503) && attempt < maxRetries) {
-                    console.warn(`[RAGDiaryPlugin] Embedding API call failed with status ${status}. Attempt ${attempt} of ${maxRetries}. Retrying in ${retryDelay}ms...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    continue;
-                }
-
-                if (error.response) {
-                    console.error(`[RAGDiaryPlugin] Embedding API Error: ${error.message} (Status: ${error.response.status})`);
-                } else {
-                    console.error('[RAGDiaryPlugin] An error occurred while setting up the embedding request:', error.message);
-                }
-                return null; // Return null after final attempt or for non-retriable errors
+        try {
+            const normalizedText = String(text).trim();
+            const chunks = chunkText(normalizedText);
+            if (chunks.length === 0) {
+                console.error('[RAGDiaryPlugin] getSingleEmbedding: text became empty after chunking.');
+                return null;
             }
+
+            if (chunks.length > 1) {
+                console.warn(
+                    `[RAGDiaryPlugin] getSingleEmbedding: input exceeds safe embedding window; ` +
+                    `split into ${chunks.length} chunks and will merge by token-weighted average.`
+                );
+            }
+
+            // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾链、并发批量、token 精确切分、429 退避。
+            // 对超长用户/AI 上下文，先按 TextChunker 的 safeMaxTokens 切分，再对各 chunk 向量做 token 加权平均，
+            // 避免单条 6800+ token 文本被 EmbeddingUtils 直接跳过导致 RAG 查询向量为 null。
+            const results = await getEmbeddingsBatch(chunks, {
+                apiUrl,
+                apiKey,
+                ...(options?.signal ? { signal: options.signal } : {}),
+                ...(typeof options?.onBatchComplete === 'function' ? { onBatchComplete: options.onBatchComplete } : {})
+            });
+            const weights = chunks.map(chunk => Math.max(
+                1,
+                typeof getTokenCount === 'function' ? getTokenCount(chunk) : this._estimateTokens(chunk)
+            ));
+            const vector = this._getWeightedAverageVector(results, weights);
+
+            if (!vector) {
+                console.error('[RAGDiaryPlugin] getSingleEmbedding: EmbeddingUtils returned no usable vectors for the input text/chunks.');
+            }
+            return vector || null;
+        } catch (error) {
+            if (error?.name === 'AbortError' || options?.signal?.aborted) {
+                const abortErr = error instanceof Error ? error : new Error('Embedding request aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
+            console.error('[RAGDiaryPlugin] getSingleEmbedding failed via EmbeddingUtils:', error.message);
+            return null;
         }
-        return null; // Should not be reached, but as a fallback
     }
 
     //####################################################################################
@@ -3594,7 +5357,14 @@ class RAGDiaryPlugin {
             dynamicK = null,
             useGroup = false,
             isAutoMode = false,
-            ghostTags = []
+            ghostTags = [],
+            autoWhitelist = null,
+            autoBlacklist = null,
+            isFreshTimeConversationStart = false,
+            shotgunDecayFactor = null,
+            shotgunHistorySegmentLimit = null,
+            nativeTimePerDiaryLimit = null,
+            nativeTimeGlobalLimit = null
         } = params;
 
         const currentDate = modifiers.includes('::Time')
@@ -3603,7 +5373,15 @@ class RAGDiaryPlugin {
 
         const ghostTagString = ghostTags.map(t => `${t.isCore ? '!' : ''}${t.name}`).sort().join(',');
 
+        const ranking = this._parseRerankModifiers(modifiers);
         return this.cacheManager.generateKey({
+            ranking: ranking.useRerank ? {
+                fusionVersion: ranking.useRerankPlus ? 'independent-omega-v1' : null,
+                nativeRiverQueryEnabled: this.vectorDBManager?.config?.nativeRiverQueryEnabled === true,
+                useJev: ranking.useJev,
+                promptHash: ranking.useJev ? crypto.createHash('sha256')
+                    .update(ranking.jevPrompt || '').digest('hex') : null
+            } : null,
             user: userContent.trim(),
             ai: aiContent ? aiContent.trim() : null,
             db: dbName,
@@ -3614,7 +5392,15 @@ class RAGDiaryPlugin {
             group: useGroup,
             auto: isAutoMode,
             date: currentDate,
-            ghosts: ghostTagString
+            ghosts: ghostTagString,
+            auto_wl: autoWhitelist ? autoWhitelist.sort().join(',') : '',
+            auto_bl: autoBlacklist ? autoBlacklist.sort().join(',') : '',
+            fresh_time_start: isFreshTimeConversationStart,
+            shotgun_decay: shotgunDecayFactor,
+            shotgun_history_limit: shotgunHistorySegmentLimit,
+            shotgun_history_enabled: this.shotgunHistoryEnabled !== false,
+            native_time_per_diary_limit: nativeTimePerDiaryLimit,
+            native_time_global_limit: nativeTimeGlobalLimit
         });
     }
 
@@ -3639,64 +5425,47 @@ class RAGDiaryPlugin {
     /**
      * ✅ 批量向量化方法（支持 OpenAI 兼容接口）
      */
-    async getBatchEmbeddings(texts) {
+    async getBatchEmbeddings(texts, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Batch embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!texts || !Array.isArray(texts) || texts.length === 0) return [];
 
         const apiKey = process.env.API_Key;
         const apiUrl = process.env.API_URL;
-        const embeddingModel = process.env.WhitelistEmbeddingModel;
 
-        if (!apiKey || !apiUrl || !embeddingModel) {
-            console.error('[RAGDiaryPlugin] Embedding API credentials or model is not configured.');
+        if (!apiKey || !apiUrl) {
+            console.error('[RAGDiaryPlugin] Embedding API credentials not configured (API_Key / API_URL).');
             return new Array(texts.length).fill(null);
         }
 
-        const validTasks = texts.map((text, index) => ({ text, index })).filter(t => t.text && t.text.trim());
-        if (validTasks.length === 0) return new Array(texts.length).fill(null);
-
-        const results = new Array(texts.length).fill(null);
-        const maxRetries = 3;
-        const retryDelay = 1000;
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const response = await axios.post(`${apiUrl}/v1/embeddings`, {
-                    model: embeddingModel,
-                    input: validTasks.map(t => t.text)
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 60000 // 批量请求可能需要更长时间
-                });
-
-                const embeddings = response.data?.data;
-                if (embeddings && Array.isArray(embeddings)) {
-                    embeddings.forEach((e, i) => {
-                        const originalIndex = validTasks[i].index;
-                        results[originalIndex] = e.embedding;
-                    });
-                    return results;
-                } else {
-                    console.error('[RAGDiaryPlugin] No embeddings found in batch response.');
-                    if (attempt === maxRetries) return results;
-                }
-            } catch (error) {
-                const status = error.response ? error.response.status : null;
-                if ((status === 500 || status === 503 || status === 429) && attempt < maxRetries) {
-                    console.warn(`[RAGDiaryPlugin] Batch Embedding API failed (${status}). Attempt ${attempt}/${maxRetries}. Retrying...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    continue;
-                }
-                console.error('[RAGDiaryPlugin] Batch embedding API error:', error.message);
-                return results;
+        try {
+            // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾链、并发批量、token 精确切分、429 退避
+            return await getEmbeddingsBatch(texts, {
+                apiUrl,
+                apiKey,
+                ...(options?.signal ? { signal: options.signal } : {}),
+                ...(typeof options?.onBatchComplete === 'function' ? { onBatchComplete: options.onBatchComplete } : {})
+            });
+        } catch (error) {
+            if (error?.name === 'AbortError' || options?.signal?.aborted) {
+                const abortErr = error instanceof Error ? error : new Error('Batch embedding request aborted');
+                abortErr.name = 'AbortError';
+                throw abortErr;
             }
+            console.error('[RAGDiaryPlugin] getBatchEmbeddings failed via EmbeddingUtils:', error.message);
+            return new Array(texts.length).fill(null);
         }
-        return results;
     }
 
-    async getBatchEmbeddingsCached(texts) {
+    async getBatchEmbeddingsCached(texts, options = {}) {
+        if (options?.signal?.aborted) {
+            const abortErr = new Error('Batch embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!texts || !Array.isArray(texts) || texts.length === 0) return [];
 
         const results = new Array(texts.length).fill(null);
@@ -3705,9 +5474,11 @@ class RAGDiaryPlugin {
 
         texts.forEach((text, index) => {
             if (!text || !text.trim()) return;
-            const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
+            const normalized = text.trim();
+            const cacheKey = this.cacheManager.generateKey({ text: normalized });
             const vector = this.cacheManager.get('embedding', cacheKey);
             if (vector) {
+                this._rememberEmbeddingText(cacheKey, normalized);
                 results[index] = vector;
             } else {
                 missingIndices.push(index);
@@ -3717,14 +5488,25 @@ class RAGDiaryPlugin {
 
         if (missingTexts.length > 0) {
             console.log(`[RAGDiaryPlugin] Batch cache miss: ${missingTexts.length}/${texts.length} texts. Requesting API...`);
-            const newEmbeddings = await this.getBatchEmbeddings(missingTexts);
+            const persistCompletedItem = (text, vec) => {
+                if (!vec || !text || !text.trim()) return;
+                const normalized = text.trim();
+                const cacheKey = this.cacheManager.generateKey({ text: normalized });
+                this.cacheManager.set('embedding', cacheKey, vec);
+                this._rememberEmbeddingText(cacheKey, normalized);
+            };
+            const newEmbeddings = await this.getBatchEmbeddings(missingTexts, {
+                ...(options?.signal ? { signal: options.signal } : {}),
+                onBatchComplete: ({ texts: batchTexts, vectors: batchVectors }) => {
+                    if (!Array.isArray(batchTexts) || !Array.isArray(batchVectors)) return;
+                    batchVectors.forEach((vec, idx) => persistCompletedItem(batchTexts[idx], vec));
+                }
+            });
             newEmbeddings.forEach((vec, i) => {
                 if (vec) {
                     const originalIndex = missingIndices[i];
                     results[originalIndex] = vec;
-                    const text = missingTexts[i];
-                    const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-                    this.cacheManager.set('embedding', cacheKey, vec);
+                    persistCompletedItem(missingTexts[i], vec);
                 }
             });
         }
@@ -3732,19 +5514,177 @@ class RAGDiaryPlugin {
         return results;
     }
 
-    async getSingleEmbeddingCached(text) {
+    async getSingleEmbeddingCached(text, options = {}) {
+        const signal = options?.signal || null;
+        if (signal?.aborted) {
+            const abortErr = new Error('Embedding request aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
         if (!text || !text.trim()) return null;
 
-        const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-        const cached = this.cacheManager.get('embedding', cacheKey);
-        if (cached) return cached;
+        const awaitWithSignal = (promise) => {
+            if (!signal) return promise;
+            return new Promise((resolve, reject) => {
+                if (signal.aborted) {
+                    promise.catch(() => {});
+                    const abortErr = new Error('Embedding request aborted');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                    return;
+                }
+                const onAbort = () => {
+                    promise.catch(() => {});
+                    const abortErr = new Error('Embedding request aborted');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                };
+                signal.addEventListener('abort', onAbort, { once: true });
+                promise.then(
+                    value => {
+                        signal.removeEventListener('abort', onAbort);
+                        resolve(value);
+                    },
+                    err => {
+                        signal.removeEventListener('abort', onAbort);
+                        reject(err);
+                    }
+                );
+            });
+        };
 
-        const vector = await this.getSingleEmbedding(text);
-        if (vector) {
-            this.cacheManager.set('embedding', cacheKey, vector);
+        const normalizedText = text.trim();
+        const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
+        const cached = this.cacheManager.get('embedding', cacheKey);
+        if (cached) {
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+            return cached;
         }
 
-        return vector;
+        if (this.pendingEmbeddingRequests.has(cacheKey)) {
+            return await awaitWithSignal(this.pendingEmbeddingRequests.get(cacheKey));
+        }
+
+        // 🌟 最小修复：精确缓存未命中时，在 API 前尝试高阈值 fuzzy 复用。
+        // 目的：兼容 superDetectors / 占位符处理导致的极小文本差异（如 “……” -> “…”），
+        // 避免 RAG 主链路与 DynamicFold 对同一段 AI 发言重复向量化。
+        const fuzzyMatch = this._findFuzzyEmbeddingFromCache(normalizedText);
+        if (fuzzyMatch && fuzzyMatch.vector) {
+            this.cacheManager.set('embedding', cacheKey, fuzzyMatch.vector);
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+            console.log(
+                `[RAGDiaryPlugin] Fuzzy embedding cache hit: ` +
+                `sim=${fuzzyMatch.similarity.toFixed(4)}, len=${normalizedText.length}/${fuzzyMatch.length}`
+            );
+            return fuzzyMatch.vector;
+        }
+
+        // 共享单飞请求不绑定单个调用方的取消信号：调用侧通过 awaitWithSignal 0ms 脱钩，
+        // 在途向量请求继续静默收割入库供重发/模糊匹配复用，同时避免误杀搭便车的并发请求。
+        const requestPromise = (async () => {
+            try {
+                const vector = await this.getSingleEmbedding(normalizedText);
+                if (vector) {
+                    this.cacheManager.set('embedding', cacheKey, vector);
+                    this._rememberEmbeddingText(cacheKey, normalizedText);
+                }
+                return vector;
+            } finally {
+                this.pendingEmbeddingRequests.delete(cacheKey);
+            }
+        })();
+
+        this.pendingEmbeddingRequests.set(cacheKey, requestPromise);
+        return await awaitWithSignal(requestPromise);
+    }
+
+    _rememberEmbeddingText(cacheKey, normalizedText) {
+        if (!cacheKey || !normalizedText) return;
+        if (this.embeddingTextIndex.has(cacheKey)) {
+            this.embeddingTextIndex.delete(cacheKey);
+        }
+        this.embeddingTextIndex.set(cacheKey, normalizedText);
+
+        while (this.embeddingTextIndex.size > this.embeddingTextIndexMaxSize) {
+            const oldestKey = this.embeddingTextIndex.keys().next().value;
+            this.embeddingTextIndex.delete(oldestKey);
+        }
+    }
+
+    _textDiceSimilarity(textA, textB) {
+        return VectorMathUtils.textDiceSimilarity(textA, textB);
+    }
+
+    _getFuzzyEmbeddingOptions(options = {}) {
+        const hotConfig = this.ragParams?.ContextFoldingV2?.fuzzyEmbedding || {};
+        const defaults = {
+            threshold: 0.985,
+            minLength: 80,
+            maxScan: 200,
+            maxLengthDiffRatio: 0.02,
+            maxLengthDiffAbs: 80
+        };
+
+        const readNumber = (key) => {
+            const optionValue = options[key];
+            if (Number.isFinite(Number(optionValue))) return Number(optionValue);
+            const hotValue = hotConfig[key];
+            if (Number.isFinite(Number(hotValue))) return Number(hotValue);
+            return defaults[key];
+        };
+
+        return {
+            threshold: readNumber('threshold'),
+            minLength: readNumber('minLength'),
+            maxScan: readNumber('maxScan'),
+            maxLengthDiffRatio: readNumber('maxLengthDiffRatio'),
+            maxLengthDiffAbs: readNumber('maxLengthDiffAbs')
+        };
+    }
+
+    _findFuzzyEmbeddingFromCache(text, options = {}) {
+        if (!text || typeof text !== 'string') return null;
+
+        const normalizedText = text.trim();
+        const fuzzyOptions = this._getFuzzyEmbeddingOptions(options);
+        const threshold = fuzzyOptions.threshold;
+        const minLength = fuzzyOptions.minLength;
+        const maxScan = fuzzyOptions.maxScan;
+        const maxLengthDiffRatio = fuzzyOptions.maxLengthDiffRatio;
+        const maxLengthDiffAbs = fuzzyOptions.maxLengthDiffAbs;
+
+        if (normalizedText.length < minLength || this.embeddingTextIndex.size === 0) {
+            return null;
+        }
+
+        const entries = Array.from(this.embeddingTextIndex.entries()).slice(-maxScan);
+        let best = null;
+
+        for (const [cacheKey, cachedText] of entries) {
+            if (!cachedText || cachedText.length < minLength) continue;
+
+            const lengthDiff = Math.abs(normalizedText.length - cachedText.length);
+            const allowedLengthDiff = Math.max(maxLengthDiffAbs, normalizedText.length * maxLengthDiffRatio);
+            if (lengthDiff > allowedLengthDiff) continue;
+
+            const similarity = this._textDiceSimilarity(normalizedText, cachedText);
+            if (similarity < threshold) continue;
+
+            const vector = this.cacheManager.get('embedding', cacheKey);
+            if (!vector) continue;
+
+            if (!best || similarity > best.similarity) {
+                best = {
+                    cacheKey,
+                    vector,
+                    textPreview: cachedText.substring(0, 80),
+                    similarity,
+                    length: cachedText.length
+                };
+            }
+        }
+
+        return best;
     }
 
     /**
@@ -3753,8 +5693,13 @@ class RAGDiaryPlugin {
      */
     _getEmbeddingFromCacheOnly(text) {
         if (!text) return null;
-        const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-        return this.cacheManager.get('embedding', cacheKey);
+        const normalizedText = text.trim();
+        const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
+        const vector = this.cacheManager.get('embedding', cacheKey);
+        if (vector) {
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+        }
+        return vector;
     }
 
     /**
@@ -3766,62 +5711,14 @@ class RAGDiaryPlugin {
      * 排除表情包路径
      */
     _extractAttachments(text) {
-        if (!text) return [];
-        // 匹配 http, https, file 协议的链接
-        const regex = /(https?:\/\/[^\s\)\"\'\>]+|file:\/\/[^\s\)\"\'\>]+)/gi;
-        const matches = text.match(regex) || [];
-        
-        return matches.filter(url => {
-            const lowerUrl = url.toLowerCase();
-            // 排除表情包路径
-            if (lowerUrl.includes('表情包') || lowerUrl.includes('emoji') || lowerUrl.includes('sticker')) {
-                return false;
-            }
-            // 检查常见的媒体后缀
-            return /\.(jpg|jpeg|png|gif|webp|mp3|wav|ogg|mp4|webm|pdf)$/i.test(lowerUrl);
-        });
+        return AttachmentMemoUtils.extractAttachments(text);
     }
 
     /**
      * 🌟 V7 新增：获取链接内容的 Base64
      */
     async _fetchAsBase64(url) {
-        try {
-            let buffer;
-            let mimeType;
-
-            if (url.startsWith('file://')) {
-                // 处理本地文件
-                let filePath = url.replace(/^file:\/\/\/?/, '');
-                // Windows 路径处理：如果路径以 H: 这种开头，确保格式正确
-                if (/^[a-zA-Z]:/.test(filePath)) {
-                    // 保持原样
-                } else if (filePath.startsWith('/')) {
-                    // 可能需要根据系统调整
-                }
-                
-                // 尝试解码 URL 编码的路径
-                try {
-                    filePath = decodeURIComponent(filePath);
-                } catch (e) {}
-
-                buffer = await fs.readFile(filePath);
-                mimeType = mime.lookup(filePath) || 'application/octet-stream';
-            } else {
-                // 处理网络链接
-                const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
-                buffer = Buffer.from(response.data);
-                mimeType = response.headers['content-type'] || mime.lookup(url) || 'application/octet-stream';
-            }
-
-            if (buffer) {
-                const base64 = buffer.toString('base64');
-                return `data:${mimeType};base64,${base64}`;
-            }
-        } catch (e) {
-            console.error(`[RAGDiaryPlugin] 🌟 V7: 获取附件 Base64 失败 (${url}):`, e.message);
-        }
-        return null;
+        return AttachmentMemoUtils.fetchAsBase64(url, { logger: console });
     }
 
     //####################################################################################
@@ -3830,7 +5727,8 @@ class RAGDiaryPlugin {
 
     /**
      * 将当前上下文中的 assistant 消息同步到 FoldingStore
-     * 仅在 vectorMap 中已有向量的消息才会被写入（不触发额外 API 调用）
+     * 仅在内存缓存中已有向量的消息才会被写入（不触发额外 API 调用）
+     * 若 assistant 块未被向量化，则不创建数据库条目，避免无意义的空向量记录。
      */
     _syncContextToFoldingStore(messages) {
         if (!this.foldingStore) return;
@@ -3839,9 +5737,7 @@ class RAGDiaryPlugin {
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractTextFromContent(msg.content);
 
             if (!content || content.length < 10) continue;
             // 跳过已折叠的内容
@@ -3857,14 +5753,16 @@ class RAGDiaryPlugin {
             if (existing && existing.vector) continue; // 已有完整条目，跳过
 
             // 尝试从内存缓存获取向量（不触发 API）
-            let vector = this._getEmbeddingFromCacheOnly(sanitized);
+            const vector = this._getEmbeddingFromCacheOnly(sanitized);
 
-            // 重启恢复：如果内存缓存为空但 store 中已有旧条目（无向量），保留旧条目等待 V2 补充
-            if (!vector && existing) continue;
+            // 关键修复：未被向量化的 assistant 块不写入 FoldingStore。
+            // 空向量条目既无法参与相似度判断，也无法安全触发摘要状态机，应等待 ContextFoldingV2
+            // 在真正需要折叠时向量化成功后再创建条目。
+            if (!vector) continue;
 
             this.foldingStore.upsertVector(hash, {
                 textPreview: sanitized.substring(0, 80),
-                vector: vector // 可能为 null，后续由 ContextFoldingV2 的 embedText 补充
+                vector
             });
             syncCount++;
         }
@@ -3872,6 +5770,122 @@ class RAGDiaryPlugin {
         if (syncCount > 0) {
             console.log(`[RAGDiaryPlugin] V2折叠: 同步了 ${syncCount} 个新 assistant 块到 FoldingStore`);
         }
+    }
+
+    //####################################################################################
+    //## 🌟 AIMemoBridge - AI 记忆总结公共接口
+    //####################################################################################
+
+    /**
+     * 暴露只读的 AIMemo 候选总结接口。
+     *
+     * 调用方负责完成检索，只向这里传入最终候选；桥接层复用 RAGDiaryPlugin
+     * 唯一持有的 AIMemoHandler、配置、预设、缓存和 VCPInfo 广播能力。
+     * 不向外暴露整本日记读取或内部 TagMemo 检索，避免插件间状态耦合。
+     *
+     * @returns {Readonly<Object>}
+     */
+    getAIMemoBridge() {
+        const self = this;
+
+        return Object.freeze({
+            version: '1.0',
+
+            isConfigured() {
+                return !!(
+                    self.aiMemoHandler &&
+                    typeof self.aiMemoHandler.isConfigured === 'function' &&
+                    self.aiMemoHandler.isConfigured()
+                );
+            },
+
+            /**
+             * 对调用方已经召回的记忆候选执行 AIMemo+ 总结。
+             * @param {object} options
+             * @param {Array<object>} options.candidates - 候选项，正文可位于 text/content
+             * @param {string|string[]} [options.diaryNames] - 来源日记本
+             * @param {string} options.userContent - 当前查询
+             * @param {string} [options.aiContent] - 可选的上一轮 AI 内容
+             * @param {string} [options.displayQuery] - VCPInfo 展示查询
+             * @param {string|null} [options.presetName] - AIMemo 预设
+             * @param {string} [options.cacheSalt] - 调用方检索参数指纹
+             * @returns {Promise<string>}
+             */
+            async summarizeCandidates(options = {}) {
+                if (!self.aiMemoHandler || typeof self.aiMemoHandler.processAIMemoPlusAggregated !== 'function') {
+                    throw new Error('AIMemoHandler 尚未初始化。');
+                }
+
+                const candidates = Array.isArray(options.candidates)
+                    ? options.candidates
+                    : [];
+                const sourceFiles = candidates
+                    .map((candidate, index) => {
+                        const text = String(candidate?.text ?? candidate?.content ?? '').trim();
+                        if (!text) return null;
+
+                        return {
+                            name: String(
+                                candidate?.name ??
+                                candidate?.sourceFile ??
+                                candidate?.fullPath ??
+                                `external_candidate_${index}`
+                            ),
+                            content: text,
+                            text,
+                            tokens: Number.isFinite(Number(candidate?.tokens))
+                                ? Number(candidate.tokens)
+                                : self._estimateTokens(text),
+                            dbName: String(candidate?.dbName ?? candidate?.diaryName ?? 'ExternalMemo'),
+                            score: Number(
+                                candidate?.rerank_score ??
+                                candidate?.hybridScore ??
+                                candidate?.vectorScore ??
+                                candidate?.score ??
+                                0
+                            ) || 0,
+                            source: String(candidate?.source ?? 'external_retrieval')
+                        };
+                    })
+                    .filter(Boolean);
+
+                if (sourceFiles.length === 0) {
+                    throw new Error('没有可供 AIMemo 总结的有效候选。');
+                }
+
+                const rawDiaryNames = Array.isArray(options.diaryNames)
+                    ? options.diaryNames
+                    : [options.diaryNames];
+                const diaryNames = [...new Set(
+                    rawDiaryNames
+                        .map(name => String(name || '').trim())
+                        .filter(Boolean)
+                )];
+                if (diaryNames.length === 0) {
+                    sourceFiles.forEach(file => {
+                        if (file.dbName && !diaryNames.includes(file.dbName)) diaryNames.push(file.dbName);
+                    });
+                }
+
+                const userContent = String(options.userContent || '').trim();
+                if (!userContent) {
+                    throw new Error('AIMemo 总结需要非空 userContent。');
+                }
+
+                return self.aiMemoHandler.processAIMemoPlusAggregated(
+                    diaryNames.length > 0 ? diaryNames : ['ExternalMemo'],
+                    userContent,
+                    String(options.aiContent || '').trim() || null,
+                    String(options.displayQuery || userContent),
+                    options.presetName ? String(options.presetName).trim() : null,
+                    {
+                        sourceFiles,
+                        baseK: Math.max(1, sourceFiles.length),
+                        cacheSalt: String(options.cacheSalt || 'external_candidates')
+                    }
+                );
+            }
+        });
     }
 
     //####################################################################################
@@ -3895,7 +5909,7 @@ class RAGDiaryPlugin {
      */
     getContextBridge() {
         const self = this;
-        const BRIDGE_VERSION = '1.0';
+        const BRIDGE_VERSION = '1.3';
 
         return Object.freeze({
             /** 接口版本号，用于未来兼容性检查 */
@@ -4005,9 +6019,98 @@ class RAGDiaryPlugin {
                 return self._getEmbeddingFromCacheOnly(text);
             },
 
-            // ═══════════════════════════════════════════════════
-            // 文本处理工具
-            // ═══════════════════════════════════════════════════
+            /**
+             * 从 RAGDiaryPlugin 的 embedding 文本索引中按高阈值模糊匹配缓存向量（不触发 API）。
+             * 主要供 ContextFoldingV2 在 RAG 主链路之后复用近似相同的最新 AI 向量。
+             * @param {string} text - 要查询的文本
+             * @param {object} [options] - { threshold, minLength, maxScan, maxLengthDiffRatio, maxLengthDiffAbs }
+             * @returns {{vector:Array<number>, similarity:number, textPreview:string, length:number}|null}
+             */
+            getFuzzyEmbeddingFromCache(text, options = {}) {
+                if (!text || typeof text !== 'string') return null;
+                return self._findFuzzyEmbeddingFromCache(text, options);
+            },
+
+            /**
+             * 在指定 dailynote 索引中执行只读向量检索。
+             * 供需要复用现有知识库向量、且不得重复向量化文档的插件使用。
+             * @param {string|string[]} diaryNames - 日记本/索引名称
+             * @param {Array|Float32Array} queryVector - 已生成的查询向量
+             * @param {number} [k=10] - 最大 chunk 数
+             * @returns {Promise<Array>} KnowledgeBaseManager 搜索结果
+             */
+            async searchDiary(diaryNames, queryVector, k = 10) {
+                if (!queryVector || !self.vectorDBManager || typeof self.vectorDBManager.searchKnn !== 'function') {
+                    return [];
+                }
+                const names = Array.isArray(diaryNames)
+                    ? diaryNames.map(name => String(name || '').trim()).filter(Boolean)
+                    : String(diaryNames || '').trim();
+                if ((Array.isArray(names) && names.length === 0) || !names) return [];
+                const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
+                return self.vectorDBManager.searchKnn(names, queryVector, safeK);
+            },
+
+            /**
+             * 执行结构化日记检索，可优先使用 Rust 原生 RiverMemo，并在不可用时回退
+             * 到 TagMemo/普通 KNN。此接口只返回候选及检索元数据，不生成展示文本，
+             * 也不重新向量化日记文档。
+             *
+             * RiverMemo 路径复用 KnowledgeBaseManager 的显式日记本权限作用域和
+             * Native Query Plan；ANN、候选合并、向量 hydrate、语义去重与
+             * Topology V3 均在原生链路完成。TagMemo 回退路径仍只计算一次
+             * TagBoost，并通过 preparedBoostResult 复用同一次感应。
+             *
+             * @param {object} options
+             * @param {string|string[]} options.diaryNames - 日记本/索引名称
+             * @param {Array|Float32Array} options.queryVector - 已生成的查询向量
+             * @param {number} [options.k=10] - 最大候选 chunk 数
+             * @param {'rivermemo'|'knn'} [options.engine='rivermemo'] - 明确选择检索引擎
+             * @param {'none'|'knn'} [options.fallback='none'] - 仅异常或能力不可用时允许纯 KNN 回退
+             * @param {number} [options.candidateK] - RiverMemo 原生候选超集大小
+             * @param {string} [options.queryText=''] - RiverMemo 查询文本
+             * 正常空召回不触发回退；纯 KNN 不进行感应、增强或 Memo 重排。
+             * @param {string} [options.userText=''] - 动态参数计算使用的用户文本
+             * @param {string} [options.aiText=''] - 动态参数计算使用的 AI 文本
+             * @param {Array} [options.coreTags=[]] - 显式核心 Tag 或幽灵节点
+             * @returns {Promise<{results:Array, meta:object}>}
+             */
+            async retrieveDiary(options = {}) {
+                const { diaryNames, queryVector, k = 10, candidateK,
+                    queryText = '', userText = '', coreTags = [],
+                    engine = 'rivermemo', fallback = 'none' } = options;
+                if (!['rivermemo', 'knn'].includes(engine)) throw new RangeError('Unsupported retrieval engine');
+                if (!['none', 'knn'].includes(fallback)) throw new RangeError('Unsupported fallback policy');
+                const names = [...new Set((Array.isArray(diaryNames) ? diaryNames : [diaryNames])
+                    .map(name => String(name || '').trim()).filter(Boolean))];
+                if (!queryVector || names.length === 0) return { results: [], meta: { engine, riverMemoUsed: false } };
+                const safeK = Math.max(1, Math.min(1000, Math.floor(Number(k) || 10)));
+                let fallbackReason = null;
+                if (engine === 'rivermemo') {
+                    try {
+                        if (typeof self.vectorDBManager?.executeNativeRiverQuery !== 'function') throw new Error('rivermemo-unavailable');
+                        const result = await self.vectorDBManager.executeNativeRiverQuery(
+                            { text: String(queryText || userText), vector: queryVector },
+                            { diaryNames: names, topK: safeK, candidateK, coreTags, enabled: true, fallbackToLegacy: true }
+                        );
+                        if (!Array.isArray(result?.results)) throw new Error('Invalid RiverMemo result');
+                        return { results: result.results, meta: {
+                            engine: 'rivermemo', riverMemoUsed: true,
+                            nativeJointQueryUsed: result.diagnostics?.nativeTopologyV3?.jointUsed === true,
+                            artifactSig: result.artifactSig || null, queryId: result.queryId || null,
+                            omega: Number(result.omega?.omega) || 0, regime: result.omega?.regime || null,
+                            matchedTags: result.queryTags?.matchedTags || [], fallbackReason: null
+                        } };
+                    } catch (error) {
+                        if (fallback !== 'knn') throw error;
+                        fallbackReason = 'rivermemo-failed: ' + error.message;
+                        console.warn('[ContextBridge] engine=knn fallback:', fallbackReason);
+                    }
+                }
+                if (typeof self.vectorDBManager?.searchKnn !== 'function') throw new Error('Pure KNN unavailable');
+                const results = await self.vectorDBManager.searchKnn(names, queryVector, safeK);
+                return { results, meta: { engine: 'knn', riverMemoUsed: false, nativeJointQueryUsed: false, fallbackReason } };
+            },
 
             /**
              * 统一内容净化器 - 移除 HTML、Emoji、工具调用标记等噪音
@@ -4125,9 +6228,21 @@ class RAGDiaryPlugin {
     }
 
     shutdown() {
+        if (this.ragParamsReloadTimer) {
+            clearTimeout(this.ragParamsReloadTimer);
+            this.ragParamsReloadTimer = null;
+        }
+        if (this.ragTagsReloadTimer) {
+            clearTimeout(this.ragTagsReloadTimer);
+            this.ragTagsReloadTimer = null;
+        }
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;
+        }
+        if (this.ragTagsWatcher) {
+            this.ragTagsWatcher.close();
+            this.ragTagsWatcher = null;
         }
         this.cacheManager.shutdown();
 

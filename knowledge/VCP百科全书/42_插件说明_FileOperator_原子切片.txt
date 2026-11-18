@@ -1,0 +1,336 @@
+[2026-03-03] - Agent-A
+[VCP百科全书] FileOperator - 文件操作器
+
+一、插件基本信息
+1. 插件名称：FileOperator / 文件操作器
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.1
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：强大的文件系统操作插件，支持读写删除移动复制，自动解析PDF/Word/Excel
+
+二、功能定位
+FileOperator是一个功能完整的文件系统操作插件，允许AI对受限目录进行读、写、列出、移动、复制、删除等多种操作。特别增强了文件读取能力，可自动提取PDF、Word(.docx)和表格(.xlsx, .csv)文件的纯文本内容。支持文件搜索、URL下载、差异应用等高级功能，是VCP系统中最常用的文件操作工具。
+
+三、配置参数
+
+1. ALLOWED_DIRECTORIES (string, 可选)
+   - 逗号分隔的允许进行文件操作的目录绝对路径列表
+   - 留空表示允许所有
+   - 默认值：空
+
+2. DEFAULT_DOWNLOAD_DIR (string, 可选)
+   - DownloadFile命令的默认下载目录绝对路径
+   - 如不设置，默认为AppData/file目录
+   - 默认值：空
+
+3. MAX_FILE_SIZE (integer, 可选)
+   - 允许操作的最大文件大小（字节）
+   - 默认值：10485760 (10MB)
+
+4. MAX_DIRECTORY_ITEMS (integer, 可选)
+   - 目录列表返回的最大项目数
+   - 默认值：1000
+
+5. MAX_SEARCH_RESULTS (integer, 可选)
+   - 文件搜索返回的最大结果数
+   - 默认值：100
+
+6. DEBUG_MODE (boolean, 可选)
+   - 是否开启此插件的调试日志
+   - 默认值：true
+
+四、调用命令列表
+
+1. ListAllowedDirectories - 列出授权目录
+   功能：列出此插件被授权访问的所有根目录及其第一层子目录和文件
+   参数：无
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」ListAllowedDirectories「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+2. ReadFile - 读取文件内容
+   功能：读取文件内容，自动解析PDF/DOCX/XLSX/CSV等格式
+   参数：
+   - filePath (string, 必需): 文件绝对路径
+   - encoding (string, 可选, 默认utf8): 文本文件编码
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」ReadFile「末」,
+   filePath:「始」/path/to/document.pdf「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+3. WebReadFile - 从URL读取文件
+   功能：从URL下载文件到临时目录，然后解析内容
+   参数：
+   - url (string, 必需): 文件URL地址
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」WebReadFile「末」,
+   url:「始」http://example.com/sample.jpg「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+4. WriteFile - 写入文件
+   功能：将内容写入文件，如文件存在则自动添加序号
+   参数：
+   - filePath (string, 必需): 文件绝对路径
+   - content (string, 必需): 文件内容
+   - encoding (string, 可选, 默认utf8): 编码格式
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」WriteFile「末」,
+   filePath:「始」/path/to/file.txt「末」,
+   content:「始」这是要写入的内容。「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+5. AppendFile - 追加内容到文件
+   功能：将内容追加到文件末尾，文件不存在则创建
+   参数：
+   - filePath (string, 必需): 文件绝对路径
+   - content (string, 必需): 要追加的内容
+   - encoding (string, 可选, 默认utf8): 编码格式
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」AppendFile「末」,
+   filePath:「始」/path/to/log.txt「末」,
+   content:「始」新的日志条目「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+6. EditFile - 编辑文件（完全覆盖）
+   功能：用新内容完全覆盖文件，文件必须存在
+   参数：
+   - filePath (string, 必需): 文件绝对路径
+   - content (string, 必需): 新内容
+   - encoding (string, 可选, 默认utf8): 编码格式
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」EditFile「末」,
+   filePath:「始」/path/to/existing_file.txt「末」,
+   content:「始」新内容「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+7. ListDirectory - 列出目录内容
+   功能：列出指定目录的文件和子目录
+   参数：
+   - directoryPath (string, 必需): 目录绝对路径
+   - showHidden (boolean, 可选, 默认false): 是否显示隐藏文件
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」ListDirectory「末」,
+   directoryPath:「始」/path/to/directory「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+8. FileInfo - 获取文件信息
+   功能：获取文件或目录的详细信息
+   参数：
+   - filePath (string, 必需): 文件或目录绝对路径
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」FileInfo「末」,
+   filePath:「始」/path/to/file.txt「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+9. CopyFile - 复制文件
+   功能：复制文件，目标存在则自动添加序号
+   参数：
+   - sourcePath (string, 必需): 源文件绝对路径
+   - destinationPath (string, 必需): 目标文件绝对路径
+   调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」FileOperator「末」,
+   command:「始」CopyFile「末」,
+   sourcePath:「始」/path/to/source.txt「末」,
+   destinationPath:「始」/path/to/destination.txt「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+10. MoveFile - 移动文件或目录
+    功能：移动文件或目录到新位置
+    参数：
+    - sourcePath (string, 必需): 源路径
+    - destinationPath (string, 必需): 目标路径
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」MoveFile「末」,
+    sourcePath:「始」/path/to/source.txt「末」,
+    destinationPath:「始」/path/to/new_directory/source.txt「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+11. RenameFile - 重命名文件
+    功能：安全重命名文件，目标存在则失败
+    参数：
+    - sourcePath (string, 必需): 原文件路径
+    - destinationPath (string, 必需): 新文件路径
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」RenameFile「末」,
+    sourcePath:「始」/path/to/old_name.txt「末」,
+    destinationPath:「始」/path/to/new_name.txt「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+12. DeleteFile - 删除文件或空目录
+    功能：删除文件或空目录
+    参数：
+    - filePath (string, 必需): 文件或目录绝对路径
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」DeleteFile「末」,
+    filePath:「始」/path/to/deletable_file.txt「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+13. CreateDirectory - 创建目录
+    功能：创建新目录，父目录不存在则一并创建
+    参数：
+    - directoryPath (string, 必需): 新目录绝对路径
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」CreateDirectory「末」,
+    directoryPath:「始」/path/to/new_folder/sub_folder「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+14. SearchFiles - 搜索文件
+    功能：递归搜索匹配模式的文件或目录
+    参数：
+    - searchPath (string, 必需): 起始目录绝对路径
+    - pattern (string, 必需): 文件模式（支持通配符）
+    - options (JSON string, 可选): 搜索选项
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」SearchFiles「末」,
+    searchPath:「始」/path/to/search「末」,
+    pattern:「始」*.log「末」,
+    options:「始」{\"caseSensitive\": false, \"fileType\": \"file\"}「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+15. DownloadFile - 下载文件（异步）
+    功能：从URL下载文件到指定目录
+    参数：
+    - url (string, 必需): 文件URL
+    - downloadDir (string, 可选): 下载目录
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」DownloadFile「末」,
+    url:「始」http://example.com/archive.zip「末」,
+    downloadDir:「始」/path/to/download「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+16. ApplyDiff - 应用差异修改
+    功能：对文件应用diff修改
+    参数：
+    - filePath (string, 必需): 文件路径
+    - searchString (string, 必需): 要查找的文本
+    - replaceString (string, 必需): 替换文本
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」ApplyDiff「末」,
+    filePath:「始」/path/to/file.md「末」,
+    searchString:「始」旧内容「末」,
+    replaceString:「始」新内容「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+17. UpdateHistory - 更新聊天历史
+    功能：安全更新JSON格式的聊天历史文件
+    参数：
+    - filePath (string, 必需): 历史文件路径
+    - searchString (string, 必需): 要查找的文本
+    - replaceString (string, 必需): 替换文本
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」UpdateHistory「末」,
+    filePath:「始」/path/to/history.json「末」,
+    searchString:「始」旧内容「末」,
+    replaceString:「始」新内容「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+18. CreateCanvas - 创建Canvas文件
+    功能：创建新文件并通知主程序打开Canvas窗口
+    参数：
+    - fileName (string, 必需): 文件名（含扩展名）
+    - content (string, 必需): 初始内容
+    调用格式：
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command:「始」CreateCanvas「末」,
+    fileName:「始」new_canvas.js「末」,
+    content:「始」console.log('Hello, Canvas!');「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+五、使用示例
+
+示例1：读取PDF文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileOperator「末」,
+command:「始」ReadFile「末」,
+filePath:「始」D:/documents/report.pdf「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：创建新文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileOperator「末」,
+command:「始」WriteFile「末」,
+filePath:「始」D:/output/result.txt「末」,
+content:「始」处理结果：成功完成任务「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：搜索所有日志文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileOperator「末」,
+command:「始」SearchFiles「末」,
+searchPath:「始」D:/logs「末」,
+pattern:「始」*.log「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：下载文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileOperator「末」,
+command:「始」DownloadFile「末」,
+url:「始」http://example.com/data.zip「末」,
+downloadDir:「始」D:/downloads「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 权限控制：
+   - ALLOWED_DIRECTORIES限制可访问的目录范围
+   - 留空表示允许所有目录（不推荐）
+   - 建议明确指定允许的目录列表
+
+2. 文件大小限制：
+   - MAX_FILE_SIZE限制单个文件大小（默认10MB）
+   - 超过限制的文件无法读取或写入
+
+3. 自动格式解析：
+   - PDF、DOCX、XLSX、CSV文件自动转换为纯文本
+   - 其他格式按普通文本处理
+   - 二进制文件可能返回乱码
+
+4. 文件冲突处理：
+   - WriteFile和CopyFile在目标存在时自动添加序号
+   - RenameFile在目标存在时失败
+   - MoveFile在目标存在时自动添加序号
+
+5. 异步操作：
+   - DownloadFile是异步操作，立即返回
+   - 不需要等待下载完成
+
+七、关联插件
+- ChatTencentcos：云存储，可配合上传文件到云端
+- CodeSearcher：代码搜索，可配合查找特定代码
+- DistImageServer：图床服务，可托管生成的文件
+
+Tag: 文件操作, 读写删除, PDF解析, 文件搜索, 下载上传, 目录管理, 权限控制

@@ -1,0 +1,67 @@
+[2026-03-02] - Nova
+[VCP百科全书] VCP开发——插件开发完整手册（从0到1）
+
+一、插件开发总流程
+1. 在 `Plugin/` 下创建插件目录（如 `Plugin/MyPlugin/`）
+2. 编写 `plugin-manifest.json`
+3. 实现执行脚本（Node/Python/Shell）
+4. 准备插件专属 `config.env` 与依赖文件
+5. 重启VCP服务器，自动发现并加载插件
+6. 在系统提示词注入 `{{VCPMyPlugin}}` 让AI可感知并调用
+
+二、manifest关键字段
+- `name`：插件内部识别名
+- `displayName`：展示名
+- `version`：版本
+- `description`：插件说明
+- `pluginType`：`static | messagePreprocessor | synchronous | asynchronous | service | hybridservice`
+- `entryPoint`：执行入口（如 `node app.js` / `python app.py`）
+- `communication.protocol`：常见为 `stdio` 或 `direct`
+- `configSchema`：配置项声明（类型、描述、默认值）
+- `capabilities`：能力声明（占位符或可调用命令）
+
+三、同步插件返回规范（必须）
+```json
+{
+  "status": "success",
+  "result": "成功返回字符串或JSON对象",
+  "error": "失败时的错误信息",
+  "messageForAI": "可选，给AI的额外提示",
+  "base64": "可选，多媒体数据"
+}
+```
+
+四、异步插件标准流程
+1. 收到任务后立即返回 `requestId`
+2. 后台执行耗时任务
+3. 完成后回调 `POST /plugin-callback/:pluginName/:taskId`
+4. 服务器持久化结果并通过占位符在后续对话中替换
+
+五、能力声明写法
+- `static` 插件：`systemPromptPlaceholders`
+- `synchronous/asynchronous` 插件：`invocationCommands`
+  - 包含 `commandIdentifier`、`description`、`example`
+  - 描述越清晰，AI调用成功率越高
+
+六、配置与依赖管理
+- Python插件：`requirements.txt`
+- Node插件：`package.json`
+- 插件私有配置：插件目录下 `config.env`
+- 全局+插件配置由 `_getPluginConfig` 合并后注入运行时
+
+七、开发调试建议
+- 先做最小可运行版本（MVP）
+- 把报错信息返回到 `error` 字段，不要吞错
+- 对外部API调用加超时和重试
+- 在 `description` 中写清参数含义和边界条件
+- 复杂插件先手动命令行跑通，再接VCP
+
+八、高成功率实践
+- 参数名使用语义清晰英文词（避免歧义）
+- 给出1~2个真实调用样例
+- 对可选参数提供合理默认值
+- 输出尽量结构化，便于AI二次处理
+- 多媒体结果优先返回可解析URL/Base64和摘要说明
+
+关联节点：plugin-manifest.json, PluginManager, invocationCommands, callback, configSchema
+Tag: 插件开发手册, plugin-manifest, 同步插件, 异步插件, stdio通信, 回调机制, capabilities, configSchema, VCP开发规范, AI工具调用

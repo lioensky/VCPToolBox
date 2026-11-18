@@ -2,16 +2,18 @@
   <section class="config-section active-section">
     <div class="schedule-manager-container">
       <div class="schedule-left-panel">
-        <div class="calendar-container card">
-          <div class="calendar-header">
-            <button type="button" @click="prevMonth" class="icon-btn" aria-label="上个月" title="上个月">
-              <span class="material-symbols-outlined">chevron_left</span>
-            </button>
-            <h3 id="current-month-year">{{ currentMonthYear }}</h3>
-            <button type="button" @click="nextMonth" class="icon-btn" aria-label="下个月" title="下个月">
-              <span class="material-symbols-outlined">chevron_right</span>
-            </button>
-          </div>
+        <UiCard class="calendar-container" size="sm" variant="subtle">
+          <UiToolbar density="compact">
+            <template #default>
+              <UiIconButton label="上个月" title="上个月" size="sm" @click="prevMonth">
+                <span class="material-symbols-outlined">chevron_left</span>
+              </UiIconButton>
+              <h3 id="current-month-year" class="calendar-title">{{ currentMonthYear }}</h3>
+              <UiIconButton label="下个月" title="下个月" size="sm" @click="nextMonth">
+                <span class="material-symbols-outlined">chevron_right</span>
+              </UiIconButton>
+            </template>
+          </UiToolbar>
           <div id="calendar-grid" class="calendar-grid">
             <button
               v-for="day in calendarDays"
@@ -34,54 +36,85 @@
               <div v-if="day.hasSchedules" class="schedule-indicator"></div>
             </button>
           </div>
-        </div>
-        <div class="add-schedule-form card">
-          <h3>添加日程</h3>
-          <div class="form-group">
-            <label for="new-schedule-time">时间</label>
-            <input
-              id="new-schedule-time"
-              v-model="newSchedule.time"
-              type="datetime-local"
-            />
-          </div>
-          <div class="form-group">
-            <label for="new-schedule-content">内容</label>
-            <textarea
-              id="new-schedule-content"
-              v-model="newSchedule.content"
-              rows="3"
-              placeholder="描述日程内容…"
-            ></textarea>
-          </div>
-          <button @click="addSchedule" class="btn-primary">添加</button>
-        </div>
+        </UiCard>
+        <UiCard
+          class="add-schedule-form"
+          :title="editingScheduleId ? '编辑日程' : '添加日程'"
+          :description="editingScheduleId ? '修改已创建日程的时间和内容。' : '创建一条带时间的提醒事项。'"
+          size="sm"
+          variant="subtle"
+          divided
+        >
+          <UiSettingsForm as="div" :columns="1" gap="sm">
+            <UiField label="时间" for-id="schedule-time" size="sm">
+              <UiInput
+                id="schedule-time"
+                v-model="scheduleDraft.time"
+                size="sm"
+                type="datetime-local"
+              />
+            </UiField>
+            <UiField label="内容" for-id="schedule-content" size="sm">
+              <UiTextarea
+                id="schedule-content"
+                v-model="scheduleDraft.content"
+                size="sm"
+                rows="3"
+                placeholder="描述日程内容…"
+              />
+            </UiField>
+          </UiSettingsForm>
+          <template #footer>
+            <div class="card-footer-actions">
+              <UiButton
+                v-if="editingScheduleId"
+                size="sm"
+                type="button"
+                variant="ghost"
+                @click="cancelEdit"
+              >
+                取消编辑
+              </UiButton>
+              <UiButton size="sm" type="button" @click="saveSchedule">
+                {{ editingScheduleId ? "保存修改" : "添加" }}
+              </UiButton>
+            </div>
+          </template>
+        </UiCard>
       </div>
       <div class="schedule-right-panel">
-        <div class="schedule-list-container card">
-          <div class="list-header">
-            <h3>日程列表</h3>
-            <div class="list-filters">
-              <button
+        <UiCard class="schedule-list-container" size="sm" variant="subtle" divided>
+          <template #title>日程列表</template>
+          <template #action>
+            <div class="list-filters" role="group" aria-label="日程筛选">
+              <UiButton
+                type="button"
+                size="sm"
+                :variant="filterType === 'all' ? 'secondary' : 'ghost'"
                 @click="filterType = 'all'"
-                :class="['filter-btn', { active: filterType === 'all' }]"
               >
                 全部
-              </button>
-              <button
+              </UiButton>
+              <UiButton
+                type="button"
+                size="sm"
+                :variant="filterType === 'upcoming' ? 'secondary' : 'ghost'"
                 @click="filterType = 'upcoming'"
-                :class="['filter-btn', { active: filterType === 'upcoming' }]"
               >
                 即将进行
-              </button>
+              </UiButton>
             </div>
-          </div>
+          </template>
           <div id="schedule-list" class="schedule-list">
-            <div v-if="filteredSchedules.length === 0" class="empty-msg">
-              <span class="material-symbols-outlined empty-icon">event_busy</span>
-              <p>暂无日程</p>
-              <p class="empty-hint">在上方日历中选择日期添加新日程</p>
-            </div>
+            <UiEmptyState
+              v-if="filteredSchedules.length === 0"
+              title="暂无日程"
+              description="在左侧日历中选择日期并添加新日程。"
+            >
+              <template #icon>
+                <span class="material-symbols-outlined">event_busy</span>
+              </template>
+            </UiEmptyState>
             <div
               v-else
               v-for="schedule in filteredSchedules"
@@ -90,15 +123,27 @@
             >
               <div class="schedule-time">{{ formatScheduleTime(schedule.time) }}</div>
               <div class="schedule-content">{{ schedule.content }}</div>
-              <button
-                @click="deleteSchedule(schedule.id)"
-                class="btn-danger btn-sm"
-              >
-                删除
-              </button>
+              <div class="schedule-actions">
+                <UiButton
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  @click="startEdit(schedule)"
+                >
+                  编辑
+                </UiButton>
+                <UiButton
+                  type="button"
+                  variant="danger"
+                  size="sm"
+                  @click="deleteSchedule(schedule.id)"
+                >
+                  删除
+                </UiButton>
+              </div>
             </div>
           </div>
-        </div>
+        </UiCard>
       </div>
     </div>
   </section>
@@ -107,6 +152,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { scheduleApi } from "@/api";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiEmptyState from "@/components/ui/UiEmptyState.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSettingsForm from "@/components/ui/UiSettingsForm.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
+import UiToolbar from "@/components/ui/UiToolbar.vue";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 interface Schedule {
@@ -127,7 +182,8 @@ interface CalendarDay {
 const currentDate = ref(new Date());
 const selectedDate = ref<Date | null>(null);
 const schedules = ref<Schedule[]>([]);
-const newSchedule = ref({ time: "", content: "" });
+const scheduleDraft = ref({ time: "", content: "" });
+const editingScheduleId = ref<string | null>(null);
 const filterType = ref<"all" | "upcoming">("all");
 
 const currentMonthYear = computed(() =>
@@ -229,33 +285,82 @@ async function loadSchedules() {
   }
 }
 
-async function addSchedule() {
-  if (!newSchedule.value.time || !newSchedule.value.content.trim()) {
+function resetScheduleDraft() {
+  scheduleDraft.value = { time: "", content: "" };
+  editingScheduleId.value = null;
+}
+
+function startEdit(schedule: Schedule) {
+  editingScheduleId.value = schedule.id;
+  scheduleDraft.value = {
+    time: toDatetimeLocalValue(schedule.time),
+    content: schedule.content,
+  };
+}
+
+function cancelEdit() {
+  resetScheduleDraft();
+}
+
+function toDatetimeLocalValue(time: string): string {
+  const date = new Date(time);
+
+  if (Number.isNaN(date.getTime())) {
+    return time;
+  }
+
+  const timezoneOffset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
+}
+
+async function saveSchedule() {
+  if (!scheduleDraft.value.time || !scheduleDraft.value.content.trim()) {
     showMessage("请同时填写时间和内容。", "error");
     return;
   }
 
+  const payload = {
+    time: scheduleDraft.value.time,
+    content: scheduleDraft.value.content.trim(),
+  };
+
   try {
-    await scheduleApi.createSchedule(
-      {
-        time: newSchedule.value.time,
-        content: newSchedule.value.content.trim(),
-      },
-      {
-        loadingKey: "schedule.create",
-      }
-    );
-    showMessage("日程已添加。", "success");
-    newSchedule.value = { time: "", content: "" };
+    if (editingScheduleId.value) {
+      await scheduleApi.updateSchedule(
+        editingScheduleId.value,
+        payload,
+        {
+          loadingKey: "schedule.update",
+        }
+      );
+      showMessage("日程已更新。", "success");
+    } else {
+      await scheduleApi.createSchedule(
+        payload,
+        {
+          loadingKey: "schedule.create",
+        }
+      );
+      showMessage("日程已添加。", "success");
+    }
+
+    resetScheduleDraft();
     await loadSchedules();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    showMessage(`添加日程失败：${errorMessage}`, "error");
+    showMessage(
+      `${editingScheduleId.value ? "更新" : "添加"}日程失败：${errorMessage}`,
+      "error"
+    );
   }
 }
 
 async function deleteSchedule(id: string) {
-  if (!confirm("确定删除这条日程吗？")) return;
+  if (!(await askConfirm({
+    message: "确定删除这条日程吗？",
+    danger: true,
+    confirmText: "删除",
+  }))) return;
 
   try {
     await scheduleApi.deleteSchedule(
@@ -289,49 +394,19 @@ onMounted(() => {
 .schedule-manager-container {
   display: grid;
   grid-template-columns: 400px 1fr;
-  gap: 24px;
+  gap: var(--space-4);
 }
 
 .calendar-container {
-  padding: var(--space-4);
   margin-bottom: var(--space-4);
 }
 
-.calendar-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--space-4);
-}
-
-.calendar-header h3 {
+.calendar-title {
   margin: 0;
-  font-size: var(--font-size-title);
-}
-
-.icon-btn {
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  min-width: 40px;
-  min-height: 40px;
-  padding: 8px 10px;
-  cursor: pointer;
   color: var(--primary-text);
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.icon-btn:hover {
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 34%, var(--border-color));
-}
-
-.icon-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  font-size: var(--font-size-body);
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .calendar-grid {
@@ -346,13 +421,16 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: var(--space-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
   position: relative;
-  transition: background 0.2s ease;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
   /* Button reset styles */
-  border: none;
   background: transparent;
   font: inherit;
   color: inherit;
@@ -364,12 +442,14 @@ onMounted(() => {
 }
 
 .calendar-day.today {
-  background: var(--button-bg);
-  color: var(--on-accent-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 56%, transparent);
+  color: var(--highlight-text);
 }
 
 .calendar-day.selected {
-  border: 2px solid var(--highlight-text);
+  background: var(--button-bg);
+  border-color: var(--button-bg);
+  color: var(--on-accent-text);
 }
 
 .calendar-day.other-month {
@@ -391,105 +471,45 @@ onMounted(() => {
   height: 4px;
   background: var(--highlight-text);
   border-radius: 50%;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
-.add-schedule-form {
-  padding: 16px;
+.calendar-day.selected .schedule-indicator {
+  background: currentColor;
 }
 
-.add-schedule-form h3 {
-  margin-top: 0;
-  margin-bottom: var(--space-4);
-}
-
-.add-schedule-form .form-group {
-  margin-bottom: var(--space-3);
-}
-
-.add-schedule-form label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-size: var(--font-size-helper);
-}
-
-.add-schedule-form input,
-.add-schedule-form textarea {
-  width: 100%;
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-}
-
-.schedule-list-container {
-  padding: 16px;
-}
-
-.list-header {
+.card-footer-actions {
   display: flex;
-  justify-content: space-between;
+  width: 100%;
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-4);
-}
-
-.list-header h3 {
-  margin: 0;
+  justify-content: flex-end;
 }
 
 .list-filters {
   display: flex;
-  gap: 8px;
-}
-
-.filter-btn {
-  padding: 6px 12px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-helper);
-  cursor: pointer;
-  color: var(--primary-text);
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    color 0.2s ease;
-}
-
-.filter-btn:hover {
-  background: var(--accent-bg);
-  border-color: color-mix(in srgb, var(--button-bg) 34%, var(--border-color));
-}
-
-.filter-btn.active {
-  background: var(--button-bg);
-  color: var(--on-accent-text);
-  border-color: var(--button-bg);
-  box-shadow: 0 4px 10px color-mix(in srgb, var(--button-bg) 26%, transparent);
-}
-
-.filter-btn:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 44%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  gap: var(--space-2);
 }
 
 .schedule-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   max-height: 500px;
   overflow-y: auto;
 }
 
 .schedule-item {
-  background: var(--tertiary-bg);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
   display: flex;
-  gap: 12px;
+  min-height: 44px;
+  gap: var(--space-3);
   align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
+.schedule-item:last-child {
+  border-bottom: 0;
 }
 
 .schedule-time {
@@ -503,25 +523,11 @@ onMounted(() => {
   font-size: var(--font-size-body);
 }
 
-.empty-msg {
-  text-align: center;
-  padding: var(--space-8) var(--space-4);
-  color: var(--secondary-text);
-}
-
-.empty-msg .empty-icon {
-  display: block;
-  font-size: var(--font-size-icon-empty);
-  opacity: 0.3;
-  margin-bottom: var(--space-3);
-  color: var(--highlight-text);
-}
-
-.empty-hint {
-  font-size: var(--font-size-helper);
-  opacity: 0.7;
-  max-width: 45ch;
-  margin-inline: auto;
+.schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
 }
 
 @media (max-width: 1024px) {

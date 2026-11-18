@@ -1,12 +1,27 @@
 // WebSocketServer.js
 const WebSocket = require('ws');
 const url = require('url');
+const fs = require('fs').promises;
+const path = require('path');
+const { resultPath, writeJson } = require('./modules/asyncResultStore');
+const { syncDistributedMusicDiary } = require('./modules/distributedMusicDiarySync');
+const vcpLogReplayManager = require('./modules/vcpLogReplayManager');
 
 let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
+let attachedHttpServer = null;
+let upgradeHandler = null;
+let heartbeatInterval = null;
+let isDraining = false;
+let shutdownPromise = null;
+
+const WEBSOCKET_HEARTBEAT_INTERVAL_MS = 60 * 1000;
+
 let serverConfig = {
     debugMode: false,
-    vcpKey: null
+    vcpKey: null,
+    distributedMusicPlaylistSyncEnabled: false,
+    heartbeatEnabled: false
 };
 
 // 用于存储不同类型的客户端
@@ -18,10 +33,48 @@ const adminPanelClients = new Map(); // 新增：管理面板客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 const waitingControlClients = new Map(); // 新增：存储等待页面更新的ChromeControl客户端 (clientId -> requestId)
+const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+
+function formatDateTimeForConfiguredTimezone(date = new Date()) {
+    try {
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: DEFAULT_TIMEZONE,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+            timeZoneName: 'longOffset'
+        }).formatToParts(date);
+
+        const getPart = (type) => parts.find(part => part.type === type)?.value;
+        const offset = (getPart('timeZoneName') || '').replace('GMT', '') || DEFAULT_TIMEZONE;
+        return `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}:${getPart('second')}${offset}`;
+    } catch (error) {
+        console.error(`[WebSocketServer] Failed to format date with timezone ${DEFAULT_TIMEZONE}:`, error.message);
+        return date.toISOString();
+    }
+}
 
 function generateClientId() {
     // 用于生成客户端ID和请求ID
     return `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+function normalizeDeviceName(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // deviceName 会进入 VCPLog 离线补发 deviceKey,限制字符集避免日志污染和异常 key。
+    const normalized = trimmed
+        .replace(/[^\w.\-:@()[\]\u4e00-\u9fa5]/g, '_')
+        .substring(0, 80);
+
+    return normalized || null;
 }
 
 async function writeLog(message) {
@@ -32,12 +85,76 @@ async function writeLog(message) {
     }
 }
 
+async function ensureAsyncResultsDir() {
+    try {
+        await fs.mkdir(VCP_ASYNC_RESULTS_DIR, { recursive: true });
+    } catch (error) {
+        console.error(`[WebSocketServer] Failed to create VCPAsyncResults directory: ${VCP_ASYNC_RESULTS_DIR}`, error);
+    }
+}
+
+async function handleDistributedPluginCallback(serverId, message) {
+    const callbackData = message?.data?.callbackData;
+    if (!callbackData || typeof callbackData !== 'object') {
+        writeLog(`Invalid plugin_callback_forward payload from server ${serverId}.`);
+        return;
+    }
+
+    const pluginName = callbackData.pluginName || callbackData.PLUGIN_NAME_FOR_CALLBACK;
+    const taskId = callbackData.taskId || callbackData.task_id || callbackData.TaskId;
+
+    if (!pluginName || !taskId) {
+        writeLog(`Distributed plugin callback missing pluginName or taskId from server ${serverId}.`);
+        return;
+    }
+
+    if (serverConfig.debugMode) {
+        console.log(`[WebSocketServer] Received distributed callback for plugin: ${pluginName}, taskId: ${taskId}, serverId: ${serverId}`);
+    }
+
+    const pluginManifest = pluginManager.getPlugin(pluginName);
+    if (!pluginManifest) return;
+    try {
+        const resultFilePath = resultPath(VCP_ASYNC_RESULTS_DIR, pluginName, taskId);
+        await writeJson(VCP_ASYNC_RESULTS_DIR, resultFilePath, callbackData);
+        if (serverConfig.debugMode) {
+            console.log(`[WebSocketServer] Saved distributed async result for ${pluginName}-${taskId} to ${resultFilePath}`);
+        }
+    } catch (fileError) {
+        console.error('[WebSocketServer] Distributed callback rejected:', fileError.code || fileError.name);
+        return;
+    }
+
+    if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
+        const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
+        const wsMessage = {
+            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification',
+            data: callbackData
+        };
+        broadcast(wsMessage, targetClientType);
+        if (serverConfig.debugMode) {
+            console.log(`[WebSocketServer] Distributed callback WebSocket push for ${pluginName} (taskId: ${taskId}) processed.`);
+        }
+    } else if (serverConfig.debugMode) {
+        console.log(`[WebSocketServer] WebSocket push not configured or disabled for distributed callback plugin: ${pluginName}`);
+    }
+}
+
 function initialize(httpServer, config) {
     if (!httpServer) {
         console.error('[WebSocketServer] Cannot initialize without an HTTP server instance.');
         return;
     }
+
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+
     serverConfig = { ...serverConfig, ...config };
+    attachedHttpServer = httpServer;
+    isDraining = false;
+    shutdownPromise = null;
 
     if (!serverConfig.vcpKey && serverConfig.debugMode) {
         console.warn('[WebSocketServer] VCP_Key not set. WebSocket connections will not be authenticated if default path is used.');
@@ -45,7 +162,17 @@ function initialize(httpServer, config) {
 
     wssInstance = new WebSocket.Server({ noServer: true });
 
-    httpServer.on('upgrade', (request, socket, head) => {
+    upgradeHandler = (request, socket, head) => {
+        if (isDraining) {
+            writeLog(`Rejecting WebSocket upgrade during draining: ${request.url}`);
+            try {
+                socket.destroy();
+            } catch (e) {
+                // ignore
+            }
+            return;
+        }
+
         const parsedUrl = url.parse(request.url, true);
         const pathname = parsedUrl.pathname;
 
@@ -105,16 +232,42 @@ function initialize(httpServer, config) {
             return;
         }
 
+        // 提前提取一次 clientIp,供 VCPLog 类型在 handleUpgrade 内部使用(此处仍能拿到 socket)
+        const rawRemoteAddress =
+            (request.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+            socket.remoteAddress ||
+            '';
+        const clientIp = rawRemoteAddress.startsWith('::ffff:')
+            ? rawRemoteAddress.substring(7)
+            : rawRemoteAddress;
+
+        // 通用设备名识别:前端可通过 ?deviceName=xxx 上报稳定设备名,用于 VCPLog 离线补发区分设备。
+        // 兼容 device_name / devicename,便于不同前端渐进接入。
+        const deviceName = normalizeDeviceName(
+            parsedUrl.query.deviceName ||
+            parsedUrl.query.device_name ||
+            parsedUrl.query.devicename
+        );
+
         if (isAuthenticated) {
             wssInstance.handleUpgrade(request, socket, head, (ws) => {
                 const clientId = generateClientId();
                 ws.clientId = clientId;
                 ws.clientType = clientType;
+                ws.clientIp = clientIp || null;
+                ws.deviceName = deviceName;
 
                 if (clientType === 'DistributedServer') {
                     const serverId = `dist-${clientId}`;
                     ws.serverId = serverId;
-                    distributedServers.set(serverId, { ws, tools: [], ips: {} }); // 初始化ips字段
+                    distributedServers.set(serverId, {
+                        ws,
+                        tools: [],
+                        capabilities: {},
+                        ips: {},
+                        connectedAt: formatDateTimeForConfiguredTimezone(),
+                        lastSeenAt: formatDateTimeForConfiguredTimezone()
+                    }); // 初始化ips字段
                     writeLog(`Distributed Server ${serverId} authenticated and connected.`);
                 } else if (clientType === 'ChromeObserver') {
                     console.log(`[WebSocketServer FORCE LOG] A client with type 'ChromeObserver' (ID: ${clientId}) has connected.`); // 强制日志
@@ -144,12 +297,40 @@ function initialize(httpServer, config) {
                 } else {
                     clients.set(clientId, ws);
                     writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
+
+                    // VCPLog 类型客户端接入设备识别 + 离线补发管理器
+                    if (clientType === 'VCPLog') {
+                        const deviceKey = ws.deviceName
+                            ? `deviceName:${ws.deviceName}`
+                            : (ws.clientIp || `noip-${clientId}`);
+                        ws.vcpLogDeviceKey = deviceKey;
+                        ws.vcpLogDeviceName = ws.deviceName || null;
+                        console.log(`[WebSocketServer] VCPLog replay device resolved: deviceKey=${deviceKey}, deviceName=${ws.vcpLogDeviceName || 'N/A'}, ip=${ws.clientIp || 'N/A'}, clientId=${clientId}`);
+                        try {
+                            vcpLogReplayManager.registerOnline({
+                                deviceKey,
+                                clientIp: ws.clientIp,
+                                clientId,
+                                sendFn: (payload) => {
+                                    if (ws.readyState === WebSocket.OPEN) {
+                                        ws.send(JSON.stringify(payload));
+                                    } else {
+                                        throw new Error('VCPLog ws not open during replay.');
+                                    }
+                                }
+                            });
+                        } catch (e) {
+                            console.error(`[WebSocketServer] VcpLogReplayManager.registerOnline failed for ${clientId}:`, e.message);
+                        }
+                    }
                 }
                 
                 wssInstance.emit('connection', ws, request);
             });
         }
-    });
+    };
+
+    httpServer.on('upgrade', upgradeHandler);
 
     wssInstance.on('connection', (ws, request) => {
         if (serverConfig.debugMode) {
@@ -180,8 +361,8 @@ function initialize(httpServer, config) {
             try {
                 const parsedMessage = JSON.parse(message);
                 
-                // 强制日志：ChromeObserver 的消息
-                if (ws.clientType === 'ChromeObserver') {
+                // ChromeObserver 的消息日志降级到 debugMode
+                if (ws.clientType === 'ChromeObserver' && serverConfig.debugMode) {
                     console.log(`[WebSocketServer] 📨 收到 ChromeObserver 消息，类型: ${parsedMessage.type}`);
                 }
                 
@@ -234,15 +415,21 @@ function initialize(httpServer, config) {
 
                             // 新增：检查是否有等待的Control客户端，并转发页面信息
                             if (parsedMessage.type === 'pageInfoUpdate') {
-                                console.log(`[WebSocketServer] 🔔 收到 pageInfoUpdate, 当前等待客户端数: ${waitingControlClients.size}`);
+                                if (serverConfig.debugMode) {
+                                    console.log(`[WebSocketServer] 🔔 收到 pageInfoUpdate, 当前等待客户端数: ${waitingControlClients.size}`);
+                                }
                                 
                                 if (waitingControlClients.size > 0) {
                                     const pageInfoMarkdown = parsedMessage.data.markdown;
-                                    console.log(`[WebSocketServer] 📤 准备转发页面信息，markdown 长度: ${pageInfoMarkdown?.length || 0}`);
+                                    if (serverConfig.debugMode) {
+                                        console.log(`[WebSocketServer] 📤 准备转发页面信息，markdown 长度: ${pageInfoMarkdown?.length || 0}`);
+                                    }
                                     
                                     // 遍历所有等待的客户端
                                     waitingControlClients.forEach((requestId, clientId) => {
-                                        console.log(`[WebSocketServer] 🎯 尝试转发给客户端 ${clientId}, requestId: ${requestId}`);
+                                        if (serverConfig.debugMode) {
+                                            console.log(`[WebSocketServer] 🎯 尝试转发给客户端 ${clientId}, requestId: ${requestId}`);
+                                        }
                                         const messageForControl = {
                                             type: 'page_info_update',
                                             data: {
@@ -252,15 +439,21 @@ function initialize(httpServer, config) {
                                         };
                                         const sent = sendMessageToClient(clientId, messageForControl);
                                         if (sent) {
-                                            console.log(`[WebSocketServer] ✅ 成功转发页面信息给客户端 ${clientId}`);
+                                            if (serverConfig.debugMode) {
+                                                console.log(`[WebSocketServer] ✅ 成功转发页面信息给客户端 ${clientId}`);
+                                            }
                                             // 发送后即从等待列表移除
                                             waitingControlClients.delete(clientId);
                                         } else {
-                                            console.log(`[WebSocketServer] ❌ 转发失败，客户端 ${clientId} 可能已断开`);
+                                            if (serverConfig.debugMode) {
+                                                console.log(`[WebSocketServer] ❌ 转发失败，客户端 ${clientId} 可能已断开`);
+                                            }
                                         }
                                     });
                                 } else {
-                                    console.log(`[WebSocketServer] ⚠️ 收到 pageInfoUpdate 但没有等待的客户端`);
+                                    if (serverConfig.debugMode) {
+                                        console.log(`[WebSocketServer] ⚠️ 收到 pageInfoUpdate 但没有等待的客户端`);
+                                    }
                                 }
                             }
                         }
@@ -287,11 +480,14 @@ function initialize(httpServer, config) {
                         }
                     }
                 } else if (parsedMessage.type === 'tool_approval_response') {
-                    const { requestId, approved } = parsedMessage.data;
+                    const { requestId, approved, reason } = parsedMessage.data || {};
                     if (pluginManager) {
-                        const success = pluginManager.handleApprovalResponse(requestId, approved);
+                        const success = pluginManager.handleApprovalResponse(requestId, approved, reason);
                         if (serverConfig.debugMode) {
-                            console.log(`[WebSocketServer] Approval response for ${requestId}: ${approved ? 'APPROVED' : 'REJECTED'}. Handled: ${success}`);
+                            const reasonPreview = typeof reason === 'string' && reason.trim()
+                                ? ` Reason: ${reason.trim().substring(0, 200)}`
+                                : '';
+                            console.log(`[WebSocketServer] Approval response for ${requestId}: ${approved ? 'APPROVED' : 'REJECTED'}. Handled: ${success}.${reasonPreview}`);
                         }
                     }
                 } else if (ws.clientType === 'AdminPanel') {
@@ -309,6 +505,7 @@ function initialize(httpServer, config) {
                 if (pluginManager) {
                     pluginManager.unregisterAllDistributedTools(ws.serverId);
                 }
+                rejectPendingToolRequestsForServer(ws.serverId);
                 distributedServers.delete(ws.serverId);
                 distributedServerIPs.delete(ws.serverId); // 新增：移除IP信息
                 writeLog(`Distributed Server ${ws.serverId} disconnected. Its tools and IP info have been unregistered.`);
@@ -324,6 +521,17 @@ function initialize(httpServer, config) {
               writeLog(`Admin Panel client ${ws.clientId} disconnected and removed.`);
            } else {
                clients.delete(ws.clientId);
+               // VCPLog 设备离线通知给 replay 管理器
+               if (ws.clientType === 'VCPLog' && ws.vcpLogDeviceKey) {
+                   try {
+                       vcpLogReplayManager.handleOffline({
+                           deviceKey: ws.vcpLogDeviceKey,
+                           clientId: ws.clientId
+                       });
+                   } catch (e) {
+                       console.error(`[WebSocketServer] VcpLogReplayManager.handleOffline failed for ${ws.clientId}:`, e.message);
+                   }
+               }
            }
             if (serverConfig.debugMode) {
                 console.log(`[WebSocketServer] Client ${ws.clientId} (${ws.clientType}) disconnected.`);
@@ -337,6 +545,31 @@ function initialize(httpServer, config) {
             if(ws.clientId) clients.delete(ws.clientId);
         });
     });
+
+    if (serverConfig.heartbeatEnabled) {
+        heartbeatInterval = setInterval(() => {
+            if (!wssInstance || isDraining) return;
+
+            let pingedClientCount = 0;
+            wssInstance.clients.forEach(client => {
+                if (client.readyState !== WebSocket.OPEN) return;
+
+                try {
+                    client.ping();
+                    pingedClientCount++;
+                } catch (error) {
+                    console.warn(`[WebSocketServer] Heartbeat ping failed for client ${client.clientId || 'unknown'}: ${error.message}`);
+                }
+            });
+
+            if (serverConfig.debugMode && pingedClientCount > 0) {
+                console.log(`[WebSocketServer] Sent heartbeat ping to ${pingedClientCount} connected client(s).`);
+            }
+        }, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
+        heartbeatInterval.unref();
+
+        console.log(`[WebSocketServer] Protocol heartbeat enabled (interval: ${WEBSOCKET_HEARTBEAT_INTERVAL_MS / 1000}s).`);
+    }
 
     if (serverConfig.debugMode) {
         console.log(`[WebSocketServer] Initialized. Waiting for HTTP server upgrades.`);
@@ -354,6 +587,19 @@ function broadcast(data, targetClientType = null, abortController = null) {
     }
     
     if (!wssInstance) return;
+
+    // VCPLog 通道:进入离线补发缓存(只对 targetClientType === 'VCPLog' 的广播缓存,
+    //              其它通道维持原行为不变,避免影响 VCPInfo / 通用广播)
+    let cacheEntryId = null;
+    if (targetClientType === 'VCPLog' && data && typeof data === 'object') {
+        try {
+            const entry = vcpLogReplayManager.enqueue(data);
+            cacheEntryId = entry ? entry.id : null;
+        } catch (e) {
+            console.error('[WebSocketServer] vcpLogReplayManager.enqueue failed:', e.message);
+        }
+    }
+
     const messageString = JSON.stringify(data);
     
     const clientsToBroadcast = new Map([
@@ -364,7 +610,17 @@ function broadcast(data, targetClientType = null, abortController = null) {
     clientsToBroadcast.forEach(clientWs => {
         if (clientWs.readyState === WebSocket.OPEN) {
             if (targetClientType === null || clientWs.clientType === targetClientType) {
-                clientWs.send(messageString);
+                try {
+                    clientWs.send(messageString);
+                    // 投递成功 → 记入对应设备的 deliveredIds
+                    if (cacheEntryId && clientWs.clientType === 'VCPLog' && clientWs.vcpLogDeviceKey) {
+                        vcpLogReplayManager.recordDelivered(clientWs.vcpLogDeviceKey, cacheEntryId);
+                    }
+                } catch (sendErr) {
+                    if (serverConfig.debugMode) {
+                        console.warn(`[WebSocketServer] broadcast send failed to ${clientWs.clientId}: ${sendErr.message}`);
+                    }
+                }
             }
         }
     });
@@ -393,21 +649,66 @@ function sendMessageToClient(clientId, data) {
     return false;
 }
 
+async function beginDrain() {
+    if (isDraining) {
+        return;
+    }
+
+    isDraining = true;
+
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+
+    writeLog('WebSocketServer entered draining mode.');
+
+    if (attachedHttpServer && upgradeHandler) {
+        attachedHttpServer.off('upgrade', upgradeHandler);
+        writeLog('WebSocket upgrade handler detached from HTTP server.');
+    }
+}
+
 function shutdown() {
-    if (serverConfig.debugMode) {
-        console.log('[WebSocketServer] Shutting down...');
+    if (shutdownPromise) {
+        return shutdownPromise;
     }
-    if (wssInstance) {
-        wssInstance.clients.forEach(client => {
-            client.close();
-        });
-        wssInstance.close(() => {
-            if (serverConfig.debugMode) {
-                console.log('[WebSocketServer] Server closed.');
-            }
-        });
-    }
-    writeLog('WebSocketServer shutdown.');
+
+    shutdownPromise = (async () => {
+        if (serverConfig.debugMode) {
+            console.log('[WebSocketServer] Shutting down...');
+        }
+
+        await beginDrain();
+
+        if (wssInstance) {
+            await new Promise((resolve) => {
+                try {
+                    wssInstance.clients.forEach(client => {
+                        try {
+                            client.close();
+                        } catch (e) {
+                            // ignore
+                        }
+                    });
+
+                    wssInstance.close(() => {
+                        if (serverConfig.debugMode) {
+                            console.log('[WebSocketServer] Server closed.');
+                        }
+                        resolve();
+                    });
+                } catch (error) {
+                    console.error('[WebSocketServer] Error during shutdown:', error);
+                    resolve();
+                }
+            });
+        }
+
+        writeLog('WebSocketServer shutdown.');
+    })();
+
+    return shutdownPromise;
 }
 
 // --- 新增分布式服务器相关函数 ---
@@ -417,7 +718,7 @@ function setPluginManager(pm) {
     if (serverConfig.debugMode) console.log('[WebSocketServer] PluginManager instance has been set.');
 }
 
-function handleDistributedServerMessage(serverId, message) {
+async function handleDistributedServerMessage(serverId, message) {
     if (!pluginManager) {
         console.error('[WebSocketServer] PluginManager not set, cannot handle distributed server message.');
         return;
@@ -431,8 +732,15 @@ function handleDistributedServerMessage(serverId, message) {
                 const externalTools = message.data.tools.filter(t => t.name !== 'internal_request_file');
                 pluginManager.registerDistributedTools(serverId, externalTools);
                 serverEntry.tools = externalTools.map(t => t.name);
+                if (message.data.serverName) {
+                    serverEntry.serverName = message.data.serverName;
+                }
+                serverEntry.capabilities = message.data.capabilities && typeof message.data.capabilities === 'object'
+                    ? { ...message.data.capabilities }
+                    : {};
+                serverEntry.lastSeenAt = formatDateTimeForConfiguredTimezone();
                 distributedServers.set(serverId, serverEntry);
-                writeLog(`Registered ${externalTools.length} external tools from server ${serverId}.`);
+                writeLog(`Registered ${externalTools.length} external tools from server ${serverId}${serverEntry.serverName ? ` (${serverEntry.serverName})` : ''}.`);
             }
             break;
        case 'report_ip':
@@ -441,12 +749,17 @@ function handleDistributedServerMessage(serverId, message) {
                const ipData = {
                    localIPs: message.data.localIPs || [],
                    publicIP: message.data.publicIP || null,
-                   serverName: message.data.serverName || serverId
+                   serverName: message.data.serverName || serverInfo.serverName || serverId
                };
                distributedServerIPs.set(serverId, ipData);
                
-               // 将 serverName 也存储在主连接对象中，以便通过名字查找
+               // 将 serverName 和 IP 信息也存储在主连接对象中，以便通过名字查找和提示词快照读取
                serverInfo.serverName = ipData.serverName;
+               serverInfo.ips = {
+                   localIPs: ipData.localIPs,
+                   publicIP: ipData.publicIP
+               };
+               serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
                distributedServers.set(serverId, serverInfo);
 
                // 强制日志记录，无论debug模式如何
@@ -467,20 +780,127 @@ function handleDistributedServerMessage(serverId, message) {
                 pluginManager.updateDistributedStaticPlaceholders(serverId, serverName, placeholders);
             }
             break;
-        case 'tool_result':
-            const pending = pendingToolRequests.get(message.data.requestId);
-            if (pending) {
-                clearTimeout(pending.timeout);
-                if (message.data.status === 'success') {
-                    pending.resolve(message.data.result);
-                } else {
-                    pending.reject(new Error(message.data.error || 'Distributed tool execution failed.'));
+        case 'music_playlist_update':
+            try {
+                const serverInfo = distributedServers.get(serverId);
+                const data = {
+                    ...(message.data || {}),
+                    serverName: message.data?.serverName || serverInfo?.serverName || serverId
+                };
+
+                if (!serverConfig.distributedMusicPlaylistSyncEnabled) {
+                    if (serverInfo) {
+                        serverInfo.serverName = data.serverName;
+                        serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
+                        serverInfo.musicPlaylist = {
+                            exists: data.exists === true,
+                            count: Array.isArray(data.tracks) ? data.tracks.length : 0,
+                            playlistPath: data.playlistPath || '',
+                            updatedAt: data.updatedAt || null,
+                            lastSyncedAt: null,
+                            syncResult: {
+                                skipped: true,
+                                reason: 'disabled_by_config',
+                                added: 0,
+                                removed: 0,
+                                kept: 0,
+                                desiredCount: 0
+                            }
+                        };
+                        distributedServers.set(serverId, serverInfo);
+                    }
+
+                    if (serverConfig.debugMode) {
+                        console.log(`[WebSocketServer] Distributed music playlist sync disabled by config. Received ${Array.isArray(data.tracks) ? data.tracks.length : 0} tracks from ${data.serverName}.`);
+                    }
+                    break;
                 }
-                pendingToolRequests.delete(message.data.requestId);
+
+                const result = await syncDistributedMusicDiary(data, { logger: console });
+                if (serverInfo) {
+                    serverInfo.serverName = data.serverName;
+                    serverInfo.lastSeenAt = formatDateTimeForConfiguredTimezone();
+                    serverInfo.musicPlaylist = {
+                        exists: data.exists === true,
+                        count: Array.isArray(data.tracks) ? data.tracks.length : 0,
+                        playlistPath: data.playlistPath || '',
+                        updatedAt: data.updatedAt || null,
+                        lastSyncedAt: formatDateTimeForConfiguredTimezone(),
+                        syncResult: {
+                            skipped: result.skipped,
+                            reason: result.reason || null,
+                            added: result.added?.length || 0,
+                            removed: result.removed?.length || 0,
+                            kept: result.kept?.length || 0,
+                            desiredCount: result.desiredCount || 0
+                        }
+                    };
+                    distributedServers.set(serverId, serverInfo);
+                }
+
+                if (serverConfig.debugMode) {
+                    console.log(`[WebSocketServer] Music playlist sync from ${data.serverName}:`, result);
+                }
+            } catch (error) {
+                console.error(`[WebSocketServer] Failed to sync distributed music playlist from ${serverId}:`, error);
             }
+            break;
+        case 'tool_result': {
+            const pending = pendingToolRequests.get(message.data.requestId);
+            if (!pending) break;
+
+            // requestId 虽然随机生成，仍不能作为跨节点信任边界；只接受目标
+            // serverId 返回的结果，其他节点的同 ID 消息不得完成该 Promise。
+            if (pending.serverId !== serverId) {
+                console.warn(`[WebSocketServer] Ignoring tool_result for ${message.data.requestId} from non-target server ${serverId}; expected ${pending.serverId}.`);
+                break;
+            }
+
+            clearTimeout(pending.timeout);
+            if (message.data.status === 'success') {
+                pending.resolve(message.data.result);
+            } else {
+                pending.reject(new Error(message.data.error || 'Distributed tool execution failed.'));
+            }
+            pendingToolRequests.delete(message.data.requestId);
+            break;
+        }
+        case 'plugin_callback_forward':
+            await handleDistributedPluginCallback(serverId, message);
             break;
         default:
             writeLog(`Unknown message type '${message.type}' from server ${serverId}.`);
+    }
+}
+
+function sendCancelToolIfSupported(pending) {
+    const ws = pending.server?.ws;
+    const supportsCancelTool = pending.server?.capabilities?.cancelTool === true;
+    if (!supportsCancelTool || !ws || ws.readyState !== WebSocket.OPEN || pending.cancelSent) {
+        return false;
+    }
+
+    try {
+        ws.send(JSON.stringify({
+            type: 'cancel_tool',
+            data: { requestId: pending.requestId }
+        }));
+        pending.cancelSent = true;
+        writeLog(`Sent cancel_tool for timed-out request ${pending.requestId} to server ${pending.serverId}.`);
+        return true;
+    } catch (error) {
+        console.warn(`[WebSocketServer] Failed to send cancel_tool for ${pending.requestId}:`, error.message);
+        return false;
+    }
+}
+
+function rejectPendingToolRequestsForServer(serverId) {
+    for (const [requestId, pending] of pendingToolRequests.entries()) {
+        if (pending.serverId !== serverId) continue;
+
+        clearTimeout(pending.timeout);
+        pendingToolRequests.delete(requestId);
+        pending.reject(new Error(`Distributed server ${serverId} disconnected while executing request ${requestId}.`));
     }
 }
 
@@ -490,12 +910,14 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
     const defaultTimeout = plugin?.communication?.timeout || 60000;
     const effectiveTimeout = timeout ?? defaultTimeout;
 
+    let targetServerId = serverIdOrName;
     let server = distributedServers.get(serverIdOrName); // 优先尝试通过 ID 查找
 
     // 如果通过 ID 找不到，则遍历并尝试通过 name 查找
     if (!server) {
-        for (const srv of distributedServers.values()) {
+        for (const [candidateServerId, srv] of distributedServers.entries()) {
             if (srv.serverName === serverIdOrName) {
+                targetServerId = candidateServerId;
                 server = srv;
                 break;
             }
@@ -517,15 +939,31 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
     };
 
     return new Promise((resolve, reject) => {
-        const timeoutId = setTimeout(() => {
+        const pending = {
+            requestId,
+            serverId: targetServerId,
+            server,
+            resolve,
+            reject,
+            timeout: null,
+            cancelSent: false
+        };
+        pending.timeout = setTimeout(() => {
             pendingToolRequests.delete(requestId);
+            sendCancelToolIfSupported(pending);
             reject(new Error(`Request to distributed tool ${toolName} on server ${serverIdOrName} timed out after ${effectiveTimeout / 1000}s.`));
         }, effectiveTimeout);
 
-        pendingToolRequests.set(requestId, { resolve, reject, timeout: timeoutId });
+        pendingToolRequests.set(requestId, pending);
 
-        server.ws.send(JSON.stringify(payload));
-        writeLog(`Sent tool execution request ${requestId} for ${toolName} to server ${serverIdOrName}.`);
+        try {
+            server.ws.send(JSON.stringify(payload));
+            writeLog(`Sent tool execution request ${requestId} for ${toolName} to server ${serverIdOrName}.`);
+        } catch (error) {
+            clearTimeout(pending.timeout);
+            pendingToolRequests.delete(requestId);
+            reject(error);
+        }
     });
 }
 
@@ -536,6 +974,63 @@ function findServerByIp(ip) {
        }
    }
    return null;
+}
+
+function getDistributedServerSnapshot() {
+    return Array.from(distributedServers.entries()).map(([serverId, serverInfo]) => {
+        const ipInfo = distributedServerIPs.get(serverId) || {};
+        const localIPs = Array.isArray(ipInfo.localIPs)
+            ? ipInfo.localIPs
+            : (Array.isArray(serverInfo.ips?.localIPs) ? serverInfo.ips.localIPs : []);
+
+        return {
+            serverId,
+            clientId: serverInfo.ws?.clientId || null,
+            serverName: serverInfo.serverName || ipInfo.serverName || serverId,
+            localIPs,
+            publicIP: ipInfo.publicIP ?? serverInfo.ips?.publicIP ?? null,
+            tools: Array.isArray(serverInfo.tools) ? [...serverInfo.tools] : [],
+            capabilities: { ...(serverInfo.capabilities || {}) },
+            connected: serverInfo.ws?.readyState === WebSocket.OPEN,
+            connectedAt: serverInfo.connectedAt || null,
+            lastSeenAt: serverInfo.lastSeenAt || null
+        };
+    });
+}
+
+function formatDistributedServerListForPrompt() {
+    const servers = getDistributedServerSnapshot()
+        .filter(server => server.connected)
+        .sort((a, b) => String(a.serverName).localeCompare(String(b.serverName), 'zh-CN'));
+
+    if (servers.length === 0) {
+        return [
+            '[VCP Distributed Server List]',
+            '当前没有已连接的 VCP 分布式服务器。'
+        ].join('\n');
+    }
+
+    const lines = [
+        '[VCP Distributed Server List]',
+        `当前已连接 ${servers.length} 个 VCP 分布式服务器。`,
+        '说明：serverId 可用于精确定位分布式节点；serverName 是节点自报名称；IP 信息来自节点最近一次上报。'
+    ];
+
+    for (const server of servers) {
+        lines.push(
+            [
+                `- serverName: ${server.serverName}`,
+                `  serverId: ${server.serverId}`,
+                `  clientId: ${server.clientId || 'unknown'}`,
+                `  publicIP: ${server.publicIP || 'N/A'}`,
+                `  localIPs: ${server.localIPs.length > 0 ? server.localIPs.join(', ') : 'N/A'}`,
+                `  connectedAt: ${server.connectedAt || 'unknown'}`,
+                `  lastSeenAt: ${server.lastSeenAt || 'unknown'}`
+            ].join('\n')
+        );
+    }
+
+    return lines.join('\n');
 }
 
 // 新增：专门广播给管理面板
@@ -556,6 +1051,7 @@ function broadcastToAdminPanel(data) {
 
 module.exports = {
     initialize,
+    beginDrain,
     setPluginManager,
     broadcast,
     broadcastVCPInfo, // 导出新的广播函数
@@ -564,5 +1060,17 @@ module.exports = {
     executeDistributedTool,
     handleDistributedServerMessage,
     findServerByIp,
-    shutdown
+    getDistributedServerSnapshot,
+    formatDistributedServerListForPrompt,
+    shutdown,
+    // 暴露给 PluginManager,在审核响应到达时清除对应缓存
+    cancelVcpLogApprovalCache: (requestId) => vcpLogReplayManager.cancelApprovalCache(requestId),
+    getVcpLogReplayStats: () => vcpLogReplayManager.getStats(),
+    // Narrow test hooks for deterministic lifecycle tests; not used by production callers.
+    __testing: {
+        distributedServers,
+        pendingToolRequests,
+        sendCancelToolIfSupported,
+        rejectPendingToolRequestsForServer
+    }
 };

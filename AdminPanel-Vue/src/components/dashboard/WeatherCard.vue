@@ -9,7 +9,7 @@
           }}</span>
           <div class="current-temp-box">
             <div class="temp-row">
-              <span class="temp">{{ data.temp }}</span>
+              <span class="temp">{{ data.temp ?? "--" }}</span>
               <span class="unit">°C</span>
             </div>
             <div class="text">{{ data.text }}</div>
@@ -18,7 +18,7 @@
         <div class="current-details">
           <div class="dashboard-card-panel detail-item">
             <span class="material-symbols-outlined">humidity_percentage</span>
-            <span>{{ data.humidity }}%</span>
+            <span>{{ data.humidity ?? "--" }}%</span>
           </div>
           <div class="dashboard-card-panel detail-item">
             <span class="material-symbols-outlined">air</span>
@@ -26,7 +26,7 @@
           </div>
           <div class="dashboard-card-panel detail-item">
             <span class="material-symbols-outlined">compress</span>
-            <span>{{ data.pressure }} hPa</span>
+            <span>{{ data.pressure ?? "--" }} hPa</span>
           </div>
         </div>
       </div>

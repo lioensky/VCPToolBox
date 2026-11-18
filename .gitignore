@@ -6,6 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
+.audit
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -90,9 +91,6 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
-# 但保留 AdminPanel-Vue 构建产物，让用户开箱即用
-!AdminPanel-Vue/dist/
-!AdminPanel-Vue/dist/**
 
 # Gatsby files
 .cache/
@@ -152,19 +150,34 @@ ModelRedirect.json
 agent_map.json
 preprocessor_order.json
 tag-processor-config.env
+# 多模态识别 JSON 真相源（首启自动生成；私密提示词不应入库）
+multimodal-config.json
 
 # ===== 运行时数据 / 缓存 =====
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 *.db
+# SQLite sidecar：主库运行期间产生的 WAL / shared memory
+*.db-shm
+*.db-wal
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
+!dailynote/VCP桌面知识/**
+!dailynote/VCP开发/
+!dailynote/VCP开发/**
 ip_blacklist.json
 /VectorStore
+/VectorStoreTDB/
 
 # 插件缓存文件
+# PlaceholderExplorer 的备份与运行时索引可能包含私密值或本机绝对路径，严禁入库。
+Plugin/PlaceholderExplorer/backups/
+Plugin/PlaceholderExplorer/generated/placeholder-index.json
 Plugin/ArtistMatcher/artist_cache.json
 Plugin/DailyHot/dailyhot_cache.md
 Plugin/EmojiListGenerator/generated_lists/
@@ -186,6 +199,29 @@ Plugin/VCPLog/log/VCPlog.txt
 Plugin/WeatherReporter/weather_cache.json
 Plugin/WeatherReporter/weather_cache.txt
 Plugin/WeatherReporter/city_cache.txt
+ToolConfigs/dynamic_tool_catalog.json
+ToolConfigs/dynamic_tool_categories.json
+ToolConfigs/*.tmp
+Plugin/VCPClawMail/data/
+Plugin/VCPTaskAssistant/task-center-data.json
+Plugin/VCPTavern/access_logs.json
+Plugin/VCPTimeLine/timeline_summaries.json
+Plugin/OneRing/memo/
+VCPAsyncResults/
+file/document/AgentTask/
+Plugin/UrlFetch/browser-profiles
+Plugin/ChromeBridge/ChromeScripts
+Plugin/ChromeBridge/managed-extension-stage
+Plugin/ChromeBridge/managed-profile
+Plugin/VCPTimeLine/config.json
+
+# Agent 插件执行态
+Plugin/AgentAssistant/agent_scores.json
+Plugin/AgentDream/dream_logs/
+Plugin/AgentDream/dream_schedule_state.json
+
+# ChromeBridge 单次运行令牌
+Plugin/ChromeBridge/managed-runtime-token.json
 
 # ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...
@@ -194,8 +230,58 @@ image/通用表情包/*
 !image/通用表情包/阿库娅-一脸智障.jpg
 !image/通用表情包/阿库娅-智慧的眼神.jpg
 
-# 忽略 FluxGen 生成的图片
+# 忽略图片生成插件的输出
 image/fluxgen/
+image/gptimagegen/
+image/agnesgen/
+image/zimageturbogen/
+image/comfycloud/
+image/comfyuigen/
+image/doubaogen/
+image/geminiimagegen/
+image/nanobananagen/
+image/novelaigen/
+image/qwenimagegen/
+image/sensegen/
+image/webuigen/
+image/zimagegen/
+
+# MediaRenderer 与 AgnesVideoGen 渲染/生成输出
+image/media-renderer/
+file/media-renderer/
+file/agnesvideogen/
+file/mimo-dubbing/
+Plugin/MimoDubbing/state/
+Plugin/LinuxShellExecutor/state/
+
+# 全局临时文件与运行时历史
+*.tmp
+*.bak
+*.pyc
+__pycache__/
+**/__pycache__/
+VCPTimedResults/
+Plugin/BilibiliFetch/.cookies_cache
+
+# 网络抓取图片输出
+image/urlfetch/
+
+# 忽略 B站截图的图片
+image/bilibili/
+
+# ===== 本地知识库 =====
+# knowledge 默认为本地私有数据，不进入 Git
+/knowledge/*
+
+# 上游官方维护的知识目录
+!/knowledge/TDBdocs/
+!/knowledge/TDBdocs/**
+
+!/knowledge/VCP百科全书/
+!/knowledge/VCP百科全书/**
+
+!/knowledge/VCP知识/
+!/knowledge/VCP知识/**
 
 # ===== IDE / OS 文件 =====
 .vscode/
@@ -207,14 +293,36 @@ image/fluxgen/
 # Qwen Code / Snow 工具配置
 **/.qwen/
 **/.snow/
+helloagents/
 
 # Windows 缩略图缓存
 Thumbs.db
 
+# 源码研究
 # ===== 编译产物 =====
 rust-vexus-lite/target/
+rust-vexus-lite/crates/vcp-tdb-index/target/
+Plugin/DailyNoteSearcher/src/target/
+Plugin/CodeSearcher/src/target/
+Plugin/PaperReader/paperreader-rs/target/
+AdminPanel-Vue/dist
+
 
 # ==== 分布式开发 ====
 VCPDistributedServer
 # XiaohongshuFetch config
 Plugin/XiaohongshuFetch/config.env
+
+# ==== 插件商店 ====
+pluginStoreSources.json
+tmp/
+Plugin/.backup/
+
+# ==== 开发SDK ====
+Plugin/VCPQQBotServer/bot-node-sdk-main
+开发日志/
+
+# Local native artifact archives; retain outside disposable build caches.
+/.vcp-native-archive/
+# Local SoVITS voice catalog (copied from VChat, not source)
+Plugin/MimoDubbing/presets.json

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VCP Chrome Control</title>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: sans-serif;
+            width: 300px;
+            padding: 10px;
+            text-align: center;
+        }
+        .status-item {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-label {
+            font-size: 14px;
+        }
+        .status-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .badge-on {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .badge-off {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .badge-managed {
+            background-color: #dbeafe;
+            color: #1d4ed8;
+        }
+        #client-mode-error {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #b42318;
+            font-size: 11px;
+            line-height: 1.35;
+            text-align: left;
+        }
+        button {
+            padding: 8px 15px;
+            font-size: 14px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #fff;
+        }
+        button:hover {
+            background-color: #f0f0f0;
+        }
+        button:active {
+            background-color: #e0e0e0;
+        }
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .mode-button-group button {
+            padding: 7px 5px;
+            font-size: 12px;
+        }
+        .mode-button-active {
+            border-color: #2563eb;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-weight: 700;
+        }
+        .button-group button {
+            flex: 1;
+            margin: 0;
+        }
+        .copy-button {
+            width: 100%;
+            border-color: #8b5cf6;
+            background: #f5f0ff;
+            color: #4c1d95;
+            font-weight: 600;
+        }
+        .copy-button:hover {
+            background: #ede3ff;
+        }
+        #copy-status {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #6d5a8f;
+            font-size: 11px;
+            text-align: left;
+        }
+        .urlfetch-cookie-button {
+            width: 100%;
+            border-color: #c2410c;
+            background: #fff7ed;
+            color: #9a3412;
+            font-weight: 600;
+        }
+        .urlfetch-cookie-button:hover {
+            background: #ffedd5;
+        }
+        #urlfetch-cookie-status {
+            min-height: 16px;
+            margin-top: 5px;
+            color: #6b7280;
+            font-size: 11px;
+            line-height: 1.35;
+            text-align: left;
+        }
+        #settings {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+            display: none;
+        }
+        .input-group {
+            margin-bottom: 10px;
+            text-align: left;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        .input-group input[type="text"],
+        .input-group input[type="password"] {
+            width: 95%;
+            padding: 5px;
+            font-size: 12px;
+        }
+        .privacy-setting {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            background: #eaf7ee;
+        }
+        .privacy-setting input {
+            margin-top: 2px;
+        }
+        .privacy-setting label {
+            margin: 0;
+            line-height: 1.4;
+        }
+        .setting-hint {
+            display: block;
+            margin-top: 3px;
+            color: #607066;
+            font-weight: normal;
+        }
+        #settings-toggle {
+            font-size: 12px;
+            background: none;
+            border: none;
+            color: #007bff;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 0;
+            margin-top: 5px;
+        }
+        #page-info {
+            margin-top: 10px;
+            padding: 8px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            text-align: left;
+        }
+        #page-title {
+            margin-top: 5px;
+            font-size: 12px;
+            word-break: break-all;
+            color: #333;
+        }
+        #page-url {
+            margin-top: 3px;
+            font-size: 11px;
+            color: #666;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <h3>VCP Chrome Control</h3>
+    
+    <!-- 状态显示区 -->
+    <div class="status-item" style="background-color: #e7f3ff;">
+        <span class="status-label">📡 页面监控</span>
+        <span id="monitor-status" class="status-badge badge-off">关闭</span>
+    </div>
+    
+    <div class="status-item" style="background-color: #fff3cd;">
+        <span class="status-label">🔌 VCP连接</span>
+        <span id="vcp-status" class="status-badge badge-off">未连接</span>
+    </div>
+
+    <div class="status-item" style="background-color: #f3e7ff;">
+        <span class="status-label">🤖 客户端模式</span>
+        <span id="client-mode-status" class="status-badge badge-off">User</span>
+    </div>
+
+    <!-- 控制按钮区 -->
+    <div class="button-group">
+        <button id="toggleMonitor">开启监控</button>
+        <button id="toggleVCP">连接VCP</button>
+    </div>
+    
+    <div class="button-group mode-button-group" role="group" aria-label="客户端模式">
+        <button id="selectUserMode" type="button">User</button>
+        <button id="selectAgentMode" type="button">Agent</button>
+        <button id="selectManagedMode" type="button">Managed</button>
+    </div>
+    <div id="client-mode-error" aria-live="polite"></div>
+
+    <div class="button-group">
+        <button id="refreshPage" style="width: 100%;">🔄 手动刷新</button>
+    </div>
+
+    <div class="button-group">
+        <button id="copyGroundedMarkdown" class="copy-button">📋 复制当前页面 MD 操作图全文</button>
+    </div>
+    <div id="copy-status" aria-live="polite"></div>
+
+    <div class="button-group">
+        <button id="syncUrlFetchCookies" class="urlfetch-cookie-button">🍪 配置当前站点 UrlFetch Cookie</button>
+    </div>
+    <div id="urlfetch-cookie-status" aria-live="polite"></div>
+
+    <!-- 显示最新页面信息 -->
+    <div id="page-info">
+        <strong>当前页面：</strong>
+        <div id="page-title" style="color: #999;">等待监控...</div>
+        <div id="page-url"></div>
+    </div>
+    
+    <button id="settings-toggle">⚙️ 设置</button>
+
+    <div id="settings">
+        <div class="input-group">
+            <label for="serverUrl">服务器地址 (WebSocket URL):</label>
+            <input type="text" id="serverUrl" placeholder="ws://localhost:8088">
+        </div>
+        <div class="input-group">
+            <label for="vcpKey">VCP 密钥:</label>
+            <input type="password" id="vcpKey" placeholder="your_secret_key">
+        </div>
+        <div class="input-group privacy-setting">
+            <input type="checkbox" id="redactSensitiveDom" checked>
+            <label for="redactSensitiveDom">
+                页面敏感信息脱敏
+                <span class="setting-hint">默认开启；隐藏密码、令牌、密钥、Cookie、会话及支付字段值。</span>
+            </label>
+        </div>
+        <button id="saveSettings">保存设置</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -24,8 +24,16 @@ export type SerializableEnvValue = string | number | boolean | null | undefined
  */
 export function inferEnvValueType(key: string | null, value: string): 'string' | 'boolean' | 'integer' {
   if (!key) return 'string'
-  if (/^(true|false)$/i.test(value)) return 'boolean'
-  if (!isNaN(parseFloat(value)) && isFinite(parseFloat(value)) && !value.includes('.')) return 'integer'
+
+  const normalizedValue = value.trim()
+
+  if (/^(true|false)$/i.test(normalizedValue)) return 'boolean'
+
+  // Token/password-like values must stay as plain text even if they start with numbers.
+  if (isSensitiveConfigKey(key)) return 'string'
+
+  if (/^[+-]?\d+$/.test(normalizedValue)) return 'integer'
+
   return 'string'
 }
 
@@ -48,7 +56,19 @@ export function castEnvValue(value: string | boolean | number, type: 'string' | 
  * 判断是否为敏感配置项（API Key, Password 等）
  */
 export function isSensitiveConfigKey(key: string): boolean {
-  return /key|api|secret|password|token/i.test(key)
+  const normalizedKey = key.trim()
+  if (!normalizedKey) return false
+
+  const lowerKey = normalizedKey.toLowerCase()
+
+  // Token 数量参数（例如 MaxToken / MaxTokens）不是密钥，不应被当作敏感信息。
+  if (/(?:max|min|total|count|output|input|context|window|limit|quota|budget)[_\-.]?tokens?$/.test(lowerKey)) {
+    return false
+  }
+
+  return /(?:^|[_\-.])(?:api[_\-.]?key|secret|password|passwd|token|access[_\-.]?key)(?:[_\-.]|$)/i.test(normalizedKey)
+    || /(?:^|[_\-.])(?:key|api|token)$/i.test(normalizedKey)
+    || /(?:api[_\-.]?key|access[_\-.]?key|secret|password|passwd|key)$/.test(lowerKey)
 }
 
 function isEscaped(line: string, index: number): boolean {
@@ -72,11 +92,12 @@ function findClosingQuote(line: string, quoteChar: '"' | "'", startIndex: number
 
 function unescapeDoubleQuotedValue(value: string): string {
   return value
+    .replace(/\\\\/g, '\x00')
     .replace(/\\r/g, '\r')
     .replace(/\\n/g, '\n')
     .replace(/\\t/g, '\t')
     .replace(/\\"/g, '"')
-    .replace(/\\\\/g, '\\')
+    .replace(/\x00/g, '\\')
 }
 
 function escapeDoubleQuotedValue(value: string): string {
@@ -151,6 +172,11 @@ export function serializeEnvValue(value: SerializableEnvValue): string {
 
   if (!shouldQuote) {
     return normalizedValue
+  }
+
+  // dotenv 对单引号值不做转义处理，可正确保留 JSON 等含双引号的值
+  if (!normalizedValue.includes("'")) {
+    return `'${normalizedValue}'`
   }
 
   return `"${escapeDoubleQuotedValue(normalizedValue)}"`
@@ -237,43 +263,3 @@ export function parseEnvToList(content: string): EnvEntry[] {
   return entries
 }
 
-/**
- * 根据表单元素和原始解析条目构建 env 字符串
- */
-export function buildEnvString(formElement: HTMLFormElement, originalParsedEntries: EnvEntry[]): string {
-  const finalLines: string[] = []
-  const formElementsMap = new Map<string, HTMLElement>()
-
-  Array.from(formElement.querySelectorAll('[data-original-key], [data-is-comment-or-empty="true"]')).forEach(el => {
-    const originalKey = (el as HTMLElement).dataset.originalKey
-    if (originalKey) {
-      formElementsMap.set(originalKey, el as HTMLElement)
-    }
-  })
-
-  originalParsedEntries.forEach(entry => {
-    if (entry.isCommentOrEmpty) {
-      finalLines.push(entry.value)
-      return
-    }
-
-    const inputElement = formElementsMap.get(entry.key!) as HTMLInputElement | HTMLTextAreaElement | undefined
-    if (!inputElement) {
-      finalLines.push(serializeEnvAssignment(entry.key!, entry.value))
-      return
-    }
-
-    let value = inputElement.value
-    const expectedType = inputElement.dataset.expectedType
-    if (inputElement.type === 'checkbox' && expectedType === 'boolean') {
-      value = (inputElement as HTMLInputElement).checked ? 'true' : 'false'
-    } else if (expectedType === 'integer') {
-      const intVal = parseInt(value, 10)
-      value = isNaN(intVal) ? (value === '' ? '' : value) : String(intVal)
-    }
-
-    finalLines.push(serializeEnvAssignment(entry.key!, value))
-  })
-
-  return finalLines.join('\n')
-}

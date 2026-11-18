@@ -2,15 +2,43 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const { Worker } = require('worker_threads');
+const { assertSafePath, resolveSafePath } = require('../modules/safeFilePath');
 
 /**
- * 日记本管理模块 (安全加固版)
- * @param {string} dailyNoteRootPath 日记本根目录
+ * 日记/知识库文件管理模块 (安全加固版)
+ * @param {string} dailyNoteRootPath 根目录（日记根目录或 knowledge 根目录）
  * @param {boolean} DEBUG_MODE 是否开启调试模式
+ * @param {{ allowedExtensions?: string, ignoredFolders?: string, resourceLabel?: string }} options 资源配置
  * @returns {express.Router}
  */
-module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
+module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
     const router = express.Router();
+    const resourceLabel = options.resourceLabel || '日记';
+    const allowedExtensions = (options.allowedExtensions || 'md,txt')
+        .split(',')
+        .map(ext => ext.trim().replace(/^\./, '').toLowerCase())
+        .filter(Boolean);
+    const allowedExtensionsParam = allowedExtensions.join(',');
+    const ignoredFoldersParam = options.ignoredFolders || 'VectorStore,DebugLog';
+    const runExternalFileMutation = typeof options.runExternalFileMutation === 'function'
+        ? options.runExternalFileMutation
+        : null;
+
+    /**
+     * 在知识库协调器可用时，将文件落盘、SQLite 摄取和 Rust 索引更新
+     * 纳入主进程的单一 FIFO；普通文件目录仍可独立使用本路由。
+     *
+     * waitForIndex=false 只影响 HTTP 返回时机：文件提交后即可响应，
+     * 协调器的内部尾队列仍会继续等待索引同步完成。
+     */
+    function executeFileMutation(operationName, operation) {
+        if (!runExternalFileMutation) return operation();
+        return runExternalFileMutation(
+            `${resourceLabel}Admin:${operationName}:${Date.now()}`,
+            operation,
+            { waitForIndex: false }
+        );
+    }
 
     // ══════════════════════════════════════════════════
     //  搜索配置
@@ -47,9 +75,12 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
     /** 符号链接检查 */
     async function isSymlink(filePath) {
         try {
+            await assertSafePath(dailyNoteRootPath, filePath);
             return (await fs.lstat(filePath)).isSymbolicLink();
-        } catch {
-            return false;
+        } catch (error) {
+            if (error.code === 'UNSAFE_PATH') return true;
+            if (error.code === 'ENOENT') return false;
+            throw error;
         }
     }
 
@@ -183,7 +214,175 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
      * @param {string|null} folder
      * @param {AbortSignal} signal
      */
+    /**
+     * 使用 Rust 搜索器执行高性能搜索，如果失败则回退到 JS Worker 搜索
+     */
     async function executeSearch(searchTerms, folder, signal) {
+        try {
+            return await executeRustSearch(searchTerms, folder, signal);
+        } catch (err) {
+            if (err.name === 'AbortError' || signal.aborted) {
+                throw err;
+            }
+            console.warn('[Search] Rust search failed, falling back to JS Worker:', err.message);
+            return await executeJsFallbackSearch(searchTerms, folder, signal);
+        }
+    }
+
+    /**
+     * 调用 Rust 编写的高性能日记搜索器
+     */
+    async function executeRustSearch(searchTerms, folder, signal) {
+        const { execFile } = require('child_process');
+        
+        // 🌟 架构自动适配逻辑
+        const platform = process.platform; // win32, linux, darwin
+        const arch = process.arch;         // x64, arm64
+        
+        let binaryName = 'DailyNoteSearcher';
+        if (platform === 'linux') {
+            binaryName += (arch === 'arm64' ? '-aarch64-unknown-linux-musl' : '-x86_64-unknown-linux-musl');
+        } else if (platform === 'win32') {
+            binaryName += (arch === 'arm64' ? '-aarch64-pc-windows-msvc.exe' : '-x86_64-pc-windows-msvc.exe');
+        } else if (platform === 'darwin') {
+            binaryName += (arch === 'arm64' ? '-aarch64-apple-darwin' : '-x86_64-apple-darwin');
+        }
+
+        let exePath = path.join(__dirname, '../Plugin/DailyNoteSearcher', binaryName);
+        const fallbackName = platform === 'win32' ? 'DailyNoteSearcher.exe' : 'DailyNoteSearcher';
+        const fallbackPath = path.join(__dirname, '../Plugin/DailyNoteSearcher', fallbackName);
+
+        // 🌟 智能探测：优先尝试架构匹配名，失败后回退至通用名
+        try {
+            await fs.access(exePath);
+        } catch {
+            try {
+                await fs.access(fallbackPath);
+                exePath = fallbackPath; // 找到通用名，使用它
+            } catch {
+                throw new Error(`Rust DailyNoteSearcher executable not found for ${platform}-${arch} (Tried: ${binaryName} and ${fallbackName})`);
+            }
+        }
+
+        // 构造 Rust 搜索器所需的参数。
+        // Rust regex crate 不支持 look-around，因此多关键词 AND 搜索通过 queries 数组交给 Rust 内部逐项匹配。
+        const inputArgs = {
+            query: searchTerms[0] || '',
+            queries: searchTerms,
+            folder: folder || undefined,
+            is_regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            context_lines: 2,
+            preview_length: SEARCH_CONFIG.PREVIEW_LENGTH,
+            root_path: path.resolve(dailyNoteRootPath),
+            max_results: SEARCH_CONFIG.MAX_RESULTS,
+            ignored_folders: ignoredFoldersParam,
+            allowed_extensions: allowedExtensionsParam
+        };
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let killFallbackTimer = null;
+
+            const cleanup = () => {
+                signal.removeEventListener('abort', onAbort);
+                if (killFallbackTimer) {
+                    clearTimeout(killFallbackTimer);
+                    killFallbackTimer = null;
+                }
+            };
+
+            const settleResolve = (value) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(value);
+            };
+
+            const settleReject = (error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(error);
+            };
+
+            const child = execFile(exePath, [], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+                if (error && child.killed) {
+                    return settleReject(new DOMException('Search aborted', 'AbortError'));
+                }
+
+                if (error) {
+                    return settleReject(new Error(`Rust search process error: ${error.message}. Stderr: ${stderr}`));
+                }
+
+                try {
+                    const output = JSON.parse(stdout);
+                    if (output.status === 'error') {
+                        return settleReject(new Error(output.error || 'Unknown Rust search error'));
+                    }
+
+                    const payload = output.result && typeof output.result === 'object'
+                        ? output.result
+                        : output;
+
+                    const rawNotes = Array.isArray(payload.notes) ? payload.notes : [];
+                    const notes = rawNotes.map(note => ({
+                        name: note.name ?? note.file_name ?? '',
+                        folderName: note.folder_name ?? note.folderName ?? '',
+                        lastModified: note.last_modified ?? note.lastModified ?? '',
+                        preview: note.preview ?? '',
+                        content: note.content ?? undefined
+                    }));
+
+                    settleResolve(notes);
+                } catch (parseErr) {
+                    settleReject(new Error(`Failed to parse Rust search output: ${parseErr.message}. Raw: ${stdout}`));
+                }
+            });
+
+            const onAbort = () => {
+                if (settled) return;
+
+                // Windows 上 child.kill() 会终止子进程；这里额外设置兜底检查，避免 Promise 悬挂。
+                if (!child.killed) {
+                    child.kill();
+                }
+
+                killFallbackTimer = setTimeout(() => {
+                    settleReject(new DOMException('Search aborted and process termination timed out', 'AbortError'));
+                }, 3000);
+
+                settleReject(new DOMException('Search aborted', 'AbortError'));
+            };
+
+            child.once('exit', () => {
+                cleanup();
+            });
+
+            if (signal.aborted) {
+                onAbort();
+            } else {
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            // 将参数通过 stdin 写入 Rust 进程
+            child.stdin.write(JSON.stringify(inputArgs));
+            child.stdin.end();
+        });
+    }
+
+    /**
+     * 辅助函数：转义正则特殊字符
+     */
+    function escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * 传统的 JS Worker 搜索（作为 Fallback）
+     */
+    async function executeJsFallbackSearch(searchTerms, folder, signal) {
         const checkAbort = () => {
             if (signal.aborted) throw new DOMException('Search aborted', 'AbortError');
         };
@@ -225,7 +424,8 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
                     foldersToSearch.push({ name: dir.name, path: fullPath, depth: dir.depth + 1 });
                 } else if (entry.isFile()) {
                     const lower = entry.name.toLowerCase();
-                    if (lower.endsWith('.txt') || lower.endsWith('.md')) {
+                    const ext = path.extname(lower).replace('.', '');
+                    if (allowedExtensions.length === 0 || allowedExtensions.includes(ext)) {
                         try {
                             const stats = await fs.stat(fullPath);
                             if (stats.size <= SEARCH_CONFIG.MAX_FILE_SIZE) {
@@ -245,8 +445,6 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         if (filesToScan.length === 0) return [];
 
         // 2. 使用 Worker Thread 进行并行搜索
-        // 将文件列表分块（如果文件很多），这里简单起见先用一个 Worker 处理所有文件
-        // 但为了防止单个 Worker 运行太久，我们可以限制文件数量或分块
         const results = await new Promise((resolve, reject) => {
             const worker = new Worker(path.join(__dirname, 'searchWorker.js'), {
                 workerData: {
@@ -285,7 +483,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
 
         if (DEBUG_MODE) {
-            console.log(`[Search] Completed: ${filesToScan.length} files scanned, ${matchedNotes.length} matches`);
+            console.log(`[Search] Fallback Completed: ${filesToScan.length} files scanned, ${matchedNotes.length} matches`);
         }
 
         return matchedNotes.slice(0, SEARCH_CONFIG.MAX_RESULTS);
@@ -502,10 +700,10 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
 
             await fs.access(specificFolderPath);
             const files = await fs.readdir(specificFolderPath);
-            const noteFiles = files.filter(file =>
-                file.toLowerCase().endsWith('.txt') ||
-                file.toLowerCase().endsWith('.md')
-            );
+            const noteFiles = files.filter(file => {
+                const ext = path.extname(file).replace('.', '').toLowerCase();
+                return allowedExtensions.length === 0 || allowedExtensions.includes(ext);
+            });
 
             const notes = await Promise.all(noteFiles.map(async (file) => {
                 const filePath = path.join(specificFolderPath, file);
@@ -569,10 +767,10 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
     });
 
-    // POST /note/:folderName/:fileName - 保存笔记
+    // POST /note/:folderName/:fileName - 保存笔记 (支持重命名与内容同时修改)
     router.post('/note/:folderName/:fileName', async (req, res) => {
         const { folderName, fileName } = req.params;
-        const { content } = req.body;
+        let { content, newFileName } = req.body;
 
         if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid request body' });
@@ -585,19 +783,110 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
 
         const targetFolderPath = path.join(dailyNoteRootPath, folderName);
-        const filePath = path.join(targetFolderPath, fileName);
+        const oldFilePath = path.join(targetFolderPath, fileName);
 
-        if (!isPathSafe(filePath, dailyNoteRootPath)) {
+        if (!isPathSafe(oldFilePath, dailyNoteRootPath)) {
             return res.status(403).json({ error: 'Invalid file path' });
         }
 
+        // 处理新文件名逻辑
+        let actualNewFileName = fileName;
+        let isRename = false;
+
+        if (typeof newFileName === 'string' && newFileName.trim()) {
+            let cleanNewName = newFileName.trim();
+
+            // 1. 判断新名字是否已经以白名单扩展名（如 .txt / .md）结尾
+            const hasValidExt = allowedExtensions.some(ext => cleanNewName.toLowerCase().endsWith(`.${ext}`));
+            if (!hasValidExt) {
+                // 2. 新名字未带合法扩展名时：优先寻找原文件名中的合法扩展名；若原文件也无合法扩展名，兜底采用 .txt
+                const matchedOldExt = allowedExtensions.find(ext => fileName.toLowerCase().endsWith(`.${ext}`));
+                const validExtToAppend = matchedOldExt ? `.${matchedOldExt}` : (allowedExtensions[0] ? `.${allowedExtensions[0]}` : '.txt');
+                cleanNewName += validExtToAppend;
+            }
+
+            if (cleanNewName.includes('..') || cleanNewName.includes('/') || cleanNewName.includes('\\')) {
+                return res.status(403).json({ error: 'Invalid new file name' });
+            }
+
+            if (cleanNewName !== fileName) {
+                actualNewFileName = cleanNewName;
+                isRename = true;
+            }
+        }
+
+        const newFilePath = path.join(targetFolderPath, actualNewFileName);
+        if (!isPathSafe(newFilePath, dailyNoteRootPath)) {
+            return res.status(403).json({ error: 'Invalid new file path' });
+        }
+
         try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-            await fs.writeFile(filePath, content, 'utf-8');
-            dirCache.invalidate(targetFolderPath);
-            res.json({ message: 'Saved successfully' });
+            const mutationKey = isRename
+                ? `rename-save:${folderName}/${fileName}->${actualNewFileName}`
+                : `save:${folderName}/${fileName}`;
+
+            const result = await executeFileMutation(
+                mutationKey,
+                async () => {
+                    await assertSafePath(dailyNoteRootPath, oldFilePath);
+                    await assertSafePath(dailyNoteRootPath, newFilePath);
+                    await fs.mkdir(targetFolderPath, { recursive: true });
+
+                    if (isRename) {
+                        // 检查新目标文件是否已存在（防止冲突静默覆盖已有日记）
+                        try {
+                            await fs.access(newFilePath);
+                            const err = new Error(`文件 "${actualNewFileName}" 已存在，请使用其他名称`);
+                            err.code = 'EEXIST';
+                            throw err;
+                        } catch (err) {
+                            if (err.code !== 'ENOENT') throw err;
+                        }
+
+                        // 1. 写入新文件（内容是最新编辑的 content）
+                        await fs.writeFile(newFilePath, content, { encoding: 'utf-8', flag: 'wx' });
+
+                        // 2. 物理删除旧文件
+                        try {
+                            await fs.unlink(oldFilePath);
+                        } catch (unlinkErr) {
+                            if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
+                        }
+
+                        dirCache.invalidate(targetFolderPath);
+                        return {
+                            status: 'success',
+                            mutationPaths: {
+                                upserts: [newFilePath],
+                                deletes: [oldFilePath],
+                            },
+                            response: {
+                                message: 'Saved and renamed successfully',
+                                savedFileName: actualNewFileName,
+                            },
+                        };
+                    } else {
+                        // 未重命名：原位覆写
+                        await fs.writeFile(oldFilePath, content, 'utf-8');
+                        dirCache.invalidate(targetFolderPath);
+                        return {
+                            status: 'success',
+                            mutationPaths: {
+                                upserts: [oldFilePath],
+                                deletes: [],
+                            },
+                            response: {
+                                message: 'Saved successfully',
+                                savedFileName: fileName,
+                            },
+                        };
+                    }
+                }
+            );
+            res.json(result.response);
         } catch (error) {
-            res.status(500).json({ error: 'Failed to save file', details: error.message });
+            const status = error.status || (error.code === 'EEXIST' || error.message.includes('已存在') ? 409 : 500);
+            res.status(status).json({ error: 'Failed to save file', details: error.message });
         }
     });
 
@@ -621,50 +910,82 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
 
         try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-            dirCache.invalidate(targetFolderPath);
-            for (const note of sourceNotes) {
-                if (note.folder.includes('..') || note.file.includes('..')) {
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
-                    continue;
-                }
+            const result = await executeFileMutation(
+                `move:${sourceNotes.length}:${targetFolder}`,
+                async () => {
+                    const upserts = [];
+                    const deletes = [];
+                    await assertSafePath(dailyNoteRootPath, targetFolderPath);
+                    await fs.mkdir(targetFolderPath, { recursive: true });
+                    dirCache.invalidate(targetFolderPath);
+                    for (const note of sourceNotes) {
+                        if (
+                            !note
+                            || typeof note.folder !== 'string'
+                            || typeof note.file !== 'string'
+                            || note.folder.includes('..')
+                            || note.file.includes('..')
+                        ) {
+                            results.errors.push({
+                                note: `${note?.folder || ''}/${note?.file || ''}`,
+                                error: 'Invalid path'
+                            });
+                            continue;
+                        }
 
-                const sourceFilePath = path.join(dailyNoteRootPath, note.folder, note.file);
-                const destinationFilePath = path.join(targetFolderPath, note.file);
+                        const sourceFilePath = path.join(dailyNoteRootPath, note.folder, note.file);
+                        const destinationFilePath = path.join(targetFolderPath, note.file);
 
-                if (!isPathSafe(sourceFilePath, dailyNoteRootPath) || !isPathSafe(destinationFilePath, dailyNoteRootPath)) {
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
-                    continue;
-                }
+                        if (!isPathSafe(sourceFilePath, dailyNoteRootPath) || !isPathSafe(destinationFilePath, dailyNoteRootPath)) {
+                            results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
+                            continue;
+                        }
 
-                try {
-                    await fs.access(sourceFilePath);
-                    try {
-                        await fs.access(destinationFilePath);
-                        results.errors.push({
-                            note: `${note.folder}/${note.file}`,
-                            error: `File already exists at destination '${targetFolder}/${note.file}'. Move aborted for this file.`
-                        });
-                        continue;
-                    } catch {
-                        // 目标不存在，可以移动
+                        try {
+                            resolveSafePath(dailyNoteRootPath, note.folder, { singleSegment: true });
+                            resolveSafePath(dailyNoteRootPath, note.file, { singleSegment: true });
+                            await assertSafePath(dailyNoteRootPath, sourceFilePath);
+                            await assertSafePath(dailyNoteRootPath, destinationFilePath);
+                            await fs.access(sourceFilePath);
+                            try {
+                                await fs.access(destinationFilePath);
+                                results.errors.push({
+                                    note: `${note.folder}/${note.file}`,
+                                    error: `File already exists at destination '${targetFolder}/${note.file}'. Move aborted for this file.`
+                                });
+                                continue;
+                            } catch {
+                                // 目标不存在，可以移动
+                            }
+
+                            await fs.rename(sourceFilePath, destinationFilePath);
+                            dirCache.invalidate(path.dirname(sourceFilePath));
+                            upserts.push(destinationFilePath);
+                            deletes.push(sourceFilePath);
+                            results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
+                        } catch (error) {
+                            if (error.code === 'ENOENT') {
+                                results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Source file not found.' });
+                            } else {
+                                results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
+                            }
+                        }
                     }
-                    
-                    await fs.rename(sourceFilePath, destinationFilePath);
-                    dirCache.invalidate(path.dirname(sourceFilePath));
-                    results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
-                } catch (error) {
-                    if (error.code === 'ENOENT') {
-                        results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Source file not found.' });
-                    } else {
-                        results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-                    }
+                    const message = `Moved ${results.moved.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
+                    return {
+                        status: results.errors.length > 0 ? 'partial' : 'success',
+                        mutationPaths: { upserts, deletes },
+                        response: {
+                            message,
+                            moved: results.moved,
+                            errors: results.errors,
+                        },
+                    };
                 }
-            }
-            const message = `Moved ${results.moved.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
-            res.json({ message, moved: results.moved, errors: results.errors });
+            );
+            res.json(result.response);
         } catch (error) {
-            res.status(500).json({ error: 'Move operation failed', details: error.message });
+            res.status(error.status || 500).json({ error: 'Move operation failed', details: error.message });
         }
     });
 
@@ -676,28 +997,59 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
 
         const results = { deleted: [], errors: [] };
-        for (const note of notesToDelete) {
-            const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
-            if (!isPathSafe(filePath, dailyNoteRootPath)) {
-                results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
-                continue;
-            }
+        try {
+            const result = await executeFileMutation(
+                `delete-batch:${notesToDelete.length}`,
+                async () => {
+                    const deletes = [];
+                    for (const note of notesToDelete) {
+                        if (
+                            !note
+                            || typeof note.folder !== 'string'
+                            || typeof note.file !== 'string'
+                        ) {
+                            results.errors.push({
+                                note: `${note?.folder || ''}/${note?.file || ''}`,
+                                error: 'Invalid path'
+                            });
+                            continue;
+                        }
 
-            try {
-                await fs.unlink(filePath);
-                dirCache.invalidate(path.dirname(filePath));
-                results.deleted.push(`${note.folder}/${note.file}`);
-            } catch (error) {
-                results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-            }
+                        const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
+                        if (!isPathSafe(filePath, dailyNoteRootPath)) {
+                            results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
+                            continue;
+                        }
+
+                        try {
+                            resolveSafePath(dailyNoteRootPath, note.folder, { singleSegment: true });
+                            resolveSafePath(dailyNoteRootPath, note.file, { singleSegment: true });
+                            await assertSafePath(dailyNoteRootPath, filePath);
+                            await fs.unlink(filePath);
+                            dirCache.invalidate(path.dirname(filePath));
+                            deletes.push(filePath);
+                            results.deleted.push(`${note.folder}/${note.file}`);
+                        } catch (error) {
+                            results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
+                        }
+                    }
+                    return {
+                        status: results.errors.length > 0 ? 'partial' : 'success',
+                        mutationPaths: { upserts: [], deletes },
+                        response: results,
+                    };
+                }
+            );
+            res.json(result.response);
+        } catch (error) {
+            res.status(500).json({ error: 'Delete operation failed', details: error.message });
         }
-        res.json(results);
     });
 
     // POST /folder/delete - 删除空文件夹
     router.post('/folder/delete', async (req, res) => {
         const { folderName } = req.body;
-        if (!folderName) return res.status(400).json({ error: 'Folder name required' });
+        if (typeof folderName !== 'string' || !folderName) return res.status(400).json({ error: 'Folder name required' });
 
         const targetFolderPath = path.join(dailyNoteRootPath, folderName);
         if (!isPathSafe(targetFolderPath, dailyNoteRootPath) || targetFolderPath === path.resolve(dailyNoteRootPath)) {
@@ -705,25 +1057,43 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
 
         try {
-            await fs.access(targetFolderPath);
-            
-            const files = await fs.readdir(targetFolderPath);
-            if (files.length > 0) {
-                return res.status(400).json({
-                    error: `Folder '${folderName}' is not empty.`,
-                    message: '为了安全起见，非空文件夹禁止删除。请先删除或移动其中的所有内容。'
-                });
-            }
-            
-            await fs.rmdir(targetFolderPath);
-            dirCache.invalidate(dailyNoteRootPath);
-            dirCache.invalidate(targetFolderPath);
-            res.json({ message: `Empty folder '${folderName}' has been deleted successfully.` });
+            const result = await executeFileMutation(
+                `delete-folder:${folderName}`,
+                async () => {
+                    await assertSafePath(dailyNoteRootPath, targetFolderPath);
+                    await fs.access(targetFolderPath);
+
+                    const files = await fs.readdir(targetFolderPath);
+                    if (files.length > 0) {
+                        return {
+                            status: 'rejected',
+                            responseStatus: 400,
+                            response: {
+                                error: `Folder '${folderName}' is not empty.`,
+                                message: '为了安全起见，非空文件夹禁止删除。请先删除或移动其中的所有内容。'
+                            },
+                        };
+                    }
+
+                    await fs.rmdir(targetFolderPath);
+                    dirCache.invalidate(dailyNoteRootPath);
+                    dirCache.invalidate(targetFolderPath);
+                    return {
+                        status: 'success',
+                        mutationPaths: { upserts: [], deletes: [] },
+                        responseStatus: 200,
+                        response: {
+                            message: `Empty folder '${folderName}' has been deleted successfully.`
+                        },
+                    };
+                }
+            );
+            res.status(result.responseStatus).json(result.response);
         } catch (error) {
             if (error.code === 'ENOENT') {
                 res.status(404).json({ error: `Folder '${folderName}' not found.` });
             } else {
-                res.status(500).json({ error: `Failed to delete folder ${folderName}`, details: error.message });
+                res.status(error.status || 500).json({ error: `Failed to delete folder ${folderName}`, details: error.message });
             }
         }
     });

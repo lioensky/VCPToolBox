@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
+// Plugin configuration is local to this module; never mutate the server's process.env.
+const dotenv = require('dotenv');
+const fsSync = require('fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const AnonymizeUAPlugin = require('puppeteer-extra-plugin-anonymize-ua');
@@ -9,6 +11,21 @@ const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
 const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
+const { PDFParse } = require('pdf-parse');
+const https = require('https');
+const http = require('http');
+const browserRuntimeManager = require('../../modules/browserRuntimeManager.js');
+const { extractHtml, preparePage, extractPage } = require('./pageExtraction.js');
+const { BrowserPool } = require('./browserPool.js');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const requestScope = new AsyncLocalStorage();
+let pagePool = new BrowserPool();
+let serviceStopped = false;
+const activeRequests = new Set();
+function checkCancelled() {
+    const signal = requestScope.getStore()?.signal;
+    if (signal?.aborted) throw signal.reason || new Error('UrlFetch 请求已取消');
+}
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -19,10 +36,35 @@ const MIME_MAP = {
 };
 
 // --- Configuration (from environment variables set by Plugin.js) ---
-const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
-const SERVER_PORT = process.env.SERVER_PORT;
-const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
-const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
+let PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VAR_HTTP_URL, JINA_API_KEY;
+let JINA_READER_TIMEOUT_MS, DIRECT_FETCH_TIMEOUT_MS, DIRECT_FETCH_MAX_BYTES, PDF_FETCH_MAX_BYTES;
+let KNOWLEDGE_BASE_DIR, URLFETCH_PERSISTENT_PROFILE, URLFETCH_PROFILE_DIR, URLFETCH_PROFILE_MODE;
+let URLFETCH_BROWSER_FIRST, URLFETCH_HEADLESS, URLFETCH_BROWSER_BACKEND, URLFETCH_USE_MANAGED_CHROME;
+let URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY, URLFETCH_HIGH_RISK_DOMAINS;
+function configure(config = {}) {
+    const env = { ...getCurrentUrlFetchCookieEnv(), ...config };
+    PROJECT_BASE_PATH = env.PROJECT_BASE_PATH || process.cwd();
+    SERVER_PORT = env.SERVER_PORT || env.PORT;
+    IMAGESERVER_IMAGE_KEY = env.IMAGESERVER_IMAGE_KEY;
+    VAR_HTTP_URL = env.VarHttpUrl;
+    JINA_API_KEY = env.JINA_API_KEY;
+    JINA_READER_TIMEOUT_MS = Number(env.JINA_READER_TIMEOUT_MS || 20000);
+    DIRECT_FETCH_TIMEOUT_MS = Number(env.DIRECT_FETCH_TIMEOUT_MS || 12000);
+    DIRECT_FETCH_MAX_BYTES = Number(env.DIRECT_FETCH_MAX_BYTES || 5242880);
+    PDF_FETCH_MAX_BYTES = Number(env.PDF_FETCH_MAX_BYTES || 52428800);
+    KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH, 'knowledge');
+    URLFETCH_PERSISTENT_PROFILE = String(env.URLFETCH_PERSISTENT_PROFILE || 'true') !== 'false';
+    URLFETCH_PROFILE_DIR = env.URLFETCH_PROFILE_DIR || path.resolve(__dirname, 'browser-profiles');
+    URLFETCH_PROFILE_MODE = String(env.URLFETCH_PROFILE_MODE || 'domain').toLowerCase();
+    URLFETCH_BROWSER_FIRST = String(env.URLFETCH_BROWSER_FIRST || 'false') === 'true';
+    URLFETCH_HEADLESS = String(env.URLFETCH_HEADLESS || 'true').toLowerCase();
+    URLFETCH_BROWSER_BACKEND = String(env.URLFETCH_BROWSER_BACKEND || 'auto').toLowerCase();
+    URLFETCH_USE_MANAGED_CHROME = String(env.URLFETCH_USE_MANAGED_CHROME || 'false') === 'true';
+    URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY = String(env.URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || 'true') !== 'false';
+    URLFETCH_HIGH_RISK_DOMAINS = String(env.URLFETCH_HIGH_RISK_DOMAINS || 'mp.weixin.qq.com,zhihu.com,x.com,twitter.com,bilibili.com,weibo.com')
+        .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+}
+configure();
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -34,6 +76,170 @@ const AD_SELECTORS = [
     '.popup', '[class*="popup"]', '[id*="popup"]', 'nav', 'aside', 'footer',
     '[aria-hidden="true"]'
 ];
+
+const BLOCK_TAGS = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BR', 'DD', 'DETAILS', 'DIALOG',
+    'DIV', 'DL', 'DT', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3',
+    'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE',
+    'SECTION', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL'
+]);
+
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
+function normalizeInlineText(text) {
+    return (text || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t\r\f\v]+/g, ' ')
+        .replace(/\s*\n\s*/g, '\n')
+        .trim();
+}
+
+function looksLikeCjk(text) {
+    return /[\u3400-\u9fff]/.test(text || '');
+}
+
+function protectUrls(text, transform) {
+    const urlTokens = [];
+    const protectedText = String(text || '').replace(/https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+/g, (url) => {
+        const token = `__URLFETCH_URL_TOKEN_${urlTokens.length}__`;
+        urlTokens.push(url);
+        return token;
+    });
+
+    const transformedText = transform(protectedText);
+    return urlTokens.reduce((result, url, index) => {
+        return result.replaceAll(`__URLFETCH_URL_TOKEN_${index}__`, url);
+    }, transformedText);
+}
+
+function repairBrokenUrls(text) {
+    return String(text || '')
+        .replace(/(https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+[?&])\s*\n+\s*([A-Za-z0-9_%.-]+=[^\s<>"'`，。！？；：、）)\]}]*)/g, '$1$2')
+        .replace(/(https?:\/\/[^\s<>"'`，。！？；：、）)\]}]+[?&])\s*\n+\s*([A-Za-z0-9_%.-]+)/g, '$1$2');
+}
+
+function splitDenseCjkTextIntoParagraphs(text) {
+    const normalized = repairBrokenUrls(String(text || '').trim());
+    if (!normalized || !looksLikeCjk(normalized)) return normalized;
+
+    // 部分站点（尤其微信公众号）在 DOM 中把整篇正文压成单个文本节点。
+    // Readability 的 textContent 也会丢弃这些隐式段落边界，因此这里按中文句末标点、
+    // 问答说话人、编号观点等特征恢复可读段落。URL 需先保护，避免 watch?v= 里的 ? 被误判为句末。
+    return protectUrls(normalized, protectedText => protectedText
+        .replace(/([。！？!?])(?=(?:[A-Z][A-Za-z]+\s+[A-Z][A-Za-z]+|[\u4e00-\u9fff]{2,10})[：:])/g, '$1\n\n')
+        .replace(/([。！？!?])(?=(?:\d{1,2}[.．、]\s*)?[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/([；;])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/([：:])(?=\d{1,2}[.．、]\s*[\u4e00-\u9fffA-Za-z])/g, '$1\n\n')
+        .replace(/\n{3,}/g, '\n\n'));
+}
+
+function normalizeExtractedText(rawText) {
+    return repairBrokenUrls(String(rawText || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .split('\n')
+        .map(line => splitDenseCjkTextIntoParagraphs(line.trimEnd()))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n'))
+        .trim();
+}
+
+function getListDepth(element) {
+    let depth = 0;
+    let current = element.parentElement;
+    while (current) {
+        if (current.tagName === 'UL' || current.tagName === 'OL') {
+            depth++;
+        }
+        current = current.parentElement;
+    }
+    return Math.max(0, depth - 1);
+}
+
+function appendTextWithSpacing(output, text) {
+    if (!text) return;
+
+    const lastIndex = output.length - 1;
+    const previous = lastIndex >= 0 ? output[lastIndex] : '';
+    const needsSpace = previous &&
+        !previous.endsWith('\n') &&
+        !previous.endsWith(' ') &&
+        !/^[,.;:!?，。；：！？、）)]/.test(text) &&
+        !/[（(]$/.test(previous);
+
+    output.push(needsSpace ? ` ${text}` : text);
+}
+
+function renderNodeAsText(node, output) {
+    if (!node) return;
+
+    if (node.nodeType === 3) {
+        appendTextWithSpacing(output, normalizeInlineText(node.textContent));
+        return;
+    }
+
+    if (node.nodeType !== 1) return;
+
+    const tagName = node.tagName;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS'].includes(tagName)) return;
+
+    if (tagName === 'BR') {
+        output.push('\n');
+        return;
+    }
+
+    const isBlock = BLOCK_TAGS.has(tagName);
+    const isHeading = HEADING_TAGS.has(tagName);
+
+    if (isBlock) {
+        output.push('\n');
+        if (isHeading || tagName === 'HR') {
+            output.push('\n');
+        }
+    }
+
+    if (tagName === 'LI') {
+        const depth = getListDepth(node);
+        output.push(`${'  '.repeat(depth)}- `);
+    }
+
+    for (const child of node.childNodes) {
+        renderNodeAsText(child, output);
+    }
+
+    if (isBlock) {
+        output.push('\n');
+        if (isHeading || tagName === 'P' || tagName === 'BLOCKQUOTE' || tagName === 'PRE' || tagName === 'TABLE') {
+            output.push('\n');
+        }
+    }
+}
+
+function formatExtractedArticleContent(article) {
+    if (!article) return '';
+
+    let rawText = '';
+    if (article.content) {
+        const articleDom = new JSDOM(article.content);
+        const output = [];
+
+        for (const selector of AD_SELECTORS) {
+            articleDom.window.document.querySelectorAll(selector).forEach(el => el.remove());
+        }
+
+        renderNodeAsText(articleDom.window.document.body, output);
+        rawText = output.join('');
+    }
+
+    if (!rawText && article.textContent) {
+        rawText = article.textContent;
+    }
+
+    return normalizeExtractedText(rawText);
+}
 
 // A more robust auto-scroll function to handle lazy-loading content
 async function autoScroll(page, mode = 'text') {
@@ -100,6 +306,10 @@ async function handleLocalFile(fileUrl) {
                 { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }
             ]
         };
+    } else if (ext === '.pdf') {
+        const buffer = await fs.readFile(localPath);
+        const textContent = await extractPdfText(buffer, fileUrl);
+        return { content: [{ type: 'text', text: `路径: ${localPath}\n\n${textContent}` }] };
     } else {
         // 本地文本文件 → 读取并返回内容
         const textContent = await fs.readFile(localPath, 'utf-8');
@@ -119,20 +329,640 @@ function isImageUrl(url) {
     }
 }
 
-async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
-    let browser;
+function isPdfUrl(url) {
     try {
+        return new URL(url).pathname.toLowerCase().endsWith('.pdf');
+    } catch {
+        return false;
+    }
+}
+
+function getCurrentUrlFetchCookieEnv() {
+    try {
+        const configPath = path.resolve(__dirname, 'config.env');
+        return {
+            ...process.env,
+            ...dotenv.parse(fsSync.readFileSync(configPath, 'utf8'))
+        };
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`读取 UrlFetch config.env 失败: ${error.message}`);
+        }
+        return process.env;
+    }
+}
+
+function hasPdfSignature(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 5) return false;
+    // 允许 PDF 文件签名前存在少量 BOM、空白或传输填充。
+    return buffer.subarray(0, Math.min(buffer.length, 1024)).includes(Buffer.from('%PDF-'));
+}
+
+function isPdfResponse({ url = '', contentType = '', contentDisposition = '', buffer = null }) {
+    return isPdfUrl(url) ||
+        String(contentType).toLowerCase().includes('application/pdf') ||
+        /filename\*?=(?:UTF-8''|["'])?[^;"']*\.pdf\b/i.test(String(contentDisposition)) ||
+        hasPdfSignature(buffer);
+}
+
+async function extractPdfText(buffer, sourceUrl) {
+    if (!Buffer.isBuffer(buffer) || !buffer.length) {
+        throw new Error('PDF 解析失败: 文件内容为空');
+    }
+
+    const parser = new PDFParse({ data: buffer });
+    try {
+        const data = await parser.getText();
+        const text = normalizeExtractedText(data && data.text);
+        if (!text) {
+            throw new Error('PDF 中未提取到文本；该文件可能是纯扫描件，需要 OCR 才能识别');
+        }
+
+        let fileName = 'document.pdf';
+        try {
+            fileName = decodeURIComponent(path.basename(new URL(sourceUrl).pathname)) || fileName;
+        } catch (_) {
+            // ignore
+        }
+
+        return `PDF文件: ${fileName}\n来源: ${sourceUrl}\n页数: ${data.total || data.pages?.length || '未知'}\n\n${text}`;
+    } finally {
+        await parser.destroy();
+    }
+}
+
+async function extractPdfFromPuppeteerResponse(response, fallbackUrl) {
+    if (!response) return null;
+
+    const responseUrl = response.url() || fallbackUrl;
+    const headers = response.headers();
+    const contentType = String(headers['content-type'] || '').toLowerCase();
+    const contentDisposition = String(headers['content-disposition'] || '');
+
+    if (!isPdfResponse({ url: responseUrl, contentType, contentDisposition })) {
+        return null;
+    }
+
+    const contentLength = Number(headers['content-length'] || 0);
+    if (contentLength > PDF_FETCH_MAX_BYTES) {
+        throw new Error(`PDF 响应大小超过 ${(PDF_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`);
+    }
+
+    const buffer = await response.buffer();
+    if (buffer.length > PDF_FETCH_MAX_BYTES) {
+        throw new Error(`PDF 响应超过 ${(PDF_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`);
+    }
+    if (!hasPdfSignature(buffer)) {
+        throw new Error(`服务器声明返回 PDF，但响应内容不是有效 PDF: ${responseUrl}`);
+    }
+
+    return await extractPdfText(buffer, responseUrl);
+}
+
+function sanitizeProfileSegment(segment) {
+    return String(segment || 'default')
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '_')
+        .replace(/^\.+|\.+$/g, '')
+        .slice(0, 80) || 'default';
+}
+
+function isHighRiskDomain(url) {
+    try {
+        const hostname = new URL(url).hostname.toLowerCase();
+        return URLFETCH_HIGH_RISK_DOMAINS.some(domain => hostname === domain || hostname.endsWith(`.${domain}`));
+    } catch {
+        return false;
+    }
+}
+
+function shouldUseBrowserFirst(url, mode) {
+    return mode === 'text' && (URLFETCH_BROWSER_FIRST || isHighRiskDomain(url));
+}
+
+function getPersistentProfilePath(url, proxyPort = null) {
+    if (!URLFETCH_PERSISTENT_PROFILE) return null;
+
+    let urlObj;
+    try {
+        urlObj = new URL(url);
+    } catch {
+        return path.resolve(URLFETCH_PROFILE_DIR, 'default');
+    }
+
+    const hostname = sanitizeProfileSegment(urlObj.hostname);
+    const proxySegment = proxyPort ? `proxy_${sanitizeProfileSegment(proxyPort)}` : 'direct';
+
+    if (URLFETCH_PROFILE_MODE === 'default') {
+        return path.resolve(URLFETCH_PROFILE_DIR, proxySegment, 'default');
+    }
+
+    if (URLFETCH_PROFILE_MODE === 'proxy-aware') {
+        return path.resolve(URLFETCH_PROFILE_DIR, proxySegment, hostname);
+    }
+
+    return path.resolve(URLFETCH_PROFILE_DIR, hostname, proxySegment);
+}
+
+function sanitizeKnowledgeSubfolderName(folderName) {
+    const normalized = String(folderName || '').trim();
+    if (!normalized) {
+        throw new Error("缺少必需的参数: knowledgeFolder（knowledge 根目录下的子文件夹名）");
+    }
+
+    if (
+        normalized.includes('/') ||
+        normalized.includes('\\') ||
+        normalized.includes('..') ||
+        path.isAbsolute(normalized) ||
+        /[\x00-\x1f<>:"|?*]/.test(normalized)
+    ) {
+        throw new Error("knowledgeFolder 只能是 knowledge 根目录下的单层子文件夹名，不能包含路径分隔符、.. 或非法文件名字符。");
+    }
+
+    return normalized;
+}
+
+function sanitizeMarkdownFileName(fileName) {
+    const normalized = String(fileName || '').trim()
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 120)
+        .trim();
+
+    if (!normalized) return '';
+
+    return normalized.toLowerCase().endsWith('.md') ? normalized : `${normalized}.md`;
+}
+
+function extractTitleFromFetchedMarkdown(content, url) {
+    const text = String(content || '');
+    const headingMatch = text.match(/^#\s+(.+)$/m);
+    if (headingMatch) return headingMatch[1].trim();
+
+    const titleLineMatch = text.match(/^(?:标题|Title):\s*(.+)$/mi);
+    if (titleLineMatch) return titleLineMatch[1].trim();
+
+    try {
+        const urlObj = new URL(url);
+        const lastSegment = decodeURIComponent(urlObj.pathname.split('/').filter(Boolean).pop() || '');
+        return lastSegment || urlObj.hostname;
+    } catch {
+        return 'webpage';
+    }
+}
+
+function buildSafeMarkdownFileName(content, url, requestedFileName = '') {
+    const explicitName = sanitizeMarkdownFileName(requestedFileName);
+    if (explicitName) return explicitName;
+
+    const title = extractTitleFromFetchedMarkdown(content, url);
+    const slug = String(title || 'webpage')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 80)
+        .trim() || 'webpage';
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${slug}_${timestamp}.md`;
+}
+
+function wrapMarkdownArchiveContent(content, url, sourceMode) {
+    const fetchedAt = new Date().toISOString();
+    const body = String(content || '').trim();
+
+    return [
+        '---',
+        `source_url: ${JSON.stringify(url)}`,
+        `fetched_at: ${JSON.stringify(fetchedAt)}`,
+        `fetch_mode: ${JSON.stringify(sourceMode)}`,
+        '---',
+        '',
+        body
+    ].join('\n');
+}
+
+async function getAvailableMarkdownPath(targetDir, safeFileName) {
+    const parsed = path.parse(safeFileName);
+    const baseName = parsed.name || 'webpage';
+    const extName = parsed.ext || '.md';
+
+    for (let index = 0; index < 1000; index++) {
+        const candidateFileName = index === 0 ? `${baseName}${extName}` : `${baseName}(${index})${extName}`;
+        const candidatePath = path.resolve(targetDir, candidateFileName);
+
+        if (!candidatePath.startsWith(targetDir + path.sep)) {
+            throw new Error("目标文件路径越界，已拒绝写入。");
+        }
+
+        try {
+            const handle = await fs.open(candidatePath, 'wx');
+            return { handle, filePath: candidatePath, fileName: candidateFileName };
+        } catch (error) {
+            if (error && error.code === 'EEXIST') {
+                continue;
+            }
+            throw error;
+        }
+    }
+
+    throw new Error("同名文件过多，已拒绝继续自动生成尾缀。");
+}
+
+async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fileName, sourceMode }) {
+    const safeFolderName = sanitizeKnowledgeSubfolderName(knowledgeFolder);
+    const targetDir = path.resolve(KNOWLEDGE_BASE_DIR, safeFolderName);
+
+    if (!targetDir.startsWith(KNOWLEDGE_BASE_DIR + path.sep) && targetDir !== KNOWLEDGE_BASE_DIR) {
+        throw new Error("目标目录越界，已拒绝写入。");
+    }
+
+    const safeFileName = buildSafeMarkdownFileName(content, url, fileName);
+    const markdownContent = wrapMarkdownArchiveContent(content, url, sourceMode);
+    await fs.mkdir(targetDir, { recursive: true });
+
+    const { handle, filePath: targetPath, fileName: finalFileName } = await getAvailableMarkdownPath(targetDir, safeFileName);
+    try {
+        await handle.writeFile(markdownContent, 'utf8');
+    } finally {
+        await handle.close();
+    }
+
+    return {
+        content: [{
+            type: 'text',
+            text: `已成功下载网页并保存为 Markdown。\n- 来源URL: ${url}\n- 提取模式: ${sourceMode}\n- knowledge子文件夹: ${safeFolderName}\n- 文件名: ${finalFileName}\n- 保存路径: ${targetPath}\n- 字符数: ${markdownContent.length}`
+        }],
+        details: {
+            sourceUrl: url,
+            sourceMode,
+            knowledgeFolder: safeFolderName,
+            fileName: finalFileName,
+            requestedFileName: safeFileName,
+            filePath: targetPath,
+            relativePath: path.relative(PROJECT_BASE_PATH || process.cwd(), targetPath).replace(/\\/g, '/')
+        }
+    };
+}
+
+function isUsableJinaApiKey(apiKey) {
+    return typeof apiKey === 'string' &&
+        apiKey.trim() &&
+        !/^YOUR_/i.test(apiKey.trim()) &&
+        !/你的API_KEY|your[_-]?api[_-]?key/i.test(apiKey.trim());
+}
+
+function requestJinaReader(targetUrl, apiKey = null) {
+    return new Promise((resolve, reject) => {
+        const jinaUrl = `https://r.jina.ai/${targetUrl}`;
+        const headers = {
+            'Accept': 'text/markdown, text/plain;q=0.9, */*;q=0.8',
+            'User-Agent': 'VCPToolBox-UrlFetch/0.3'
+        };
+
+        if (apiKey) {
+            headers.Authorization = `Bearer ${apiKey}`;
+        }
+
+        checkCancelled();
+        const req = https.get(jinaUrl, { headers, timeout: JINA_READER_TIMEOUT_MS, signal: requestScope.getStore()?.signal }, (res) => {
+            const chunks = [];
+            res.on('error', reject);
+            res.on('aborted', () => reject(new Error('Jina Reader 响应中断')));
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                const statusCode = res.statusCode || 0;
+
+                if (statusCode >= 200 && statusCode < 300 && body.trim()) {
+                    resolve(body.trim());
+                    return;
+                }
+
+                const message = body.trim().slice(0, 500) || `HTTP ${statusCode}`;
+                reject(new Error(`Jina Reader 请求失败: ${message}`));
+            });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`Jina Reader 请求超时: ${JINA_READER_TIMEOUT_MS}ms`));
+        });
+
+        req.on('error', reject);
+    });
+}
+
+async function fetchWithJinaReader(url) {
+    const apiKey = isUsableJinaApiKey(JINA_API_KEY) ? JINA_API_KEY.trim() : null;
+    const errors = [];
+
+    if (apiKey) {
+        try {
+            return await requestJinaReader(url, apiKey);
+        } catch (error) {
+            errors.push(`鉴权模式失败: ${error.message}`);
+        }
+    }
+
+    try {
+        return await requestJinaReader(url);
+    } catch (error) {
+        errors.push(`免费模式失败: ${error.message}`);
+    }
+
+    throw new Error(errors.join('；'));
+}
+
+function requestDirectHttp(targetUrl, redirectCount = 0) {
+    return new Promise((resolve, reject) => {
+        if (redirectCount > 5) {
+            reject(new Error('直接读取失败: 重定向次数过多'));
+            return;
+        }
+
+        let urlObj;
+        try {
+            urlObj = new URL(targetUrl);
+        } catch {
+            reject(new Error(`直接读取失败: URL 无效: ${targetUrl}`));
+            return;
+        }
+
+        checkCancelled();
+        const transport = urlObj.protocol === 'https:' ? https : http;
+        const req = transport.get(urlObj, {
+            timeout: DIRECT_FETCH_TIMEOUT_MS,
+            signal: requestScope.getStore()?.signal,
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        }, (res) => {
+            res.on('error', reject);
+            res.on('aborted', () => reject(new Error('直接读取响应中断')));
+            const statusCode = res.statusCode || 0;
+            const location = res.headers.location;
+
+            if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+                res.resume();
+                const nextUrl = new URL(location, urlObj).toString();
+                requestDirectHttp(nextUrl, redirectCount + 1).then(resolve, reject);
+                return;
+            }
+
+            if (statusCode < 200 || statusCode >= 300) {
+                res.resume();
+                reject(new Error(`直接读取失败: HTTP ${statusCode}`));
+                return;
+            }
+
+            const contentType = String(res.headers['content-type'] || '').toLowerCase();
+            const contentDisposition = String(res.headers['content-disposition'] || '');
+            const headerDeclaresPdf = isPdfResponse({
+                url: urlObj.toString(),
+                contentType,
+                contentDisposition
+            });
+            const isDeclaredText = !contentType ||
+                contentType.includes('text/') ||
+                contentType.includes('html') ||
+                contentType.includes('xml');
+            const contentLength = Number(res.headers['content-length'] || 0);
+            const initialLimit = headerDeclaresPdf ? PDF_FETCH_MAX_BYTES : DIRECT_FETCH_MAX_BYTES;
+
+            if (contentLength > initialLimit) {
+                res.resume();
+                reject(new Error(`直接读取失败: 响应大小超过 ${(initialLimit / 1024 / 1024).toFixed(1)}MB 限制`));
+                return;
+            }
+
+            const chunks = [];
+            let totalBytes = 0;
+            let detectedPdf = headerDeclaresPdf;
+
+            res.on('data', chunk => {
+                totalBytes += chunk.length;
+                if (!detectedPdf && chunks.length === 0) {
+                    detectedPdf = hasPdfSignature(chunk);
+                }
+
+                const activeLimit = detectedPdf ? PDF_FETCH_MAX_BYTES : DIRECT_FETCH_MAX_BYTES;
+                if (totalBytes > activeLimit) {
+                    req.destroy(new Error(`直接读取失败: 响应超过 ${(activeLimit / 1024 / 1024).toFixed(1)}MB 限制`));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+
+            res.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                if (!buffer.length) {
+                    reject(new Error('直接读取失败: 响应为空'));
+                    return;
+                }
+
+                const responseIsPdf = isPdfResponse({
+                    url: urlObj.toString(),
+                    contentType,
+                    contentDisposition,
+                    buffer
+                });
+                if (!responseIsPdf && !isDeclaredText) {
+                    reject(new Error(`直接读取失败: 非文本响应 ${contentType || '未知类型'}`));
+                    return;
+                }
+
+                resolve({
+                    body: responseIsPdf ? null : buffer.toString('utf8'),
+                    buffer,
+                    isPdf: responseIsPdf,
+                    contentType,
+                    finalUrl: urlObj.toString()
+                });
+            });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`直接读取超时: ${DIRECT_FETCH_TIMEOUT_MS}ms`));
+        });
+
+        req.on('error', reject);
+    });
+}
+
+async function fetchWithDirectHttp(url) {
+    const { body, buffer, isPdf, contentType, finalUrl } = await requestDirectHttp(url);
+
+    if (isPdf) {
+        return await extractPdfText(buffer, finalUrl);
+    }
+
+    if (contentType.includes('text/plain') || !/<html[\s>]/i.test(body)) {
+        const text = body.trim();
+        if (text.length < 80) {
+            throw new Error('直接读取失败: 文本内容过短');
+        }
+        return text;
+    }
+
+    return extractHtml(body, finalUrl).text;
+}
+
+function shouldUseManagedChrome(url, mode) {
+    if (!URLFETCH_USE_MANAGED_CHROME) return false;
+    if (mode !== 'text') return false;
+    if (URLFETCH_BROWSER_BACKEND === 'puppeteer' || URLFETCH_BROWSER_BACKEND === 'direct' || URLFETCH_BROWSER_BACKEND === 'jina') return false;
+    if (URLFETCH_BROWSER_BACKEND === 'managed') return true;
+    return !URLFETCH_MANAGED_CHROME_HIGH_RISK_ONLY || isHighRiskDomain(url) || URLFETCH_BROWSER_FIRST;
+}
+
+async function captureAndFormatScreenshot(page, url, options = {}) {
+    // 稍等 1 秒让动画、着色器与动态 DOM 稳定
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    const isFullPage = options.fullPage === true;
+    const screenshotOptions = {
+        type: 'png'
+    };
+    if (isFullPage) {
+        screenshotOptions.fullPage = true;
+    }
+
+    const imageBuffer = await page.screenshot(screenshotOptions);
+    const generatedFileName = `${uuidv4()}.png`;
+    const urlFetchImageDir = path.join(PROJECT_BASE_PATH, 'image', 'urlfetch');
+    const localImageServerPath = path.join(urlFetchImageDir, generatedFileName);
+
+    await fs.mkdir(urlFetchImageDir, { recursive: true });
+    await fs.writeFile(localImageServerPath, imageBuffer);
+
+    const relativeServerPathForUrl = path.join('urlfetch', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+
+    const safeBuffer = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer);
+    const base64Image = safeBuffer.toString('base64');
+    const imageMimeType = 'image/png';
+    const pageTitle = await page.title().catch(() => '') || url;
+    const altText = pageTitle ? pageTitle.substring(0, 80) + (pageTitle.length > 80 ? "..." : "") : (generatedFileName || "网页快照");
+    const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="500">`;
+
+    return {
+        content: [
+            {
+                type: 'text',
+                text: `已成功获取网页快照: ${url}\n- 标题: ${pageTitle}\n- 可访问URL: ${accessibleImageUrl}\n\n请使用以下HTML <img> 标签将图片直接展示给用户：\n${imageHtml}`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: {
+            serverPath: `image/urlfetch/${generatedFileName}`,
+            fileName: generatedFileName,
+            originalUrl: url,
+            pageTitle: pageTitle,
+            imageUrl: accessibleImageUrl
+        }
+    };
+}
+
+async function fetchWithManagedChrome(url, mode = 'text') {
+    if (mode !== 'text' && mode !== 'screenshot') {
+        throw new Error(`managed Chrome backend 当前不支持 ${mode} 模式`);
+    }
+
+    checkCancelled();
+    let browser;
+    let page;
+    let lease;
+    try {
+        if (isPdfUrl(url)) {
+            return await fetchWithDirectHttp(url);
+        }
+
+        lease = await pagePool.lease('managed', async () => {
+            await browserRuntimeManager.ensureManagedBrowser();
+            const browserWSEndpoint = await browserRuntimeManager.getManagedBrowserWebSocketEndpoint();
+            if (!browserWSEndpoint) throw new Error('无法获取 managed Chrome DevTools WebSocket 端点');
+            const instance = await puppeteer.connect({ browserWSEndpoint });
+            // The managed browser is shared with other plugins. Never own its shutdown.
+            return { browser: instance, close: async () => instance.disconnect() };
+        }, requestScope.getStore()?.signal);
+        browser = lease.browser;
+        page = lease.page;
+        await page.setViewport({ width: 1280, height: 900 });
+        const navigationWaitUntil = (mode === 'snapshot' || mode === 'screenshot') ? 'domcontentloaded' : 'networkidle2';
+        const response = await page.goto(url, { waitUntil: navigationWaitUntil, timeout: 20000 });
+        const pdfText = await extractPdfFromPuppeteerResponse(response, url);
+        if (pdfText) {
+            return pdfText;
+        }
+
+        if (mode === 'screenshot' || mode === 'snapshot') {
+            return await captureAndFormatScreenshot(page, url);
+        }
+
+        await preparePage(page);
+        return await extractPage(page);
+    } finally {
+        if (lease) {
+            await lease.release();
+            lease.throwIfCancelled();
+        }
+    }
+}
+
+async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
+    checkCancelled();
+    let browser;
+    let lease;
+    try {
+        const userDataDir = getPersistentProfilePath(url, proxyPort);
         const launchOptions = {
-            headless: true,
+            headless: URLFETCH_HEADLESS === 'false' ? false : (URLFETCH_HEADLESS === 'new' ? 'new' : true),
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         };
+
+        if (userDataDir) {
+            await fs.mkdir(userDataDir, { recursive: true });
+            launchOptions.userDataDir = userDataDir;
+        }
 
         if (proxyPort) {
             launchOptions.args.push(`--proxy-server=http://127.0.0.1:${proxyPort}`);
         }
 
-        browser = await puppeteer.launch(launchOptions);
-        const page = await browser.newPage();
+        const systemBrowser = (typeof browserRuntimeManager?.findChromeExecutable === 'function')
+            ? browserRuntimeManager.findChromeExecutable()
+            : null;
+        if (systemBrowser) {
+            launchOptions.executablePath = systemBrowser;
+        }
+
+        lease = await pagePool.lease(
+            `puppeteer:${userDataDir ? (process.platform === 'win32' ? path.resolve(userDataDir).toLowerCase() : path.resolve(userDataDir)) : 'ephemeral'}:${proxyPort || 'direct'}`,
+            async () => {
+                const instance = await puppeteer.launch(launchOptions);
+                // Chromium starts with an unused about:blank tab; do not keep
+                // an extra sixth tab outside the five task-page budget.
+                try {
+                    for (const initialPage of await instance.pages()) await initialPage.close();
+                } catch (error) {
+                    await instance.close();
+                    throw error;
+                }
+                return { browser: instance, close: () => instance.close() };
+            },
+            requestScope.getStore()?.signal
+        );
+        browser = lease.browser;
+        const page = lease.page;
 
         // We no longer need to set UserAgent manually, AnonymizeUAPlugin handles it.
         await page.setViewport({ width: 1280, height: 800 });
@@ -161,16 +991,26 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         };
 
         // 方式1：多站点原始格式 (FETCH_COOKIES_RAW_MULTI) - 优先级最高
-        const fetchCookiesRawMulti = process.env.FETCH_COOKIES_RAW_MULTI;
+        const currentCookieEnv = getCurrentUrlFetchCookieEnv();
+        const fetchCookiesRawMulti = currentCookieEnv.FETCH_COOKIES_RAW_MULTI;
         if (fetchCookiesRawMulti && fetchCookiesRawMulti.trim()) {
             try {
                 const cookiesMap = JSON.parse(fetchCookiesRawMulti);
-                // 遍历所有域名配置，找到匹配当前访问 URL 的
-                for (const [domain, cookieString] of Object.entries(cookiesMap)) {
-                    if (urlObj.hostname.includes(domain)) {
-                        cookiesToSet = parseRawCookies(cookieString, urlObj);
-                        break;
-                    }
+                const matchingEntry = Object.entries(cookiesMap)
+                    .filter(([domain, cookieString]) => {
+                        if (typeof cookieString !== 'string') return false;
+                        const normalizedDomain = String(domain || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+                        return normalizedDomain &&
+                            (urlObj.hostname.toLowerCase() === normalizedDomain ||
+                                urlObj.hostname.toLowerCase().endsWith(`.${normalizedDomain}`));
+                    })
+                    .sort((left, right) => {
+                        const leftDomain = String(left[0]).trim().replace(/^\.+|\.+$/g, '');
+                        const rightDomain = String(right[0]).trim().replace(/^\.+|\.+$/g, '');
+                        return rightDomain.length - leftDomain.length;
+                    })[0];
+                if (matchingEntry) {
+                    cookiesToSet = parseRawCookies(matchingEntry[1], urlObj);
                 }
             } catch (multiCookieError) {
                 console.error('解析多站点 Cookies 失败:', multiCookieError.message);
@@ -179,7 +1019,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         // 方式2：单站点原始格式 (FETCH_COOKIES_RAW)
         if (cookiesToSet.length === 0) {
-            const fetchCookiesRaw = process.env.FETCH_COOKIES_RAW;
+            const fetchCookiesRaw = currentCookieEnv.FETCH_COOKIES_RAW;
             if (fetchCookiesRaw && fetchCookiesRaw.trim()) {
                 try {
                     cookiesToSet = parseRawCookies(fetchCookiesRaw, urlObj);
@@ -191,7 +1031,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         // 方式3：JSON 数组格式 (FETCH_COOKIES)
         if (cookiesToSet.length === 0) {
-            const fetchCookies = process.env.FETCH_COOKIES;
+            const fetchCookies = currentCookieEnv.FETCH_COOKIES;
             if (fetchCookies && fetchCookies.trim()) {
                 try {
                     const cookies = JSON.parse(fetchCookies);
@@ -217,6 +1057,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }
         }
 
+        if (mode === 'text' && isPdfUrl(url)) {
+            return await fetchWithDirectHttp(url);
+        }
+
         // image 模式：直接下载图片，不需要先导航到页面
         if (mode === 'image') {
             const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -234,63 +1078,26 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             };
         }
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const navigationWaitUntil = (mode === 'snapshot' || mode === 'screenshot') ? 'domcontentloaded' : 'networkidle2';
+        const navigationResponse = await page.goto(url, { waitUntil: navigationWaitUntil, timeout: 20000 });
+        if (mode === 'text') {
+            const pdfText = await extractPdfFromPuppeteerResponse(navigationResponse, url);
+            if (pdfText) {
+                return pdfText;
+            }
+        }
 
-        if (mode === 'snapshot') {
+        if (mode === 'snapshot' || mode === 'screenshot') {
             // Check for essential environment variables for saving image
             if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
                 throw new Error("UrlFetch Plugin Snapshot Error: Required environment variables for saving image are not set (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl).");
             }
 
-            // Use the robust auto-scroll function
-            await autoScroll(page, mode);
-
-            // 网页快照模式
-            const imageBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-
-            // Save the image
-            const generatedFileName = `${uuidv4()}.png`;
-            const urlFetchImageDir = path.join(PROJECT_BASE_PATH, 'image', 'urlfetch');
-            const localImageServerPath = path.join(urlFetchImageDir, generatedFileName);
-
-            await fs.mkdir(urlFetchImageDir, { recursive: true });
-            await fs.writeFile(localImageServerPath, imageBuffer);
-
-            // Construct accessible URL
-            const relativeServerPathForUrl = path.join('urlfetch', generatedFileName).replace(/\\/g, '/');
-            const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-
-            // Prepare response for AI
-            const base64Image = imageBuffer.toString('base64');
-            const imageMimeType = 'image/png';
-            const pageTitle = await page.title();
-            const altText = pageTitle ? pageTitle.substring(0, 80) + (pageTitle.length > 80 ? "..." : "") : (generatedFileName || "网页快照");
-            const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="500">`;
-
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: `已成功获取网页快照: ${url}\n- 标题: ${pageTitle}\n- 可访问URL: ${accessibleImageUrl}\n\n请使用以下HTML <img> 标签将图片直接展示给用户：\n${imageHtml}`
-                    },
-                    {
-                        type: 'image_url',
-                        image_url: {
-                            url: `data:${imageMimeType};base64,${base64Image}`
-                        }
-                    }
-                ],
-                details: {
-                    serverPath: `image/urlfetch/${generatedFileName}`,
-                    fileName: generatedFileName,
-                    originalUrl: url,
-                    pageTitle: pageTitle,
-                    imageUrl: accessibleImageUrl
-                }
-            };
+            // 网页快照模式：直接捕获视口，无需 autoScroll 循环拖延
+            return await captureAndFormatScreenshot(page, url);
         } else {
             // 默认的文本提取模式
-            await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
+            await preparePage(page);
 
             // === 特定站点提取增强 ===
             const isGithub = urlObj.hostname.includes('github.com');
@@ -435,46 +1242,28 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 return markdownOutput.trim();
             }
 
-            // 如果链接提取失败或链接很少，则回退到使用Readability提取文章正文
-            const pageContent = await page.content();
-            const doc = new JSDOM(pageContent, { url });
-            const reader = new Readability(doc.window.document);
-            const article = reader.parse();
-
-            if (article && article.textContent) {
-                // Format the output with title and content
-                const result = `标题: ${article.title}\n\n${article.textContent.trim()}`;
-                return result;
-            } else {
-                // Fallback if Readability fails to extract content
-                return "成功获取网页，但无法提取主要内容或链接列表。";
-            }
+            return await extractPage(page);
         }
     } finally {
-        if (browser) {
-            await browser.close();
+        if (lease) {
+            await lease.release();
+            lease.throwIfCancelled();
         }
     }
 }
 
-async function main() {
-    let inputData = '';
-    stdin.setEncoding('utf8');
-
-    stdin.on('data', function (chunk) {
-        inputData += chunk;
-    });
-
-    stdin.on('end', async function () {
+async function runRequest(data) {
         let output = {};
         try {
-            if (!inputData.trim()) {
-                throw new Error("未从 stdin 接收到输入数据。");
-            }
-
-            const data = JSON.parse(inputData);
+            checkCancelled();
             const url = data.url;
-            let mode = data.mode || 'text'; // 'text', 'snapshot', or 'image'
+            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', 'jina', or 'download'
+            if (mode === 'screenshot') {
+                mode = 'snapshot';
+            }
+            const knowledgeFolder = data.knowledgeFolder || data.folder || data.knowledge_subfolder;
+            const outputFileName = data.fileName || data.filename || data.outputFileName;
+            const downloadSourceMode = data.sourceMode || data.fetchMode || 'jina';
 
             if (!url) {
                 throw new Error("缺少必需的参数: url");
@@ -503,10 +1292,101 @@ async function main() {
                 }
 
                 try {
-                    fetchedData = await fetchWithPuppeteer(url, mode);
+                    if (mode === 'download') {
+                        const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
+                        if (effectiveSourceMode === 'jina') {
+                            try {
+                                fetchedData = await fetchWithJinaReader(url);
+                            } catch (jinaError) {
+                                console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
+                                try {
+                                    fetchedData = await fetchWithDirectHttp(url);
+                                } catch (directError) {
+                                    console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                    if (shouldUseManagedChrome(url, 'text')) {
+                                        try {
+                                            fetchedData = await fetchWithManagedChrome(url, 'text');
+                                        } catch (managedError) {
+                                            console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                            fetchedData = await fetchWithPuppeteer(url, 'text');
+                                        }
+                                    } else {
+                                        fetchedData = await fetchWithPuppeteer(url, 'text');
+                                    }
+                                }
+                            }
+                        } else {
+                            try {
+                                fetchedData = await fetchWithDirectHttp(url);
+                            } catch (directError) {
+                                console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                if (shouldUseManagedChrome(url, 'text')) {
+                                    try {
+                                        fetchedData = await fetchWithManagedChrome(url, 'text');
+                                    } catch (managedError) {
+                                        console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                        fetchedData = await fetchWithPuppeteer(url, 'text');
+                                    }
+                                } else {
+                                    fetchedData = await fetchWithPuppeteer(url, 'text');
+                                }
+                            }
+                        }
+
+                        if (typeof fetchedData !== 'string' || !fetchedData.trim()) {
+                            throw new Error("下载模式未提取到可写入的 Markdown 文本。");
+                        }
+
+                        output = {
+                            status: "success",
+                            result: await saveMarkdownToKnowledgeFolder({
+                                url,
+                                content: fetchedData,
+                                knowledgeFolder,
+                                fileName: outputFileName,
+                                sourceMode: effectiveSourceMode
+                            })
+                        };
+                        return output;
+                    } else if (mode === 'jina') {
+                        fetchedData = await fetchWithJinaReader(url);
+                    } else if (mode === 'text') {
+                        if (shouldUseManagedChrome(url, mode)) {
+                            console.error(`检测到 managed Chrome 策略，使用托管浏览器 Profile: ${url}`);
+                            try {
+                                fetchedData = await fetchWithManagedChrome(url, mode);
+                            } catch (managedError) {
+                                console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                fetchedData = await fetchWithPuppeteer(url, mode);
+                            }
+                        } else if (shouldUseBrowserFirst(url, mode)) {
+                            console.error(`检测到浏览器优先策略，使用 Puppeteer 持久化 Profile: ${url}`);
+                            fetchedData = await fetchWithPuppeteer(url, mode);
+                        } else {
+                            try {
+                                fetchedData = await fetchWithDirectHttp(url);
+                            } catch (directError) {
+                                console.error(`直接读取快速路径失败，回退浏览器: ${directError.message}`);
+                                if (shouldUseManagedChrome(url, mode)) {
+                                    try {
+                                        fetchedData = await fetchWithManagedChrome(url, mode);
+                                    } catch (managedError) {
+                                        console.error(`managed Chrome 路径失败，回退 Puppeteer: ${managedError.message}`);
+                                        fetchedData = await fetchWithPuppeteer(url, mode);
+                                    }
+                                } else {
+                                    fetchedData = await fetchWithPuppeteer(url, mode);
+                                }
+                            }
+                        }
+                    } else {
+                        fetchedData = await fetchWithPuppeteer(url, mode);
+                    }
                 } catch (e) {
-                    const proxyPort = process.env.FETCH_PROXY_PORT;
-                    if (proxyPort) {
+                    checkCancelled();
+                    if (/URLFETCH_|already running|服务已关闭/.test(String(e.code || '') + e.message)) throw e;
+                    const proxyPort = getCurrentUrlFetchCookieEnv().FETCH_PROXY_PORT;
+                    if (proxyPort && mode !== 'download') {
                         try {
                             fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
                         } catch (proxyError) {
@@ -548,12 +1428,74 @@ async function main() {
             output = { status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } };
         }
 
-        process.stdout.write(JSON.stringify(output, null, 2));
-    });
+        return output;
 }
 
-main().catch(error => {
-    const errorMsgStr = `未处理的插件错误: ${error.message || error}`;
-    process.stdout.write(JSON.stringify({ status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } }));
-    process.exit(1);
-});
+function numberOption(config, name, fallback, max) {
+    const value = Number(config[name] ?? getCurrentUrlFetchCookieEnv()[name] ?? fallback);
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new Error(`Invalid ${name}`);
+    return value;
+}
+
+async function initialize(config = {}, dependencies = {}) {
+    await pagePool.shutdown();
+    const manager = dependencies.pluginManager;
+    configure({
+        ...config,
+        IMAGESERVER_IMAGE_KEY: manager?.getResolvedPluginConfigValue('ImageServer', 'Image_Key') || config.IMAGESERVER_IMAGE_KEY
+    });
+    pagePool = new BrowserPool({
+        maxPages: numberOption(config, 'URLFETCH_MAX_TABS', 5, 32),
+        maxQueue: numberOption(config, 'URLFETCH_MAX_QUEUE', 100, 1000),
+        queueTimeoutMs: numberOption(config, 'URLFETCH_QUEUE_TIMEOUT_MS', 90000, 90000),
+        executionTimeoutMs: 60000,
+        idleMs: numberOption(config, 'URLFETCH_BROWSER_IDLE_MS', 30000, 3600000)
+    });
+    serviceStopped = false;
+}
+
+async function processToolCall(data, context = {}) {
+    if (serviceStopped) throw new Error('UrlFetch 服务已关闭');
+    const controller = new AbortController();
+    activeRequests.add(controller);
+    const abort = () => controller.abort(context.signal?.reason || new Error('UrlFetch 请求已取消'));
+    context.signal?.addEventListener('abort', abort, { once: true });
+    if (context.signal?.aborted) abort();
+    const timer = setTimeout(() => controller.abort(new Error('UrlFetch 请求总预算超时')), 160000);
+    try {
+        const output = await requestScope.run({ signal: controller.signal }, () => runRequest(data));
+        controller.signal.throwIfAborted();
+        if (output.status === 'error') throw new Error(output.error);
+        return output.result;
+    } finally {
+        clearTimeout(timer);
+        activeRequests.delete(controller);
+        context.signal?.removeEventListener('abort', abort);
+    }
+}
+
+async function shutdown() {
+    serviceStopped = true;
+    for (const controller of activeRequests) controller.abort(new Error('UrlFetch 服务已关闭'));
+    await pagePool.shutdown();
+}
+
+module.exports = { initialize, processToolCall, shutdown, _poolStats: () => pagePool.stats() };
+
+if (require.main === module) {
+    (async () => {
+        let input = '';
+        for await (const chunk of stdin) input += chunk;
+        try {
+            await initialize();
+            const result = await processToolCall(JSON.parse(input));
+            process.stdout.write(JSON.stringify({ status: 'success', result }));
+        } catch (error) {
+            const text = `UrlFetch 错误: ${error.message}`;
+            process.stdout.write(JSON.stringify({ status: 'error', error: text, result: { content: [{ type: 'text', text }] } }));
+            process.exitCode = 1;
+        } finally {
+            await shutdown();
+        }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+}

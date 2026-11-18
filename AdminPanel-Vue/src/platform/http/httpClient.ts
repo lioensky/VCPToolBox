@@ -7,6 +7,11 @@ export interface RetryPolicy {
   maxRetries?: number;
   retryDelayMs?: number;
   backoffMultiplier?: number;
+  /**
+   * 默认只对 GET 重试；其他方法（POST/PUT/PATCH/DELETE）需调用方显式确认请求可安全重放
+   * 再开启重试，以避免副作用操作被放大。
+   */
+  allowNonIdempotent?: boolean;
 }
 
 export interface HttpRequest<TBody = unknown> {
@@ -32,6 +37,7 @@ const DEFAULT_RETRY_POLICY: Required<RetryPolicy> = {
   maxRetries: 0,
   retryDelayMs: 600,
   backoffMultiplier: 2,
+  allowNonIdempotent: false,
 };
 
 function createAbortError(message = "Request aborted"): DOMException {
@@ -74,7 +80,7 @@ function createTimeoutSignal(timeoutMs?: number): {
 
   const controller = new AbortController();
   const timer = globalThis.setTimeout(() => {
-    controller.abort();
+    controller.abort(createAbortError(`Request timed out after ${timeoutMs}ms`));
   }, timeoutMs);
 
   return {
@@ -100,15 +106,15 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): {
 
   const controller = new AbortController();
 
-  const abort = () => {
+  const abort = (reason?: unknown) => {
     if (!controller.signal.aborted) {
-      controller.abort();
+      controller.abort(reason);
     }
   };
 
   for (const signal of availableSignals) {
     if (signal.aborted) {
-      abort();
+      abort(signal.reason);
       return {
         signal: controller.signal,
         cleanup: () => undefined,
@@ -117,7 +123,7 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): {
   }
 
   const listeners = availableSignals.map((signal) => {
-    const handleAbort = () => abort();
+    const handleAbort = () => abort(signal.reason);
     signal.addEventListener("abort", handleAbort, { once: true });
     return {
       signal,
@@ -228,10 +234,18 @@ export function createHttpClient(): HttpClient {
     async request<TResponse, TBody = unknown>(
       req: HttpRequest<TBody>
     ): Promise<TResponse> {
+      const method = req.method ?? "GET";
+      const userRetry = req.retry ?? {};
+      const isRetryableMethod =
+        method === "GET" || userRetry.allowNonIdempotent === true;
+
       const retryPolicy = {
         ...DEFAULT_RETRY_POLICY,
-        ...(req.retry || {}),
+        ...userRetry,
       };
+      if (!isRetryableMethod) {
+        retryPolicy.maxRetries = 0;
+      }
 
       let lastError: unknown;
       const maxAttempts = retryPolicy.maxRetries + 1;
@@ -241,23 +255,32 @@ export function createHttpClient(): HttpClient {
         const mergedSignals = mergeAbortSignals([req.signal, timeoutSignal.signal]);
 
         try {
+          const isFormDataBody =
+            typeof FormData !== "undefined" && req.body instanceof FormData;
+
           const headers: Record<string, string> = {
-            ...(req.body !== undefined ? { "Content-Type": "application/json" } : {}),
+            ...(req.body !== undefined && !isFormDataBody
+              ? { "Content-Type": "application/json" }
+              : {}),
             ...(req.headers || {}),
           };
 
           const requestInit: RequestInit = {
-            method: req.method ?? "GET",
+            method,
             headers,
             credentials: req.auth === "none" ? "omit" : "same-origin",
             signal: mergedSignals.signal,
           };
 
           if (req.body !== undefined) {
-            requestInit.body =
-              typeof req.body === "string"
-                ? req.body
-                : JSON.stringify(req.body);
+            if (isFormDataBody) {
+              requestInit.body = req.body as FormData;
+            } else {
+              requestInit.body =
+                typeof req.body === "string"
+                  ? req.body
+                  : JSON.stringify(req.body);
+            }
           }
 
           const response = await fetch(buildUrl(req.url, req.query), requestInit);

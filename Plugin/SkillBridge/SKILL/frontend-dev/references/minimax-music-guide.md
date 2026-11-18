@@ -17,6 +17,32 @@ python scripts/minimax_music.py --prompt "Soulful blues, rainy night" --lyrics-f
 
 # Custom audio settings
 python scripts/minimax_music.py --prompt "Lo-fi beats" --instrumental -o lofi.wav --format wav --sample-rate 44100 --bitrate 256000
+
+# Cover a reference track (URL or local file)
+python scripts/minimax_music.py --model music-cover --prompt "Lo-fi bedroom pop rework, soft female vocals" --audio-url https://example.com/reference.mp3 -o cover.mp3
+python scripts/minimax_music.py --model music-cover --prompt "Acoustic ballad rework" --audio-file reference.wav -o cover.mp3
+
+# Pick a regional endpoint
+python scripts/minimax_music.py --prompt "Ambient pads" --instrumental -o pad.mp3 --region cn_zh
+```
+
+## Regional Endpoints
+
+The music API is served from two regional hosts with the same request shape. Resolution order:
+
+1. `--region` flag (or `region=` argument)
+2. `MINIMAX_API_BASE` environment variable (full base URL override, e.g. a gateway)
+3. `MINIMAX_REGION` environment variable
+4. default `global_en`
+
+| Region | Base URL |
+|--------|----------|
+| `global_en` | `https://api.minimax.io/v1` |
+| `cn_zh` | `https://api.minimaxi.com/v1` |
+
+```bash
+export MINIMAX_REGION=cn_zh
+python scripts/minimax_music.py --prompt "City pop" --auto-lyrics -o citypop.mp3
 ```
 
 ## Programmatic Usage
@@ -41,6 +67,16 @@ result = generate_music(
     lyrics_optimizer=True,
 )
 
+# Cover a reference track
+result = generate_music(
+    model="music-cover",
+    prompt="Lo-fi bedroom pop rework, soft female vocals",
+    audio_url="https://example.com/reference.mp3",
+)
+
+# Target a regional endpoint
+result = generate_music(prompt="Ambient pads", is_instrumental=True, region="cn_zh")
+
 # Access metadata
 print(f"Duration: {result['duration']}ms")
 print(f"Sample rate: {result['sample_rate']}")
@@ -51,8 +87,15 @@ print(f"Size: {result['size']} bytes")
 
 | Model | Features |
 |-------|----------|
-| `music-2.5+` | Recommended. Supports instrumental mode, complete song structures, hi-fi audio |
-| `music-2.5` | Standard model. No instrumental mode |
+| `music-3.0` | Recommended. Latest text-to-music model. Supports instrumental mode and auto-written lyrics |
+| `music-2.6` | Previous-generation text-to-music model. Supports instrumental mode and auto-written lyrics |
+| `music-cover` | Cover generation from a reference track. Needs a style `prompt` plus one reference |
+| `music-3.0-free` | Free tier of `music-3.0`, much lower rate limit |
+| `music-2.6-free` | Free tier of `music-2.6`, much lower rate limit |
+| `music-cover-free` | Free tier of `music-cover`, much lower rate limit |
+
+`--instrumental` and `--auto-lyrics` apply to the text-to-music models only; the reference flags
+(`--audio-url`, `--audio-file`, `--cover-feature-id`) apply to the cover models only.
 
 ## Prompt Writing
 
@@ -163,7 +206,7 @@ Under the neon lights...
 ```bash
 python scripts/minimax_music.py --prompt "Ambient electronic, space theme" --instrumental -o ambient.mp3
 ```
-- Requires `music-2.5+` model
+- Requires a text-to-music model (`music-3.0` / `music-2.6`, or their `-free` variants)
 - Only `prompt` needed, no lyrics
 
 ### 2. With Custom Lyrics
@@ -178,6 +221,24 @@ python scripts/minimax_music.py --prompt "Rock anthem about freedom" --auto-lyri
 ```
 - System generates lyrics from prompt
 - Good for quick generation when lyrics aren't critical
+
+### 4. Cover From a Reference Track
+```bash
+# Reference by URL
+python scripts/minimax_music.py --model music-cover --prompt "Lo-fi bedroom pop rework" --audio-url https://example.com/reference.mp3 -o cover.mp3
+
+# Reference from a local file (sent as base64)
+python scripts/minimax_music.py --model music-cover --prompt "Acoustic ballad rework" --audio-file reference.wav -o cover.mp3
+
+# Two-step workflow: reuse a preprocessed reference and supply edited lyrics
+python scripts/minimax_music.py --model music-cover --prompt "Acoustic ballad rework" --cover-feature-id "<id>" --lyrics "[verse]\nNew words here" -o cover.mp3
+```
+- `--prompt` describes the target style and is required
+- Supply exactly one reference: `--audio-url`, `--audio-file` or `--cover-feature-id`
+- Reference track: 6 seconds to 6 minutes, up to 50 MB, common audio formats
+- `--cover-feature-id` comes from the cover preprocess step, is valid for 24 hours, and requires `--lyrics`
+- Without lyrics the cover models derive them from the reference track
+- `--instrumental` and `--auto-lyrics` are not available on the cover models
 
 ## Limits
 

@@ -1,0 +1,19 @@
+{
+  "name": "DynamicToolBridge",
+  "displayName": "动态工具清单桥接器",
+  "version": "1.0.0",
+  "description": "为 {{VCPDynamicTools}} 动态工具清单提供桥接标识。全部业务配置请在管理面板专属“动态工具清单”Tab 中编辑、保存并热生效；语义摘要与分类模型固定共用后端主 API_URL / API_Key，只填写主源支持的模型 ID。旧插件 env 仅作为一次性迁移来源，不再覆盖专属配置。本插件不是 LLM 可调用工具。",
+  "author": "白金喵",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "node noop.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": []
+  }
+}

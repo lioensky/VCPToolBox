@@ -1,116 +1,128 @@
 <template>
-  <div v-if="modelValue" class="modal-overlay" @click="closeModal">
-    <div class="modal-content discovery-modal" @click.stop>
-      <div class="modal-header">
-        <h3>联想追溯：{{ sourceFileName }}</h3>
-        <button class="modal-close" @click="closeModal">
-          <span class="material-symbols-outlined">close</span>
-        </button>
-      </div>
+  <BaseModal
+    v-model="modalVisible"
+    aria-label="联想追溯"
+  >
+    <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+      <div v-bind="overlayAttrs" class="modal-overlay">
+        <div :ref="panelRef" v-bind="panelAttrs" class="modal-content discovery-modal">
+    <div class="modal-header">
+      <h3>联想追溯：{{ sourceFileName }}</h3>
+      <UiIconButton class="modal-close" label="关闭联想追溯" title="关闭" @click="closeModal">
+        <span class="material-symbols-outlined">close</span>
+      </UiIconButton>
+    </div>
 
-      <div class="modal-body">
-        <!-- 配置区域 -->
-        <div class="discovery-config">
-          <div class="config-row">
-            <label>K 值（返回数量）:</label>
-            <div class="k-slider-container">
-              <input
-                type="range"
-                min="1"
-                max="200"
-                v-model.number="kValue"
-                @input="updateKDisplay"
-              />
-              <span class="k-value-display">{{ kDisplay }}</span>
-            </div>
-          </div>
-
-          <div class="config-row">
-            <label>搜索范围:</label>
-            <div class="folder-chips-container">
-              <div
-                v-for="folder in folders"
-                :key="folder"
-                class="folder-chip"
-                :class="{ active: selectedFolders.includes(folder) }"
-                @click="toggleFolder(folder)"
-              >
-                {{ folder }}
-              </div>
-            </div>
+    <div class="modal-body">
+      <!-- 配置区域 -->
+      <div class="discovery-config">
+        <div class="config-row">
+          <label>K 值（返回数量）:</label>
+          <div class="k-slider-container">
+            <input
+              type="range"
+              min="1"
+              max="200"
+              v-model.number="kValue"
+              @input="updateKDisplay"
+            />
+            <span class="k-value-display">{{ kDisplay }}</span>
           </div>
         </div>
 
-        <!-- 加载状态 -->
-        <div v-if="loading" class="loading-state">
-          <span class="loading-spinner"></span>
-          <p>正在进行联想追溯…</p>
-        </div>
-
-        <!-- 警告信息 -->
-        <div v-if="warning" class="warning-message">
-          <span class="material-symbols-outlined">warning</span>
-          {{ warning }}
-        </div>
-
-        <!-- 结果列表 -->
-        <div v-if="results.length > 0" class="discovery-results-list">
-          <div
-            v-for="(result, index) in results"
-            :key="result.path || `${result.name}-${index}`"
-            class="discovery-result-card"
-            @click="openResult(result)"
-          >
-            <div class="result-header">
-              <span class="result-filename">{{ result.name }}</span>
-              <span class="result-score-tag"
-                >匹配度：{{ result.scorePercent }}%</span
-              >
-            </div>
-            <div class="result-score-bar-container">
-              <div
-                class="result-score-bar"
-                :style="{ width: result.scorePercent + '%' }"
-              ></div>
-            </div>
-            <div class="result-tags">
-              <span
-                v-for="(tag, i) in result.matchedTags?.slice(0, 5)"
-                :key="`${tag}-${i}`"
-                class="result-tag"
-              >
-                #{{ tag }}
-              </span>
-            </div>
-            <div class="result-preview">{{ result.preview }}</div>
+        <div class="config-row">
+          <label>搜索范围:</label>
+          <div class="folder-chips-container">
+            <button
+              v-for="folder in folders"
+              :key="folder"
+              type="button"
+              class="folder-chip"
+              :class="{ active: selectedFolders.includes(folder) }"
+              @click="toggleFolder(folder)"
+            >
+              {{ folder }}
+            </button>
           </div>
-        </div>
-
-        <!-- 无结果 -->
-        <div v-else-if="!loading && hasSearched" class="no-results">
-          <span class="material-symbols-outlined">search_off</span>
-          <p>未发现相关的记忆节点。</p>
         </div>
       </div>
 
-      <div class="modal-footer">
-        <button
-          class="btn-primary"
-          @click="performDiscovery"
-          :disabled="loading"
+      <!-- 加载状态 -->
+      <div v-if="loading" class="loading-state">
+        <span class="loading-spinner loading-spinner--mb-4"></span>
+        <p>正在进行联想追溯…</p>
+      </div>
+
+      <!-- 警告信息 -->
+      <div v-if="warning" class="warning-message">
+        <span class="material-symbols-outlined">warning</span>
+        {{ warning }}
+      </div>
+
+      <!-- 结果列表 -->
+      <div v-if="results.length > 0" class="discovery-results-list">
+        <div
+          v-for="(result, index) in results"
+          :key="result.path || `${result.name}-${index}`"
+          class="discovery-result-card"
+          @click="openResult(result)"
         >
-          <span class="material-symbols-outlined">psychology</span>
-          开始联想
-        </button>
+          <div class="result-header">
+            <span class="result-filename">{{ result.name }}</span>
+            <UiBadge variant="default">匹配度：{{ result.scorePercent }}%</UiBadge>
+          </div>
+          <div class="result-score-bar-container">
+            <div
+              class="result-score-bar"
+              :style="{ width: result.scorePercent + '%' }"
+            ></div>
+          </div>
+          <div class="result-tags">
+            <UiBadge
+              v-for="(tag, i) in result.matchedTags?.slice(0, 5)"
+              :key="`${tag}-${i}`"
+              variant="info"
+            >
+              #{{ tag }}
+            </UiBadge>
+          </div>
+          <div class="result-preview">{{ result.preview }}</div>
+        </div>
+      </div>
+
+      <!-- 无结果 -->
+      <div v-else-if="!loading && hasSearched" class="no-results">
+        <span class="material-symbols-outlined">search_off</span>
+        <p>未发现相关的记忆节点。</p>
       </div>
     </div>
-  </div>
+
+    <div class="modal-footer">
+      <UiButton
+        variant="primary"
+        @click="performDiscovery"
+        :disabled="loading"
+      >
+        <template #leading>
+          <span class="material-symbols-outlined">psychology</span>
+        </template>
+        开始联想
+      </UiButton>
+    </div>
+        </div>
+      </div>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { diaryApi } from "@/api";
 import { showMessage } from "@/utils";
+import BaseModal from "@/components/ui/BaseModal.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiIconButton from "@/components/ui/UiIconButton.vue";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -145,6 +157,11 @@ const hasSearched = ref(false);
 const sourceFileName = computed(
   () => props.sourceNote?.title || props.sourceNote?.file || ""
 );
+
+const modalVisible = computed({
+  get: () => props.modelValue,
+  set: (value: boolean) => emit("update:modelValue", value),
+});
 
 // 加载文件夹列表
 async function loadFolders() {
@@ -241,32 +258,23 @@ watch(
 
 <style scoped>
 .modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--overlay-backdrop);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-  animation: fadeIn 0.2s ease;
+  background: var(--overlay-backdrop-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .modal-content {
   background: var(--secondary-bg);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   max-width: 800px;
   width: 90%;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  animation: slideIn 0.3s ease;
 }
 
 .discovery-modal {
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   box-shadow: var(--overlay-panel-shadow);
 }
 
@@ -274,8 +282,9 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--border-color);
+  padding: var(--space-4);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .modal-header h3 {
@@ -284,35 +293,18 @@ watch(
   color: var(--primary-text);
 }
 
-.modal-close {
-  background: transparent;
-  border: none;
-  color: var(--secondary-text);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 0.2s ease;
-}
-
-.modal-close:hover {
-  background: var(--accent-bg);
-  color: var(--primary-text);
-}
-
 .modal-body {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: var(--space-4);
 }
 
 .discovery-config {
-  margin-bottom: var(--space-5);
-  padding: 16px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .config-row {
@@ -365,15 +357,17 @@ watch(
 .folder-chips-container {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .folder-chip {
-  padding: 6px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 20px;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-full);
   font-size: var(--font-size-helper);
+  font: inherit;
   cursor: pointer;
   transition:
     background-color 0.2s ease,
@@ -382,15 +376,19 @@ watch(
   color: var(--primary-text);
 }
 
+.folder-chip:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+}
+
 .folder-chip:hover {
-  border-color: var(--highlight-text);
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .folder-chip.active {
-  background: var(--highlight-text);
-  color: var(--on-accent-text);
-  border-color: var(--highlight-text);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
+  color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 58%, var(--border-color));
 }
 
 .loading-state {
@@ -401,24 +399,14 @@ watch(
   color: var(--secondary-text);
 }
 
-.loading-spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--highlight-text);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: var(--space-4);
-}
-
 .warning-message {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   color: var(--warning-text);
   margin-bottom: var(--space-4);
 }
@@ -430,25 +418,22 @@ watch(
 .discovery-results-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .discovery-result-card {
-  padding: 16px;
-  background: var(--tertiary-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition:
-    transform 0.2s ease,
-    border-color 0.2s ease,
-    background-color 0.2s ease;
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
 }
 
 .discovery-result-card:hover {
-  border-color: var(--highlight-text);
-  background: var(--accent-bg);
-  transform: translateX(4px);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .result-header {
@@ -462,15 +447,6 @@ watch(
   font-weight: 600;
   color: var(--primary-text);
   font-size: var(--font-size-body);
-}
-
-.result-score-tag {
-  padding: 4px 8px;
-  background: var(--highlight-text);
-  color: var(--on-accent-text);
-  border-radius: 4px;
-  font-size: var(--font-size-helper);
-  font-weight: 600;
 }
 
 .result-score-bar-container {
@@ -493,14 +469,6 @@ watch(
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: var(--space-2);
-}
-
-.result-tag {
-  padding: 2px 8px;
-  background: var(--info-bg);
-  color: var(--highlight-text);
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-helper);
 }
 
 .result-preview {
@@ -529,16 +497,11 @@ watch(
 }
 
 .modal-footer {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
   display: flex;
   justify-content: flex-end;
-}
-
-.modal-footer button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .modal-footer .material-symbols-outlined {
@@ -599,7 +562,7 @@ watch(
     gap: 6px;
   }
 
-  .result-score-tag {
+  .result-header :deep(.ui-badge) {
     align-self: flex-start;
   }
 
@@ -607,29 +570,9 @@ watch(
     padding: 12px;
   }
 
-  .modal-footer .btn-primary {
+  .modal-footer :deep(.ui-button) {
     width: 100%;
     justify-content: center;
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes slideIn {
-  from {
-    transform: translateY(-20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
   }
 }
 

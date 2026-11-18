@@ -58,6 +58,27 @@ export interface ReviewDreamOperationResponse {
   operation?: RawDreamOperation;
 }
 
+export interface BatchDreamOperationInput {
+  filename: string;
+  operationId: string;
+}
+
+export interface BatchDreamOperationResult {
+  filename?: string;
+  operationId?: string;
+  ok?: boolean;
+  message?: string;
+  error?: string;
+  operation?: RawDreamOperation;
+}
+
+export interface BatchReviewDreamOperationsResponse {
+  status?: string;
+  successCount?: number;
+  failedCount?: number;
+  results?: BatchDreamOperationResult[];
+}
+
 export const dreamApi = {
   async getDreamLogSummaries(
     uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
@@ -94,6 +115,21 @@ export const dreamApi = {
         url: `/admin_api/dream-logs/${encodeURIComponent(filename)}/operations/${encodeURIComponent(operationId)}`,
         method: "POST",
         body: { action },
+      },
+      uiOptions
+    );
+  },
+
+  async batchReviewDreamOperations(
+    operations: BatchDreamOperationInput[],
+    action: DreamOperationAction,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<BatchReviewDreamOperationsResponse> {
+    return requestWithUi(
+      {
+        url: "/admin_api/dream-logs/batch-operations",
+        method: "POST",
+        body: { action, operations },
       },
       uiOptions
     );

@@ -1,0 +1,69 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TimedTaskQuery",
+  "displayName": "定时任务结果查询",
+  "version": "1.0.0",
+  "description": "查询或取消通用未来工具调用（timely_contact）的待执行任务，并查询执行后的持久化结果。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node TimedTaskQuery.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QueryTimedTaskResult",
+        "description": "查询或取消通用未来工具调用。仅需提供创建定时任务时返回的 task_id/taskId。若任务尚未到点或尚未执行完成，查询会返回 pending 状态。取消仅对尚未执行的任务有效；已完成任务不可取消，只能查询结果。\n\n📋 查询格式:\n\n\n📋 取消格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」,\naction:「始」cancel「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "查询未来定时任务的执行结果与状态，或取消尚未触发的排队定时任务。",
+    "jevPrompt": "用户希望取消任务时裁决 action=cancel；希望查看结果或查询状态时裁决 action=query。未提及取消时默认 query。",
+    "agentPrompt": "当需要追踪已创建的未来定时任务结果或取消任务时，使用 {便利操作} 中的 `TimedTaskQuery`，将 taskId 放入【主要内容】，动作放入 []：\nJEV:「始」请使用 {便利操作} 中的 `TimedTaskQuery`，查询定时任务【task-1779106560000-650e398d】的执行结果。「末」",
+    "defaultCommand": "QueryTimedTaskResult",
+    "commands": [
+      {
+        "commandIdentifier": "QueryTimedTaskResult",
+        "description": "查询或取消定时工具调用任务",
+        "aliases": ["查定时任务", "定时结果", "取消定时任务", "任务状态"],
+        "parameters": {
+          "task_id": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 100,
+            "description": "待查询或取消的定时任务唯一编号 ID"
+          },
+          "action": {
+            "type": "enum",
+            "required": false,
+            "description": "定时任务操作动作（查询或取消）",
+            "values": {
+              "query": "查询定时任务的当前状态与执行回执",
+              "cancel": "取消尚未到点的排队定时任务"
+            },
+            "aliases": {
+              "query": ["查询", "查看", "获取"],
+              "cancel": ["取消", "撤销", "终止"]
+            },
+            "default": "query"
+          }
+        }
+      }
+    ]
+  },
+  "permissions": [
+    "read_from_file_system",
+    "write_to_file_system"
+  ]
+}

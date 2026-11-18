@@ -1,27 +1,30 @@
 <template>
   <div v-if="selectedFolder" class="notes-content-area">
     <div class="notes-toolbar">
-      <input
+      <UiInput
         type="search"
-        :value="searchQuery"
-        placeholder="搜索日记…"
+        :model-value="searchQuery"
+        size="md"
+        :placeholder="`搜索${itemLabel}…`"
         autocomplete="off"
-        aria-label="搜索日记"
+        :aria-label="`搜索${itemLabel}`"
         @input="onSearchInput"
       />
-      <button
-        class="btn-secondary"
+      <UiButton
+        v-if="showMoveActions"
+        variant="outline"
         :disabled="selectedNotes.length === 0"
         @click="$emit('moveSelectedNotes')"
       >
         移动选中项到…
-      </button>
-      <select
-        :value="moveTargetFolder"
+      </UiButton>
+      <UiSelect
+        v-if="showMoveActions"
+        :model-value="moveTargetFolder"
         :disabled="selectedNotes.length === 0"
         @change="onMoveTargetChange"
       >
-        <option value="">选择目标知识库…</option>
+        <option value="">选择目标{{ folderLabel }}…</option>
         <option
           v-for="folder in folders"
           :key="folder"
@@ -30,39 +33,39 @@
         >
           {{ folder }}
         </option>
-      </select>
-      <button
-        class="btn-danger"
+      </UiSelect>
+      <UiButton
+        variant="danger"
         :disabled="selectedNotes.length === 0"
         @click="$emit('deleteSelectedNotes')"
       >
         批量删除选中项
-      </button>
-      <span v-if="notesStatus" :class="['status-message', notesStatusType]">{{
-        notesStatus
-      }}</span>
+      </UiButton>
+      <UiBadge v-if="notesStatus" :variant="notesStatusBadgeVariant">
+        {{ notesStatus }}
+      </UiBadge>
     </div>
 
     <div
       id="notes-list-view"
       ref="notesContainerRef"
       class="notes-list-view"
+      :style="notesListGridStyle"
       :class="{
-        'is-virtualized-host':
-          shouldVirtualize && !loadingNotes && filteredNotes.length > 0,
+        'is-virtualized-host': isVirtualListMode,
       }"
     >
       <div v-if="loadingNotes" class="loading-state">
-        <span class="loading-spinner"></span>
-        <p>正在加载日记…</p>
+        <span class="loading-spinner loading-spinner--thick loading-spinner--primary loading-spinner--mb-4"></span>
+        <p>正在加载{{ itemLabel }}…</p>
       </div>
       <div v-else-if="filteredNotes.length === 0" class="empty-state">
         <span class="material-symbols-outlined empty-state-icon">article</span>
-        <p>{{ searchQuery ? '没有找到匹配的日记' : '暂无日记' }}</p>
-        <p class="empty-hint">{{ searchQuery ? '尝试调整搜索关键词' : '当添加日记后，它们将显示在这里' }}</p>
+        <p>{{ searchQuery ? `没有找到匹配的${itemLabel}` : `暂无${itemLabel}` }}</p>
+        <p class="empty-hint">{{ searchQuery ? '尝试调整搜索关键词' : `当添加${itemLabel}后，它们将显示在这里` }}</p>
       </div>
       <div
-        v-else-if="shouldVirtualize"
+        v-else-if="isVirtualListMode"
         ref="virtualListRef"
         class="notes-list-view virtualized"
         :style="{ height: `${virtualListHeight}px` }"
@@ -81,30 +84,26 @@
               :key="row.index"
               class="virtual-note-row"
               :style="{
-                gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+                gridTemplateColumns: `repeat(${displayColumnCount}, minmax(0, 1fr))`,
               }"
             >
-              <div
+              <UiCard
                 v-for="note in row.item"
                 :key="note.file"
-                class="note-card card virtual-card"
+                class="note-card virtual-card"
+                size="sm"
+                variant="subtle"
               >
                 <div class="note-card-header">
-                  <label class="note-select-label">
-                    <input
-                      type="checkbox"
-                      :checked="selectedNotes.includes(note.file)"
-                      @change="
-                        toggleSelected(
-                          note.file,
-                          ($event.target as HTMLInputElement).checked
-                        )
-                      "
-                    />
+                  <AppCheckbox
+                    class="note-select-label"
+                    :model-value="selectedNotes.includes(note.file)"
+                    @update:model-value="toggleSelected(note.file, $event)"
+                  >
                     <span class="note-title">{{
                       note.title || note.file
                     }}</span>
-                  </label>
+                  </AppCheckbox>
                 </div>
 
                 <div
@@ -119,51 +118,51 @@
                 <div class="note-card-footer">
                   <span class="note-meta">{{ formatDate(note.modified) }}</span>
                   <div class="note-actions">
-                    <button
-                      class="btn-secondary btn-sm"
+                    <UiButton
+                      variant="outline"
+                      size="sm"
                       @click="$emit('editNote', note)"
                     >
                       编辑
-                    </button>
-                    <button
-                      class="btn-secondary btn-sm"
+                    </UiButton>
+                    <UiButton
+                      v-if="showDiscoveryAction"
+                      variant="outline"
+                      size="sm"
                       @click="$emit('discoveryNote', note)"
                     >
                       联想
-                    </button>
-                    <button
-                      class="btn-danger btn-sm"
+                    </UiButton>
+                    <UiButton
+                      variant="danger"
+                      size="sm"
                       @click="$emit('deleteNote', note)"
                     >
                       删除
-                    </button>
+                    </UiButton>
                   </div>
                 </div>
-              </div>
+              </UiCard>
             </div>
           </div>
         </div>
       </div>
-      <div
+      <UiCard
         v-else
         v-for="note in filteredNotes"
         :key="note.file"
-        class="note-card card"
+        class="note-card"
+        size="sm"
+        variant="subtle"
       >
         <div class="note-card-header">
-          <label class="note-select-label">
-            <input
-              type="checkbox"
-              :checked="selectedNotes.includes(note.file)"
-              @change="
-                toggleSelected(
-                  note.file,
-                  ($event.target as HTMLInputElement).checked
-                )
-              "
-            />
+          <AppCheckbox
+            class="note-select-label"
+            :model-value="selectedNotes.includes(note.file)"
+            @update:model-value="toggleSelected(note.file, $event)"
+          >
             <span class="note-title">{{ note.title || note.file }}</span>
-          </label>
+          </AppCheckbox>
         </div>
 
         <div
@@ -176,27 +175,31 @@
         <div class="note-card-footer">
           <span class="note-meta">{{ formatDate(note.modified) }}</span>
           <div class="note-actions">
-            <button
-              class="btn-secondary btn-sm"
+            <UiButton
+              variant="outline"
+              size="sm"
               @click="$emit('editNote', note)"
             >
               编辑
-            </button>
-            <button
-              class="btn-secondary btn-sm"
+            </UiButton>
+            <UiButton
+              v-if="showDiscoveryAction"
+              variant="outline"
+              size="sm"
               @click="$emit('discoveryNote', note)"
             >
               联想
-            </button>
-            <button
-              class="btn-danger btn-sm"
+            </UiButton>
+            <UiButton
+              variant="danger"
+              size="sm"
               @click="$emit('deleteNote', note)"
             >
               删除
-            </button>
+            </UiButton>
           </div>
         </div>
-      </div>
+      </UiCard>
     </div>
   </div>
 </template>
@@ -206,6 +209,12 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useVirtualScroll } from "@/composables/useVirtualScroll";
 import { useDebounceFn } from "@/composables/useDebounceFn";
 import { formatDate } from "@/utils/format";
+import AppCheckbox from "@/components/ui/AppCheckbox.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
 
 interface Note {
   file: string;
@@ -224,6 +233,10 @@ const props = defineProps<{
   loadingNotes: boolean;
   notesStatus: string;
   notesStatusType: "info" | "success" | "error";
+  itemLabel?: string;
+  folderLabel?: string;
+  showMoveActions?: boolean;
+  showDiscoveryAction?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -248,7 +261,17 @@ const debouncedSearch = useDebounceFn(
   { delay: 300 }
 );
 
+const itemLabel = computed(() => props.itemLabel || "日记");
+const folderLabel = computed(() => props.folderLabel || "知识库");
+const showMoveActions = computed(() => props.showMoveActions !== false);
+const showDiscoveryAction = computed(() => props.showDiscoveryAction !== false);
+const notesStatusBadgeVariant = computed(() =>
+  props.notesStatusType === "error" ? "danger" : props.notesStatusType
+);
 const shouldVirtualize = computed(() => props.filteredNotes.length > 50);
+const isVirtualListMode = computed(
+  () => shouldVirtualize.value && !props.loadingNotes && props.filteredNotes.length > 0
+);
 const virtualOverscan = computed(() =>
   props.filteredNotes.length > 1200 ? 16 : 10
 );
@@ -259,10 +282,20 @@ const columnCount = ref(1);
 let resizeObserver: ResizeObserver | null = null;
 
 const CARD_MIN_WIDTH = 280;
+const MAX_COLUMN_COUNT = 3;
 const GRID_GAP = 12; // --space-3
 const VIRTUAL_ROW_HEIGHT = 242;
 const LIST_BOTTOM_GAP = 24; // --space-5
 const MIN_LIST_HEIGHT = 320;
+const displayColumnCount = computed(() =>
+  Math.max(1, Math.min(MAX_COLUMN_COUNT, columnCount.value))
+);
+const notesListGridStyle = computed(() => {
+  if (isVirtualListMode.value) return undefined;
+  return {
+    gridTemplateColumns: `repeat(${displayColumnCount.value}, minmax(0, 1fr))`,
+  };
+});
 
 const virtualRows = computed(() => {
   const cols = Math.max(1, columnCount.value);
@@ -318,7 +351,10 @@ function updateVirtualListHeight() {
   if (width > 0) {
     columnCount.value = Math.max(
       1,
-      Math.floor((width + GRID_GAP) / (CARD_MIN_WIDTH + GRID_GAP))
+      Math.min(
+        MAX_COLUMN_COUNT,
+        Math.floor((width + GRID_GAP) / (CARD_MIN_WIDTH + GRID_GAP))
+      )
     );
   }
 }
@@ -431,28 +467,20 @@ function toggleSelected(file: string, checked: boolean) {
 <style scoped>
 .notes-toolbar {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
   flex-wrap: wrap;
 }
 
-.notes-toolbar input[type="search"] {
+.notes-toolbar :deep(.ui-input) {
   flex: 1;
   min-width: 200px;
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
 }
 
-.notes-toolbar select {
-  padding: 8px 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
+.notes-toolbar :deep(.ui-select) {
+  width: auto;
+  min-width: 180px;
 }
 
 .notes-list-view {
@@ -501,12 +529,19 @@ function toggleSelected(file: string, checked: boolean) {
   flex-direction: column;
   gap: var(--space-3);
   min-height: 190px;
-  padding: var(--space-3);
+  background: color-mix(in srgb, var(--primary-text) 0.8%, transparent);
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.note-card:hover {
+  background: color-mix(in srgb, var(--primary-text) 3.5%, transparent);
 }
 
 .note-card-header {
   display: flex;
   align-items: center;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-select-label {
@@ -527,16 +562,17 @@ function toggleSelected(file: string, checked: boolean) {
 .note-card-preview {
   color: var(--secondary-text);
   font-size: var(--font-size-body);
-  line-height: 1.5;
+  line-height: 1.6;
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--tertiary-bg);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .note-card-footer {
@@ -546,7 +582,7 @@ function toggleSelected(file: string, checked: boolean) {
   gap: var(--space-3);
   margin-top: auto;
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
 }
 
 .note-meta {
@@ -582,27 +618,15 @@ function toggleSelected(file: string, checked: boolean) {
   margin-inline: auto;
 }
 
-.loading-spinner {
-  display: inline-block;
-  width: 40px;
-  height: 40px;
-  border: 4px solid var(--border-color);
-  border-top-color: var(--primary-color);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: var(--space-4);
-}
-
 @media (max-width: 768px) {
   .notes-toolbar {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .notes-toolbar input[type="search"],
-  .notes-toolbar select,
-  .notes-toolbar .btn-secondary,
-  .notes-toolbar .btn-danger {
+  .notes-toolbar :deep(.ui-input),
+  .notes-toolbar :deep(.ui-select),
+  .notes-toolbar :deep(.ui-button) {
     width: 100%;
     min-width: 0;
   }

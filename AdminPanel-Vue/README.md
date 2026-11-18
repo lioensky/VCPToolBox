@@ -168,14 +168,7 @@ import type { User } from '@/types'
 
 ## 环境变量
 
-项目使用 `.env` 文件管理环境变量：
-
-```bash
-# API 基础路径
-VITE_API_BASE_URL=/admin_api
-
-# 其他环境变量...
-```
+目前项目未使用 `VITE_*` 构建时环境变量。所有后端接口默认走同源前缀 `/admin_api`（见 `vite.config.ts` 的 proxy 与 `src/api/*.ts`），由 `adminServer.js` 挂载 `AdminPanel-Vue/dist` 于 `/AdminPanel` 路径提供服务。
 
 ## 浏览器支持
 

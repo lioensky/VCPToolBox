@@ -1,7 +1,7 @@
 // Plugin/AgentDream/DreamWaveEngine.js
 // 记忆涟漪浪潮引擎 - 实现基于多级时间线和共振的梦境召回
-// 🌊 核心算法: 种子记忆 → L0联想 → L1共振桥梁 → L2下探 → 深渊浪潮
-// 🔑 设计原则: 纯本地向量操作，零网络依赖
+// 🌊 核心算法: 种子记忆 → RiverMemo L0联想 → L1共振桥梁 → L2下探 → 深渊浪潮
+// 🔑 设计原则: 复用已摄取向量，走本地 Rust RiverMemo，零 Embedding 网络依赖
 
 const fsPromises = require('fs').promises;
 const fsSync = require('fs');
@@ -24,7 +24,10 @@ const MID_EXPAND_MAX = 180;         // 中期最多放宽到180天
 class DreamWaveEngine {
     constructor(knowledgeBaseManager) {
         this.kb = knowledgeBaseManager;
-        this.db = knowledgeBaseManager ? knowledgeBaseManager.db : null;
+    }
+
+    get db() {
+        return this.kb?.db || null;
     }
 
     // =========================================================================
@@ -327,125 +330,175 @@ class DreamWaveEngine {
     // =========================================================================
 
     /**
-     * 直接从 DB 获取文件的第一个 chunk 向量
-     * 🔧 修复: 路径匹配使用多种格式尝试
+     * 通过 KBM Rust 高层接口获取文件的第一个 Chunk 向量。
+     * 路径变体兼容由 NativeKnowledgeRuntime 的路径 hydrate 统一处理。
      */
-    _getLocalVector(absFilePath) {
-        if (!this.db) return null;
-        try {
-            const relPath = path.relative(DAILY_NOTE_ROOT, absFilePath);
-            const relPathPosix = relPath.replace(/\\/g, '/');
-            const relPathWin = relPath.replace(/\//g, '\\');
+   async _getLocalVector(absFilePath) {
+       if (
+           !this.kb
+           || typeof this.kb.getChunksByFilePaths !== 'function'
+           || !absFilePath
+       ) {
+           return null;
+       }
 
-            const fileRow = this.db.prepare(
-                "SELECT id FROM files WHERE path = ? OR path = ? OR path = ? OR path = ?"
-            ).get(relPathPosix, relPathWin, '/' + relPathPosix, '\\' + relPathWin);
+       try {
+           const relPath = path.relative(DAILY_NOTE_ROOT, absFilePath);
+           return await this._getVectorByRelPath(relPath);
+       } catch (e) {
+           console.error(
+               `[DreamWave] _getLocalVector 失败 (${path.basename(absFilePath)}):`,
+               e.message
+           );
+           return null;
+       }
+   }
 
-            if (!fileRow) return null;
+   /**
+    * 从 search 返回的 fullPath（相对路径）获取首个 Chunk 向量。
+    * fullPath 是相对于 DAILY_NOTE_ROOT 的路径。
+    */
+   async _getVectorByRelPath(relPath) {
+       if (
+           !this.kb
+           || typeof this.kb.getChunksByFilePaths !== 'function'
+           || !relPath
+       ) {
+           return null;
+       }
 
-            const chunkRow = this.db.prepare(
-                "SELECT vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1"
-            ).get(fileRow.id);
+       try {
+           const normalized = String(relPath).replace(/\\/g, '/');
+           const variants = [...new Set([
+               normalized,
+               normalized.replace(/\//g, '\\'),
+               `/${normalized}`,
+               `\\${normalized.replace(/\//g, '\\')}`
+           ])];
+           const rows = await this.kb.getChunksByFilePaths(variants);
+           const firstChunk = (Array.isArray(rows) ? rows : [])
+               .filter(row => row && row.vector)
+               .sort((left, right) =>
+                   Number(left.chunkId ?? left.id) - Number(right.chunkId ?? right.id)
+               )[0];
+           if (!firstChunk) return null;
 
-            if (!chunkRow || !chunkRow.vector) return null;
-
-            const vecDim = Math.floor(chunkRow.vector.length / 4);
-            return new Float32Array(chunkRow.vector.buffer, chunkRow.vector.byteOffset, vecDim);
-        } catch (e) {
-            console.error(`[DreamWave] _getLocalVector 失败 (${path.basename(absFilePath)}):`, e.message);
-            return null;
-        }
-    }
-
-    /**
-     * 从 search 返回的 fullPath（相对路径）获取向量
-     * fullPath 是相对于 DAILY_NOTE_ROOT 的路径
-     */
-    _getVectorByRelPath(relPath) {
-        if (!this.db || !relPath) return null;
-        try {
-            const relPathPosix = relPath.replace(/\\/g, '/');
-            const relPathWin = relPath.replace(/\//g, '\\');
-
-            const fileRow = this.db.prepare(
-                "SELECT id FROM files WHERE path = ? OR path = ? OR path = ? OR path = ?"
-            ).get(relPathPosix, relPathWin, '/' + relPathPosix, '\\' + relPathWin);
-
-            if (!fileRow) return null;
-
-            const chunkRow = this.db.prepare(
-                "SELECT vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1"
-            ).get(fileRow.id);
-
-            if (!chunkRow || !chunkRow.vector) return null;
-
-            const vecDim = Math.floor(chunkRow.vector.length / 4);
-            return new Float32Array(chunkRow.vector.buffer, chunkRow.vector.byteOffset, vecDim);
-        } catch (e) {
-            return null;
-        }
-    }
-
+           const vector = firstChunk.vector instanceof Float32Array
+               ? firstChunk.vector
+               : new Float32Array(firstChunk.vector);
+           return vector.length === Number(this.kb.config?.dimension)
+               ? vector
+               : null;
+       } catch (e) {
+           return null;
+       }
+   }
     // =========================================================================
     // 向量召回（核心联想）
     // =========================================================================
 
     /**
-     * 对某篇向量在多个日记本索引中进行召回
-     * 🔧 关键修复: Float32Array → Array.from() 以匹配 KnowledgeBaseManager.search() 签名
-     * 🔧 署名过滤: 召回结果中排除非本人署名的公共日记
-     * 🌊 V8 升级: 测地线重排 — 过采样 2×k 候选，经 geodesicRerank 后截断回 k
-     *    tagBoost 使用 "0.6+" 语法触发 KnowledgeBaseManager 内置的测地线重排管线
+     * 对某篇记忆在 Agent 可见的多个日记本中执行联想召回。
+     *
+     * 主路径一次进入 Rust Native Query Plan：
+     * ANN → 跨索引合并 → hydrate → 语义去重 → RiverMemo Topology V3/Rayon。
+     * 原生联合查询内部的候选兼容路径仍使用 RiverMemo 读出；
+     * 只有整个 RiverMemo 环境不可用时，才回退到纯 KNN。
+     *
+     * @param {string} agentName
+     * @param {Float32Array|Array<number>} vector
+     * @param {number} k
+     * @param {string} queryText - 与该向量对应的记忆正文，用于 RiverMemo 查询观测
      */
-    async _recallForVector(agentName, vector, k) {
+    async _recallForVector(agentName, vector, k, queryText = '') {
         if (!vector || !this.kb) return [];
 
         const indices = this._getSearchableIndexNames(agentName);
+        if (indices.length === 0) return [];
+
+        const safeK = Math.max(1, Math.floor(Number(k) || 1));
+        // 为源文件自排除、文件级去重和署名过滤留出候选余量。
+        const oversampleK = Math.min(200, Math.max(safeK, safeK * 3));
+        const queryVector = vector instanceof Float32Array
+            ? vector
+            : new Float32Array(vector);
+        const observationText = String(queryText || '').substring(0, 4000);
         let allResults = [];
+        let riverMemoUsed = false;
 
-        // 🌊 V8 测地线重排: 过采样 2×k，让 geodesicRerank 有足够候选做地形感知排序
-        const oversampleK = k * 2;
-
-        // 🔧 核心修复: KnowledgeBaseManager.search(diaryName, queryVec, k, tagBoost)
-        // queryVec 必须是 Array (Array.isArray 检查)，不能是 Float32Array！
-        const queryVecArray = Array.from(vector);
-
-        // 🌊 tagBoost = "0.6+" — 尾部 "+" 触发 V8 geodesicRerank 管线
-        const tagBoostWithGeodesic = '0.6+';
-
-        for (const idxName of indices) {
+        if (typeof this.kb.executeNativeRiverQuery === 'function') {
             try {
-                const results = await this.kb.search(idxName, queryVecArray, oversampleK, tagBoostWithGeodesic);
-                if (results && results.length > 0) {
-                    allResults = allResults.concat(results);
-                }
-            } catch (e) {
-                // 静默跳过搜索失败的索引
+                const riverResult = await this.kb.executeNativeRiverQuery(
+                    {
+                        text: observationText,
+                        vector: queryVector
+                    },
+                    {
+                        agentId: agentName,
+                        diaryNames: indices,
+                        topK: oversampleK,
+                        sourceObservationConfig: {
+                            baseTagBoost: 0.6,
+                            coreBoostFactor: 1.33
+                        },
+                        enabled: true,
+                        // 一级回退仍会进入原生 Topology V3，只把联合候选生成退回 JS。
+                        fallbackToLegacy: true
+                    }
+                );
+                allResults = Array.isArray(riverResult?.results)
+                    ? riverResult.results
+                    : [];
+                riverMemoUsed = true;
+
+                const jointUsed =
+                    riverResult?.diagnostics?.nativeTopologyV3?.jointUsed === true;
+                console.log(
+                    `[DreamWave]   RiverMemo Topology V3 召回: ` +
+                    `mode=${jointUsed ? 'native-joint' : 'topology-fallback'}, ` +
+                    `candidates=${allResults.length}, omega=` +
+                    `${(Number(riverResult?.omega?.omega) || 0).toFixed(3)}`
+                );
+            } catch (error) {
+                console.warn(
+                    `[DreamWave]   RiverMemo 不可用，回退纯 KNN: ` +
+                    `${error.message}`
+                );
             }
         }
 
-        // 按分数排序（分数已包含测地线重排融合后的 finalScore）
+        if (!riverMemoUsed) {
+            console.warn('[DreamWave] engine=knn; RiverMemo failed or capability unavailable.');
+            if (typeof this.kb.searchKnn !== 'function') {
+                throw new Error('Dream pure KNN fallback is unavailable');
+            }
+            allResults = await this.kb.searchKnn(indices, queryVector, oversampleK);
+        }
+        allResults = allResults.map(result => ({
+            ...result,
+            retrievalEngine: riverMemoUsed ? 'rivermemo' : 'knn'
+        }));
+
         allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-        // 去重（按 fullPath）
+        // 按文件去重；RiverMemo 返回 chunk 级结果，梦境消费文件级记忆。
         const unique = [];
         const seen = new Set();
-        for (const r of allResults) {
-            const key = r.fullPath || r.sourceFile || '';
+        for (const result of allResults) {
+            const key = result.fullPath || result.sourceFile || '';
             if (key && !seen.has(key)) {
                 seen.add(key);
-                unique.push(r);
+                unique.push(result);
             }
         }
 
-        // 🔧 署名过滤: 排除公共日记本中非本人署名的记忆
+        // 二次执行署名过滤，防止公共日记本中的其他 Agent 记忆进入梦境。
         const filtered = [];
-        for (const r of unique) {
-            const relPath = r.fullPath || '';
+        for (const result of unique) {
+            const relPath = result.fullPath || '';
             const topDir = relPath.split('/')[0] || relPath.split('\\')[0] || '';
 
             if (topDir.startsWith('公共')) {
-                // 公共日记本 → 检查署名
                 const absPath = path.join(DAILY_NOTE_ROOT, relPath);
                 try {
                     const fd = await fsPromises.open(absPath, 'r');
@@ -454,18 +507,17 @@ class DreamWaveEngine {
                     await fd.close();
                     const head = buffer.toString('utf-8', 0, bytesRead);
                     const author = this._extractAuthor(head);
-                    // 有署名但不是本人 → 跳过
                     if (author && !author.includes(agentName)) {
                         continue;
                     }
-                } catch (e) {
-                    // 读取失败时宽容处理，保留
+                } catch (error) {
+                    // 读取失败时宽容保留；权限域已由 diaryNames + allowedFileIds 强制限定。
                 }
             }
-            filtered.push(r);
+            filtered.push(result);
         }
 
-        return filtered.slice(0, k);
+        return filtered.slice(0, safeK);
     }
 
     /**
@@ -511,11 +563,15 @@ class DreamWaveEngine {
     // =========================================================================
 
     async generateDreamWave(agentName) {
-        if (!this.kb || !this.db) {
+        if (
+            !this.kb
+            || typeof this.kb.executeNativeRiverQuery !== 'function'
+            || typeof this.kb.getChunksByFilePaths !== 'function'
+        ) {
             throw new Error("知识库未就绪，无法生成梦境浪潮");
         }
 
-        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮 (V8 测地线重排已启用, tagBoost=0.6+, 过采样=2×k)...`);
+        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮 (RiverMemo Topology V3 [Rust/Rayon])...`);
 
         const buckets = await this._getTimelineBuckets(agentName);
 
@@ -535,7 +591,7 @@ class DreamWaveEngine {
 
             recentSeeds.push({ filePath: seed.filePath, content });
 
-            const vector = this._getLocalVector(seed.filePath);
+            const vector = await this._getLocalVector(seed.filePath);
             if (!vector) {
                 console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} 无向量，跳过联想`);
                 continue;
@@ -543,10 +599,10 @@ class DreamWaveEngine {
 
             // 3/5/7 原则
             const k = this._determineK(content.length);
-            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → k=${k} (过采样${k * 2}→重排→${k})`);
+            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → RiverMemo k=${k}`);
 
-            const recalls = await this._recallForVector(agentName, vector, k);
-            console.log(`[DreamWave]   → 测地线重排后召回 ${recalls.length} 条结果`);
+            const recalls = await this._recallForVector(agentName, vector, k, content);
+            console.log(`[DreamWave]   → engine=${recalls[0]?.retrievalEngine || 'empty'} 召回 ${recalls.length} 条结果`);
 
             // 收集命中计数，用于找共振桥梁
             const seedRelPath = path.relative(DAILY_NOTE_ROOT, seed.filePath).replace(/\\/g, '/');
@@ -593,10 +649,15 @@ class DreamWaveEngine {
         }
 
         for (const l1 of resonantL1) {
-            const vec = this._getVectorByRelPath(l1.fullPath);
+            const vec = await this._getVectorByRelPath(l1.fullPath);
             if (vec) {
                 allCollectedVectors.push(vec);
-                const l2Recalls = await this._recallForVector(agentName, vec, 3);
+                const l2Recalls = await this._recallForVector(
+                    agentName,
+                    vec,
+                    3,
+                    l1.text || ''
+                );
                 for (const r of l2Recalls) {
                     const rPath = r.fullPath || '';
                     if (!seenL2Paths.has(rPath)) {
@@ -615,7 +676,7 @@ class DreamWaveEngine {
             const hydrated = await this._hydrateSearchResult(r);
             if (hydrated) {
                 hydratedL2.push(hydrated);
-                const vec = this._getVectorByRelPath(r.fullPath);
+                const vec = await this._getVectorByRelPath(r.fullPath);
                 if (vec) allCollectedVectors.push(vec);
             }
         }
@@ -636,11 +697,16 @@ class DreamWaveEngine {
             const seedRelPath = path.relative(DAILY_NOTE_ROOT, seed.filePath).replace(/\\/g, '/');
             seenMidPaths.add(seedRelPath);
 
-            const vector = this._getLocalVector(seed.filePath);
+            const vector = await this._getLocalVector(seed.filePath);
             if (!vector) continue;
 
             const k = this._determineK(content.length);
-            const recalls = await this._recallForVector(agentName, vector, k);
+            const recalls = await this._recallForVector(
+                agentName,
+                vector,
+                k,
+                content
+            );
 
             for (const r of recalls) {
                 const rPath = r.fullPath || '';
@@ -648,7 +714,7 @@ class DreamWaveEngine {
                 if (!seenMidPaths.has(rPath)) {
                     seenMidPaths.add(rPath);
                     midL1Raw.push(r);
-                    const rVec = this._getVectorByRelPath(rPath);
+                    const rVec = await this._getVectorByRelPath(rPath);
                     if (rVec) allCollectedVectors.push(rVec);
                 }
             }
@@ -686,8 +752,22 @@ class DreamWaveEngine {
                 for (let i = 0; i < dim; i++) waveVector[i] /= mag;
             }
 
-            // 用浪潮向量召回 k=5，取前3
-            const deepRaw = await this._recallForVector(agentName, waveVector, 5);
+            // 用所有桥梁记忆的正文形成复合观测，浪潮向量提供查询坐标；
+            // RiverMemo 据此读取跨记忆的关系拓扑，而非只比较平均向量距离。
+            const waveObservationText = [
+                ...hydratedL1,
+                ...hydratedL2,
+                ...hydratedMidL1
+            ].map(item => item.content || item.text || '')
+                .filter(Boolean)
+                .join('\n\n')
+                .substring(0, 4000);
+            const deepRaw = await this._recallForVector(
+                agentName,
+                waveVector,
+                5,
+                waveObservationText
+            );
             const deepTop = deepRaw.slice(0, 3);
 
             for (const r of deepTop) {

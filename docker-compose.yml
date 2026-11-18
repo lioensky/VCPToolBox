@@ -1,12 +1,21 @@
 services:
   app:
-    build: .
+    image: lioensky/vcptoolbox:latest
+    # 如需本地构建，取消注释下面一行并注释掉上面的 image
+    # build: .
     container_name: vcptoolbox
     ports:
       - "6005:6005"
+      - "6006:6006"
     environment:
       # 使用宿主机环境变量 DEFAULT_TIMEZONE，如果未设置则回退到 Asia/Shanghai
       TZ: ${DEFAULT_TIMEZONE:-Asia/Shanghai}
+      # 必须在 Node.js 进程启动前设置，扩大 libuv worker pool，缓解原生异步任务饥饿
+      UV_THREADPOOL_SIZE: "64"
+      # PM2 主服务内存重启阈值：大知识库冷启动峰值可能达到 3~4GB
+      VCP_MAIN_MAX_MEMORY: "4096M"
+    mem_limit: 4g
+    memswap_limit: 4g
     volumes:
       #1 将本地的 config.env 映射到容器中
       #1- ./config.env:/usr/src/app/config.env
@@ -27,9 +36,14 @@ services:
       #0- ./image:/usr/src/app/image # 映射整个 image 目录，包括 fluxgen 等子目录
 
       - .:/usr/src/app
+      # SQLite/WAL 不建议放在 Docker Desktop 的跨系统 bind mount 上；使用命名卷避免宿主机文件同步层导致数据库损坏。
+      - vcp_vectorstore:/usr/src/app/VectorStore
       # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的。添加pydeps兼容科学计算器依赖。
       - /usr/src/app/pydeps
       - /usr/src/app/node_modules
-    
+      
     # The command is defined in the Dockerfile's CMD instruction.
     restart: unless-stopped
+
+volumes:
+  vcp_vectorstore:

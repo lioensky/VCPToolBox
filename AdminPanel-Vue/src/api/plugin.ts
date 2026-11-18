@@ -5,6 +5,7 @@ import {
 import type {
   PluginInfo,
   PluginListResponse,
+  PluginReadmeResponse,
 } from "@/types/api.plugin";
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
@@ -65,6 +66,18 @@ export const pluginApi = {
     return pluginListInflight;
   },
 
+  async getPluginReadme(
+    pluginName: string,
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<PluginReadmeResponse> {
+    return requestWithUi<PluginReadmeResponse>(
+      {
+        url: `/admin_api/plugins/${encodeURIComponent(pluginName)}/readme`,
+      },
+      uiOptions
+    );
+  },
+
   async savePluginConfig(
     pluginName: string,
     content: string,
@@ -95,6 +108,26 @@ export const pluginApi = {
           url: `/admin_api/plugins/${encodeURIComponent(pluginName)}/toggle`,
           method: "POST",
           body: { enable },
+        },
+        uiOptions
+      );
+    } finally {
+      invalidatePluginListCache();
+    }
+  },
+
+  async saveInvocationCommandExample(
+    pluginName: string,
+    commandIdentifier: string,
+    example: string | null,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<void> {
+    try {
+      await requestWithUi(
+        {
+          url: `/admin_api/plugins/${encodeURIComponent(pluginName)}/commands/${encodeURIComponent(commandIdentifier)}/metadata`,
+          method: "POST",
+          body: { example },
         },
         uiOptions
       );

@@ -35,14 +35,81 @@
     "invocationCommands": [
       {
         "commandIdentifier": "wiki_structure",
-        "description": "获取 GitHub仓库在 DeepWiki 上的文档目录结构。\n参数:\n- url (字符串, 必需): 仓库标识，支持 owner/repo 格式、GitHub URL 或 DeepWiki URL。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_structure「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"},
+        "description": "获取 GitHub仓库在 DeepWiki 上的文档目录结构。\n参数:\n- url (字符串, 必需): 仓库标识，支持 owner/repo 格式、GitHub URL 或 DeepWiki URL。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_structure「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
       {
         "commandIdentifier": "wiki_content",
-        "description": "读取 DeepWiki 上指定仓库的完整文档内容。返回整个仓库的文档，内容较长时会自动截断。注意：返回数据量可能很大，建议优先使用 wiki_ask。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_content「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "读取 DeepWiki 上指定仓库的完整文档内容。返回整个仓库的文档，内容较长时会自动截断。注意：返回数据量可能很大，建议优先使用 wiki_ask。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n调用格式:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_content「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "wiki_ask",
-        "description": "向 DeepWiki AI 提出关于 GitHub 仓库的问题。支持单仓库或多仓库联合查询（最多10个）。\n参数:\n- url (字符串, 必需): 仓库标识。单仓库: owner/repo 格式。多仓库: 用逗号分隔，如 'owner1/repo1, owner2/repo2'（最多10个）。\n- question (字符串, 必需): 你想问的问题。\n- deep_research (布尔, 可选): 设为 true 启用深度研究模式，AI 将进行多轮迭代检索（最多5轮），适合复杂架构分析。\n调用示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」插件系统是如何工作的？「末」\n<<<[END_TOOL_REQUEST]>>>\n深度研究:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」详细分析 RAG 记忆系统的完整架构「末」,\ndeep_research:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n多仓库联合查询:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox, lioensky/VCPChat「末」,\nquestion:「始」前后端是如何通信的？「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "向 DeepWiki AI 提出关于 GitHub 仓库的问题。支持单仓库或多仓库联合查询（最多10个）。\n参数:\n- url (字符串, 必需): 仓库标识。单仓库: owner/repo 格式。多仓库: 用逗号分隔，如 'owner1/repo1, owner2/repo2'（最多10个）。\n- question (字符串, 必需): 你想问的问题。\n- deep_research (布尔, 可选): 设为 true 启用深度研究模式，AI 将进行多轮迭代检索（最多5轮），适合复杂架构分析。\n调用示例:\n\n深度研究:\n\n多仓库联合查询:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」插件系统是如何工作的？「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」详细分析 RAG 记忆系统的完整架构「末」,\ndeep_research:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox, lioensky/VCPChat「末」,\nquestion:「始」前后端是如何通信的？「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "信息获取",
+    "jevDescPrompt": "检索 GitHub 公开仓库在 DeepWiki 上的 AI 生成架构文档、目录结构或基于源码进行架构问答。",
+    "jevPrompt": "用户向指定代码仓库提出技术问题、询问架构或实现机理时选择 wiki_ask 命令；用户希望查看仓库的文档目录或文件大纲时选择 wiki_structure；希望阅读仓库全量文档长文时选择 wiki_content。未明确指定动作时默认 wiki_ask。",
+    "agentPrompt": "当需要查阅开源仓库架构或向 DeepWiki 询问代码库实现时，使用 {信息获取} 中的 `DeepWikiVCP`，问题放入【主要内容】，仓库名或 URL 放入 [仓库:owner/repo]：\nJEV:「始」请使用 {信息获取} 中的 `DeepWikiVCP`，基于[仓库:lioensky/VCPToolBox]询问【插件系统是如何加载与初始化的】。「末」",
+    "defaultCommand": "wiki_ask",
+    "commands": [
+      {
+        "commandIdentifier": "wiki_ask",
+        "description": "向 DeepWiki AI 提出关于代码仓库的问题",
+        "aliases": ["问仓库", "架构问答", "问代码", "DeepWiki问答"],
+        "parameters": {
+          "question": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 500,
+            "description": "向仓库 AI 提出的架构或实现问题"
+          },
+          "url": {
+            "type": "text",
+            "required": true,
+            "source": "constraints",
+            "prefixes": ["仓库", "repo", "项目", "地址"],
+            "maxLength": 200,
+            "description": "目标代码仓库标识（如 lioensky/VCPToolBox）"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "wiki_structure",
+        "description": "获取代码仓库的 DeepWiki 文档目录树",
+        "aliases": ["文档目录", "目录结构", "仓库大纲", "架构大纲"],
+        "parameters": {
+          "url": {
+            "type": "text",
+            "required": true,
+            "source": "constraints",
+            "prefixes": ["仓库", "repo", "项目", "地址"],
+            "maxLength": 200,
+            "description": "目标代码仓库标识（如 lioensky/VCPToolBox）"
+          }
+        }
+      },
+      {
+        "commandIdentifier": "wiki_content",
+        "description": "读取代码仓库的 DeepWiki 完整文档正文",
+        "aliases": ["完整文档", "阅读文档", "仓库文档"],
+        "parameters": {
+          "url": {
+            "type": "text",
+            "required": true,
+            "source": "constraints",
+            "prefixes": ["仓库", "repo", "项目", "地址"],
+            "maxLength": 200,
+            "description": "目标代码仓库标识（如 lioensky/VCPToolBox）"
+          }
+        }
       }
     ]
   }

@@ -1,0 +1,37 @@
+[2026-03-02] - Nova
+[VCP百科全书] 插件说明——VSearch联网搜索（使用规范）
+
+一、插件定位
+VSearch 是语义并发联网搜索插件，用于“主题+多关键词”检索与信息聚合。
+
+二、manifest关键信息
+- name: `VSearch`
+- pluginType: `synchronous`
+- protocol: `stdio`
+- commandIdentifier: `VSearch`
+
+三、参数说明
+- `SearchTopic`（必需，字符串）：检索主题背景
+- `Keywords`（必需，字符串）：关键词（逗号/换行分隔）
+- `ShowURL`（可选，布尔，默认false）：是否返回来源URL
+
+四、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VSearch「末」,
+SearchTopic:「始」AI在医疗诊断中的最新应用「末」,
+Keywords:「始」medical imaging, transformer healthcare, clinical AI benchmark「末」,
+ShowURL:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+五、常见错误
+- Invalid URL：后端搜索入口配置异常或URL构造失败
+- Key缺失：未配置 `VSearchKey`
+- 模型不可用：`VSearchModel` 无效或无权限
+- 超时：关键词过多，建议拆批检索
+
+六、RAG标签建议（TagMemo V5）
+主体词元：VSearch, 语义搜索, 联网搜索  
+动作词元：SearchTopic, Keywords, ShowURL, 并发检索  
+故障词元：Invalid URL, 配置缺失, 超时, 模型不可用
+
+Tag: VSearch, 联网搜索, 语义并发检索, SearchTopic, Keywords, ShowURL, 信息聚合, URL溯源, Invalid URL, 插件配置, 检索超时

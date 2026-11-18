@@ -1,0 +1,58 @@
+{
+  "name": "CrossRefDailyPapers",
+  "displayName": "CrossRef Daily Papers",
+  "version": "1.0.0",
+  "description": "Fetches daily research papers from the CrossRef API and provides them as a placeholder.",
+  "author": "Gemini",
+  "pluginType": "static",
+  "entryPoint": {
+    "command": "node CrossRefDailyPapers.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "refreshIntervalCron": "*/30 * * * *",
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{CrossRefDailyPapersData}}",
+        "description": "Daily research papers from CrossRef, updated every 30 minutes."
+      }
+    ]
+  },
+  "configSchema": {
+    "CROSSREF_QUERY_BIBLIOGRAPHIC": {
+      "type": "string",
+      "required": true,
+      "default": "\"Long-read Sequencing\" OR metagenome OR \"microbial genomics\" OR \"pathogen detection\"",
+      "description": "The bibliographic query for CrossRef API."
+    },
+    "CROSSREF_ROWS": {
+      "type": "number",
+      "required": true,
+      "default": 300,
+      "description": "Number of results to fetch from CrossRef API."
+    },
+    "CROSSREF_DAYS_RANGE": {
+      "type": "number",
+      "required": false,
+      "default": 1,
+      "description": "Number of days to fetch papers from, including today (e.g., 1 for today, 2 for today and yesterday)."
+    },
+    "CROSSREF_DEBUG_MODE": {
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "Enable debug mode for more verbose logging. If false, some non-critical errors will be suppressed."
+    }
+  },
+  "permissions": [
+    "fetch_data_from_url",
+    "write_to_file_system",
+    "read_from_file_system"
+  ],
+  "cacheFiles": [
+    "crossref_papers.json"
+  ],
+  "logLevel": "info"
+} 

@@ -1,0 +1,933 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const ToolCallParser = require('../modules/vcpLoop/toolCallParser');
+const { JevToolCallExp } = require('../modules/jevToolCallExp');
+
+const CONFIG_PATH = path.join(__dirname, '..', 'ToolConfigs', 'jev_tool_call_exp.json');
+const PROMPT_PATH = path.join(__dirname, '..', 'TVStxt', 'JevToolCallDecision.txt');
+
+function makePlanner({ configured = false, choice = null, confidence = 0.9 } = {}) {
+    const decisions = [];
+    const jevClient = {
+        isConfigured() {
+            return configured;
+        },
+        async decide(state, questions) {
+            decisions.push({ state, questions });
+            return {
+                answers: {
+                    decision: {
+                        type: 'choice',
+                        choice,
+                        confidence
+                    }
+                }
+            };
+        }
+    };
+    return {
+        decisions,
+        planner: new JevToolCallExp({
+            configPath: CONFIG_PATH,
+            decisionPromptPath: PROMPT_PATH,
+            jevClient
+        })
+    };
+}
+
+test('ToolCallParser 将顶层 JEV 字段解析为虚拟工具调用并保留 maid', () => {
+    const calls = ToolCallParser.parse(`
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」
+JEV:「始」{联网搜索} 【最近美国土豆是不是打折】「末」
+<<<[END_TOOL_REQUEST]>>>
+    `);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].name, 'JEV');
+    assert.equal(calls[0].args.maid, 'Nova');
+    assert.equal(calls[0].args.expression, '{联网搜索} 【最近美国土豆是不是打折】');
+});
+
+test('JEV 展开继承通用参数与调用级高级协议', async () => {
+    const { planner } = makePlanner();
+    const [virtualCall] = ToolCallParser.parse(`
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+JEV:「始」{联网搜索} 【未来发布会消息】「末」,
+timely_contact:「始」2027-07-05-14:00「末」,
+archery:「始」no_reply「末」,
+ink:「始」mark_history「末」,
+river:「始」last:3「末」,
+vref:「始」2「末」,
+tool_password:「始」123456「末」
+<<<[END_TOOL_REQUEST]>>>
+    `);
+
+    const [call] = await planner.plan(
+        virtualCall.args.expression,
+        virtualCall
+    );
+
+    assert.equal(call.name, 'VSearch');
+    assert.equal(call.args.maid, 'Nova');
+    assert.equal(call.args.timely_contact, '2027-07-05-14:00');
+    assert.equal(call.args.tool_password, '123456');
+    assert.equal(call.archery, true);
+    assert.equal(call.archeryNoReply, true);
+    assert.equal(call.markHistory, true);
+    assert.equal(call.river, 'last:3');
+    assert.equal(call.vref, '2');
+});
+
+test('JEV 字段支持 ESCAPE 包裹并保留协议字面量', async () => {
+    const { planner } = makePlanner();
+    const [virtualCall] = ToolCallParser.parse(`
+<<<[TOOL_REQUEST]>>>
+JEV:「始ESCAPE」{日用工具} 计算【字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度】「末ESCAPE」
+<<<[END_TOOL_REQUEST]>>>
+    `);
+
+    assert.equal(virtualCall.name, 'JEV');
+    assert.equal(
+        virtualCall.args.expression,
+        '{日用工具} 计算【字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度】'
+    );
+
+    const [call] = await planner.plan(
+        virtualCall.args.expression,
+        virtualCall
+    );
+    assert.equal(call.name, 'SciCalculator');
+    assert.equal(
+        call.args.expression,
+        '字符串 "「始」" 与 <<<[TOOL_REQUEST]>>> 的长度'
+    );
+});
+
+test('联网搜索默认使用 VSearch grounding 模板且不调用 Jev', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const calls = await planner.plan(
+        '{联网搜索} 【最近美国土豆是不是打折】[美国土豆产能][美国当前土豆价格]',
+        { maid: 'Nova' }
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].name, 'VSearch');
+    assert.deepEqual(calls[0].args, {
+        SearchMode: 'grounding',
+        ShowURL: 'false',
+        SearchTopic: '最近美国土豆是不是打折',
+        Keywords: '美国土豆产能, 美国当前土豆价格',
+        maid: 'Nova'
+    });
+    assert.equal(decisions.length, 0);
+});
+
+test('可在一个联网请求中显式选择 VSearch 与 AnySearch', async () => {
+    const { planner, decisions } = makePlanner();
+    const calls = await planner.plan(
+        "{联网搜索} 'VSearch' 'AnySearch' 【最近美国土豆是不是打折】"
+    );
+
+    assert.deepEqual(calls.map(call => call.name), ['VSearch', 'AnySearch']);
+    assert.equal(calls[0].args.SearchMode, 'grounding');
+    assert.equal(calls[1].args.query, '最近美国土豆是不是打折');
+    assert.equal(calls[1].args.command, 'search');
+    assert.equal(decisions.length, 0);
+});
+
+test('Keenable 官方搜索支持别名、约束和多工具选择，无需 Jev 裁决', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    for (const expression of [
+        "{联网搜索} 'Keenable' 【AI智能体新闻】[最近一周]",
+        "{联网搜索} 'KeenableSearch' 【AI智能体新闻】[最近一周]",
+        '{联网搜索} 使用 Keenable 搜索【AI智能体新闻】[最近一周]'
+    ]) {
+        const calls = await planner.plan(expression);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].name, 'KeenableSearch');
+        assert.deepEqual(calls[0].args, { query: 'AI智能体新闻 最近一周' });
+        assert.equal(calls[0].jev.category, 'web_search');
+        assert.equal(calls[0].jev.toolKey, 'keenable');
+        assert.equal(calls[0].jev.thirdParty, undefined);
+    }
+
+    const calls = await planner.plan(
+        "{联网搜索} 'VSearch' 'KeenableSearch' 【AI智能体新闻】"
+    );
+    assert.deepEqual(calls.map(call => call.name), ['VSearch', 'KeenableSearch']);
+    assert.deepEqual(calls[1].args, { query: 'AI智能体新闻' });
+    assert.equal(decisions.length, 0);
+});
+
+test('谷歌搜索使用 SerpSearch 固定命令并确定性映射地区', async () => {
+    const { planner } = makePlanner();
+    const [call] = await planner.plan(
+        "{联网搜索} '谷歌搜索' 【Coffee prices】[美国]"
+    );
+
+    assert.equal(call.name, 'SerpSearch');
+    assert.equal(call.args.command, 'google_search');
+    assert.equal(call.args.q, 'Coffee prices 美国');
+    assert.equal(call.args.gl, 'us');
+    assert.equal(call.args.hl, 'en');
+});
+
+test('谷歌学术确定性提取年份范围', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        "{联网搜索} '谷歌学术' 【large language models in diagnosis】[2020年至2026年][按日期]"
+    );
+
+    assert.equal(call.name, 'SerpSearch');
+    assert.equal(call.args.command, 'google_scholar_search');
+    assert.equal(call.args.as_ylo, '2020');
+    assert.equal(call.args.as_yhi, '2026');
+    assert.equal(call.args.scisbd, '2');
+    assert.equal(decisions.length, 0);
+});
+
+test('Tavily 固定 advanced 并确定性识别新闻和时间范围', async () => {
+    const { planner } = makePlanner();
+    const [call] = await planner.plan(
+        "{联网搜索} 'Tavily' 【AI芯片进展】[新闻][最近一周]"
+    );
+
+    assert.equal(call.name, 'TavilySearch');
+    assert.equal(call.args.search_depth, 'advanced');
+    assert.equal(call.args.topic, 'news');
+    assert.equal(call.args.time_range, 'week');
+    assert.equal(call.args.include_raw_content, 'markdown');
+});
+
+test('AnySearch 明确垂直领域使用规则，不调用 Jev', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        "{联网搜索} 'AnySearch' 【Jinja2 2.4.1】[查询软件包漏洞]"
+    );
+
+    assert.equal(call.name, 'AnySearch');
+    assert.equal(call.args.sub_domain, 'security.vuln');
+    assert.equal(decisions.length, 0);
+});
+
+test('AnySearch 模糊垂直约束只调用一次 Jev 并映射白名单选项', async () => {
+    const { planner, decisions } = makePlanner({
+        configured: true,
+        choice: 'business.company'
+    });
+    const [call] = await planner.plan(
+        "{联网搜索} 'AnySearch' 【Acme未来经营情况】[希望使用最适合企业调查的专业资料]"
+    );
+
+    assert.equal(call.name, 'AnySearch');
+    assert.equal(call.args.sub_domain, 'business.company');
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].questions.decision.type, 'choice');
+    assert.match(decisions[0].questions.decision.instructions, /选择最匹配的搜索子领域/);
+});
+
+test('B站普通关键词自动走搜索，BV号自动走获取', async () => {
+    const { planner } = makePlanner();
+    const [searchCall] = await planner.plan(
+        "{联网搜索} 'B站获取' 【Python入门教程】[UP主]"
+    );
+    assert.equal(searchCall.name, 'BilibiliFetch');
+    assert.equal(searchCall.args.action, 'search');
+    assert.equal(searchCall.args.keyword, 'Python入门教程');
+    assert.equal(searchCall.args.search_type, 'bili_user');
+
+    const [fetchCall] = await planner.plan(
+        "{联网搜索} 'B站搜索' 【BV1CC4y1a7ee】[截图 30,120 秒]"
+    );
+    assert.equal(fetchCall.name, 'BilibiliFetch');
+    assert.equal(fetchCall.args.url, 'BV1CC4y1a7ee');
+    assert.equal(fetchCall.args.need_subs, 'false');
+    assert.equal(fetchCall.args.need_pbp, 'false');
+    assert.equal(fetchCall.args.danmaku_num, '0');
+    assert.equal(fetchCall.args.comment_num, '0');
+    assert.equal(fetchCall.args.snapshots, '30,120');
+    assert.equal(fetchCall.args.hd_snapshot, 'true');
+});
+
+// 保护自然语言到真实插件参数的公开契约：截图轻量返回，组合请求按需取数。
+test('B站内容选择覆盖截图、组合内容、排除项和连续调用', async (t) => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const full = { need_subs: 'true', need_pbp: 'true', danmaku_num: '20', comment_num: '20' };
+    const lean = { need_subs: 'false', need_pbp: 'false', danmaku_num: '0', comment_num: '0' };
+    const cases = [
+        ['普通获取', '获取视频【BV1mEnb6LEnC】的内容。', full],
+        ['复现达里奥会话', '获取视频【https://www.bilibili.com/video/BV1mEnb6LEnC/】的画面，并在[截图 95,148,598,678,688 秒]指定的时间点截取高清画面。', { ...lean, snapshots: '95,148,598,678,688', hd_snapshot: 'true' }],
+        ['复现边检员会话', '获取视频【https://www.bilibili.com/video/BV1yDn368En2/】的画面，并在[截图 12,55,100,145,195,245,295,340 秒]指定的时间点截取高清画面。', { ...lean, snapshots: '12,55,100,145,195,245,295,340', hd_snapshot: 'true' }],
+        ['首轮内容和截图一起取', '获取视频【BV1mEnb6LEnC】的字幕、评论、弹幕和高能进度条，并在[截图 30,120 秒]截取画面。', { ...full, snapshots: '30,120', hd_snapshot: 'true' }],
+        ['截图加字幕', '获取视频【BV1mEnb6LEnC】的字幕和[截图 30 秒]。', { ...lean, need_subs: 'true', snapshots: '30', hd_snapshot: 'true' }],
+        ['截图加默认数量评论', '获取视频【BV1mEnb6LEnC】的[截图 30 秒]和热门评论。', { ...lean, comment_num: '20', snapshots: '30', hd_snapshot: 'true' }],
+        ['截图加指定数量评论', '获取视频【BV1mEnb6LEnC】的[截图 30 秒]和 5 条热门评论。', { ...lean, comment_num: '5', snapshots: '30', hd_snapshot: 'true' }],
+        ['括号中的数量约束', '获取视频【BV1mEnb6LEnC】的[截图 30 秒][评论 5 条][弹幕 10 条]。', { ...lean, comment_num: '5', danmaku_num: '10', snapshots: '30', hd_snapshot: 'true' }],
+        ['单独获取高能时间点', '获取视频【BV1mEnb6LEnC】的[截图 30 秒]和弹幕热度。', { ...lean, need_pbp: 'true', snapshots: '30', hd_snapshot: 'true' }],
+        ['只要字幕', '只要视频【BV1mEnb6LEnC】的字幕。', { ...lean, need_subs: 'true' }],
+        ['只要评论', '只获取视频【BV1mEnb6LEnC】的 5 条评论。', { ...lean, comment_num: '5' }],
+        ['多个排除项', '获取视频【BV1mEnb6LEnC】的[截图 30 秒]和高能进度条，[不要字幕、评论和弹幕]。', { ...lean, need_pbp: 'true', snapshots: '30', hd_snapshot: 'true' }],
+        ['普通获取的排除项', '获取视频【BV1mEnb6LEnC】的内容，[无需字幕][不需要评论和弹幕]。', { ...full, need_subs: 'false', comment_num: '0', danmaku_num: '0' }],
+        ['字幕已获取时只补截图', '视频【BV1mEnb6LEnC】的字幕已经有了，只补[截图 30 秒]。', { ...lean, snapshots: '30', hd_snapshot: 'true' }],
+        ['小数和重复时间点', '获取视频【BV1mEnb6LEnC】的[截图 1.5，2.75，1.5 秒]。', { ...lean, snapshots: '1.5,2.75', hd_snapshot: 'true' }],
+        ['取消截图', '获取视频【BV1mEnb6LEnC】的内容，[不要截图]。', { ...full, hd_snapshot: 'false' }],
+        ['旧版简短取消指令', '获取视频【BV1mEnb6LEnC】的内容，[不截图]。', { ...full, hd_snapshot: 'false' }],
+        ['截图时间点标签', '获取视频【BV1mEnb6LEnC】的[截图时间点 30,120 秒]。', { ...lean, snapshots: '30,120', hd_snapshot: 'true' }],
+        ['数量为零', '获取视频【BV1mEnb6LEnC】的[截图 30 秒][评论 0][弹幕 0]。', { ...lean, snapshots: '30', hd_snapshot: 'true' }],
+        ['截图后重新普通获取', '获取视频【av12345】的内容。', full]
+    ];
+    for (const [label, request, expected] of cases) {
+        await t.test(label, async () => {
+            const [call] = await planner.plan(`请使用 {联网搜索} 中的 \`B站获取\`，${request}`);
+            assert.equal(call.name, 'BilibiliFetch');
+            const { url, ...selected } = call.args;
+            assert.ok(url);
+            assert.deepEqual(selected, expected);
+        });
+    }
+    assert.equal(decisions.length, 0);
+});
+
+test('图片生成默认使用 NanoBanana2，无图片为 generate', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        '{图片生成} 【一只坐在窗边的猫，电影感】'
+    );
+
+    assert.equal(call.name, 'NanoBananaGen2');
+    assert.deepEqual(call.args, {
+        prompt: '一只坐在窗边的猫，电影感',
+        command: 'generate'
+    });
+    assert.equal(decisions.length, 0);
+});
+
+test('一个图片 URL 自动修图，多个图片 URL 自动合成', async () => {
+    const { planner } = makePlanner();
+    const [editCall] = await planner.plan(
+        "{图片生成} 'ZImage' 【改成雨夜霓虹风格】[file:///C:/images/person.png]"
+    );
+    assert.equal(editCall.name, 'ZImageTurboGen');
+    assert.equal(editCall.args.command, 'edit');
+    assert.equal(editCall.args.image, 'file:///C:/images/person.png');
+
+    const [composeCall] = await planner.plan(
+        "{图片生成} '豆包' 【融合角色和背景】[https://example.com/a.png][https://example.com/b.png]"
+    );
+    assert.equal(composeCall.name, 'DoubaoGen');
+    assert.equal(composeCall.args.command, 'compose');
+    assert.deepEqual(composeCall.args.image, [
+        'https://example.com/a.png',
+        'https://example.com/b.png'
+    ]);
+});
+
+test('GPT 生图是独立模式并映射专用命令', async () => {
+    const { planner } = makePlanner();
+    const [generateCall] = await planner.plan(
+        "{图片生成} 'GPT生图' 【精细科幻城市概念图】[横版高清]"
+    );
+    assert.equal(generateCall.name, 'GPTImageGen');
+    assert.equal(generateCall.args.command, 'GPTGenerateImage');
+    assert.equal(generateCall.args.size, '3840x2160');
+    assert.equal(generateCall.args.quality, 'high');
+
+    const [editCall] = await planner.plan(
+        "{图片生成} 'GPT生图' 【改成水彩画】[https://example.com/source.png]"
+    );
+    assert.equal(editCall.args.command, 'GPTEditImage');
+    assert.equal(editCall.args.image, 'https://example.com/source.png');
+});
+
+test('显式尺寸按目标插件能力确定性映射，不调用 Jev', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        "{图片生成} 'ZImage' 【一张风景图】[1000x1700]"
+    );
+
+    assert.equal(call.args.size, '1152x2048');
+    assert.equal(decisions.length, 0);
+});
+
+test('模糊图片用途只调用一次 Jev 选择目标插件合法尺寸', async () => {
+    const { planner, decisions } = makePlanner({
+        configured: true,
+        choice: '1024x1536'
+    });
+    const [call] = await planner.plan(
+        "{图片生成} 'GPT生图' 【人物摄影】[用于杂志封面并保留人物全身]"
+    );
+
+    assert.equal(call.args.size, '1024x1536');
+    assert.equal(decisions.length, 1);
+    assert.match(decisions[0].questions.decision.instructions, /选择目标插件支持的最接近尺寸/);
+});
+
+test('低置信度 Jev 决策回退默认模板，不注入猜测值', async () => {
+    const { planner, decisions } = makePlanner({
+        configured: true,
+        choice: 'academic.search',
+        confidence: 0.2
+    });
+    const [call] = await planner.plan(
+        "{联网搜索} 'AnySearch' 【一个模糊问题】[使用一种不明确的专业来源]"
+    );
+
+    assert.equal(call.args.sub_domain, undefined);
+    assert.equal(decisions.length, 1);
+});
+
+test('拒绝一个 JEV 块包含多个能力目录', async () => {
+    const { planner } = makePlanner();
+    await assert.rejects(
+        planner.plan('{联网搜索}{图片生成}【猫】'),
+        /只能包含一个能力目录/
+    );
+});
+
+test('完整自然语言、关系词和标点不会干扰语义锚点解析', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        "请使用 {联网搜索} 中的 '谷歌学术'，在[2024年至今]的范围内搜索【大语言模型在临床诊断中的应用】。"
+    );
+
+    assert.equal(call.name, 'SerpSearch');
+    assert.equal(call.args.command, 'google_scholar_search');
+    assert.equal(call.args.q, '大语言模型在临床诊断中的应用');
+    assert.equal(call.args.as_ylo, '2024');
+    assert.equal(decisions.length, 0);
+});
+
+test('UrlFetch 用 [URL] 直接触发，默认文本且仅映射三种允许模式', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+
+    const [defaultCall] = await planner.plan(
+        '请使用 {联网搜索}，打开网页[https://example.com]。'
+    );
+    assert.equal(defaultCall.name, 'UrlFetch');
+    assert.deepEqual(defaultCall.args, {
+        mode: 'text',
+        url: 'https://example.com'
+    });
+
+    const [snapshotCall] = await planner.plan(
+        '请使用 {联网搜索}，打开网页[https://example.com/page]并获取[截图]。'
+    );
+    assert.equal(snapshotCall.name, 'UrlFetch');
+    assert.equal(snapshotCall.args.url, 'https://example.com/page');
+    assert.equal(snapshotCall.args.mode, 'snapshot');
+
+    const [imageCall] = await planner.plan(
+        '请使用 {联网搜索}，打开图片地址[https://example.com/cat.png]并[看图]。'
+    );
+    assert.equal(imageCall.name, 'UrlFetch');
+    assert.equal(imageCall.args.mode, 'image');
+
+    const [jinaHintCall] = await planner.plan(
+        "请使用 {联网搜索} 中的 'UrlFetch'，打开网页[https://example.com]并使用[jina]。"
+    );
+    assert.equal(jinaHintCall.args.mode, 'text');
+    assert.equal(decisions.length, 0);
+});
+
+test('点歌默认常规播放，八种中英文演出模式确定性映射', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const modes = [
+        ['流光', 'luminous'],
+        ['云阶', 'partita'],
+        ['心象', 'cadenza'],
+        ['凝彩', 'tempera'],
+        ['商籁', 'sonnet'],
+        ['镜台', 'diorama'],
+        ['浮名', 'fume'],
+        ['星诞', 'starborn']
+    ];
+
+    const [regular] = await planner.plan(
+        '请使用 {音乐播放}，播放【星の余韻】。'
+    );
+    assert.deepEqual(regular.args, {
+        command: 'playSong',
+        songname: '星の余韻'
+    });
+
+    for (const [label, expected] of modes) {
+        const [call] = await planner.plan(
+            `请使用 {音乐播放}，播放【星の余韻】，并启用[${label}]演出模式。`
+        );
+        assert.equal(call.name, 'MusicController');
+        assert.equal(call.args.command, 'playSong');
+        assert.equal(call.args.songname, '星の余韻');
+        assert.equal(call.args.stageMode, expected);
+    }
+
+    const [english] = await planner.plan(
+        '请使用 {音乐播放}，播放【星の余韻】，并启用[luminous]演出模式。'
+    );
+    assert.equal(english.args.stageMode, 'luminous');
+    assert.equal(decisions.length, 0);
+});
+
+test('获取音乐内容原生映射到分布式 MusicController，无需主要内容或模型裁决', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const expressions = [
+        '获取音乐内容。',
+        '请获取当前歌曲的歌词。',
+        '{日用工具} 查看正在播放的音乐信息。',
+        '{音乐播放} 查询歌词。',
+        '{日用工具} `MusicController` 获取音乐内容。',
+        '{日用工具} `MusicController` [getCurrentLyrics]',
+        '{日用工具} 获取音乐内容【当前歌曲】[星诞]'
+    ];
+    for (const expression of expressions) {
+        const calls = await planner.plan(expression, { maid: 'Nova' });
+        assert.equal(calls.length, 1, expression);
+        assert.equal(calls[0].name, 'MusicController', expression);
+        assert.deepEqual(calls[0].args, {
+            command: 'getCurrentLyrics',
+            maid: 'Nova'
+        }, expression);
+        assert.equal(calls[0].jev.thirdParty, undefined);
+    }
+    assert.equal(decisions.length, 0);
+});
+
+test('音乐内容查询不会误识别主要负载，也不会放宽其他工具的必填内容', async () => {
+    const { planner } = makePlanner();
+    const [song] = await planner.plan('播放【获取音乐内容】');
+    assert.deepEqual(song.args, { command: 'playSong', songname: '获取音乐内容' });
+
+    const [memo] = await planner.plan('主动回忆【获取当前歌曲的歌词】');
+    assert.equal(memo.name, 'LightMemo');
+    assert.equal(memo.args.query, '获取当前歌曲的歌词');
+
+    await assert.rejects(planner.plan('{日用工具} 播放'), /缺少主要内容/);
+    await assert.rejects(planner.plan('{日用工具} `SciCalculator` 获取音乐内容'), /缺少主要内容/);
+    await assert.rejects(planner.plan('{联网搜索} 获取音乐内容'), /缺少主要内容/);
+
+    const [explicitMemo] = await planner.plan('{日用工具} `LightMemo` 获取音乐内容【音乐知识】');
+    assert.equal(explicitMemo.name, 'LightMemo');
+});
+
+test('大量并发规划保持调用参数隔离且全部使用确定性模板', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const stageModes = ['流光', '云阶', '心象', '凝彩', '商籁', '镜台', '浮名', '星诞'];
+    const expressions = [];
+
+    for (let i = 0; i < 40; i++) {
+        expressions.push(`请使用 {联网搜索}，打开网页[https://example.com/page-${i}]并读取[文本]。`);
+        expressions.push(`请使用 {联网搜索}，打开网页[https://example.com/snapshot-${i}]并获取[截图]。`);
+        expressions.push(`请使用 {音乐播放}，播放【测试歌曲-${i}】，并启用[${stageModes[i % stageModes.length]}]演出模式。`);
+        expressions.push(`请使用 {联网搜索} 中的 'B站搜索'，在B站上[搜UP主]，查找【测试UP-${i}】。`);
+    }
+
+    const batches = await Promise.all(expressions.map(expression => planner.plan(expression)));
+    assert.equal(batches.length, 160);
+    assert.ok(batches.every(calls => calls.length === 1));
+
+    for (let i = 0; i < 40; i++) {
+        const offset = i * 4;
+        assert.deepEqual(batches[offset][0].args, {
+            mode: 'text',
+            url: `https://example.com/page-${i}`
+        });
+        assert.deepEqual(batches[offset + 1][0].args, {
+            mode: 'snapshot',
+            url: `https://example.com/snapshot-${i}`
+        });
+        assert.equal(batches[offset + 2][0].args.songname, `测试歌曲-${i}`);
+        assert.equal(batches[offset + 3][0].args.keyword, `测试UP-${i}`);
+        assert.equal(batches[offset + 3][0].args.search_type, 'bili_user');
+    }
+
+    assert.equal(decisions.length, 0);
+});
+
+test('日用工具动作词确定性路由到六类真实插件', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+
+    const [memo] = await planner.plan(
+        '请使用 {日用工具} 主动回忆【关于上次A项目会议的讨论内容】，从[小吉的地缘政治]中返回[3条]。',
+        { maid: 'Nova' }
+    );
+    assert.equal(memo.name, 'LightMemo');
+    assert.deepEqual(memo.args, {
+        k: '3',
+        search_all_knowledge_bases: 'false',
+        query: '关于上次A项目会议的讨论内容',
+        folder: '小吉的地缘政治',
+        maid: 'Nova'
+    });
+
+    const [alarm] = await planner.plan(
+        '请使用 {日用工具}，在[1分钟后]设置闹钟，提醒我【检查烤箱里的点心】。'
+    );
+    assert.equal(alarm.name, 'VCPAlarm');
+    assert.deepEqual(alarm.args, {
+        time_description: '1分钟后',
+        reminder_text: '检查烤箱里的点心'
+    });
+
+    const [calculator] = await planner.plan(
+        "请使用 {日用工具} 计算【integral('sin(x)', 0, pi)】。"
+    );
+    assert.equal(calculator.name, 'SciCalculator');
+    assert.deepEqual(calculator.args, {
+        expression: "integral('sin(x)', 0, pi)"
+    });
+
+    const [assistant] = await planner.plan(
+        '请使用 {日用工具} 联络[小娜]，告诉她【我是Nova，我想请你检查这份方案】，并使用[临时通讯][异步委托][上下文:last:3]。'
+    );
+    assert.equal(assistant.name, 'AgentAssistant');
+    assert.deepEqual(assistant.args, {
+        agent_name: '小娜',
+        prompt: '我是Nova，我想请你检查这份方案',
+        temporary_contact: 'true',
+        task_delegation: 'true',
+        river: 'last:3'
+    });
+
+    const [sleep] = await planner.plan(
+        '请使用 {日用工具} 睡眠[10分钟]，醒来后提醒【重新检查异步任务状态】。'
+    );
+    assert.equal(sleep.name, 'VCPSleep');
+    assert.deepEqual(sleep.args, {
+        sleeptime: '10分钟',
+        tips: '重新检查异步任务状态'
+    });
+
+    const [music] = await planner.plan(
+        '请使用 {日用工具}，播放【星の余韻】，并启用[星诞]演出模式。'
+    );
+    assert.equal(music.name, 'MusicController');
+    assert.equal(music.args.stageMode, 'starborn');
+
+    assert.equal(decisions.length, 0);
+});
+
+test('LightMemo 支持全知识库、默认数量和显式索引前缀', async () => {
+    const { planner } = makePlanner();
+    const [call] = await planner.plan(
+        '请使用 {日用工具} 检索记忆【美国军事动向】，限定[索引:地缘政治]并搜索[所有知识库]。'
+    );
+
+    assert.equal(call.name, 'LightMemo');
+    assert.equal(call.args.query, '美国军事动向');
+    assert.equal(call.args.folder, '地缘政治');
+    assert.equal(call.args.k, '5');
+    assert.equal(call.args.search_all_knowledge_bases, 'true');
+});
+
+test('LightMemo 将独立日期约束拼回 query，并保留多文件夹索引', async () => {
+    const { planner } = makePlanner();
+    const [rangeCall] = await planner.plan(
+        '主动回忆【美国军事动向】，检索[2025-04-11~2025-05-12]期间的[小吉的地缘政治|小吉的知识]并返回[3条]。'
+    );
+
+    assert.equal(rangeCall.name, 'LightMemo');
+    assert.deepEqual(rangeCall.args, {
+        k: '3',
+        search_all_knowledge_bases: 'false',
+        query: '[2025-04-11~2025-05-12] 美国军事动向',
+        folder: '小吉的地缘政治|小吉的知识'
+    });
+
+    const [singleDateCall] = await planner.plan(
+        '请使用 {日用工具} 检索记忆【美国军事动向】，限定[2026-02-14][索引:地缘政治]。'
+    );
+    assert.equal(singleDateCall.args.query, '[2026-02-14] 美国军事动向');
+    assert.equal(singleDateCall.args.folder, '地缘政治');
+});
+
+test('LightMemo 将独立音乐检索标记拼回 query，并优先于播放器路由', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const [call] = await planner.plan(
+        '[音乐检索]【煮咖啡时适合听的歌】'
+    );
+
+    assert.equal(call.name, 'LightMemo');
+    assert.deepEqual(call.args, {
+        k: '5',
+        search_all_knowledge_bases: 'false',
+        query: '[音乐检索] 煮咖啡时适合听的歌'
+    });
+    assert.equal(decisions.length, 0);
+});
+
+test('AgentAssistant 支持未来通讯时间和委托查询字段', async () => {
+    const { planner } = makePlanner();
+    const [scheduled] = await planner.plan(
+        '请使用 {日用工具} 联络[小克]，发送【我是Nova，请在约定时间检查任务】，安排在[2026-10-01-14:00]。'
+    );
+    assert.equal(scheduled.name, 'AgentAssistant');
+    assert.equal(scheduled.args.agent_name, '小克');
+    assert.equal(scheduled.args.timely_contact, '2026-10-01-14:00');
+
+    const [query] = await planner.plan(
+        '请使用 {日用工具} 联络[小克]，查询【异步任务进度】，并使用[查询委托 delegation-abc_123]。'
+    );
+    assert.equal(query.args.query_delegation, 'delegation-abc_123');
+});
+
+test('大量并发日用工具规划无参数串扰且不调用 Jev', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const expressions = [];
+
+    for (let i = 0; i < 50; i++) {
+        expressions.push(`请使用 {日用工具} 主动回忆【项目记忆-${i}】，从[索引-${i}]中返回[${(i % 5) + 1}条]。`);
+        expressions.push(`请使用 {日用工具}，在[${i + 1}分钟后]设置闹钟，提醒我【提醒-${i}】。`);
+        expressions.push(`请使用 {日用工具} 计算【sqrt(${i + 1})】。`);
+        expressions.push(`请使用 {日用工具} 联络[Agent-${i}]，告诉她【我是测试Agent，请处理任务-${i}】，并使用[临时通讯]。`);
+        expressions.push(`请使用 {日用工具} 睡眠[${i + 1}分钟]，醒来后提醒【继续任务-${i}】。`);
+        expressions.push(`请使用 {日用工具}，播放【歌曲-${i}】，并启用[星诞]演出模式。`);
+    }
+
+    const batches = await Promise.all(expressions.map(expression => planner.plan(expression)));
+    assert.equal(batches.length, 300);
+
+    for (let i = 0; i < 50; i++) {
+        const offset = i * 6;
+        assert.equal(batches[offset][0].args.query, `项目记忆-${i}`);
+        assert.equal(batches[offset][0].args.folder, `索引-${i}`);
+        assert.equal(batches[offset + 1][0].args.reminder_text, `提醒-${i}`);
+        assert.equal(batches[offset + 2][0].args.expression, `sqrt(${i + 1})`);
+        assert.equal(batches[offset + 3][0].args.agent_name, `Agent-${i}`);
+        assert.equal(batches[offset + 4][0].args.tips, `继续任务-${i}`);
+        assert.equal(batches[offset + 5][0].args.songname, `歌曲-${i}`);
+    }
+
+    assert.equal(decisions.length, 0);
+});
+
+test('高置信度日用动作可以省略显式能力目录', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+    const cases = [
+        ["请计算【sqrt(81)】。", 'SciCalculator'],
+        ["请联络[小娜]，告诉她【我是Nova，请检查方案】。", 'AgentAssistant'],
+        ["请播放【星の余韻】，并启用[星诞]演出模式。", 'MusicController'],
+        ["请在[5分钟后]设置闹钟，提醒我【关掉烤箱】。", 'VCPAlarm'],
+        ["请睡眠[10分钟]，醒来后提醒【继续任务】。", 'VCPSleep'],
+        ["请主动回忆【上次项目会议】。", 'LightMemo']
+    ];
+
+    for (const [expression, plugin] of cases) {
+        const [call] = await planner.plan(expression);
+        assert.equal(call.name, plugin, expression);
+        assert.equal(call.jev.category, 'daily_tools');
+    }
+    assert.equal(decisions.length, 0);
+});
+
+test('打开动作与 [URL] 组合可省略联网目录并自动选择 UrlFetch', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+
+    const [textCall] = await planner.plan('打开[https://example.com]。');
+    assert.equal(textCall.name, 'UrlFetch');
+    assert.deepEqual(textCall.args, {
+        mode: 'text',
+        url: 'https://example.com'
+    });
+
+    const [snapshotCall] = await planner.plan('截图[https://example.com/page]。');
+    assert.equal(snapshotCall.name, 'UrlFetch');
+    assert.equal(snapshotCall.args.mode, 'snapshot');
+
+    const [imageCall] = await planner.plan('看图[https://example.com/cat.png]。');
+    assert.equal(imageCall.name, 'UrlFetch');
+    assert.equal(imageCall.args.mode, 'image');
+
+    const [fileCall] = await planner.plan('读取[file:///C:/docs/example.html]。');
+    assert.equal(fileCall.name, 'UrlFetch');
+    assert.equal(fileCall.args.mode, 'text');
+    assert.equal(fileCall.args.url, 'file:///C:/docs/example.html');
+
+    assert.equal(decisions.length, 0);
+});
+
+test('隐式能力推断保持保守，弱信号和不完整组合必须拒绝', async () => {
+    const { planner } = makePlanner();
+
+    await assert.rejects(
+        planner.plan('[https://example.com]'),
+        /缺少能力目录/
+    );
+    await assert.rejects(
+        planner.plan('请打开这个东西【某个对象】'),
+        /缺少能力目录/
+    );
+    await assert.rejects(
+        planner.plan('我今天想听听你的看法【最近怎么样】'),
+        /缺少能力目录/
+    );
+    await assert.rejects(
+        planner.plan('请搜索【美国土豆价格】'),
+        /缺少能力目录/
+    );
+    await assert.rejects(
+        planner.plan('请生成【一只猫】'),
+        /缺少能力目录/
+    );
+});
+
+test('ToolCallParser 提取参数时保留首行缩进与多行代码缩进', () => {
+    const rawCall = `
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileEditor「末」
+content:「始」
+    def hello_world():
+        print("Hello")
+「末」
+inline_code:「始」  const a = 1;「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+
+    const [call] = ToolCallParser.parse(rawCall);
+    assert.equal(call.name, 'FileEditor');
+    // 首行前导4空格必须被完整保留，末尾单独的换行被清理
+    assert.equal(call.args.content, '    def hello_world():\n        print("Hello")');
+    // 单行参数的前导2空格也必须完整保留
+    assert.equal(call.args.inline_code, '  const a = 1;');
+});
+test('ToolCallParser 消解 JEV 虚拟工具与实体插件参数歧义，支持顺序无关双轨解析', () => {
+    // 场景 1：实体工具显式声明 tool_name 且携带 jev 参数（正序）
+    const lightMemoCall1 = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+tool_name:「始」LightMemo「末」
+query:「始」双调和超曲面「末」
+jev:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call1] = ToolCallParser.parse(lightMemoCall1);
+    assert.equal(call1.name, 'LightMemo');
+    assert.equal(call1.args.maid, '星阑');
+    assert.equal(call1.args.query, '双调和超曲面');
+    assert.equal(call1.args.jev, 'true');
+    assert.equal(call1.args.expression, undefined);
+
+    // 场景 2：字段倒序（jev 声明在 tool_name 之前）
+    const lightMemoCall2 = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+jev:「始」rrf0.7「末」
+tool_name:「始」LightMemo「末」
+query:「始」空间形式 刚性谱系「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call2] = ToolCallParser.parse(lightMemoCall2);
+    assert.equal(call2.name, 'LightMemo');
+    assert.equal(call2.args.maid, '星阑');
+    assert.equal(call2.args.query, '空间形式 刚性谱系');
+    assert.equal(call2.args.jev, 'rrf0.7');
+    assert.equal(call2.args.expression, undefined);
+
+    // 场景 3：纯 JEV 顶层虚拟调用
+    const jevVirtualCall = `
+<<<[TOOL_REQUEST]>>>
+maid:「始」星阑「末」
+JEV:「始」{联网搜索} 【2026年最新数学进展】「末」
+<<<[END_TOOL_REQUEST]>>>
+    `;
+    const [call3] = ToolCallParser.parse(jevVirtualCall);
+    assert.equal(call3.name, 'JEV');
+    assert.equal(call3.args.maid, '星阑');
+    assert.equal(call3.args.expression, '{联网搜索} 【2026年最新数学进展】');
+});
+
+test('意图剥离与意图保护：主要内容与约束槽位中的动作词、目录、URL与嵌套括号绝不反向劫持主意图', async () => {
+    const { planner, decisions } = makePlanner({ configured: true });
+
+    // 1. 真实故障复现：主动回忆负载中包含“预计算”，绝不可误触发 SciCalculator
+    const [xiaokeCall] = await planner.plan(
+        '主动回忆【RiverMoonShadow 寻址推理 预计算树形图权重 池月】，搜索[所有知识库]并返回[5条]。',
+        { maid: '小克', markHistory: true, args: { maid: '小克' } }
+    );
+    assert.equal(xiaokeCall.name, 'LightMemo');
+    assert.deepEqual(xiaokeCall.args, {
+        k: '5',
+        search_all_knowledge_bases: 'true',
+        query: 'RiverMoonShadow 寻址推理 预计算树形图权重 池月',
+        maid: '小克'
+    });
+    assert.equal(xiaokeCall.markHistory, true);
+
+    // 2. 负载内嵌 {目录}、[约束]、[URL]、引号工具名与嵌套【】字面量完全冻结为纯数据
+    const [nestedMemo] = await planner.plan(
+        '主动回忆【POM 先天命石【天界箭袋】及 {联网搜索} `SciCalculator` [https://evil.example/image] 计算联络闹钟睡眠】，从[科学计算与睡眠研究]中返回[3条]。'
+    );
+    assert.equal(nestedMemo.name, 'LightMemo');
+    assert.equal(
+        nestedMemo.args.query,
+        'POM 先天命石【天界箭袋】及 {联网搜索} `SciCalculator` [https://evil.example/image] 计算联络闹钟睡眠'
+    );
+    assert.equal(nestedMemo.args.folder, '科学计算与睡眠研究');
+    assert.equal(nestedMemo.args.k, '3');
+
+    // 3. 闹钟提醒内容含“联络”，不应被排在前面的 AgentAssistant 抢走并误绑目标名
+    const [alarmCall] = await planner.plan(
+        '请在[5分钟后]设置闹钟，提醒我【联络小克并计算本月算力预算】。'
+    );
+    assert.equal(alarmCall.name, 'VCPAlarm');
+    assert.deepEqual(alarmCall.args, {
+        time_description: '5分钟后',
+        reminder_text: '联络小克并计算本月算力预算'
+    });
+
+    // 4. 睡眠主动作后接“醒来后提醒我”，受先导主意图保护，不应被误判为闹钟
+    const [sleepCall] = await planner.plan(
+        '请睡眠[10分钟]，醒来后提醒我【重新检查异步任务并联络小娜】。'
+    );
+    assert.equal(sleepCall.name, 'VCPSleep');
+    assert.deepEqual(sleepCall.args, {
+        sleeptime: '10分钟',
+        tips: '重新检查异步任务并联络小娜'
+    });
+
+    // 5. 女仆通讯目标名与正文均含其他动作关键词
+    const [contactCall] = await planner.plan(
+        '联络[计算姬]，告诉她【5分钟后提醒我播放歌词并主动回忆昨天日志】。'
+    );
+    assert.equal(contactCall.name, 'AgentAssistant');
+    assert.deepEqual(contactCall.args, {
+        agent_name: '计算姬',
+        prompt: '5分钟后提醒我播放歌词并主动回忆昨天日志'
+    });
+
+    // 6. UrlFetch 的 URL 路径自身含 image / snapshot / google 子串时，不污染 mode 与工具选择
+    const [urlCall] = await planner.plan(
+        '请使用 {联网搜索}，打开网页[https://www.google.com/images/snapshot-2026.html]。'
+    );
+    assert.equal(urlCall.name, 'UrlFetch');
+    assert.deepEqual(urlCall.args, {
+        mode: 'text',
+        url: 'https://www.google.com/images/snapshot-2026.html'
+    });
+
+    // 7. B站视频负载含嵌套【】与“不要字幕”字面量时，不影响默认完整拉取契约
+    const [biliCall] = await planner.plan(
+        '请使用 {联网搜索} 中的 `B站获取`，获取视频【BV1mEnb6LEnC】与说明【【官方MV】不要字幕、评论和弹幕】的内容。'
+    );
+    assert.equal(biliCall.name, 'BilibiliFetch');
+    assert.equal(biliCall.args.need_subs, 'true');
+    assert.equal(biliCall.args.comment_num, '20');
+    assert.equal(biliCall.args.danmaku_num, '20');
+
+    // 8. 目录别名自带具体工具意图（如 {音乐播放} 省略动词“播放”）
+    const [musicAliasCall] = await planner.plan(
+        '{音乐播放} 【计算器与闹钟协奏曲】[星诞]'
+    );
+    assert.equal(musicAliasCall.name, 'MusicController');
+    assert.deepEqual(musicAliasCall.args, {
+        command: 'playSong',
+        songname: '计算器与闹钟协奏曲',
+        stageMode: 'starborn'
+    });
+
+    assert.equal(decisions.length, 0);
+});

@@ -2,8 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const glob = require('glob');
-const { minimatch } = require('minimatch');
-const pdf = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 const axios = require('axios');
@@ -28,6 +27,14 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const ENABLE_RECURSIVE_OPERATIONS = process.env.ENABLE_RECURSIVE_OPERATIONS !== 'false';
 const ENABLE_HIDDEN_FILES = process.env.ENABLE_HIDDEN_FILES === 'true';
 
+// WebReadFile/DownloadFile default file storage directory
+// Priority: WEB_FILE_DIR > DEFAULT_DOWNLOAD_DIR > VCPToolBox/file/
+const WEB_FILE_DIR = process.env.WEB_FILE_DIR
+  ? path.resolve(process.env.WEB_FILE_DIR)
+  : (process.env.DEFAULT_DOWNLOAD_DIR
+    ? path.resolve(process.env.DEFAULT_DOWNLOAD_DIR)
+    : path.join(__dirname, '..', '..', 'file'));
+
 // Utility functions
 function debugLog(message, data = null) {
   if (DEBUG_MODE) {
@@ -35,6 +42,43 @@ function debugLog(message, data = null) {
     console.error(`[DEBUG ${timestamp}] ${message}`);
     if (data) console.error(JSON.stringify(data, null, 2));
   }
+}
+
+/**
+ * Get a parameter value with AI-friendly fallbacks.
+ * Searches candidate names in order, then falls back to case-insensitive matching.
+ */
+function getParameterValue(parameters, ...candidateNames) {
+  if (!parameters || typeof parameters !== 'object') {
+    return undefined;
+  }
+
+  for (const name of candidateNames) {
+    if (Object.prototype.hasOwnProperty.call(parameters, name) && parameters[name] !== undefined) {
+      return parameters[name];
+    }
+  }
+
+  const normalizedCandidateNames = candidateNames.map(name => String(name).toLowerCase());
+  for (const [key, value] of Object.entries(parameters)) {
+    if (value !== undefined && normalizedCandidateNames.includes(key.toLowerCase())) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function getPathParameter(parameters, ...legacyNames) {
+  return getParameterValue(parameters, 'path', 'filePath', 'directoryPath', 'searchPath', ...legacyNames);
+}
+
+function getSourcePathParameter(parameters) {
+  return getParameterValue(parameters, 'source', 'sourcePath');
+}
+
+function getDestinationPathParameter(parameters) {
+  return getParameterValue(parameters, 'destination', 'destinationPath');
 }
 
 function isPathAllowed(targetPath, operationType = 'generic') {
@@ -83,82 +127,82 @@ function formatFileSize(bytes) {
  * @returns {Object} Object containing normalization and restoration methods
  */
 function createLineEndingHelper(content) {
-    const crlfCount = (content.match(/\r\n/g) || []).length;
+  const crlfCount = (content.match(/\r\n/g) || []).length;
 
-    // Improved LF counting: [^\r]\n handles most cases, plus check file start
-    let lfCount = (content.match(/[^\r]\n/g) || []).length;
-    if (content.startsWith('\n')) {
-        lfCount += 1;
-    }
+  // Improved LF counting: [^\r]\n handles most cases, plus check file start
+  let lfCount = (content.match(/[^\r]\n/g) || []).length;
+  if (content.startsWith('\n')) {
+    lfCount += 1;
+  }
 
-    const crCount = (content.match(/\r(?!\n)/g) || []).length;
+  const crCount = (content.match(/\r(?!\n)/g) || []).length;
 
-    let lineEnding = '\n';
-    if (crlfCount > lfCount && crlfCount > crCount) {
-        lineEnding = '\r\n';
-    } else if (crCount > lfCount && crCount > crlfCount) {
-        lineEnding = '\r';
-    }
+  let lineEnding = '\n';
+  if (crlfCount > lfCount && crlfCount > crCount) {
+    lineEnding = '\r\n';
+  } else if (crCount > lfCount && crCount > crlfCount) {
+    lineEnding = '\r';
+  }
 
-    const hasCRLF = crlfCount > 0;
+  const hasCRLF = crlfCount > 0;
 
-    if (DEBUG_MODE) {
-        console.error(`[CRLF Detect] CRLF=${crlfCount}, LF=${lfCount}, CR=${crCount}, using=${JSON.stringify(lineEnding)}`);
-    }
+  if (DEBUG_MODE) {
+    console.error(`[CRLF Detect] CRLF=${crlfCount}, LF=${lfCount}, CR=${crCount}, using=${JSON.stringify(lineEnding)}`);
+  }
 
-    return {
-        normalize: (str) => str.replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+  return {
+    normalize: (str) => str.replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
 
-        denormalize: (str) => {
-            if (lineEnding === '\r\n') {
-                return str.replace(/\n/g, '\r\n');
-            } else if (lineEnding === '\r') {
-                return str.replace(/\n/g, '\r');
-            }
-            return str;
-        },
+    denormalize: (str) => {
+      if (lineEnding === '\r\n') {
+        return str.replace(/\n/g, '\r\n');
+      } else if (lineEnding === '\r') {
+        return str.replace(/\n/g, '\r');
+      }
+      return str;
+    },
 
-        includes: (cnt, search) => {
-            const normContent = cnt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            const normSearch = search.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            return normContent.includes(normSearch);
-        },
+    includes: (cnt, search) => {
+      const normContent = cnt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const normSearch = search.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      return normContent.includes(normSearch);
+    },
 
-        safeReplace: (originalContent, searchStr, replaceStr) => {
-            const normContent = originalContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            const normSearch = searchStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            const normReplace = replaceStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    safeReplace: (originalContent, searchStr, replaceStr) => {
+      const normContent = originalContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const normSearch = searchStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const normReplace = replaceStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-            if (!normContent.includes(normSearch)) {
-                return {
-                    success: false,
-                    error: 'Search string not found after CRLF normalization'
-                };
-            }
+      if (!normContent.includes(normSearch)) {
+        return {
+          success: false,
+          error: 'Search string not found after CRLF normalization'
+        };
+      }
 
-            const normResult = normContent.replace(normSearch, normReplace);
+      const normResult = normContent.replace(normSearch, normReplace);
 
-            let result = normResult;
-            if (lineEnding === '\r\n') {
-                result = normResult.replace(/\n/g, '\r\n');
-            } else if (lineEnding === '\r') {
-                result = normResult.replace(/\n/g, '\r');
-            }
+      let result = normResult;
+      if (lineEnding === '\r\n') {
+        result = normResult.replace(/\n/g, '\r\n');
+      } else if (lineEnding === '\r') {
+        result = normResult.replace(/\n/g, '\r');
+      }
 
-            return { success: true, result };
-        },
+      return { success: true, result };
+    },
 
-        getDebugInfo: () => ({
-            crlfCount,
-            lfCount,
-            crCount,
-            chosen: lineEnding === '\r\n' ? 'CRLF' : (lineEnding === '\r' ? 'CR' : 'LF'),
-            totalSize: content.length
-        }),
+    getDebugInfo: () => ({
+      crlfCount,
+      lfCount,
+      crCount,
+      chosen: lineEnding === '\r\n' ? 'CRLF' : (lineEnding === '\r' ? 'CR' : 'LF'),
+      totalSize: content.length
+    }),
 
-        hasCRLF,
-        lineEnding: JSON.stringify(lineEnding)
-    };
+    hasCRLF,
+    lineEnding: JSON.stringify(lineEnding)
+  };
 }
 
 function getUniqueFilePath(filePath) {
@@ -180,6 +224,36 @@ function getUniqueFilePath(filePath) {
     }
     counter++;
   }
+}
+
+/**
+ * Detect file encoding from raw buffer.
+ * Progressive: BOM detection (zero-dep) → chardet (if installed) → fallback utf-8.
+ */
+function detectEncoding(buffer) {
+  // 1. BOM detection (zero dependency)
+  if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+    return { encoding: 'utf-8', bom: true, confidence: 'bom' };
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xFE) {
+    return { encoding: 'utf-16le', bom: true, confidence: 'bom' };
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xFE && buffer[1] === 0xFF) {
+    return { encoding: 'utf-16be', bom: true, confidence: 'bom' };
+  }
+
+  // 2. Try chardet if available (progressive upgrade)
+  try {
+    const chardet = require('chardet');
+    const sample = buffer.slice(0, 4096);
+    const detected = chardet.detect(sample);
+    return { encoding: detected || 'utf-8', bom: false, confidence: 'chardet' };
+  } catch (_e) {
+    // chardet not installed — fallback
+  }
+
+  // 3. Fallback: assume utf-8
+  return { encoding: 'utf-8', bom: false, confidence: 'fallback' };
 }
 
 function applyDiffLogic(originalContent, diffContent) {
@@ -231,15 +305,11 @@ function resolveAndNormalizePath(inputPath) {
     return path.resolve(originalPath);
   }
 
-  // 2. 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
-  const resolvedInput = path.resolve(originalPath);
-  const fileOperatorRoot = path.resolve(__dirname);
-
-  // 使用 startsWith 检查是否已经是 FileOperator 下的绝对路径
-  // 注意：Windows 下路径大小写不敏感，但这里主要是解决 Linux/Mac 的双写问题
-  if (resolvedInput.toLowerCase().startsWith(fileOperatorRoot.toLowerCase())) {
-    return resolvedInput;
-  }
+  // 2. BASE_PATH: configurable project root for bare relative paths.
+  // Falls back to two levels up from this plugin's directory.
+  const BASE_PATH = process.env.BASE_PATH
+    ? path.resolve(process.env.BASE_PATH)
+    : path.resolve(__dirname, '..', '..');
 
   // 3. 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
   // 在 Windows 上，/foo 不是绝对路径，所以会进入此逻辑
@@ -264,13 +334,113 @@ function resolveAndNormalizePath(inputPath) {
   const startsWithDotDot = normalized.startsWith(`..${path.sep}`);
 
   if (!startsWithDot && !startsWithDotDot) {
-    // Path is like 'foo/bar', so treat it as relative to the project root.
-    // The project root is two levels up from this script's directory.
-    return path.resolve(__dirname, '..', '..', normalized);
+    // Treat plain relative paths like "foo/bar" as BASE_PATH relative.
+    return path.resolve(BASE_PATH, normalized);
   } else {
     // Path is like './foo' or '../foo', so it's explicitly relative to this script's directory.
     return path.resolve(__dirname, normalized);
   }
+}
+
+function parseLineSelection(lines) {
+  if (lines === undefined || lines === null || lines === '') {
+    return null;
+  }
+
+  if (typeof lines === 'number') {
+    if (!Number.isInteger(lines) || lines <= 0) {
+      throw new Error('Invalid lines parameter: numeric value must be a positive integer line number.');
+    }
+    return { mode: 'range', start: lines, end: lines, raw: String(lines) };
+  }
+
+  const raw = String(lines).trim();
+  if (!raw) {
+    return null;
+  }
+
+  const positiveIntPattern = '[1-9]\\d*';
+  const headMatch = raw.match(new RegExp(`^head\\s*[:=]\\s*(${positiveIntPattern})$`, 'i'));
+  if (headMatch) {
+    return { mode: 'head', count: Number(headMatch[1]), raw };
+  }
+
+  const tailMatch = raw.match(new RegExp(`^tail\\s*[:=]\\s*(${positiveIntPattern})$`, 'i'));
+  if (tailMatch) {
+    return { mode: 'tail', count: Number(tailMatch[1]), raw };
+  }
+
+  const rangeMatch = raw.match(new RegExp(`^(${positiveIntPattern})\\s*[-:]\\s*(${positiveIntPattern})$`));
+  if (rangeMatch) {
+    const start = Number(rangeMatch[1]);
+    const end = Number(rangeMatch[2]);
+    if (start > end) {
+      throw new Error(`Invalid lines parameter: range start (${start}) cannot be greater than end (${end}).`);
+    }
+    return { mode: 'range', start, end, raw };
+  }
+
+  const singleLineMatch = raw.match(new RegExp(`^(${positiveIntPattern})$`));
+  if (singleLineMatch) {
+    const line = Number(singleLineMatch[1]);
+    return { mode: 'range', start: line, end: line, raw };
+  }
+
+  throw new Error('Invalid lines parameter. Supported syntax: "head:N", "tail:N", "M-N", "M:N", or "N".');
+}
+
+function applyLineSelection(content, selection) {
+  if (!selection) {
+    return { content, metadata: null };
+  }
+
+  const lineEndingMatch = content.match(/\r\n|\n|\r/);
+  const lineEnding = lineEndingMatch ? lineEndingMatch[0] : '\n';
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const allLines = normalized.split('\n');
+  const totalLines = allLines.length;
+
+  let startLine;
+  let endLine;
+
+  if (selection.mode === 'head') {
+    startLine = 1;
+    endLine = Math.min(selection.count, totalLines);
+  } else if (selection.mode === 'tail') {
+    startLine = Math.max(totalLines - selection.count + 1, 1);
+    endLine = totalLines;
+  } else {
+    startLine = Math.min(selection.start, totalLines);
+    endLine = Math.min(selection.end, totalLines);
+    if (selection.start > totalLines) {
+      return {
+        content: '',
+        metadata: {
+          requested: selection.raw,
+          startLine: selection.start,
+          endLine: selection.end,
+          actualStartLine: null,
+          actualEndLine: null,
+          totalLines,
+          selectedLines: 0
+        }
+      };
+    }
+  }
+
+  const selectedLines = allLines.slice(startLine - 1, endLine);
+  return {
+    content: selectedLines.join(lineEnding),
+    metadata: {
+      requested: selection.raw,
+      startLine,
+      endLine,
+      actualStartLine: startLine,
+      actualEndLine: endLine,
+      totalLines,
+      selectedLines: selectedLines.length
+    }
+  };
 }
 
 // Helper function to run validation and attach results
@@ -291,9 +461,9 @@ async function runValidationAndAttachResults(result, filePath, fileContent) {
 }
 
 // File operation functions
-async function webReadFile(fileUrl) {
+async function webReadFile(fileUrl, options = {}) {
   try {
-    const fileDir = path.join(__dirname, '..', '..', '..', 'AppData', 'file');
+    const fileDir = WEB_FILE_DIR;
     await fs.mkdir(fileDir, { recursive: true }); // Ensure directory exists
 
     // Extract filename from URL, handling potential query strings
@@ -318,7 +488,7 @@ async function webReadFile(fileUrl) {
     });
 
     debugLog('File downloaded successfully. Reading local file.', { localFilePath });
-    const result = await readFile(localFilePath);
+    const result = await readFile(localFilePath, options.encoding, options.lines);
 
     if (result.success) {
       result.data.localPath = localFilePath;
@@ -340,10 +510,11 @@ async function webReadFile(fileUrl) {
   }
 }
 
-async function readFile(filePath, encoding = 'utf8') {
+async function readFile(filePath, encoding = 'utf8', lines) {
   try {
     filePath = resolveAndNormalizePath(filePath);
-    debugLog('Reading file', { filePath, encoding });
+    const lineSelection = parseLineSelection(lines);
+    debugLog('Reading file', { filePath, encoding, lines });
 
     if (!isPathAllowed(filePath, 'ReadFile')) {
       throw new Error(`Access denied: Path '${filePath}' is not in allowed directories`);
@@ -368,9 +539,14 @@ async function readFile(filePath, encoding = 'utf8') {
     const videoExtensions = ['.mp4', '.webm', '.mov'];
 
     if (extension === '.pdf') {
-      const data = await pdf(fileBuffer);
-      content = data.text;
-      isExtracted = true;
+      const parser = new PDFParse({ data: fileBuffer });
+      try {
+        const data = await parser.getText();
+        content = data.text;
+        isExtracted = true;
+      } finally {
+        await parser.destroy();
+      }
     } else if (extension === '.docx') {
       const { value } = await mammoth.extractRawText({ buffer: fileBuffer });
       content = value;
@@ -410,16 +586,39 @@ async function readFile(filePath, encoding = 'utf8') {
       content = fileBuffer.toString(encoding);
     }
 
+    let lineSelectionMetadata = null;
+    const isDataUriContent = typeof content === 'string' && content.startsWith('data:');
+    if (lineSelection && typeof content === 'string' && !isDataUriContent) {
+      const lineSelectionResult = applyLineSelection(content, lineSelection);
+      content = lineSelectionResult.content;
+      lineSelectionMetadata = lineSelectionResult.metadata;
+    } else if (lineSelection && isDataUriContent) {
+      lineSelectionMetadata = {
+        requested: lineSelection.raw,
+        skipped: true,
+        reason: 'Line selection is only supported for text content.'
+      };
+    }
+
+    // Detect encoding for text files (non-extracted, non-binary)
+    const isDataUriCheck = typeof content === 'string' && content.startsWith('data:');
+    const encodingInfo = (!isExtracted && !isDataUriCheck) ? detectEncoding(fileBuffer) : null;
+
     const returnData = {
       size: stats.size,
       sizeFormatted: formatFileSize(stats.size),
       lastModified: stats.mtime.toISOString(),
       encoding: isExtracted ? 'utf8' : encoding,
       isExtracted: isExtracted,
-      fileName: path.basename(filePath)
+      fileName: path.basename(filePath),
+      lines: lineSelectionMetadata,
+      detectedEncoding: encodingInfo
     };
 
-    const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。`;
+    const lineInfoText = lineSelectionMetadata && !lineSelectionMetadata.skipped
+      ? ` 行范围: ${lineSelectionMetadata.selectedLines > 0 ? `${lineSelectionMetadata.actualStartLine}-${lineSelectionMetadata.actualEndLine}` : '空结果'}/${lineSelectionMetadata.totalLines}。`
+      : (lineSelectionMetadata && lineSelectionMetadata.skipped ? ` 行范围参数已忽略: ${lineSelectionMetadata.reason}` : '');
+    const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。${lineInfoText}`;
 
     if (isExtracted && content.startsWith('data:image')) {
       returnData.content = [
@@ -432,19 +631,11 @@ async function readFile(filePath, encoding = 'utf8') {
         { type: 'image_url', image_url: { url: content } }
       ];
     } else {
-      // For text-based files
-      let language = extension.slice(1).toLowerCase();
-      const codeLangs = {
-        'js': 'javascript', 'py': 'python', 'md': 'markdown', 'ts': 'typescript',
-        'html': 'html', 'css': 'css', 'json': 'json', 'sh': 'bash', 'yml': 'yaml', 'yaml': 'yaml'
-      };
-      language = codeLangs[language] || language;
-      if (isExtracted) language = '';
-
-      const backticks = content.includes('```') ? '````' : '```';
-
+      // For text-based files — return header and raw content as separate objects
+      // (no code block wrapping, to avoid interfering with ApplyDiff target matching)
       returnData.content = [
-        { type: 'text', text: `${headerText}\n${backticks}${language}\n${content}\n${backticks}` }
+        { type: 'text', text: headerText },
+        { type: 'text', text: content }
       ];
     }
 
@@ -552,7 +743,17 @@ async function appendFile(filePath, content, encoding = 'utf8') {
       throw new Error(`File would be too large after append: exceeds limit of ${formatFileSize(MAX_FILE_SIZE)}`);
     }
 
-    await fs.appendFile(filePath, content, encoding);
+    // Preserve original file's line ending style when appending
+    let finalContent = content;
+    try {
+      const existingContent = await fs.readFile(filePath, encoding);
+      const helper = createLineEndingHelper(existingContent);
+      finalContent = helper.denormalize(helper.normalize(content));
+    } catch (_e) {
+      // File doesn't exist yet, keep content as-is (LF from AI)
+    }
+
+    await fs.appendFile(filePath, finalContent, encoding);
     const stats = await fs.stat(filePath);
 
     let result = {
@@ -587,11 +788,14 @@ async function editFile(filePath, content, encoding = 'utf8') {
     }
 
     // Ensure the file exists before attempting to edit it.
+    let originalContent = null;
     try {
       const stats = await fs.stat(filePath);
       if (stats.isDirectory()) {
         throw new Error(`Path points to a directory, not a file. Cannot edit.`);
       }
+      // Read original content to detect line endings
+      originalContent = await fs.readFile(filePath, encoding);
     } catch (e) {
       if (e.code === 'ENOENT') {
         throw new Error(`File not found at '${filePath}'. Use WriteFile to create a new file.`);
@@ -603,7 +807,14 @@ async function editFile(filePath, content, encoding = 'utf8') {
       throw new Error(`Content too large: exceeds limit of ${formatFileSize(MAX_FILE_SIZE)}`);
     }
 
-    await fs.writeFile(filePath, content, encoding);
+    // Preserve original file's line ending style
+    let finalContent = content;
+    if (originalContent) {
+      const helper = createLineEndingHelper(originalContent);
+      finalContent = helper.denormalize(helper.normalize(content));
+    }
+
+    await fs.writeFile(filePath, finalContent, encoding);
     const stats = await fs.stat(filePath);
 
     let result = {
@@ -970,8 +1181,12 @@ async function searchFiles(searchPath, pattern, options = {}) {
       fileType = 'all', // 'file', 'directory', 'all'
     } = options;
 
-    const globPattern = path.join(searchPath, '**', pattern);
+    // Keep the literal search root out of the glob pattern (Windows separators
+    // and directory names containing [] must not be interpreted as syntax).
+    const globPattern = path.posix.join('**', pattern.replace(/\\/g, '/'));
     const globOptions = {
+      cwd: searchPath,
+      absolute: true,
       dot: includeHidden,
       nocase: !caseSensitive,
       maxDepth: ENABLE_RECURSIVE_OPERATIONS ? undefined : 1,
@@ -1058,7 +1273,7 @@ async function downloadFile(url, downloadDir, customFileName) {
     } else if (process.env.DEFAULT_DOWNLOAD_DIR) {
       baseDir = path.resolve(process.env.DEFAULT_DOWNLOAD_DIR);
     } else {
-      baseDir = path.join(__dirname, '..', '..', '..', 'AppData', 'file');
+      baseDir = WEB_FILE_DIR;
     }
 
     const destinationPath = path.join(baseDir, fileName);
@@ -1241,10 +1456,10 @@ async function createCanvas(fileName, content, encoding = 'utf8') {
   }
 }
 
-async function updateHistory(filePath, searchString, replaceString, encoding = 'utf8') {
+async function updateHistory(filePath, target, replace, encoding = 'utf8') {
   try {
     filePath = resolveAndNormalizePath(filePath);
-    debugLog('Updating history file', { filePath, searchString, replaceString });
+    debugLog('Updating history file', { filePath, target, replace });
 
     if (!isPathAllowed(filePath, 'UpdateHistory')) {
       throw new Error(`Access denied: Path '${filePath}' is not in allowed directories`);
@@ -1274,9 +1489,9 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
       const entry = history[i];
       if (entry.role === 'assistant' && typeof entry.content === 'string') {
         // [CRLF Fix] Use normalized comparison
-        if (helper.includes(entry.content, searchString)) {
+        if (helper.includes(entry.content, target)) {
           // [CRLF Fix] Use safe replacement
-          const replaceResult = helper.safeReplace(entry.content, searchString, replaceString);
+          const replaceResult = helper.safeReplace(entry.content, target, replace);
           if (replaceResult.success) {
             entry.content = replaceResult.result;
             updateApplied = true;
@@ -1288,7 +1503,7 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
     }
 
     if (!updateApplied) {
-      throw new Error(`Content to replace was not found in any assistant message. Search string: "${searchString}"`);
+      throw new Error(`Content to replace was not found in any assistant message. Target: "${target}"`);
     }
 
     // 4. Stringify the modified history and write it back
@@ -1314,13 +1529,23 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
   }
 }
 
+function getTargetReplaceParameters(parameters) {
+  return {
+    // 新字段优先；旧字段保留兼容，避免已有 Agent 提示词和批量调用迁移失败。
+    target: getParameterValue(parameters, 'target', 'searchString'),
+    replace: getParameterValue(parameters, 'replace', 'replaceString')
+  };
+}
+
 async function applyDiff(parameters) {
   try {
-    const { filePath, diffContent, searchString, replaceString, encoding = 'utf8' } = parameters;
+    const { diffContent, encoding = 'utf8' } = parameters;
+    const { target, replace } = getTargetReplaceParameters(parameters);
+    const filePath = getPathParameter(parameters, 'filePath');
 
     // [FIX] Resolve path and read raw content directly via fs.readFile(),
     // bypassing readFile()'s display formatting (code block wrapping)
-    // that was causing searchString match failures.
+    // that was causing target match failures.
     const resolvedPath = resolveAndNormalizePath(filePath);
 
     if (!isPathAllowed(resolvedPath, 'ApplyDiff')) {
@@ -1354,13 +1579,17 @@ async function applyDiff(parameters) {
 
       newContent = helper.denormalize(normResult);
 
-    } else if (searchString !== undefined && replaceString !== undefined) {
-      const replaceResult = helper.safeReplace(originalContent, searchString, replaceString);
+    } else if (target !== undefined && replace !== undefined) {
+      if (typeof target !== 'string' || typeof replace !== 'string') {
+        throw new Error('ApplyDiff "target" and "replace" parameters must be strings.');
+      }
+
+      const replaceResult = helper.safeReplace(originalContent, target, replace);
 
       if (!replaceResult.success) {
         throw new Error(
-          `Diff application failed: searchString not found after CRLF normalization. ` +
-          `Search: "${searchString.substring(0, 80)}..."`
+          `Diff application failed: target not found after CRLF normalization. ` +
+          `Target: "${target.substring(0, 80)}..."`
         );
       }
 
@@ -1371,7 +1600,10 @@ async function applyDiff(parameters) {
       });
 
     } else {
-      throw new Error('ApplyDiff requires either "diffContent" or both "searchString" and "replaceString" parameters.');
+      throw new Error(
+        'ApplyDiff requires either "diffContent" or both "target" and "replace" parameters. ' +
+        'Legacy "searchString"/"replaceString" parameters remain supported.'
+      );
     }
 
     const editResult = await editFile(filePath, newContent, encoding);
@@ -1420,8 +1652,10 @@ async function processBatchRequest(request) {
       switch (command) {
         case 'ReadFile':
         case 'WebReadFile':
-          const filePath = parameters.filePath || parameters.url;
-          result = command === 'ReadFile' ? await readFile(filePath) : await webReadFile(filePath);
+          const filePath = getPathParameter(parameters, 'filePath') || parameters.url;
+          result = command === 'ReadFile'
+            ? await readFile(filePath, parameters.encoding, parameters.lines)
+            : await webReadFile(filePath, { encoding: parameters.encoding, lines: parameters.lines });
           if (result.success) {
             // Add a text header for the file content
             aggregatedContent.push({ type: 'text', text: `--- Content of ${result.data.fileName || filePath} ---` });
@@ -1433,49 +1667,49 @@ async function processBatchRequest(request) {
           }
           break;
         case 'ListDirectory':
-          result = await listDirectory(parameters.directoryPath, parameters.showHidden);
+          result = await listDirectory(getPathParameter(parameters, 'directoryPath'), parameters.showHidden);
           if (result.success && result.data.content) {
             aggregatedContent.push({ type: 'text', text: `--- Directory listing of ${parameters.directoryPath} ---` });
             aggregatedContent.push(...result.data.content);
           }
           break;
         case 'FileInfo':
-          result = await getFileInfo(parameters.filePath);
+          result = await getFileInfo(getPathParameter(parameters, 'filePath'));
           if (result.success && result.data.content) {
             aggregatedContent.push({ type: 'text', text: `--- File info of ${parameters.filePath} ---` });
             aggregatedContent.push(...result.data.content);
           }
           break;
         case 'SearchFiles':
-          result = await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
+          result = await searchFiles(getPathParameter(parameters, 'searchPath'), parameters.pattern, parameters.options);
           if (result.success && result.data.content) {
             aggregatedContent.push({ type: 'text', text: `--- Search results for "${parameters.pattern}" in ${parameters.searchPath} ---` });
             aggregatedContent.push(...result.data.content);
           }
           break;
         case 'CopyFile':
-          result = await copyFile(parameters.sourcePath, parameters.destinationPath);
+          result = await copyFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
           break;
         case 'MoveFile':
-          result = await moveFile(parameters.sourcePath, parameters.destinationPath);
+          result = await moveFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
           break;
         case 'RenameFile':
-          result = await renameFile(parameters.sourcePath, parameters.destinationPath);
+          result = await renameFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
           break;
         case 'DeleteFile':
-          result = await deleteFile(parameters.filePath);
+          result = await deleteFile(getPathParameter(parameters, 'filePath'));
           break;
         case 'CreateDirectory':
-          result = await createDirectory(parameters.directoryPath);
+          result = await createDirectory(getPathParameter(parameters, 'directoryPath'));
           break;
         case 'WriteFile':
-          result = await writeFile(parameters.filePath, parameters.content, parameters.encoding);
+          result = await writeFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
           break;
         case 'AppendFile':
-          result = await appendFile(parameters.filePath, parameters.content, parameters.encoding);
+          result = await appendFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
           break;
         case 'EditFile':
-          result = await editFile(parameters.filePath, parameters.content, parameters.encoding);
+          result = await editFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
           break;
         case 'DownloadFile':
           result = await downloadFile(parameters.url, parameters.downloadDir, parameters.fileName);
@@ -1483,9 +1717,11 @@ async function processBatchRequest(request) {
         case 'CreateCanvas':
           result = await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
           break;
-        case 'UpdateHistory':
-          result = await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
+        case 'UpdateHistory': {
+          const { target, replace } = getTargetReplaceParameters(parameters);
+          result = await updateHistory(getPathParameter(parameters, 'filePath'), target, replace, parameters.encoding);
           break;
+        }
         case 'ApplyDiff':
           result = await applyDiff(parameters);
           break;
@@ -1562,39 +1798,41 @@ async function processRequest(request) {
     case 'ListAllowedDirectories':
       return await listAllowedDirectories();
     case 'ReadFile':
-      return await readFile(parameters.filePath, parameters.encoding);
+      return await readFile(getPathParameter(parameters, 'filePath'), parameters.encoding, parameters.lines);
     case 'WebReadFile':
-      return await webReadFile(parameters.url || parameters.filePath);
+      return await webReadFile(parameters.url || getPathParameter(parameters, 'filePath'), { encoding: parameters.encoding, lines: parameters.lines });
     case 'WriteFile':
-      return await writeFile(parameters.filePath, parameters.content, parameters.encoding);
+      return await writeFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
     case 'WriteEscapedFile':
-      return await writeEscapedFile(parameters.filePath, parameters.content, parameters.encoding);
+      return await writeEscapedFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
     case 'AppendFile':
-      return await appendFile(parameters.filePath, parameters.content, parameters.encoding);
+      return await appendFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
     case 'EditFile':
-      return await editFile(parameters.filePath, parameters.content, parameters.encoding);
+      return await editFile(getPathParameter(parameters, 'filePath'), parameters.content, parameters.encoding);
     case 'ListDirectory':
-      return await listDirectory(parameters.directoryPath, parameters.showHidden);
+      return await listDirectory(getPathParameter(parameters, 'directoryPath'), parameters.showHidden);
     case 'FileInfo':
-      return await getFileInfo(parameters.filePath);
+      return await getFileInfo(getPathParameter(parameters, 'filePath'));
     case 'CopyFile':
-      return await copyFile(parameters.sourcePath, parameters.destinationPath);
+      return await copyFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
     case 'MoveFile':
-      return await moveFile(parameters.sourcePath, parameters.destinationPath);
+      return await moveFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
     case 'RenameFile':
-      return await renameFile(parameters.sourcePath, parameters.destinationPath);
+      return await renameFile(getSourcePathParameter(parameters), getDestinationPathParameter(parameters));
     case 'DeleteFile':
-      return await deleteFile(parameters.filePath);
+      return await deleteFile(getPathParameter(parameters, 'filePath'));
     case 'CreateDirectory':
-      return await createDirectory(parameters.directoryPath);
+      return await createDirectory(getPathParameter(parameters, 'directoryPath'));
     case 'SearchFiles':
-      return await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
+      return await searchFiles(getPathParameter(parameters, 'searchPath'), parameters.pattern, parameters.options);
     case 'DownloadFile':
       return await downloadFile(parameters.url, parameters.downloadDir, parameters.fileName);
     case 'CreateCanvas':
       return await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
-    case 'UpdateHistory':
-      return await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
+    case 'UpdateHistory': {
+      const { target, replace } = getTargetReplaceParameters(parameters);
+      return await updateHistory(getPathParameter(parameters, 'filePath'), target, replace, parameters.encoding);
+    }
     case 'ApplyDiff':
       return await applyDiff(parameters);
     default:

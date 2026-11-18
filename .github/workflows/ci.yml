@@ -1,42 +1,126 @@
-name: Node.js CI & Docker Build
+name: CI & Docker Publish
 
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]  # 打 tag 时触发发布
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: '是否推送 Docker 镜像到 Docker Hub'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      platforms:
+        description: 'Docker 构建平台。日常验证建议 linux/amd64，正式发布用 linux/amd64,linux/arm64'
+        required: true
+        default: 'linux/amd64'
+        type: string
+
+# 高频提交场景下，只保留同一分支/PR 的最新一次 CI，避免排队浪费几小时。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build_and_test:
+  # ============================================================
+  # Job 1: Node.js 依赖安装验证
+  # ============================================================
+  validate:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [20.x] # 仅保留 Node 20, 移除 18.x
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Node.js ${{ matrix.node-version }}
+    - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: '22'
         cache: 'npm'
 
     - name: Install dependencies
       run: npm ci
 
-    - name: Set up QEMU
+  # ============================================================
+  # Job 2: Docker 构建 & 发布
+  # ============================================================
+  docker:
+    runs-on: ubuntu-latest
+    needs: validate
+    # Docker 多架构构建非常耗时：
+    # - tag(v*)：正式发布，构建并推送多架构镜像
+    # - workflow_dispatch：手动按需构建/推送
+    # - PR 且触及容器/原生依赖关键文件：只做 amd64 构建验证，不推送
+    # main 分支普通 push 不再自动构建 Docker，避免一天几十次全量编译。
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU (多架构支持)
       uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build Docker image
-      uses: docker/build-push-action@v5
+    # 仅在需要推送镜像时登录 Docker Hub
+    - name: Login to Docker Hub
+      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_image == 'true')
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # 自动生成镜像标签
+    # tag v1.0.0 → latest + 1.0.0 + 1.0 + 1
+    - name: Extract metadata (tags, labels)
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: lioensky/vcptoolbox
+        tags: |
+          # 语义化版本标签
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          # main 分支推送时打 latest
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Resolve Docker build settings
+      id: docker_settings
+      shell: bash
+      run: |
+        if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+        elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+          echo "platforms=${{ github.event.inputs.platforms }}" >> "$GITHUB_OUTPUT"
+          echo "push=${{ github.event.inputs.publish_image }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+          echo "push=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # 构建并推送：
+    # - tag：正式多架构发布
+    # - 手动 workflow_dispatch：按输入决定平台与是否推送
+    # - PR：仅 amd64 构建验证，不推送
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
       with:
         context: .
         file: ./Dockerfile
-        push: false # 在 PR 检查和 main 分支构建时不推送镜像
-        tags: lioensky/vcptoolbox:latest # 替换为您的 Docker Hub 用户名/组织名和镜像名
+        platforms: ${{ steps.docker_settings.outputs.platforms }}
+        push: ${{ steps.docker_settings.outputs.push == 'true' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

@@ -3,61 +3,43 @@
 
 [===vcp_fold:0.3===]
 
-## 1. 通义Qwen生图 (ZImageTurboGen)
-国产生图开源模型，性能不错，支持NSFW。每日有100点免费算力额度。
-tool_name:「始」ZImageTurboGen「末」,
-command:「始」GenerateImage「末」,
-prompt:「始」(必需) 用于图片生成的详细提示词，使用自然语言，支持中文或英文。支持文本生成和排版，详细描述生成的文本和样式即可。「末」,
-size:「始」(可选) 该模型总像素固定，只能输入比例例如1:1，4:3等等。「末」,
-negative_prompt:「始」(可选) 模糊, 低质量, 变形，某些不希望出现的物体「末」,
-num_inference_steps:「始」(可选)默认8「末」
+## 1. 统一生图/修图/多图合成
+以下生图工具已做字段兼容，AI无需记多套命令。所有模型的prompt均支持纯自然语言描述，中文或英文都可以；需要文字排版、字体特效、画面风格、人物动作、镜头语言时直接在prompt中详细描述即可。
 
-## 2. 莱恩家的点歌台 (MusicController)
+### 推荐优先使用
+- ZImageTurboGen：国产开源图像模型，支持文本生成、修图、多图合成，NSFW相对宽松。每日有100点免费算力额度。
+- DoubaoGen：国产强图像模型，字体/中文排版/海报类任务表现强，输出规格偏高。
+- NanoBananaGen2：顶级图像编辑AI，适合长描述、复杂修图、多图参考和角色一致性任务。
+- GPTImageGen：OpenAI超大参数图片编辑模型，适合通用生成与编辑，但昂贵而缓慢。
+
+### 统一调用格式
+tool_name:「始」ZImageTurboGen 或 DoubaoGen 或 NanoBananaGen2 或 GPTImageGen「末」,
+command:「始」generate / edit / compose「末」,
+prompt:「始」(必需) 用于生成、编辑或合成图片的自然语言描述，支持中文或英文。纯文本描述即可，不需要特殊格式。「末」,
+size:「始」(可选) 统一尺寸字段，也兼容resolution和image_size。可写1024x1024、1536x1024、2K、4K、adaptive等，具体可用值取决于所选模型。「末」,
+image:「始」(编辑/合成时必需) 单图URL/base64/data URI，或图片数组，例如["url1","url2"]。也兼容image_url、image_1、image_2、image_url_1、image_base64_1等字段。「末」,
+negative_prompt:「始」(可选) 不希望出现的内容，例如模糊、低质量、变形、错误文字等。只有Zimage支持该功能。「末」,
+showbase64:「始」(可选) 是否在返回结果中附带 base64 图片数据供直接查看，默认 false。可填 true 或 false。「末」
+
+### 使用规则
+- image可以直接写数组：image:「始」["url1","url2"]「末」
+- image也可以写编号字段分开传url：image_1、image_2。
+
+### 模型差异注意
+- ZImageTurboGen：文生图会自动贴近固定支持分辨率；输入比例/尺寸会被映射到最接近的可用规格。编辑/合成走异步任务，输入图片会先转base64再提交。
+- DoubaoGen：不适合生成低于2K的图片，建议size写2K、4K、2048x2048或adaptive。
+- NanoBananaGen2：image_size主要支持1K、2K、4K；长prompt和复杂修图适合优先使用。
+- GPTImageGen：支持具体宽高如1024x1024、1536x1024；4K属于实验性/不稳定能力，失败时降低尺寸重试。
+
+## 2. VCP点歌台 (MusicController)
 用于控制服务器音乐播放。
 tool_name:「始」MusicController「末」,
 command:「始」playSong「末」,
 songname:「始」星の余韻「末」 // 注意观察当前服务器音乐列表是否包含曲目，可用LightMemo检索。
 
-[===vcp_fold:0.5===]
+[===vcp_fold:0.6::desc:音频视频生成工具===]
 
-## 3. 豆包生图 (DoubaoGen)
-国产超强文生图工具，支持任意分辨率组合，对文字/字体高度可控。
-tool_name:「始」DoubaoGen「末」,
-command:「始」DoubaoGenerateImage「末」,
-prompt:「始」(必需) 用于图片生成的详细提示词，使用自然语言即可，支持细致的字体特效控制和排版。「末」,
-resolution:「始」(必需) 图片分辨率，建议输入2K或4K，也可以2048x2048此类格式。「末」
-
-### 豆包修图
-command:「始」DoubaoEditImage「末」,
-prompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,
-image:「始」(必需) 图片来源 (URL 或 file:///)。「末」,
-resolution:「始」(必需) 分辨率，总像素不能小于2k。「末」,
-guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
-
-### 豆包多图合成
-command:「始」DoubaoComposeImage「末」,
-prompt:「始」(必需) 用于指导图片融合或对话的详细提示词。「末」,
-image_1:「始」(必需) 第1张图片来源。「末」,
-image_2:「始」(可选) 第2张图片来源。「末」,
-resolution:「始」(必需) 分辨率，可设为“adaptive”。「末」
-
-## 4. 纳米香蕉 (NanoBananaGen2)
-顶级图像编辑AI，支持极长描述（3万字），支持中英文。
-tool_name:「始」NanoBananaGen2「末」,   
-### 生成图片
-command:「始」generate「末」,
-prompt:「始」(必需) 详细的任务描述。「末」
-### 编辑图片
-command:「始」edit「末」,
-prompt:「始」(必需) 编辑指令。「末」,
-image_url:「始」(必需) 图片URL。「末」
-### 合成图片
-command:「始」compose「末」,
-prompt:「始」(必需) 合成指令。「末」,
-image_url_1:「始」(必需) 第一张URL。「末」
-image_size:「始」(可选) 1K, 2K, 4K。「末」
-
-## 5. Suno 音乐生成 (SunoGen)
+## 3. Suno 音乐生成 (SunoGen)
 著名的 Suno 音乐生成器。
 tool_name:「始」SunoGen「末」,
 command:「始」generate_song「末」,
@@ -66,7 +48,7 @@ tags:「始」acoustic, pop, happy「末」,
 title:「始」Sunny Days「末」,
 gpt_description_prompt:「始」纯音乐描述「末」
 
-## 6. Grok 视频生成 (GrokVideoGen)
+## 4. Grok 视频生成 (GrokVideoGen)
 马斯克出品，极速生成 6 秒视频，包含高质量配音，支持 NSFW。
 tool_name:「始」GrokVideoGen「末」,
 image_url:「始」(必需) 底图链接「末」,

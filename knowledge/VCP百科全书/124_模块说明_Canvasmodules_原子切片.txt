@@ -1,0 +1,93 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Canvasmodules - 协同Canvas编辑模块
+
+一、模块基本信息
+1. 模块名称：Canvasmodules / 协同Canvas编辑模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供代码编辑、文件管理、版本控制、Diff对比的协同编辑Canvas
+
+二、功能定位
+Canvasmodules是VCPChat的协同编辑模块，为用户提供强大的代码编辑和文件管理能力。基于CodeMirror 5编辑器，支持多种编程语言的语法高亮、自动保存、版本历史、文件变动追踪、Diff对比等功能。支持AI修改文件后的变动检测和合并。
+
+三、核心功能
+1. 代码编辑器：
+   - 基于CodeMirror 5
+   - 支持20+编程语言（JS、Python、Go、Rust、SQL等）
+   - 行号显示、自动缩进、代码折叠
+   - 主题切换（亮色/暗色）
+
+2. 文件管理：
+   - Canvas文件列表（左侧边栏）
+   - 新建Canvas文件
+   - 重命名、复制、删除文件
+   - 文件搜索功能
+
+3. 版本控制：
+   - 自动保存（2秒防抖）
+   - 内容历史记录
+   - 文档变动追踪（右侧边栏）
+   - 撤销/重做功能
+
+4. Diff对比：
+   - AI修改检测
+   - 变动预览（Diff Modal）
+   - 接受/拒绝变动
+
+5. 编辑功能：
+   - 查找替换（Ctrl+F）
+   - 自动换行切换
+   - 代码执行（Python）
+   - Markdown渲染
+   - HTML渲染
+
+6. 右键菜单：
+   - 编辑器菜单：撤销、重做、剪切、复制、粘贴、全选
+   - 文件菜单：重命名、复制、删除
+
+四、主要文件结构
+- canvas.html：UI布局（编辑器、侧边栏、菜单）
+- canvas.js：核心逻辑（编辑、保存、历史、Diff）
+- canvas.css：样式定义
+- vendor/diff_match_patch.js：Diff算法库
+
+五、关键API接口
+1. window.electronAPI.onCanvasLoadData(callback)
+   - 接收Canvas初始数据
+   - 参数：{current: {path, content}, history: []}
+
+2. window.electronAPI.saveCanvasFile({path, content})
+   - 保存Canvas文件
+
+3. window.electronAPI.onAIModifyCanvas(callback)
+   - 接收AI修改的文件内容
+   - 触发Diff对比
+
+4. CodeMirror API：
+   - editor.getValue()：获取编辑器内容
+   - editor.setValue(content)：设置内容
+   - editor.setOption('mode', mode)：设置语言模式
+   - editor.getSelection()：获取选中文本
+
+六、使用场景
+1. 代码编写：在Canvas中编���和编辑代码
+2. 文件管理：创建、管理多个Canvas文件
+3. 版本追踪：查看文件的修改历史
+4. AI协作：接收AI修改，对比变动后决定接受或拒绝
+5. 代码执行：运行Python脚本
+6. 文档生成：渲染Markdown或HTML
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 依赖 CodeMirror 5：代码编辑
+- 依赖 diff_match_patch：Diff算法
+
+八、注意事项
+1. 自动保存延迟2秒（防抖）
+2. 支持Ctrl+F查找、Esc关闭搜索
+3. 文件路径显示在状态栏
+4. 支持多种编程语言自动识别
+5. Diff对比支持接受或拒绝AI修改
+
+Tag: Canvas编辑, 代码编辑器, 文件管理, 版本控制, Diff对比, CodeMirror, 协同编辑, 自动保存

@@ -1,2 +1,0 @@
-# This file is for listing Python package dependencies.
-# Currently, this plugin only uses standard Python libraries.

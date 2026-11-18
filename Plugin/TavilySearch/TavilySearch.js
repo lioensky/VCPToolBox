@@ -2,6 +2,28 @@
 const { tavily } = require('@tavily/core'); // Using the official Node.js client
 const stdin = require('process').stdin;
 
+/**
+ * 将 Tavily 搜索结果格式化为 Markdown
+ */
+function formatTavilyResults(response) {
+    let md = '';
+    if (response.answer) {
+        md += `### 直接回答\n${response.answer}\n\n`;
+    }
+    if (response.results && response.results.length > 0) {
+        md += `### 搜索结果\n`;
+        response.results.forEach((item, index) => {
+            md += `${index + 1}. **[${item.title}](${item.url})**\n`;
+            if (item.content) {
+                md += `   ${item.content}\n\n`;
+            }
+        });
+    } else {
+        md += `未找到相关搜索结果。\n`;
+    }
+    return md;
+}
+
 async function main() {
     let inputData = '';
     stdin.setEncoding('utf8');
@@ -116,6 +138,9 @@ async function main() {
                     searchOptions.end_date = endDate.trim();
                 }
                 searchOptions.time_range = null; // 显式覆盖任何默认或传入的 time_range 值
+                // 防御 @tavily/core 0.5.2 SDK 内部 _search() 函数硬编码 days:3 默认值的问题
+                // SDK 合并参数时 defaultOptions.days=3 不会被 undefined 覆盖，需显式传入
+                searchOptions.days = undefined;
             } else if (time_range) {
                 // 仅在没有日期范围时才使用 time_range 参数
                 const validTimeRanges = ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'];
@@ -124,27 +149,58 @@ async function main() {
                 }
             }
 
-            const response = await tvly.search(query, searchOptions);
+            // 检测是否包含 | 分隔的多个查询
+            const subQueries = query.split('|').map(q => q.trim()).filter(q => q.length > 0);
 
-            // 将 Tavily 搜索结果转换为 Markdown 格式
-            let markdownResult = '';
-            if (response.answer) {
-                markdownResult += `### 直接回答\n${response.answer}\n\n`;
+            if (subQueries.length === 0) {
+                throw new Error("No valid search query after splitting by '|'");
             }
 
-            if (response.results && response.results.length > 0) {
-                markdownResult += `### 搜索结果\n`;
-                response.results.forEach((item, index) => {
-                    markdownResult += `${index + 1}. **[${item.title}](${item.url})**\n`;
-                    if (item.content) {
-                        markdownResult += `   ${item.content}\n\n`;
+            if (subQueries.length > 1) {
+                // 多个子查询 => 并发搜索
+                const searchPromises = subQueries.map(subQuery =>
+                    tvly.search(subQuery, searchOptions)
+                        .then(response => ({ subQuery, response }))
+                );
+
+                const settledResults = await Promise.allSettled(searchPromises);
+
+                let markdownResult = '';
+                const failedResults = [];
+                let hasAnySuccess = false;
+
+                settledResults.forEach((result, index) => {
+                    if (result.status === 'fulfilled') {
+                        hasAnySuccess = true;
+                        const { subQuery, response } = result.value;
+                        markdownResult += `## 🔍 查询: ${subQuery}\n\n`;
+                        markdownResult += formatTavilyResults(response);
+                        markdownResult += '\n\n---\n\n';
+                    } else {
+                        failedResults.push({ subQuery: subQueries[index], error: result.reason?.message || '未知错误' });
                     }
                 });
-            } else {
-                markdownResult += `未找到相关搜索结果。\n`;
-            }
 
-            output = { status: "success", result: markdownResult };
+                // 补充失败查询信息
+                if (failedResults.length > 0) {
+                    markdownResult += `## ⚠️ 以下查询失败\n\n`;
+                    for (const fail of failedResults) {
+                        markdownResult += `### 查询: ${fail.subQuery}\n`;
+                        markdownResult += `错误: ${fail.error}\n\n`;
+                    }
+                }
+
+                if (!hasAnySuccess && failedResults.length > 0) {
+                    throw new Error(`All searches failed. First error: ${failedResults[0].error}`);
+                }
+
+                output = { status: "success", result: markdownResult };
+
+            } else {
+                // 单个查询 => 原有流程
+                const response = await tvly.search(query, searchOptions);
+                output = { status: "success", result: formatTavilyResults(response) };
+            }
 
         } catch (e) {
             let errorMessage;

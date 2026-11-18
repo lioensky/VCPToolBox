@@ -1,27 +1,171 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { fileURLToPath } = require('url');
+const { safeFilePath, assertSafePath, invalidPath } = require('../../modules/safeFilePath');
 
 module.exports = function(options) {
     const router = express.Router();
-    const { pluginManager, vectorDBManager } = options;
+    const { pluginManager, vectorDBManager, dailyNoteRootPath } = options;
     const PROJECT_BASE_PATH = path.join(__dirname, '..', '..');
     const DREAM_LOGS_DIR = path.join(PROJECT_BASE_PATH, 'Plugin', 'AgentDream', 'dream_logs');
 
-    // 辅助: file:/// URL 转本地路径
-    function _urlToFilePath(fileUrl) {
-        if (fileUrl.startsWith('file:///')) {
-            // Windows 下可能是 file:///C:/... 或者是 file:///H:/...
-            // 处理路径分隔符
-            let p = fileUrl.replace('file:///', '');
-            if (process.platform === 'win32') {
-                p = p.replace(/\//g, path.sep);
-            } else {
-                p = '/' + p;
-            }
-            return p;
+    async function _safeDiaryPath(fileUrl) {
+        if (!dailyNoteRootPath || typeof fileUrl !== 'string' || !fileUrl) throw invalidPath('Invalid diary path');
+        let target;
+        try {
+            target = fileUrl.startsWith('file:') ? fileURLToPath(fileUrl) : fileUrl;
+        } catch {
+            throw invalidPath('Invalid diary URL');
         }
-        return fileUrl;
+        if (!path.isAbsolute(target) || !/\.(txt|md)$/i.test(target)) throw invalidPath('Invalid diary path');
+        return assertSafePath(dailyNoteRootPath, target);
+    }
+
+    function _createHttpError(status, message, details) {
+        const error = new Error(message);
+        error.status = status;
+        if (details !== undefined) error.details = details;
+        return error;
+    }
+
+    async function _writeDailyNote(maid, date, content) {
+        const writeResult = await pluginManager.processToolCall('DailyNote', {
+            command: 'create',
+            maid,
+            Date: date,
+            Content: content
+        }, null, 'admin/dream');
+
+        if (!writeResult || writeResult.status !== 'success') {
+            throw new Error(writeResult?.error || 'DailyNote returned an unexpected response.');
+        }
+
+        return writeResult;
+    }
+
+    async function _processDreamOperation(filename, opId, action) {
+        if (typeof filename !== 'string' || !filename.endsWith('.json')) {
+            throw _createHttpError(400, 'Invalid filename.');
+        }
+
+        if (action !== 'approve' && action !== 'reject') {
+            throw _createHttpError(400, 'Invalid action.');
+        }
+
+        const filePath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
+        const content = await fs.readFile(filePath, 'utf-8');
+        const dreamLog = JSON.parse(content);
+        const operations = dreamLog.operations || [];
+        const operation = operations.find(o => o.operationId === opId);
+
+        if (!operation) {
+            throw _createHttpError(404, `操作 ${opId} 未找到。`);
+        }
+        if (operation.status !== 'pending_review') {
+            throw _createHttpError(400, `操作 ${opId} 已被处理 (${operation.status})，无法重复审批。`);
+        }
+
+        if (action === 'reject') {
+            operation.status = 'rejected';
+            operation.reviewedAt = new Date().toISOString();
+            await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+            return { status: 'success', message: `操作 ${opId} 已拒绝。`, operation };
+        }
+
+        // Validate every delete target before creating a replacement diary.
+        const sourcePaths = operation.type === 'merge'
+            ? await Promise.all((operation.sourceDiaries || []).map(_safeDiaryPath))
+            : [];
+        const deletePath = operation.type === 'delete' ? await _safeDiaryPath(operation.targetDiary) : null;
+        let result = {};
+
+        switch (operation.type) {
+            case 'merge': {
+                const maidName = dreamLog.agentName || '未知';
+                const now = new Date();
+                const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+                try {
+                    result.newDiary = await _writeDailyNote(
+                        maidName,
+                        dateStr,
+                        operation.newContent || ''
+                    );
+                } catch (e) {
+                    operation.status = 'error';
+                    operation.error = `创建合并日记失败: ${e.message}`;
+                    operation.reviewedAt = new Date().toISOString();
+                    await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                    throw _createHttpError(500, operation.error);
+                }
+
+                const deleteResults = [];
+                for (const [index, diaryUrl] of (operation.sourceDiaries || []).entries()) {
+                    const diaryPath = sourcePaths[index];
+                    try {
+                        await assertSafePath(dailyNoteRootPath, diaryPath);
+                        await fs.unlink(diaryPath);
+                        deleteResults.push({ path: diaryUrl, deleted: true });
+                        if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
+                            try { await vectorDBManager.removeDocument(diaryPath); } catch (e) { /* ignore */ }
+                        }
+                    } catch (e) {
+                        deleteResults.push({ path: diaryUrl, deleted: false, error: e.message });
+                    }
+                }
+                result.deletedSources = deleteResults;
+                break;
+            }
+
+            case 'delete': {
+                const targetPath = deletePath;
+                try {
+                    await assertSafePath(dailyNoteRootPath, targetPath);
+                    await fs.unlink(targetPath);
+                    result.deleted = true;
+                    if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
+                        try { await vectorDBManager.removeDocument(targetPath); } catch (e) { /* ignore */ }
+                    }
+                } catch (e) {
+                    operation.status = 'error';
+                    operation.error = `删除日记失败: ${e.message}`;
+                    operation.reviewedAt = new Date().toISOString();
+                    await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                    throw _createHttpError(500, operation.error);
+                }
+                break;
+            }
+
+            case 'insight': {
+                const maidName = operation.suggestedMaid || dreamLog.agentName || '未知';
+                const dateStr = operation.suggestedDate || new Date().toISOString().split('T')[0];
+
+                try {
+                    result.newDiary = await _writeDailyNote(
+                        `[${maidName}的梦]${maidName}`,
+                        dateStr,
+                        operation.insightContent || ''
+                    );
+                } catch (e) {
+                    operation.status = 'error';
+                    operation.error = `创建梦感悟失败: ${e.message}`;
+                    operation.reviewedAt = new Date().toISOString();
+                    await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                    throw _createHttpError(500, operation.error);
+                }
+                break;
+            }
+
+            default:
+                throw _createHttpError(400, `不支持的操作类型: ${operation.type}`);
+        }
+
+        operation.status = 'approved';
+        operation.reviewedAt = new Date().toISOString();
+        operation.result = result;
+        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+        return { status: 'success', message: `操作 ${opId} 已批准并执行。`, operation };
     }
 
     // GET /dream-logs - 获取所有梦境日志文件列表（含简要元数据）
@@ -34,7 +178,7 @@ module.exports = function(options) {
             const logs = [];
             for (const filename of jsonFiles) {
                 try {
-                    const filePath = path.join(DREAM_LOGS_DIR, filename);
+                    const filePath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
                     const content = await fs.readFile(filePath, 'utf-8');
                     const data = JSON.parse(content);
                     const ops = data.operations || [];
@@ -74,13 +218,58 @@ module.exports = function(options) {
         try {
             const filename = req.params.filename;
             if (!filename.endsWith('.json')) return res.status(400).json({ error: 'Invalid filename' });
-            const logPath = path.join(DREAM_LOGS_DIR, filename);
+            const logPath = await safeFilePath(DREAM_LOGS_DIR, filename, { singleSegment: true });
             const content = await fs.readFile(logPath, 'utf-8');
             res.json(JSON.parse(content));
         } catch (error) {
             console.error('[AdminAPI] Error reading dream log:', error);
-            res.status(500).json({ error: 'Failed to read dream log', details: error.message });
+            res.status(error.status || 500).json({ error: 'Failed to read dream log', details: error.message });
         }
+    });
+
+    // POST /dream-logs/batch-operations - 批量审批/拒绝 AgentDream 操作
+    router.post('/dream-logs/batch-operations', async (req, res) => {
+        const { action, operations } = req.body || {};
+
+        if (action !== 'approve' && action !== 'reject') {
+            return res.status(400).json({ error: 'Invalid action.' });
+        }
+        if (!Array.isArray(operations) || operations.length === 0) {
+            return res.status(400).json({ error: 'operations must be a non-empty array.' });
+        }
+
+        const results = [];
+        for (const item of operations) {
+            const filename = item && item.filename;
+            const operationId = item && (item.operationId || item.opId);
+
+            try {
+                const result = await _processDreamOperation(filename, operationId, action);
+                results.push({
+                    filename,
+                    operationId,
+                    ok: true,
+                    message: result.message,
+                    operation: result.operation
+                });
+            } catch (error) {
+                results.push({
+                    filename,
+                    operationId,
+                    ok: false,
+                    error: error.message,
+                    details: error.details
+                });
+            }
+        }
+
+        const successCount = results.filter(item => item.ok).length;
+        res.json({
+            status: successCount === results.length ? 'success' : 'partial_success',
+            successCount,
+            failedCount: results.length - successCount,
+            results
+        });
     });
 
     // POST /dream-logs/:filename/operations/:opId - 标记并处理 AgentDream 操作
@@ -89,128 +278,13 @@ module.exports = function(options) {
         const filename = req.params.filename;
         const { action } = req.body; // action: 'approve' or 'reject'
 
-        if (!filename || !filename.endsWith('.json')) {
-            return res.status(400).json({ error: 'Invalid filename.' });
-        }
-
-        const filePath = path.join(DREAM_LOGS_DIR, filename);
-
         try {
-            const content = await fs.readFile(filePath, 'utf-8');
-            const dreamLog = JSON.parse(content);
-            const operations = dreamLog.operations || [];
-            const operation = operations.find(o => o.operationId === opId);
-
-            if (!operation) {
-                return res.status(404).json({ error: `操作 ${opId} 未找到。` });
-            }
-            if (operation.status !== 'pending_review') {
-                return res.status(400).json({ error: `操作 ${opId} 已被处理 (${operation.status})，无法重复审批。` });
-            }
-
-            if (action === 'reject') {
-                operation.status = 'rejected';
-                operation.reviewedAt = new Date().toISOString();
-                await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
-                return res.json({ status: 'success', message: `操作 ${opId} 已拒绝。`, operation });
-            }
-
-            // --- action === 'approve' ---
-            let result = {};
-
-            switch (operation.type) {
-                case 'merge': {
-                    const maidName = dreamLog.agentName || '未知';
-                    const now = new Date();
-                    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-                    try {
-                        const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
-                            maidName: maidName,
-                            dateString: dateStr,
-                            contentText: operation.newContent || ''
-                        }));
-                        result.newDiary = writeResult;
-                    } catch (e) {
-                        operation.status = 'error';
-                        operation.error = `创建合并日记失败: ${e.message}`;
-                        operation.reviewedAt = new Date().toISOString();
-                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
-                        return res.status(500).json({ error: operation.error });
-                    }
-
-                    // 删除源日记文件
-                    const deleteResults = [];
-                    for (const diaryUrl of (operation.sourceDiaries || [])) {
-                        const diaryPath = _urlToFilePath(diaryUrl);
-                        try {
-                            await fs.unlink(diaryPath);
-                            deleteResults.push({ path: diaryUrl, deleted: true });
-                            // 更新向量库
-                            if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
-                                try { await vectorDBManager.removeDocument(diaryPath); } catch (e) { /* ignore */ }
-                            }
-                        } catch (e) {
-                            deleteResults.push({ path: diaryUrl, deleted: false, error: e.message });
-                        }
-                    }
-                    result.deletedSources = deleteResults;
-                    break;
-                }
-
-                case 'delete': {
-                    const targetPath = _urlToFilePath(operation.targetDiary || '');
-                    try {
-                        await fs.unlink(targetPath);
-                        result.deleted = true;
-                        // 更新向量库
-                        if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
-                            try { await vectorDBManager.removeDocument(targetPath); } catch (e) { /* ignore */ }
-                        }
-                    } catch (e) {
-                        operation.status = 'error';
-                        operation.error = `删除日记失败: ${e.message}`;
-                        operation.reviewedAt = new Date().toISOString();
-                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
-                        return res.status(500).json({ error: operation.error });
-                    }
-                    break;
-                }
-
-                case 'insight': {
-                    const maidName = operation.suggestedMaid || dreamLog.agentName || '未知';
-                    const dateStr = operation.suggestedDate || new Date().toISOString().split('T')[0];
-
-                    try {
-                        const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
-                            maidName: `[${maidName}的梦]${maidName}`,
-                            dateString: dateStr,
-                            contentText: operation.insightContent || ''
-                        }));
-                        result.newDiary = writeResult;
-                    } catch (e) {
-                        operation.status = 'error';
-                        operation.error = `创建梦感悟失败: ${e.message}`;
-                        operation.reviewedAt = new Date().toISOString();
-                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
-                        return res.status(500).json({ error: operation.error });
-                    }
-                    break;
-                }
-
-                default:
-                    return res.status(400).json({ error: `不支持的操作类型: ${operation.type}` });
-            }
-
-            operation.status = 'approved';
-            operation.reviewedAt = new Date().toISOString();
-            operation.result = result;
-            await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
-            res.json({ status: 'success', message: `操作 ${opId} 已批准并执行。`, operation });
+            const result = await _processDreamOperation(filename, opId, action);
+            res.json(result);
 
         } catch (error) {
             console.error('[AdminAPI] Error processing dream operation:', error);
-            res.status(500).json({ error: 'Failed to process operation', details: error.message });
+            res.status(error.status || 500).json({ error: error.message || 'Failed to process operation', details: error.details });
         }
     });
 

@@ -25,6 +25,7 @@
 const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const util = require('util');
 
 const { MonitorTask } = require('./MonitorTask');
 const AnomalyDetector = require('./AnomalyDetector');
@@ -39,6 +40,28 @@ const CUSTOM_RULES_PATH = path.join(__dirname, '..', 'rules', 'custom-rules.json
 const STATE_FILE_PATH = path.join(__dirname, '..', 'state', 'active-monitors.json');
 const PID_FILE_PATH = path.join(__dirname, '..', 'state', 'monitor.pid');
 const STOP_SIGNAL_PATH = path.join(__dirname, '..', 'state', 'stop-requests.json');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class MonitorManager {
     /**
@@ -71,6 +94,8 @@ class MonitorManager {
             totalCallbacks: 0,
             startTime: new Date().toISOString()
         };
+
+        this._stateWriteQueue = Promise.resolve();
     }
     
     /**
@@ -92,19 +117,27 @@ class MonitorManager {
         await this._loadRules();
         
         if (mode === 'full') {
-            // 完整模式：恢复之前的任务
-            await this._recoverTasks();
-            
-            // 写入 PID 文件
-            await this._writePidFile();
-            
-            // 启动停止信号监听
-            this._startStopSignalWatcher();
-            
+            if (!this._isServerModeConfigured()) {
+                await this._recoverTasks();
+                await this._writePidFile();
+                this._startStopSignalWatcher();
+            }
+
             // MEU-5.1: 启动时重试失败的回调
             const retryResult = await this.callbackTrigger.retryFailedCallbacks();
             if (retryResult.total > 0) {
                 this._log(`重试了 ${retryResult.total} 个失败回调，成功 ${retryResult.success}，失败 ${retryResult.failed}`);
+            }
+
+            // 记录连接池状态（如果支持）
+            try {
+                const manager = await this._getSSHManager();
+                if (manager && manager.getPoolStats) {
+                    const poolStats = manager.getPoolStats();
+                    this._log(`连接池状态: 活跃连接=${poolStats.activeConnections}, 池大小=${poolStats.poolSize}/${poolStats.maxPoolSize}, 流式会话=${poolStats.activeStreamSessions}`);
+                }
+            } catch (error) {
+                this._log(`获取连接池状态失败: ${error.message}`);
             }
         }
         
@@ -121,7 +154,7 @@ class MonitorManager {
      * @returns {string} taskId
      */
     async startMonitor(config) {
-        const { hostId, logPath, rules, contextLines } = config;
+        const { hostId, logPath, rules, contextLines, afterContextLines } = config;
         
         // 生成任务 ID
         const taskId = this._generateTaskId(hostId, logPath);
@@ -135,13 +168,17 @@ class MonitorManager {
         
         // 创建任务实例
         // MEU-2.1: 传递 onStatusChange 回调
+        const effectiveContextLines = contextLines ?? 10;
+        const effectiveAfterContextLines = afterContextLines ?? effectiveContextLines;
         const task = new MonitorTask({
             taskId,
             hostId,
             logPath,
-            contextLines: contextLines || 10,
+            contextLines: effectiveContextLines,
+            afterContextLines: effectiveAfterContextLines,
             debug: this.debug,
-            onData: (line) => this._handleLogLine(taskId, line),
+            rules: rules || [], // v1.4.0: 传递规则给 Server
+            onData: (line, meta) => this._handleLogLine(taskId, line, meta),
             onError: (error) => this._handleTaskError(taskId, error),
             onClose: () => this._handleTaskClose(taskId),
             onStatusChange: (statusInfo) => this._handleTaskStatusChange(taskId, statusInfo)
@@ -154,11 +191,15 @@ class MonitorManager {
             }
         }
         
-        // 启动任务
-        await task.start();
-        
-        // 保存任务
+        // 先登记任务，确保 Server 模式启动预读阶段的异常通知能找到回调上下文。
         this.tasks.set(taskId, task);
+        try {
+            await task.start();
+        } catch (error) {
+            this.tasks.delete(taskId);
+            this.anomalyDetector.removeTaskRules(taskId);
+            throw error;
+        }
         
         // 持久化状态
         await this._saveState();
@@ -223,11 +264,22 @@ class MonitorManager {
                 ...task.getStatus()
             });
         }
+        // 获取连接池状态（如果支持）
+        let connectionPool = null;
+        if (this.sshManager && this.sshManager.getPoolStats) {
+            try {
+                connectionPool = this.sshManager.getPoolStats();
+            } catch (error) {
+                this._log(`获取连接池状态失败: ${error.message}`);
+            }
+        }
+
         return {
             activeTasks,
             taskCount: this.tasks.size,
             stats: this.stats,
-            rulesCount: this.anomalyDetector.getRulesCount()
+            rulesCount: this.anomalyDetector.getRulesCount(),
+            connectionPool
         };
     }
     
@@ -256,19 +308,34 @@ class MonitorManager {
     // ==================== 主动查询命令 (v1.2.0) ====================
     /**
      * 获取 SSHManager 实例（延迟初始化）
+     * 使用共享模块以确保复用同一个连接池
      * @returns {SSHManager}
      */
     async _getSSHManager() {
         if (!this.sshManager) {
-            // 加载 hosts 配置
-            const hostsPath = path.join(__dirname, '..', '..', 'LinuxShellExecutor', 'hosts.json');
             try {
-                const hostsContent = await fs.readFile(hostsPath, 'utf-8');
-                const hostsConfig = JSON.parse(hostsContent);
-                this.sshManager = new SSHManager(hostsConfig);
-                this._log('SSHManager 初始化成功');
+                // 优先使用共享模块，确保连接池复用
+                const sharedModule = require('../../../modules/SSHManager');
+                this.sshManager = sharedModule.getSSHManager();
+
+                if (!this.sshManager) {
+                    throw new Error('共享模块返回 null');
+                }
+
+                this._log('SSHManager 初始化成功（共享模块）');
             } catch (error) {
-                throw new Error(`无法加载 hosts 配置: ${error.message}`);
+                // 降级：使用旧的直接实例化方式
+                this._log(`共享模块加载失败，降级到直接实例化: ${error.message}`);
+                try {
+                    const SSHManager = require('../../LinuxShellExecutor/ssh/SSHManager');
+                    const hostsPath = path.join(__dirname, '..', '..', 'LinuxShellExecutor', 'hosts.json');
+                    const hostsContent = await fs.readFile(hostsPath, 'utf-8');
+                    const hostsConfig = JSON.parse(hostsContent);
+                    this.sshManager = new SSHManager(hostsConfig);
+                    this._log('SSHManager 降级初始化成功');
+                } catch (fallbackError) {
+                    throw new Error(`无法初始化 SSHManager: ${fallbackError.message}`);
+                }
             }
         }
         return this.sshManager;
@@ -286,6 +353,33 @@ class MonitorManager {
      * @returns {Object} 搜索结果
      */
     async searchLog(params) {
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        const proxy = getLogMonitorProxy();
+
+        // 先尝试内存查询
+        if (proxy) {
+            try {
+                const result = await proxy.searchLog(params);
+                if (result.source === 'memory' && !result.error) {
+                    return this._formatSearchLogResult(result, params);
+                }
+                if (result.source === 'remote' && !result.error) {
+                    return this._formatSearchLogResult(result, params);
+                }
+                // partial/error 结果继续 fallback 到本地远程 grep
+            } catch (e) {
+                this._log(`内存查询失败，fallback 远程: ${e.message}`);
+            }
+        }
+
+        // Fallback：原有 SSH 查询逻辑
+        return this._searchLogRemote(params);
+    }
+
+    /**
+     * Fallback: 远程 SSH 搜索日志文件
+     */
+    async _searchLogRemote(params) {
         const { hostId, logPath, pattern, lines = 100, since, context = 0 } = params;
         
         if (!hostId) throw new Error('缺少必需参数: hostId');
@@ -366,6 +460,30 @@ class MonitorManager {
      * @returns {Object} 错误日志
      */
     async lastErrors(params) {
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        const proxy = getLogMonitorProxy();
+
+        // 先尝试内存查询
+        if (proxy) {
+            try {
+                const result = await proxy.lastErrors(params);
+                if ((result.source === 'memory' || result.source === 'remote') && !result.error) {
+                    return this._formatLastErrorsResult(result, params);
+                }
+                // partial/error 结果继续 fallback 到本地远程 grep
+            } catch (e) {
+                this._log(`内存查询失败，fallback 远程: ${e.message}`);
+            }
+        }
+
+        // Fallback：原有 SSH 查询逻辑
+        return this._lastErrorsRemote(params);
+    }
+
+    /**
+     * Fallback: 远程 SSH 获取最近错误日志
+     */
+    async _lastErrorsRemote(params) {
         const { hostId, logPath, count = 20, levels = ['ERROR', 'FATAL', 'CRIT', 'CRITICAL'] } = params;
         
         if (!hostId) throw new Error('缺少必需参数: hostId');
@@ -438,6 +556,30 @@ class MonitorManager {
      * @returns {Object} 统计结果
      */
     async logStats(params) {
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        const proxy = getLogMonitorProxy();
+
+        // 先尝试内存查询
+        if (proxy) {
+            try {
+                const result = await proxy.logStats(params);
+                if ((result.source === 'memory' || result.source === 'remote') && !result.error) {
+                    return this._formatLogStatsResult(result, params);
+                }
+                // source === 'none'/error，继续 fallback
+            } catch (e) {
+                this._log(`内存查询失败，fallback 远程: ${e.message}`);
+            }
+        }
+
+        // Fallback：原有 SSH 查询逻辑
+        return this._logStatsRemote(params);
+    }
+
+    /**
+     * Fallback: 远程 SSH 日志统计分析
+     */
+    async _logStatsRemote(params) {
         const { hostId, logPath, since, groupBy = 'level' } = params;
         
         if (!hostId) throw new Error('缺少必需参数: hostId');
@@ -502,6 +644,92 @@ class MonitorManager {
         } catch (error) {
             throw error;
         }
+    }
+
+    _formatSearchLogResult(result, params) {
+        const lines = Array.isArray(result.lines) ? result.lines : [];
+        return {
+            success: true,
+            hostId: result.hostId ?? params.hostId,
+            logPath: result.logPath ?? params.logPath,
+            pattern: result.pattern ?? params.pattern,
+            matchCount: result.matchCount ?? lines.length,
+            lines,
+            command: result.command,
+            source: result.source,
+            taskId: result.taskId,
+            executionTime: result.executionTime || new Date().toISOString(),
+            ...(result.partial ? { partial: result.partial } : {}),
+            ...(result.fallbackError ? { fallbackError: result.fallbackError } : {}),
+            ...(result.note ? { note: result.note } : {})
+        };
+    }
+
+    _formatLastErrorsResult(result, params) {
+        const lines = Array.isArray(result.lines) ? result.lines : [];
+        const errors = Array.isArray(result.errors)
+            ? result.errors
+            : lines.map(line => ({
+                raw: line,
+                ...this._parseLogLine(line)
+            }));
+        return {
+            success: true,
+            hostId: result.hostId ?? params.hostId,
+            logPath: result.logPath ?? params.logPath,
+            levels: params.levels ?? result.levels ?? ['ERROR', 'FATAL', 'CRIT', 'CRITICAL'],
+            errorCount: result.errorCount ?? result.matchCount ?? errors.length,
+            errors,
+            command: result.command,
+            source: result.source,
+            taskId: result.taskId,
+            executionTime: result.executionTime || new Date().toISOString(),
+            ...(result.partial ? { partial: result.partial } : {}),
+            ...(result.fallbackError ? { fallbackError: result.fallbackError } : {}),
+            ...(result.note ? { note: result.note } : {})
+        };
+    }
+
+    _formatLogStatsResult(result, params) {
+        const groupBy = result.groupBy ?? params.groupBy ?? 'level';
+        const stats = Array.isArray(result.stats)
+            ? result.stats
+            : this._statsFromServerResult(result, groupBy);
+        return {
+            success: true,
+            hostId: result.hostId ?? params.hostId,
+            logPath: result.logPath ?? params.logPath,
+            groupBy,
+            since: result.since ?? params.since ?? 'all',
+            stats,
+            totalEntries: result.totalEntries ?? stats.reduce((sum, s) => sum + s.count, 0),
+            command: result.command,
+            source: result.source,
+            taskId: result.taskId,
+            executionTime: result.executionTime || new Date().toISOString(),
+            ...(result.partial ? { partial: result.partial } : {}),
+            ...(result.fallbackError ? { fallbackError: result.fallbackError } : {})
+        };
+    }
+
+    _statsFromServerResult(result, groupBy) {
+        const mapByGroup = {
+            level: result.levelStats,
+            hour: result.hourStats,
+            status_code: result.statusCodeStats,
+            ip: result.ipStats
+        };
+        const statsMap = mapByGroup[groupBy] || {};
+        const stats = Object.entries(statsMap)
+            .filter(([, count]) => Number(count) > 0)
+            .map(([key, count]) => ({
+                count: Number(count),
+                key: String(key)
+            }));
+        if (groupBy === 'hour') {
+            return stats.sort((a, b) => Number(a.key) - Number(b.key));
+        }
+        return stats.sort((a, b) => b.count - a.count);
     }
     
     /**
@@ -657,11 +885,34 @@ class MonitorManager {
     /**
      * 处理日志行
      */
-    async _handleLogLine(taskId, line) {
+    async _handleLogLine(taskId, line, meta) {
         const task = this.tasks.get(taskId);
         if (!task) return;
         
-        // 检测异常
+        // v1.4.0: UDS 模式，Server 已检测异常，直接触发回调
+        if (meta && (meta.rule || meta.anomaly)) {
+            this.stats.totalAnomalies++;
+            const context =
+                meta.context !== undefined
+                    ? this._normalizeContext(meta.context)
+                    : task.getContext();
+            const anomaly = meta.anomaly || {};
+            await this._triggerCallback(taskId, {
+                ...anomaly,
+                rule: meta.rule ?? anomaly.rule,
+                severity: meta.severity ?? anomaly.severity,
+                logLine: line,
+                hostId: task.hostId,
+                logPath: task.logPath,
+                context,
+                afterContext: meta.afterContext || [],
+                timestamp: meta.timestamp || new Date().toISOString()
+            });
+            task.addToContext(line);
+            return;
+        }
+        
+        // Legacy 模式：本地检测异常
         const anomalies = this.anomalyDetector.detect(line, taskId);
         
         if (anomalies.length > 0) {
@@ -881,33 +1132,41 @@ class MonitorManager {
     }
     
     /**
-     * MEU-2.1: 保存状态（扩展版）
-     * 增加 state、lastMessage、reconnectAttempts、lastDataTime 字段
+     * MEU-2.1: 保存状态
+     * v1.4.0: Server-backed 任务由常驻服务持有，只持久化 legacy tail -f 任务。
      */
     async _saveState() {
-        const state = {
-            tasks: [],
-            lastUpdated: new Date().toISOString()
-        };
-        
-        for (const [taskId, task] of this.tasks) {
-            state.tasks.push({
-                taskId,
-                hostId: task.hostId,
-                logPath: task.logPath,
-                contextLines: task.contextLines,
-                startTime: task.startTime,
-                // MEU-2.1: 新增字段
-                status: task.state || 'UNKNOWN',
-                lastMessage: task.lastMessage || '',
-                reconnectAttempts: task.reconnectAttempts || 0,
-                lastDataTime: task.lastDataTime || null
+        this._stateWriteQueue = this._stateWriteQueue
+            .catch(() => {})
+            .then(async () => {
+                const state = {
+                    tasks: [],
+                    lastUpdated: new Date().toISOString()
+                };
+
+                for (const [taskId, task] of this.tasks) {
+                    if (task.serverTaskId) {
+                        continue;
+                    }
+                    state.tasks.push({
+                        taskId,
+                        hostId: task.hostId,
+                        logPath: task.logPath,
+                        contextLines: task.contextLines,
+                        afterContextLines: task.afterContextLines,
+                        startTime: task.startTime,
+                        status: task.state || 'UNKNOWN',
+                        lastMessage: task.lastMessage || '',
+                        reconnectAttempts: task.reconnectAttempts || 0,
+                        lastDataTime: task.lastDataTime || null
+                    });
+                }
+
+                await this._atomicWrite(STATE_FILE_PATH, JSON.stringify(state, null, 4));
             });
-        }
-        
-        await this._atomicWrite(STATE_FILE_PATH, JSON.stringify(state, null, 4));
+        return this._stateWriteQueue;
     }
-    
+
     /**
      * 恢复任务
      */
@@ -915,16 +1174,17 @@ class MonitorManager {
         try {
             const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
             const state = JSON.parse(stateContent);
-            
+
             if (state.tasks && state.tasks.length > 0) {
                 this._log(`发现 ${state.tasks.length} 个待恢复的任务`);
-                
+
                 for (const taskConfig of state.tasks) {
                     try {
                         await this.startMonitor({
                             hostId: taskConfig.hostId,
                             logPath: taskConfig.logPath,
-                            contextLines: taskConfig.contextLines
+                            contextLines: taskConfig.contextLines,
+                            afterContextLines: taskConfig.afterContextLines
                         });
                         this._log(`任务 ${taskConfig.taskId} 恢复成功`);
                     } catch (error) {
@@ -933,16 +1193,15 @@ class MonitorManager {
                 }
             }
         } catch (error) {
-            // 状态文件不存在是正常的
             this._log('无待恢复的任务');
         }
     }
-    
+
     /**
      * 原子写入文件
      */
     async _atomicWrite(filePath, content) {
-        const tempPath = filePath + '.tmp';
+        const tempPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
         try {
             await fs.writeFile(tempPath, content, 'utf-8');
             await fs.rename(tempPath, filePath);
@@ -956,165 +1215,127 @@ class MonitorManager {
             throw error;
         }
     }
-    
-    /**
-     * 写入 PID 文件
-     */
-    async _writePidFile() {
-        await this._atomicWrite(PID_FILE_PATH, process.pid.toString());
-        this._log(`PID 文件已写入: ${process.pid}`);
-    }
-    
-    /**
-     * 清理 PID 文件
-     */
-    async _cleanupPidFile() {
-        try {
-            await fs.unlink(PID_FILE_PATH);} catch (e) {
-            // 忽略
-        }
-    }
-    
-    /**
-     * 检查进程是否在运行
-     */
-    _isProcessRunning(pid) {
-        try {
-            process.kill(pid, 0);
-            return true;
-        } catch (e) {
-            return false;
-        }
-    }
-    
-    /**
-     * 启动停止信号监听器
-     */
-    _startStopSignalWatcher() {
-        // 每秒检查一次停止信号
-        this._stopSignalInterval = setInterval(async () => {
-            await this._checkStopSignals();
-        }, 1000);
-        // 进程退出时清理
-        process.on('exit', async () => {
-            if (this._stopSignalInterval) {
-                clearInterval(this._stopSignalInterval);
-            }
-            await this._cleanupPidFile();
-        });
-    }
-    
-    /**
-     * 检查停止信号
-     */
-    async _checkStopSignals() {
-        try {
-            const content = await fs.readFile(STOP_SIGNAL_PATH, 'utf-8');
-            const stopRequests = JSON.parse(content);
-            
-            if (stopRequests.length === 0) return;
-            
-            // 处理停止请求
-            const remainingRequests = [];
-            for (const request of stopRequests) {
-                if (this.tasks.has(request.taskId)) {
-                    this._log(`收到停止信号，停止任务: ${request.taskId}`);
-                    try {
-                        await this.stopMonitor(request.taskId);} catch (error) {
-                        this._log(`停止任务失败: ${error.message}`);
-                    }
-                } else {
-                    // 任务不存在，可能是其他进程的请求，保留
-                    // 但如果请求太旧（超过 30 秒），则丢弃
-                    const requestAge = Date.now() - new Date(request.requestTime).getTime();
-                    if (requestAge < 30000) {
-                        remainingRequests.push(request);
-                    }
-                }
-            }
-            
-            // 更新停止请求文件
-            await this._atomicWrite(STOP_SIGNAL_PATH, JSON.stringify(remainingRequests, null, 4));
-        } catch (error) {
-            // 文件不存在或解析失败，忽略
-        }
-    }
-    
-    /**
-     * 等待任务停止
-     */
-    async _waitForTaskStop(taskId, timeout) {
-        const startTime = Date.now();
-        while (Date.now() - startTime < timeout) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // 检查任务是否还在状态文件中
-            try {
-                const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
-                const state = JSON.parse(stateContent);
-                const taskExists = (state.tasks || []).some(t => t.taskId === taskId);
-                if (!taskExists) {
-                    return true;
-                }
-            } catch (e) {
-                // 文件不存在，任务已停止
-                return true;
-            }
-        }
-        return false;
-    }
-    
+
     /**
      * 从状态文件读取状态（用于 status 命令，不启动任务）
+     * v1.4.0: 优先返回内存状态
      * @returns {Object} 状态信息
      */
     async getStatusFromFile() {
-        try {
-            const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
-            const state = JSON.parse(stateContent);
-            
-            // 检查监控进程是否在运行
-            let monitorProcessRunning = false;
+        // v1.4.0: UDS 模式下优先查询常驻 Server 的真实状态
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        const proxy = getLogMonitorProxy();
+        if (proxy) {
             try {
-                const pidContent = await fs.readFile(PID_FILE_PATH, 'utf-8');
-                const pid = parseInt(pidContent.trim(), 10);
-                monitorProcessRunning = this._isProcessRunning(pid);
+                const serverStatus = await proxy.getStatus();
+                const activeTasks =
+                    serverStatus.activeTasks ||
+                    serverStatus.watchers ||
+                    [];
+                return {
+                    activeTasks,
+                    taskCount:
+                        serverStatus.taskCount ??
+                        serverStatus.watcherCount ??
+                        activeTasks.length,
+                    lastUpdated: new Date().toISOString(),
+                    monitorProcessRunning: true,
+                    stats: this.stats,
+                    rulesCount: this.anomalyDetector.getRulesCount(),
+                    serverStatus
+                };
             } catch (e) {
-                // PID 文件不存在
+                this._log(`Proxy 查询状态失败，fallback 本地状态: ${e.message}`);
             }
-            
-            return {
-                activeTasks: state.tasks || [],
-                taskCount: (state.tasks || []).length,
-                lastUpdated: state.lastUpdated,
-                monitorProcessRunning,
-                stats: this.stats,
-                rulesCount: this.anomalyDetector.getRulesCount()
-            };
-        } catch (error) {
-            // 状态文件不存在
-            return {
-                activeTasks: [],
-                taskCount: 0,
-                lastUpdated: null,
-                monitorProcessRunning: false,
-                stats: this.stats,
-                rulesCount: this.anomalyDetector.getRulesCount()
-            };
         }
+
+        return this._readLegacyStatusFromFile();
     }
-    
+
     /**
-     * 发送停止信号（用于 stop 命令，通过文件信号通知运行中的进程）
+     * 发送停止信号（用于 stop 命令）
+     * v1.4.0: UDS 优先使用 proxy，非 UDS 保留 legacy 文件信号
      * @param {string} taskId - 要停止的任务 ID
      * @param {Object} options
      * @param {number} options.timeout - 等待超时时间（毫秒）
      * @returns {Object} 停止结果
      */
     async sendStopSignal(taskId, options = {}) {
+        const task = this.tasks.get(taskId);
+        if (task) {
+            await this.stopMonitor(taskId);
+            return { success: true, method: 'direct' };
+        }
+
+        // 如果任务不在当前管理器中，尝试通过 proxy 停止
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        const proxy = getLogMonitorProxy();
+        if (proxy) {
+            try {
+                const result = await proxy.stopMonitor({ taskId });
+                if (!result || result.error || result.success !== true) {
+                    const message = result?.error || 'Proxy 未确认停止任务';
+                    throw new Error(message);
+                }
+                return { success: true, method: 'proxy' };
+            } catch (e) {
+                this._log(`Proxy 停止任务失败: ${e.message}`);
+            }
+        }
+
+        return await this._sendLegacyStopSignal(taskId, options);
+    }
+
+    _isServerModeConfigured() {
+        return Boolean(process.env.LOG_MONITOR_SOCK || global.__vcp_log_monitor_sock);
+    }
+
+    _normalizeContext(context) {
+        if (Array.isArray(context)) {
+            return context.join('\n');
+        }
+        if (
+            context &&
+            typeof context === 'object' &&
+            Array.isArray(context.before)
+        ) {
+            return context.before.join('\n');
+        }
+        if (typeof context === 'string') {
+            return context;
+        }
+        return '';
+    }
+
+    async _readLegacyStatusFromFile() {
+        try {
+            const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
+            const state = JSON.parse(stateContent);
+            return {
+                activeTasks: state.tasks || [],
+                taskCount: (state.tasks || []).length,
+                lastUpdated: state.lastUpdated,
+                monitorProcessRunning: await this._isMonitorProcessRunning(),
+                stats: this.stats,
+                rulesCount: this.anomalyDetector.getRulesCount(),
+                fallback: true
+            };
+        } catch (error) {
+            return {
+                activeTasks: [],
+                taskCount: 0,
+                lastUpdated: null,
+                monitorProcessRunning: false,
+                stats: this.stats,
+                rulesCount: this.anomalyDetector.getRulesCount(),
+                fallback: true
+            };
+        }
+    }
+
+    async _sendLegacyStopSignal(taskId, options = {}) {
         const timeout = options.timeout || 10000;
-        
-        // 检查任务是否存在于状态文件中
+
         let taskExists = false;
         try {
             const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
@@ -1123,23 +1344,13 @@ class MonitorManager {
         } catch (e) {
             // 状态文件不存在
         }
-        
+
         if (!taskExists) {
             throw new Error(`任务不存在: ${taskId}`);
         }
-        
-        // 检查监控进程是否在运行
-        let monitorProcessRunning = false;
-        try {
-            const pidContent = await fs.readFile(PID_FILE_PATH, 'utf-8');
-            const pid = parseInt(pidContent.trim(), 10);
-            monitorProcessRunning = this._isProcessRunning(pid);
-        } catch (e) {
-            // PID 文件不存在
-        }
-        
+
+        const monitorProcessRunning = await this._isMonitorProcessRunning();
         if (!monitorProcessRunning) {
-            // 监控进程不在运行，直接清理状态文件
             this._log('监控进程未运行，直接清理状态文件');
             try {
                 const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
@@ -1152,11 +1363,9 @@ class MonitorManager {
                 throw new Error(`清理状态文件失败: ${e.message}`);
             }
         }
-        
-        // 监控进程在运行，发送停止信号
+
         this._log(`发送停止信号: ${taskId}`);
-        
-        // 读取现有的停止请求
+
         let stopRequests = [];
         try {
             const content = await fs.readFile(STOP_SIGNAL_PATH, 'utf-8');
@@ -1164,30 +1373,129 @@ class MonitorManager {
         } catch (e) {
             // 文件不存在
         }
-        
-        // 添加新的停止请求
+
         stopRequests.push({
             taskId,
             requestTime: new Date().toISOString()
         });
-        
+
         await this._atomicWrite(STOP_SIGNAL_PATH, JSON.stringify(stopRequests, null, 4));
-        
-        // 等待任务停止
+
         const stopped = await this._waitForTaskStop(taskId, timeout);
-        
         if (stopped) {
             return { success: true, method: 'signal' };
-        } else {
-            return { success: false, method: 'signal', error: '等待超时，任务可能仍在运行' };
         }
+        return { success: false, method: 'signal', error: '等待超时，任务可能仍在运行' };
+    }
+
+    async _writePidFile() {
+        await this._atomicWrite(PID_FILE_PATH, process.pid.toString());
+        this._log(`PID 文件已写入: ${process.pid}`);
+    }
+
+    async _cleanupPidFile() {
+        try {
+            await fs.unlink(PID_FILE_PATH);
+        } catch (e) {
+            // 忽略
+        }
+    }
+
+    async _isMonitorProcessRunning() {
+        try {
+            const pidContent = await fs.readFile(PID_FILE_PATH, 'utf-8');
+            const pid = parseInt(pidContent.trim(), 10);
+            return this._isProcessRunning(pid);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    _isProcessRunning(pid) {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    _startStopSignalWatcher() {
+        if (this._stopSignalInterval) {
+            return;
+        }
+        this._stopSignalInterval = setInterval(async () => {
+            await this._checkStopSignals();
+        }, 1000);
+
+        process.once('exit', () => {
+            if (this._stopSignalInterval) {
+                clearInterval(this._stopSignalInterval);
+            }
+            try {
+                require('fs').unlinkSync(PID_FILE_PATH);
+            } catch (e) {
+                // 忽略
+            }
+        });
+    }
+
+    async _checkStopSignals() {
+        try {
+            const content = await fs.readFile(STOP_SIGNAL_PATH, 'utf-8');
+            const stopRequests = JSON.parse(content);
+
+            if (stopRequests.length === 0) return;
+
+            const remainingRequests = [];
+            for (const request of stopRequests) {
+                if (this.tasks.has(request.taskId)) {
+                    this._log(`收到停止信号，停止任务: ${request.taskId}`);
+                    try {
+                        await this.stopMonitor(request.taskId);
+                    } catch (error) {
+                        this._log(`停止任务失败: ${error.message}`);
+                    }
+                } else {
+                    const requestAge = Date.now() - new Date(request.requestTime).getTime();
+                    if (requestAge < 30000) {
+                        remainingRequests.push(request);
+                    }
+                }
+            }
+
+            await this._atomicWrite(STOP_SIGNAL_PATH, JSON.stringify(remainingRequests, null, 4));
+        } catch (error) {
+            // 文件不存在或解析失败，忽略
+        }
+    }
+
+    async _waitForTaskStop(taskId, timeout) {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeout) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            try {
+                const stateContent = await fs.readFile(STATE_FILE_PATH, 'utf-8');
+                const state = JSON.parse(stateContent);
+                const taskExists = (state.tasks || []).some(t => t.taskId === taskId);
+                if (!taskExists) {
+                    return true;
+                }
+            } catch (e) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
      * 日志输出
      */
     _log(msg, ...args) {
-        console.error(`[MonitorManager] ${msg}`, ...args);  
+        if (this.debug) {
+            logInfo(`[MonitorManager] ${msg}`, ...args);
+        }
     }  
 }  
   

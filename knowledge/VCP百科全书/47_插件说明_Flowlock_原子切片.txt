@@ -1,0 +1,221 @@
+[2026-03-03] - Agent-A
+[VCP百科全书] Flowlock - 心流锁控制器
+
+一、插件基本信息
+1. 插件名称：Flowlock / 心流锁控制器
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：2.3.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：允许AI控制心流锁功能，支持启动停止、提示词设置、输入框管理
+
+二、功能定位
+Flowlock是一个心流锁控制插件，允许AI像人类用户一样控制心流锁功能。心流锁是一个UI组件，用于启动自动续写循环，帮助用户进入创意写作的"心流"状态。插件支持启动/停止心流锁、设置提示词、管理输入框内容、查询状态等操作。适用于需要自动续写、创意写作辅助、长文本生成等场景。
+
+三、配置参数
+本插件无config.env配置文件，所有参数通过命令行参数传递。
+
+四、调用命令列表
+
+1. start - 启动心流锁
+   功能描述：为指定的Agent和话题启动心流锁，UI显示发光效果，自动开始续写循环
+   参数列表：
+   - command (string, 必需): 固定为「始」start「末」
+   - agentId (string, 必需): 要启动心流锁的Agent ID
+   - topicId (string, 必需): 要启动心流锁的话题ID
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」start「末」,
+   agentId:「始」agent_123「末」,
+   topicId:「始」topic_456「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回启动成功确认
+
+2. stop - 停止心流锁
+   功能描述：停止当前正在运行的心流锁，UI发光效果消失，自动续写循环停止
+   参数列表：
+   - command (string, 必需): 固定为「始」stop「末」
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」stop「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回停止成功确认
+
+3. promptee - 设置提示词
+   功能描述：设置下一次自动续写时使用的提示词，提示词追加到输入框现有内容后面
+   参数列表：
+   - command (string, 必需): 固定为「始」promptee「末」
+   - prompt (string, 必需): 要设置的提示词内容
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」promptee「末」,
+   prompt:「始」请继续描述主角的内心活动「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回提示词设置成功确认
+
+4. prompter - 指定外部数据源
+   功能描述：指定外部数据源，从该源获取内容作为下一次续写的提示词
+   参数列表：
+   - command (string, 必需): 固定为「始」prompter「末」
+   - promptSource (string, 必需): 数据源的标识或路径
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」prompter「末」,
+   promptSource:「始」external_api_endpoint「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回数据源设置成功确认
+
+5. clear - 清空输入框
+   功能描述：清空输入框中的所有内容，用于重置提示词或开始全新输入
+   参数列表：
+   - command (string, 必需): 固定为「始」clear「末」
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」clear「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回清空成功确认
+
+6. remove - 移除匹配的文本
+   功能描述：从输入框中移除所有匹配的文本
+   参数列表：
+   - command (string, 必需): 固定为「始」remove「末」
+   - target (string, 必需): 要移除的文本内容
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」remove「末」,
+   target:「始」需要删除的文本「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回移除成功确认
+
+7. edit - 编辑输入框文本
+   功能描述：编辑输入框中的指定文本，查找oldText并替换为newText（仅替换第一个匹配项）
+   参数列表：
+   - command (string, 必需): 固定为「始」edit「末」
+   - oldText (string, 必需): 要查找的原始文本
+   - newText (string, 必需): 替换后的新文本
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」edit「末」,
+   oldText:「始」原来的文字「末」,
+   newText:「始」修改后的文字「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回编辑成功确认
+
+8. get - 获取输入框内容
+   功能描述：获取输入框中当前的所有文本内容
+   参数列表：
+   - command (string, 必需): 固定为「始」get「末」
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」get「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回JSON格式的响应
+   {
+     "status": "success",
+     "message": "输入框当前内容为: \"文本内容\"",
+     "content": "文本内容"
+   }
+
+9. status - 查询心流锁状态
+   功能描述：获取心流锁的当前状态，包括是否启用、正在处理、关联的Agent和话题等信息
+   参数列表：
+   - command (string, 必需): 固定为「始」status「末」
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」Flowlock「末」,
+   command:「始」status「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回JSON格式的状态信息
+   {
+     "status": "success",
+     "message": "心流锁已启用 (Agent: agent_id, Topic: topic_id, 处理中: 否)",
+     "flowlockStatus": {
+       "isActive": true,
+       "isProcessing": false,
+       "agentId": "agent_id",
+       "topicId": "topic_id"
+     }
+   }
+
+五、使用示例
+
+示例1：启动心流锁进入创意写作模式
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」start「末」,
+agentId:「始」writer_agent_001「末」,
+topicId:「始」novel_chapter_5「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：设置续写提示词
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」promptee「末」,
+prompt:「始」主角突然意识到真相，内心产生了强烈的震撼。请继续描述他的反应和接下来的行动。「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：获取当前输入框内容
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」get「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：编辑输入框中的文本
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」edit「末」,
+oldText:「始」这是一个错误的描述「末」,
+newText:「始」这是正确的描述「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例5：查询心流锁状态
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」status「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例6：停止心流锁
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」,
+command:「始」stop「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 心流锁启动：
+   - 必须同时提供agentId和topicId才能启动
+   - 启动后UI会显示发光效果，表示心流锁已激活
+   - 同一时间只能有一个心流锁处于活跃状态
+
+2. 提示词管理：
+   - promptee设置的提示词会追加到输入框现有内容后面
+   - 如需完全替换，先使用clear清空，再使用promptee设置
+   - prompter用于从外部数据源获取提示词，需要数据源支持
+
+3. 输入框操作：
+   - edit命令只替换第一个匹配项
+   - remove命令移除所有匹配项
+   - get命令返回完整的输入框内容
+
+4. 状态查询：
+   - status命令返回JSON格式的详细状态信息
+   - isActive表示心流锁是否启用
+   - isProcessing表示是否正在进行续写
+
+5. 自动续写循环：
+   - 启动心流锁后，系统会自动进行续写循环
+   - 每次续写会使用当前的提示词
+   - 停止心流锁会中断自动续写
+
+七、关联插件
+- FileOperator：文件操作，可用于保存续写结果
+- DailyNote：日记管理，可用于记录创意写作过程
+
+Tag: 心流锁, 自动续写, 创意写作, 提示词管理, 输入框控制, 写作辅助

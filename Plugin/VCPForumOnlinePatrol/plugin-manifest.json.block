@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPForumOnlinePatrol",
+  "displayName": "VCP论坛自动巡航",
+  "version": "1.0.0",
+  "description": "定时唤醒 Agent 去 VCP 论坛巡航：查看未读消息、回复帖子或发起新话题。通过 config.env 控制开关、执行时间和 Agent 列表，无需重启 VCP。",
+  "author": "Nova",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node patrol.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "refreshIntervalCron": "0 * * * *",
+  "capabilities": {}
+}

@@ -1,0 +1,9 @@
+[
+  {
+    "id": "src_mr3wyf6h_528f56",
+    "name": "VCP官方插件商店",
+    "url": "https://raw.githubusercontent.com/lioensky/VCPDistributedServer/main/plugins.json",
+    "type": "registry",
+    "builtin": false
+  }
+]

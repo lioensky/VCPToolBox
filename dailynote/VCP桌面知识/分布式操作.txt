@@ -11,7 +11,13 @@
 - `musicAPI.play/pause/getState/setVolume/seek` - 控制音乐播放
 
 参数:
-- htmlContent (字符串, 必需): 挂件的完整HTML代码。可以包含 <style> 和 <script> 标签。
+- htmlContent / builtinWidgetKey / metricComponent（三选一，至少提供一个）：
+  - htmlContent (字符串): 挂件的完整HTML代码。可以包含 <style> 和 <script> 标签。
+  - builtinWidgetKey (字符串): 内置监控挂件键名 cpu / memory / disk / network / gpu / battery / docker / sensors / processes，传它时无需 htmlContent。
+  - metricComponent (字符串): builtinWidgetKey 的别名。
+- preSavedId (字符串, 可选): 绑定已有挂件目录（如 dw-xxx），挂件因此拥有 widgetFS，之后收藏写回同一目录。会用新 HTML 覆盖该目录的 widget.html，只对自己的目录使用。
+- options (JSON对象或JSON字符串, 可选): 透传给渲染端的额外选项；显式的 x/y/width/height 优先。
+- 行为说明（DesktopRemote 1.5.0）：桌面关闭时会自动打开窗口并等待2秒；CreateWidget 不经过 DESKTOP_PUSH，不产生 dw-* 推送归档，需要持久化就传 autoSave 或 preSavedId；坐标与尺寸的 0 是合法值。
 - x (数字, 可选): 挂件左上角的X坐标（像素），默认100。
 - y (数字, 可选): 挂件左上角的Y坐标（像素），默认100。
 - width (数字, 可选): 挂件初始宽度（像素），默认320。挂件会根据内容自动调整。
@@ -19,7 +25,7 @@
 - widgetId (字符串, 可选): 自定义挂件ID。默认自动生成。
 - autoSave (布尔, 可选): 是否自动将挂件收藏到侧栏，默认false。
 - saveName (字符串, 可选): 收藏名称（仅当autoSave为true时有效）。
-- scriptFiles (数组, 可选): 外部脚本文件列表。当挂件的JS逻辑较复杂时，可以将JS代码拆分为独立文件，而不是全部内联在htmlContent中。每个元素是一个对象，包含 fileName（文件名，默认 'app.js'）和 content（JS代码内容）。使用此参数时，htmlContent中应通过 <script src="文件名"> 引用这些文件。系统会自动将文件保存到挂件的收藏目录中，并将相对路径转换为绝对路径以确保正确加载。注意：使用scriptFiles时会自动启用autoSave（因为外部文件需要持久化存储）。
+- scriptFiles (字符串, 可选): 一段 JS 源码，系统保存为挂件目录下的 app.js。htmlContent 中用 <script src="app.js"></script> 引用（漏写时系统自动追加）。写盘时 src 会被改写为 file:/// 绝对路径。使用此参数会自动启用 autoSave，目录前缀为 saved-*。
 
 调用示例 - 创建一个简单时钟挂件:
 tool_name:「始」DesktopRemote「末」,
@@ -50,5 +56,5 @@ saveName:「始」画布挂件「末」
 # 精细化改造已有插件的方法
 
 阅读widget日志可以了解所有当前widget运行时
-H:\MCP\VCPChat\AppData\DesktopWidgets\CATALOG.md
+VCPChat 根目录下的 AppData/DesktopWidgets/CATALOG.md（以实际安装位置为准）
 然后使用本地版本的FileOperator进行对应操作

@@ -11,6 +11,11 @@ import {
 } from "@/app/routes/manifest";
 import { pluginApi } from "@/api";
 import { useLocalStorage } from "@/composables/useLocalStorage";
+import {
+  applyActiveTheme,
+  syncBrowserThemeColor,
+} from "@/features/theme-editor/themeEngine";
+import type { ThemeMode } from "@/features/theme-editor/themeEngine";
 import type { PluginInfo } from "@/types/api.plugin";
 
 export type NavItem = AppNavItem;
@@ -31,10 +36,37 @@ function comparePluginLabels(a: PluginInfo, b: PluginInfo): number {
   });
 }
 
+function parseThemeStorageValue(value: string): ThemeMode {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed === "dark" || parsed === "light") {
+      return parsed;
+    }
+  } catch {
+    // 兼容旧版裸字符串 localStorage.theme = dark/light
+  }
+
+  if (value === "dark" || value === "light") {
+    return value;
+  }
+
+  return "dark";
+}
+
+export interface ImmersiveCelestialAngle {
+  planet: string;
+  angle: number;
+}
+
 export const useAppStore = defineStore("app", () => {
-  const theme = useLocalStorage<"dark" | "light">("theme", "dark");
+  const theme = useLocalStorage<ThemeMode>("theme", "dark", {
+    parser: parseThemeStorageValue,
+    serializer: (value) => value,
+  });
+  const resolvedTheme = ref<"dark" | "light">("dark");
   const animationsEnabled = useLocalStorage<boolean>("animationsEnabled", true);
   const isImmersiveMode = ref(false);
+  const immersiveCelestialAngles = ref<Record<string, number>>({});
   const pinnedPluginNames = useLocalStorage<string[]>(
     PINNED_PLUGINS_STORAGE_KEY,
     []
@@ -46,16 +78,27 @@ export const useAppStore = defineStore("app", () => {
   const pluginsLoaded = ref(false);
   let pluginsLoadPromise: Promise<PluginInfo[]> | null = null;
 
+  function syncThemeToDom(newTheme: ThemeMode) {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    resolvedTheme.value = newTheme;
+    document.documentElement.setAttribute("data-theme", newTheme);
+    syncBrowserThemeColor();
+  }
+
   // 自动同步主题状态到 DOM，确保 CSS 变量正确应用
   watch(
     theme,
     (newTheme) => {
-      if (typeof document !== "undefined") {
-        document.documentElement.setAttribute("data-theme", newTheme);
-      }
+      syncThemeToDom(newTheme);
     },
     { immediate: true }
   );
+
+  // 启动时应用保存的自定义主题（覆盖 -dark/-light 变量，切换模式时 CSS 自动选择）
+  applyActiveTheme();
 
   const pluginMap = computed(
     () => new Map(plugins.value.map((plugin) => [getPluginName(plugin), plugin]))
@@ -66,7 +109,7 @@ export const useAppStore = defineStore("app", () => {
       .filter((plugin): plugin is PluginInfo => plugin !== undefined)
   );
 
-  function setTheme(newTheme: "dark" | "light") {
+  function setTheme(newTheme: ThemeMode) {
     theme.value = newTheme;
   }
 
@@ -82,6 +125,12 @@ export const useAppStore = defineStore("app", () => {
   function exitImmersiveMode() {
     isImmersiveMode.value = false;
     document.body.style.overflow = "";
+  }
+
+  function setImmersiveCelestialAngles(angles: ImmersiveCelestialAngle[]) {
+    immersiveCelestialAngles.value = Object.fromEntries(
+      angles.map((item) => [item.planet, item.angle])
+    );
   }
 
   function loadPlugins(pluginList: PluginInfo[]) {
@@ -171,8 +220,10 @@ export const useAppStore = defineStore("app", () => {
 
   return {
     theme,
+    resolvedTheme,
     animationsEnabled,
     isImmersiveMode,
+    immersiveCelestialAngles,
     navItems,
     plugins,
     pluginsLoaded,
@@ -182,6 +233,7 @@ export const useAppStore = defineStore("app", () => {
     toggleAnimations,
     enterImmersiveMode,
     exitImmersiveMode,
+    setImmersiveCelestialAngles,
     loadPlugins,
     refreshPlugins,
     ensurePluginsLoaded,

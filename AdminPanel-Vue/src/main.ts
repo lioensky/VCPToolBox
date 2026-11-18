@@ -46,4 +46,12 @@ app.directive("lazy", lazyDirective);
 
 app.use(pinia);
 app.use(router);
-app.mount("#app");
+
+async function bootstrap(): Promise<void> {
+	await router.isReady();
+	app.mount("#app");
+}
+
+void bootstrap().catch((error) => {
+	console.error("[AdminPanel] Failed to initialize router:", error);
+});

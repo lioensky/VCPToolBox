@@ -10,10 +10,14 @@
 const crypto = require('crypto');
 
 class ContextVectorManager {
-    constructor(plugin) {
+    constructor(plugin, maxVectorMapSize = 1000) {
         this.plugin = plugin;
-        // 核心映射：normalizedHash -> { vector, role, originalText, timestamp }
+        // 核心映射：normalizedHash -> { vector, role, normalizedText, timestamp }，有界 LRU。
         this.vectorMap = new Map();
+        this.maxVectorMapSize = maxVectorMapSize;
+        // 原始消息 -> { normalized, hash }，有界 LRU。
+        this.normalizationCache = new Map();
+        this.maxNormalizationCacheSize = 512;
         // 顺序索引：用于按顺序获取向量
         this.historyAssistantVectors = [];
         this.historyUserVectors = [];
@@ -27,6 +31,25 @@ class ContextVectorManager {
     /**
      * 文本归一化处理
      */
+    /**
+     * 提取消息文本内容（兼容 string 与多模态文本块数组）
+     */
+    _extractContent(msg) {
+        if (!msg) return '';
+        if (typeof msg.content === 'string') return msg.content;
+        if (Array.isArray(msg.content)) {
+            return msg.content.find(p => p && p.type === 'text')?.text || '';
+        }
+        return '';
+    }
+
+    /**
+     * 判断是否为以 [系统...] 开头的虚拟系统用户消息
+     */
+    _isVirtualSystemUser(msg) {
+        return msg?.role === 'user' && /^\s*\[系统/.test(this._extractContent(msg));
+    }
+
     _normalize(text) {
         if (!text) return '';
         // 复用插件的清理逻辑
@@ -46,38 +69,77 @@ class ContextVectorManager {
         return crypto.createHash('sha256').update(text).digest('hex');
     }
 
-    /**
-     * 简单的字符串相似度算法 (Dice's Coefficient)
-     * 用于处理微小编辑时的模糊匹配
-     */
+    /** 复用历史消息归一化结果与哈希（>64KB 自动切换为定长 SHA-256 缓存键，支持任意长度历史消息跨轮 O(1) 命中）。 */
+    _getNormalizedAndHash(content) {
+        if (!content) return { normalized: '', hash: this._generateHash('') };
+        const cacheKey = content.length <= 65536
+            ? content
+            : `__raw_sha256:${content.length}:${this._generateHash(content)}`;
+        const cached = this.normalizationCache.get(cacheKey);
+        if (cached !== undefined) {
+            this.normalizationCache.delete(cacheKey);
+            this.normalizationCache.set(cacheKey, cached);
+            return cached;
+        }
+
+        const normalized = this._normalize(content);
+        const hash = this._generateHash(normalized);
+        const record = { normalized, hash };
+        if (normalized.length <= 5000000) {
+            if (this.normalizationCache.size >= this.maxNormalizationCacheSize) {
+                const oldestKey = this.normalizationCache.keys().next().value;
+                if (oldestKey !== undefined) this.normalizationCache.delete(oldestKey);
+            }
+            this.normalizationCache.set(cacheKey, record);
+        }
+        return record;
+    }
+
+    _getBigrams(str) {
+        const bigrams = new Set();
+        for (let i = 0; i < str.length - 1; i++) {
+            bigrams.add(str.substring(i, i + 2));
+        }
+        return bigrams;
+    }
+
+    /** 字符 Bigram Set Dice 相似度。 */
     _calculateSimilarity(str1, str2) {
         if (str1 === str2) return 1.0;
         if (str1.length < 2 || str2.length < 2) return 0;
+        const b1 = this._getBigrams(str1);
+        const b2 = this._getBigrams(str2);
+        return this._calculateSimilarityFromBigrams(b1, b2);
+    }
 
-        const getBigrams = (str) => {
-            const bigrams = new Set();
-            for (let i = 0; i < str.length - 1; i++) {
-                bigrams.add(str.substring(i, i + 2));
-            }
-            return bigrams;
-        };
-
-        const b1 = getBigrams(str1);
-        const b2 = getBigrams(str2);
+    _calculateSimilarityFromBigrams(b1, b2) {
+        if (b1.size === 0 || b2.size === 0) return 0;
+        const [smaller, larger] = b1.size <= b2.size ? [b1, b2] : [b2, b1];
         let intersect = 0;
-        for (const b of b1) {
-            if (b2.has(b)) intersect++;
+        for (const b of smaller) {
+            if (larger.has(b)) intersect++;
         }
-
         return (2.0 * intersect) / (b1.size + b2.size);
     }
 
-    /**
-     * 尝试在现有缓存中寻找模糊匹配的向量
-     */
+    /** 复用 normalizedText 与惰性驻留的 Bigram Set，并以严格成立的集合基数上界剪枝。 */
     _findFuzzyMatch(normalizedText) {
+        if (!normalizedText || normalizedText.length < 2) return null;
+        let queryBigrams = null;
+
         for (const entry of this.vectorMap.values()) {
-            const similarity = this._calculateSimilarity(normalizedText, this._normalize(entry.originalText));
+            const targetNormalized = entry.normalizedText;
+
+            if (!targetNormalized || targetNormalized.length < 2) continue;
+            if (normalizedText === targetNormalized) return entry.vector;
+
+            if (!queryBigrams) queryBigrams = this._getBigrams(normalizedText);
+            if (!entry.bigrams) entry.bigrams = this._getBigrams(targetNormalized);
+            if ((2.0 * Math.min(queryBigrams.size, entry.bigrams.size)) / (queryBigrams.size + entry.bigrams.size) < this.fuzzyThreshold) {
+                continue;
+            }
+
+            const similarity = this._calculateSimilarityFromBigrams(queryBigrams, entry.bigrams);
             if (similarity >= this.fuzzyThreshold) {
                 return entry.vector;
             }
@@ -92,7 +154,12 @@ class ContextVectorManager {
      */
     async updateContext(messages, options = {}) {
         if (!Array.isArray(messages)) return;
-        const { allowApi = false } = options;
+        const { allowApi = false, signal = null } = options;
+        if (signal?.aborted) {
+            const abortErr = new Error('ContextVectorManager update aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
 
         const newAssistantVectors = [];
         const newUserVectors = [];
@@ -112,8 +179,8 @@ class ContextVectorManager {
             skippedEmptyMessages: 0
         };
 
-        // 识别最后的消息索引以进行排除
-        const lastUserIndex = messages.findLastIndex(m => m.role === 'user');
+        // 识别最后的消息索引以进行排除（排除最后一轮真实用户消息和最后 AI 消息）
+        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const tasks = messages.map(async (msg, index) => {
@@ -127,12 +194,16 @@ class ContextVectorManager {
                 return;
             }
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractContent(msg);
 
             if (!content || content.length < 2) {
                 stats.skippedEmptyMessages++;
+                return;
+            }
+
+            // 排除虚拟系统消息（以 [系统...] 开头的 user 消息，与全库 findLastRealUserMessage 规则保持一致）
+            if (this._isVirtualSystemUser(msg)) {
+                stats.skippedSystemMessages++;
                 return;
             }
 
@@ -142,8 +213,7 @@ class ContextVectorManager {
                 stats.totalHistoricalUserMessages++;
             }
 
-            const normalized = this._normalize(content);
-            const hash = this._generateHash(normalized);
+            const { normalized, hash } = this._getNormalizedAndHash(content);
 
             let vector = null;
             let vectorSource = 'none';
@@ -170,7 +240,12 @@ class ContextVectorManager {
 
                 // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
                 if (!vector && allowApi) {
-                    vector = await this.plugin.getSingleEmbeddingCached(content);
+                    if (signal?.aborted) {
+                        const abortErr = new Error('ContextVectorManager update aborted');
+                        abortErr.name = 'AbortError';
+                        throw abortErr;
+                    }
+                    vector = await this.plugin.getSingleEmbeddingCached(content, { signal });
                     if (vector) {
                         vectorSource = 'api';
                     }
@@ -178,10 +253,15 @@ class ContextVectorManager {
 
                 // 存入映射
                 if (vector) {
+                    // 按写入先后淘汰：不刷新顺序，上限以内模糊匹配的扫描顺序与原来相同
+                    if (!this.vectorMap.has(hash) && this.vectorMap.size >= this.maxVectorMapSize) {
+                        const oldestKey = this.vectorMap.keys().next().value;
+                        if (oldestKey !== undefined) this.vectorMap.delete(oldestKey);
+                    }
                     this.vectorMap.set(hash, {
                         vector,
                         role: msg.role,
-                        originalText: content,
+                        normalizedText: normalized,
                         timestamp: Date.now()
                     });
                 }
@@ -206,6 +286,11 @@ class ContextVectorManager {
         });
 
         await Promise.all(tasks);
+        if (signal?.aborted) {
+            const abortErr = new Error('ContextVectorManager update aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+        }
 
         // 保持原始顺序
         this.historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
@@ -283,58 +368,78 @@ class ContextVectorManager {
      * @returns {number} L ∈ [0, 1]，越高表示逻辑越集中
      */
     computeLogicDepth(vector, topK = 64) {
-        if (!vector) return 0;
+        if (!vector || vector.length === 0) return 0;
         const dim = vector.length;
         const energies = new Float32Array(dim);
         let totalEnergy = 0;
 
         for (let i = 0; i < dim; i++) {
-            energies[i] = vector[i] * vector[i];
+            const value = Number(vector[i]);
+            if (!Number.isFinite(value)) return 0;
+            energies[i] = value * value;
             totalEnergy += energies[i];
         }
 
-        if (totalEnergy < 1e-9) return 0;
+        if (!Number.isFinite(totalEnergy) || totalEnergy < 1e-9) return 0;
+
+        // topK 必须严格小于 dim，否则 expectedUniform=1 会使归一化分母为零。
+        // 对低维向量保留至少一个非 Top-K 维度，维持“相对均匀分布”的定义。
+        const requestedTopK = Number.isFinite(Number(topK)) ? Math.floor(Number(topK)) : 64;
+        const actualTopK = Math.max(1, Math.min(requestedTopK, dim - 1));
 
         const sorted = Array.from(energies).sort((a, b) => b - a);
         let topKEnergy = 0;
-        const actualTopK = Math.min(topK, dim);
         for (let i = 0; i < actualTopK; i++) {
             topKEnergy += sorted[i];
         }
 
         const concentration = topKEnergy / totalEnergy;
         const expectedUniform = actualTopK / dim;
-        const L = (concentration - expectedUniform) / (1 - expectedUniform);
+        const denominator = 1 - expectedUniform;
+        if (denominator <= 0) return 0;
+
+        const L = (concentration - expectedUniform) / denominator;
+        if (!Number.isFinite(L)) return 0;
 
         return Math.max(0, Math.min(1, L));
     }
 
     /**
      * 计算语义宽度指数 S
-     * 核心思想：L2归一化后 Σv_i² = 1，v_i² 构成概率分布，
+     * 核心思想：将各维平方能量按总能量归一化为概率分布，
      * 用归一化熵衡量能量的分散程度。
      * S ≈ 1 → 能量均匀分布，语义宽泛
      * S ≈ 0 → 能量集中少数维度，语义精准
      *
-     * @param {Array|Float32Array} vector - L2归一化向量
+     * @param {Array|Float32Array} vector - 任意非零向量（无需预先 L2 归一化）
      * @returns {number} S ∈ [0, 1]
      */
     computeSemanticWidth(vector) {
-        if (!vector) return 0;
+        if (!vector || vector.length <= 1) return 0;
         const dim = vector.length;
+        let totalEnergy = 0;
 
-        // v_i^2 构成概率分布 (L2归一化 => Σv_i² = 1)
+        for (let i = 0; i < dim; i++) {
+            const value = Number(vector[i]);
+            if (!Number.isFinite(value)) return 0;
+            totalEnergy += value * value;
+        }
+
+        if (!Number.isFinite(totalEnergy) || totalEnergy < 1e-12) return 0;
+
+        // p_i = v_i² / Σv_j²，避免依赖模型输出或聚合向量已经 L2 归一化。
         let entropy = 0;
         for (let i = 0; i < dim; i++) {
-            const p = vector[i] * vector[i];
+            const value = Number(vector[i]);
+            const p = (value * value) / totalEnergy;
             if (p > 1e-12) {
                 entropy -= p * Math.log(p);
             }
         }
 
-        // 归一化到 [0, 1]：均匀分布时熵最大 = log(dim)
-        const maxEntropy = Math.log(dim);
-        return maxEntropy > 0 ? entropy / maxEntropy : 0;
+        // 均匀分布时熵最大为 log(dim)，并钳制浮点误差导致的轻微越界。
+        const semanticWidth = entropy / Math.log(dim);
+        return Math.max(0, Math.min(1, semanticWidth));
     }
 
     /**
@@ -364,44 +469,25 @@ class ContextVectorManager {
      * @returns {Array<{vector: Float32Array, text: string, role: string, range: [number, number]}>}
      */
     segmentContext(messages, similarityThreshold = 0.70) {
-        // 1. 获取所有有效向量并按顺序排列
-        // 我们需要合并 assistant 和 user 的向量，按 index 排序
-        const allEntries = [];
-        this.vectorMap.forEach((entry, hash) => {
-            // 注意：vectorMap 中存储的是无序的 hash 映射，我们需要找到对应的 index
-            // 但 updateContext 中构建的 historyAssistantVectors 丢失了原始 index
-            // 因此我们需要重新扫描一次 messages 来对齐向量
-            // 优化：直接在 updateContext 时存储带 index 的列表会更好，但为了少改动，这里重新扫描
-        });
-
-        // 由于 vectorMap hash 丢失了 index，我们利用 updateContext 中的逻辑重新构建有序列表
-        // 或者直接修改 updateContext 让 vectorMap 存 index? 不行，hash是去重的。
-        // 最好的办法是重新遍历 messages，查 vectorMap
+        // 1. 重新遍历消息，按原始顺序对齐向量并排除最后一轮
+        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
+        const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const sequence = [];
         messages.forEach((msg, index) => {
             // 跳过系统消息和无关消息
             if (msg.role === 'system') return;
+            if (index === lastUserIndex || index === lastAiIndex) return;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractContent(msg);
 
             if (!content || content.length < 2) return;
+            if (this._isVirtualSystemUser(msg)) return;
 
-            const normalized = this._normalize(content);
-            const hash = this._generateHash(normalized);
+            const { hash } = this._getNormalizedAndHash(content);
 
             // 尝试精确匹配
-            let entry = this.vectorMap.get(hash);
-
-            // 尝试模糊匹配 (如果精确匹配失败)
-            if (!entry) {
-                // 这里为了性能，只做精确查找。模糊查找开销较大且 updateContext 已经做过了并存入 vectorMap
-                // 理论上如果 updateContext 刚跑过，vectorMap 里应该有（或是 fuzzy 后的 match）
-                // 我们再次计算 fuzzy 可能会很慢。
-                // 妥协：如果没有 vector，跳过
-            }
+            const entry = this.vectorMap.get(hash);
 
             if (entry && entry.vector) {
                 sequence.push({

@@ -1,9 +1,11 @@
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { agentApi, pluginApi } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentAssistantConfigAgent,
   AgentAssistantConfigResponse,
   SaveAgentAssistantConfigPayload,
+  AgentAssistantDelegationTask,
 } from "@/types/api.agent";
 import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
@@ -44,6 +46,10 @@ export interface GlobalConfig {
   maxHistory: number;
   contextTtl: number;
   globalSystemPrompt: string;
+  delegationMaxRounds: number;
+  delegationTimeout: number;
+  delegationSystemPrompt: string;
+  delegationHeartbeatPrompt: string;
 }
 
 interface ApiEnvelope<T> {
@@ -161,6 +167,24 @@ function buildConfigFromEnvPairs(
     pairs.get("GLOBAL_SYSTEM_PROMPT") ||
     pairs.get("globalSystemPrompt") ||
     "";
+  const delegationMaxRounds = Number(
+    pairs.get("DELEGATION_MAX_ROUNDS") ||
+      pairs.get("delegationMaxRounds") ||
+      15
+  );
+  const delegationTimeout = Number(
+    pairs.get("DELEGATION_TIMEOUT") ||
+      pairs.get("delegationTimeout") ||
+      300000
+  );
+  const delegationSystemPrompt =
+    pairs.get("DELEGATION_SYSTEM_PROMPT") ||
+    pairs.get("delegationSystemPrompt") ||
+    "";
+  const delegationHeartbeatPrompt =
+    pairs.get("DELEGATION_HEARTBEAT_PROMPT") ||
+    pairs.get("delegationHeartbeatPrompt") ||
+    "";
 
   const agentsRaw =
     pairs.get("AGENTS") ||
@@ -175,6 +199,10 @@ function buildConfigFromEnvPairs(
       maxHistoryRounds,
       contextTtlHours,
       globalSystemPrompt,
+      delegationMaxRounds,
+      delegationTimeout,
+      delegationSystemPrompt,
+      delegationHeartbeatPrompt,
       agents: jsonAgents,
     };
   }
@@ -217,6 +245,10 @@ function buildConfigFromEnvPairs(
     maxHistoryRounds,
     contextTtlHours,
     globalSystemPrompt,
+    delegationMaxRounds,
+    delegationTimeout,
+    delegationSystemPrompt,
+    delegationHeartbeatPrompt,
     agents: envAgents,
   };
 }
@@ -311,6 +343,26 @@ function normalizeConfigPayload(payload: unknown): AgentAssistantConfigResponse 
       "global_system_prompt",
       "GLOBAL_SYSTEM_PROMPT",
       "AGENT_ALL_SYSTEM_PROMPT",
+    ]),
+    delegationMaxRounds: pickNumber(
+      source,
+      ["delegationMaxRounds", "delegation_max_rounds", "DELEGATION_MAX_ROUNDS"],
+      15
+    ),
+    delegationTimeout: pickNumber(
+      source,
+      ["delegationTimeout", "delegation_timeout", "DELEGATION_TIMEOUT"],
+      300000
+    ),
+    delegationSystemPrompt: pickString(source, [
+      "delegationSystemPrompt",
+      "delegation_system_prompt",
+      "DELEGATION_SYSTEM_PROMPT",
+    ]),
+    delegationHeartbeatPrompt: pickString(source, [
+      "delegationHeartbeatPrompt",
+      "delegation_heartbeat_prompt",
+      "DELEGATION_HEARTBEAT_PROMPT",
     ]),
     agents: Array.isArray(agentsSource)
       ? agentsSource.map((item) => ({
@@ -436,6 +488,10 @@ export function useAgentAssistantConfig() {
     maxHistory: 7,
     contextTtl: 24,
     globalSystemPrompt: "",
+    delegationMaxRounds: 15,
+    delegationTimeout: 300000,
+    delegationSystemPrompt: "",
+    delegationHeartbeatPrompt: "",
   });
 
   const agents = ref<AgentConfig[]>([]);
@@ -443,6 +499,11 @@ export function useAgentAssistantConfig() {
   const selectedExistingAgent = ref("");
   const statusMessage = ref("");
   const statusType = ref<"info" | "success" | "error">("info");
+  const activeDelegations = ref<AgentAssistantDelegationTask[]>([]);
+  const recentDelegations = ref<AgentAssistantDelegationTask[]>([]);
+  const delegationStatusMessage = ref("");
+  const delegationLoading = ref(false);
+  let delegationPollingTimer: number | undefined;
 
   async function loadConfig() {
     try {
@@ -475,6 +536,10 @@ export function useAgentAssistantConfig() {
         maxHistory: Number(data.maxHistoryRounds) || 7,
         contextTtl: Number(data.contextTtlHours) || 24,
         globalSystemPrompt: data.globalSystemPrompt || "",
+        delegationMaxRounds: Number(data.delegationMaxRounds) || 15,
+        delegationTimeout: Number(data.delegationTimeout) || 300000,
+        delegationSystemPrompt: data.delegationSystemPrompt || "",
+        delegationHeartbeatPrompt: data.delegationHeartbeatPrompt || "",
       };
 
       agents.value = Array.isArray(data.agents)
@@ -494,6 +559,59 @@ export function useAgentAssistantConfig() {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error("Failed to load config:", errorMessage);
       showMessage(`加载配置失败：${errorMessage}`, "error");
+    }
+  }
+
+  async function loadDelegations() {
+    try {
+      delegationLoading.value = true;
+      const data = await agentApi.getAgentDelegations(
+        {},
+        {
+          showLoader: false,
+          loadingKey: "agent-assistant.delegations.load",
+        }
+      );
+      activeDelegations.value = Array.isArray(data.active) ? data.active : [];
+      recentDelegations.value = Array.isArray(data.recent) ? data.recent : [];
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.warn("Failed to load delegations:", errorMessage);
+      delegationStatusMessage.value = `加载委托任务失败：${errorMessage}`;
+    } finally {
+      delegationLoading.value = false;
+    }
+  }
+
+  function startDelegationPolling() {
+    if (delegationPollingTimer) {
+      window.clearInterval(delegationPollingTimer);
+    }
+    delegationPollingTimer = window.setInterval(() => {
+      loadDelegations();
+    }, 5000);
+  }
+
+  async function cancelDelegation(delegationId: string) {
+    if (!(await askConfirm({
+      message: `确定要取消委托任务 ${delegationId} 吗？当前正在进行的模型请求可能需要等本轮返回后才会退出。`,
+      danger: true,
+      confirmText: "取消委托",
+    }))) {
+      return;
+    }
+
+    try {
+      const result = await agentApi.cancelAgentDelegation(delegationId, "用户从 AgentAssistant 面板请求取消。", {
+        loadingKey: "agent-assistant.delegations.cancel",
+      });
+      delegationStatusMessage.value = result.message || "已请求取消委托任务。";
+      showMessage(delegationStatusMessage.value, result.success ? "success" : "error");
+      await loadDelegations();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      delegationStatusMessage.value = `取消失败：${errorMessage}`;
+      showMessage(delegationStatusMessage.value, "error");
     }
   }
 
@@ -529,10 +647,16 @@ export function useAgentAssistantConfig() {
     }));
   }
 
-  function removeAgent(index: number) {
-    if (confirm("确定要删除这个 Agent 助手配置吗？")) {
-      agents.value.splice(index, 1);
+  async function removeAgent(index: number) {
+    if (!(await askConfirm({
+      message: "确定要删除这个 Agent 助手配置吗？",
+      danger: true,
+      confirmText: "删除",
+    }))) {
+      return;
     }
+
+    agents.value.splice(index, 1);
   }
 
   async function saveConfig() {
@@ -555,6 +679,10 @@ export function useAgentAssistantConfig() {
         maxHistoryRounds: globalConfig.value.maxHistory,
         contextTtlHours: globalConfig.value.contextTtl,
         globalSystemPrompt: globalConfig.value.globalSystemPrompt,
+        delegationMaxRounds: globalConfig.value.delegationMaxRounds,
+        delegationTimeout: globalConfig.value.delegationTimeout,
+        delegationSystemPrompt: globalConfig.value.delegationSystemPrompt,
+        delegationHeartbeatPrompt: globalConfig.value.delegationHeartbeatPrompt,
         agents: agents.value
           .filter((agent) => agent.name.trim() || agent.model.trim())
           .map((agent) => ({
@@ -585,16 +713,30 @@ export function useAgentAssistantConfig() {
 
   onMounted(() => {
     loadConfig();
+    loadDelegations();
+    startDelegationPolling();
+  });
+
+  onUnmounted(() => {
+    if (delegationPollingTimer) {
+      window.clearInterval(delegationPollingTimer);
+    }
   });
 
   return {
     globalConfig,
     agents,
+    activeDelegations,
+    recentDelegations,
+    delegationStatusMessage,
+    delegationLoading,
     availableAgents,
     selectedExistingAgent,
     statusMessage,
     statusType,
     loadConfig,
+    loadDelegations,
+    cancelDelegation,
     addFromExisting,
     addCustomAgent,
     removeAgent,

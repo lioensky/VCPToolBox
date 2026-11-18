@@ -22,11 +22,55 @@ const VAR_HTTP_URL = process.env.VarHttpUrl;
 // Config for 'create' command
 const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt";
 
+// Tag AI helper configuration (disabled by default)
+const TAG_MASTER_ENABLED = (process.env.TagMaster || "false").toLowerCase() === "true";
+const TAG_MODEL = process.env.TagModel || 'gemini-2.5-flash-preview-09-2025-thinking';
+const TAG_MODEL_MAX_OUTPUT_TOKENS = parseInt(process.env.TagModelMaxOutPutTokens || '30000', 10);
+const TAG_MODEL_MAX_TOKENS = parseInt(process.env.TagModelMaxTokens || '40000', 10);
+const TAG_MODEL_PROMPT_FILE = process.env.TagModelPrompt || 'TagMaster.txt';
+const API_KEY = process.env.API_Key;
+const API_URL = process.env.API_URL;
+
+// Fuzzy Diff for Update Failures
+const FUZZY_DIFF_ENABLED = (process.env.DAILY_NOTE_FUZZY_DIFF || "false").toLowerCase() === "true";
+const UPDATE_FAILURE_HINT = "请检查字段或标点符号是否与原文一致；若多次失败，可尝试使用 DailyNoteManager 插件 list 对应文件夹/日期，以检索日记原文状态后再重试。";
+
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
 
+// --- Resident Service State ---
+// DailyNote 升级为 direct 常驻服务后，所有 create/update 都通过同一条进程内队列执行。
+// 文件落盘后即可向 AI 返回；SQLite/Rust 向量入库仍由
+// KnowledgeBaseManager.runExternalFileMutation() 的内部 FIFO 队列托管并在后台完成。
+let knowledgeBaseManager = null;
+let residentQueue = Promise.resolve();
+let residentAcceptingRequests = true;
+let residentPendingCount = 0;
+let residentInitialized = false;
+
 
 // --- Debug Logging (to stderr) ---
+function getArgumentValue(args, ...candidateNames) {
+    if (!args || typeof args !== 'object') {
+        return undefined;
+    }
+
+    for (const name of candidateNames) {
+        if (Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined) {
+            return args[name];
+        }
+    }
+
+    const normalizedNames = candidateNames.map(name => String(name).toLowerCase());
+    for (const [key, value] of Object.entries(args)) {
+        if (value !== undefined && normalizedNames.includes(key.toLowerCase())) {
+            return value;
+        }
+    }
+
+    return undefined;
+}
+
 function debugLog(message, ...args) {
     if (DEBUG_MODE) {
         console.error(`[DailyNote][Debug] ${message}`, ...args); // Log debug to stderr
@@ -81,6 +125,166 @@ function isPathWithinBase(targetPath, basePath) {
         resolvedTarget.startsWith(resolvedBase + path.sep);
 }
 
+// --- Folder Resolution Helpers ---
+const FOLDER_NOISE_WORDS = [
+    '日记本'
+];
+
+function normalizeDiaryFolderAlias(name) {
+    if (!name || typeof name !== 'string') {
+        return '';
+    }
+
+    let normalized = name.trim();
+    for (const word of FOLDER_NOISE_WORDS) {
+        normalized = normalized.split(word).join('');
+    }
+
+    normalized = normalized
+        .replace(/[\\/:*?"<>|]/g, '')
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+        .replace(/[\u200b-\u200d\ufeff]/g, '')
+        .replace(/\s+/g, '')
+        .replace(/[._]+$/g, '')
+        .trim();
+
+    return normalized;
+}
+
+function calculateFolderMatchScore(requestedAlias, existingAlias) {
+    if (!requestedAlias || !existingAlias) {
+        return 0;
+    }
+
+    if (requestedAlias === existingAlias) {
+        return 100000 + existingAlias.length;
+    }
+
+    if (requestedAlias.includes(existingAlias)) {
+        return 50000 + existingAlias.length;
+    }
+
+    if (existingAlias.includes(requestedAlias)) {
+        return 40000 + requestedAlias.length;
+    }
+
+    return 0;
+}
+
+function isPublicFolderAlias(alias) {
+    return alias === '公共' || alias.startsWith('公共的') || alias.startsWith('公共_');
+}
+
+function isFolderMatchAllowedByOwner(requestedAlias, existingAlias, ownerAlias) {
+    if (!ownerAlias) {
+        return true;
+    }
+
+    const requestedIsPublic = isPublicFolderAlias(requestedAlias);
+    const existingIsPublic = isPublicFolderAlias(existingAlias);
+
+    if (requestedIsPublic || existingIsPublic) {
+        return requestedIsPublic && existingIsPublic;
+    }
+
+    return existingAlias === ownerAlias || existingAlias.startsWith(ownerAlias + '的');
+}
+
+async function resolveDiaryFolderName(folderName, options = {}) {
+    const {
+        allowFuzzyExisting = true,
+        fallbackName = 'Untitled',
+        logContext = 'folder',
+        ownerName = ''
+    } = options;
+
+    const rawName = typeof folderName === 'string' ? folderName.trim() : '';
+    const aliasName = normalizeDiaryFolderAlias(rawName);
+    const ownerAlias = normalizeDiaryFolderAlias(ownerName);
+    const candidateName = aliasName || rawName || fallbackName;
+    const sanitizedCandidate = sanitizePathComponent(candidateName);
+
+    if (!allowFuzzyExisting) {
+        return {
+            folderName: sanitizedCandidate,
+            matchedExisting: false,
+            requestedName: rawName,
+            normalizedAlias: aliasName
+        };
+    }
+
+    let allDirEntries = [];
+    try {
+        allDirEntries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            debugLog(`resolveDiaryFolderName: root does not exist yet, using sanitized ${logContext}: ${sanitizedCandidate}`);
+            return {
+                folderName: sanitizedCandidate,
+                matchedExisting: false,
+                requestedName: rawName,
+                normalizedAlias: aliasName
+            };
+        }
+        throw error;
+    }
+
+    let bestMatch = null;
+    for (const dirEntry of allDirEntries) {
+        if (!dirEntry.isDirectory() || IGNORED_FOLDERS.includes(dirEntry.name)) {
+            continue;
+        }
+
+        const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
+        if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
+            debugLog(`resolveDiaryFolderName: skipping unsafe directory: ${dirPath}`);
+            continue;
+        }
+
+        const existingAlias = normalizeDiaryFolderAlias(dirEntry.name);
+        if (!isFolderMatchAllowedByOwner(aliasName, existingAlias, ownerAlias)) {
+            debugLog(`resolveDiaryFolderName: owner guard skipped folder "${dirEntry.name}" for requested "${rawName}" and owner "${ownerName}"`);
+            continue;
+        }
+
+        const score = calculateFolderMatchScore(aliasName, existingAlias);
+        if (
+            score > 0 &&
+            (!bestMatch ||
+                score > bestMatch.score ||
+                (score === bestMatch.score && dirEntry.name.length < bestMatch.name.length))
+        ) {
+            bestMatch = {
+                name: dirEntry.name,
+                score,
+                alias: existingAlias
+            };
+        }
+    }
+
+    if (bestMatch) {
+        debugLog(
+            `Resolved ${logContext} "${rawName}" (alias: "${aliasName}") to existing folder "${bestMatch.name}" (alias: "${bestMatch.alias}", score: ${bestMatch.score})`
+        );
+        return {
+            folderName: bestMatch.name,
+            matchedExisting: true,
+            requestedName: rawName,
+            normalizedAlias: aliasName,
+            matchedAlias: bestMatch.alias
+        };
+    }
+
+    debugLog(`No existing folder matched ${logContext} "${rawName}" (alias: "${aliasName}"), using new folder "${sanitizedCandidate}"`);
+    return {
+        folderName: sanitizedCandidate,
+        matchedExisting: false,
+        requestedName: rawName,
+        normalizedAlias: aliasName
+    };
+}
+
 // --- Tag Processing Functions (for 'create' command) ---
 
 function detectTagLine(content) {
@@ -120,28 +324,171 @@ function fixTagFormat(tagLine) {
 }
 
 
+function extractTagFromAIResponse(aiResponse) {
+    debugLog('Extracting tag from AI response:', aiResponse);
+
+    const match = aiResponse.match(/\[\[Tag:\s*(.+?)\]\]/i);
+    if (match && match[1]) {
+        const tagContent = match[1].trim();
+        const result = 'Tag: ' + tagContent;
+        debugLog('Extracted tag:', result);
+        return result;
+    }
+
+    debugLog('No tag found in AI response');
+    return null;
+}
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function generateTagsWithAI(content, maxRetries = 3) {
+    debugLog('Generating tags with AI model...');
+
+    if (!TAG_MASTER_ENABLED) {
+        debugLog('TagMaster disabled, skipping AI tag generation.');
+        return null;
+    }
+
+    if (!API_KEY || !API_URL) {
+        console.error('[DailyNote] API configuration missing. Cannot generate tags.');
+        return null;
+    }
+
+    const promptFilePath = path.join(__dirname, TAG_MODEL_PROMPT_FILE);
+    let systemPrompt;
+    try {
+        systemPrompt = await fs.readFile(promptFilePath, 'utf-8');
+    } catch (err) {
+        console.error('[DailyNote] Failed to read TagMaster prompt file:', err.message);
+        return null;
+    }
+
+    const requestData = {
+        model: TAG_MODEL,
+        messages: [
+            {
+                role: 'system',
+                content: systemPrompt
+            },
+            {
+                role: 'user',
+                content: content
+            }
+        ],
+        max_tokens: TAG_MODEL_MAX_TOKENS,
+        max_output_tokens: TAG_MODEL_MAX_OUTPUT_TOKENS,
+        temperature: 0.7
+    };
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            debugLog(`Calling AI API (attempt ${attempt}/${maxRetries}) with model: ${TAG_MODEL}`);
+
+            const fetch = (await import('node-fetch')).default;
+            const response = await fetch(`${API_URL}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: JSON.stringify(requestData),
+                timeout: 60000
+            });
+
+            if (response.status === 500 || response.status === 503) {
+                const errorText = await response.text();
+                console.error(`[DailyNote] Tag AI API returned ${response.status} (attempt ${attempt}/${maxRetries}):`, errorText);
+
+                if (attempt < maxRetries) {
+                    const backoffTime = Math.pow(2, attempt - 1) * 1000;
+                    debugLog(`Retrying tag generation after ${backoffTime}ms...`);
+                    await delay(backoffTime);
+                    continue;
+                }
+
+                console.error('[DailyNote] Max retries reached. Giving up tag generation.');
+                return null;
+            }
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[DailyNote] Tag AI API error:', response.status, errorText);
+                return null;
+            }
+
+            const result = await response.json();
+            if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+                const aiResponse = result.choices[0].message.content;
+                debugLog('Tag AI response:', aiResponse);
+
+                const tagLine = extractTagFromAIResponse(aiResponse);
+                if (tagLine) {
+                    debugLog(`Successfully generated tag on attempt ${attempt}`);
+                }
+                return tagLine;
+            }
+
+            console.error('[DailyNote] Unexpected Tag AI response format:', result);
+            return null;
+        } catch (error) {
+            console.error(`[DailyNote] Tag AI error on attempt ${attempt}/${maxRetries}:`, error.message);
+
+            if (attempt < maxRetries) {
+                const backoffTime = Math.pow(2, attempt - 1) * 1000;
+                debugLog(`Retrying tag generation after ${backoffTime}ms due to error...`);
+                await delay(backoffTime);
+                continue;
+            }
+
+            console.error('[DailyNote] Max retries reached after errors. Giving up tag generation.');
+            return null;
+        }
+    }
+
+    return null;
+}
+
 async function processTags(contentText, externalTag) {
     debugLog('Processing tags...');
-    // Prioritize externalTag if provided
+    const detection = detectTagLine(contentText);
+
+    // Prioritize externalTag if provided, but deduplicate any existing trailing tag line in content
     if (externalTag && typeof externalTag === 'string' && externalTag.trim() !== '') {
         debugLog('External tag provided, using it:', externalTag);
+        if (detection.hasTag) {
+            debugLog('Trailing tag detected in content while external tag is provided, removing duplicate trailing tag line.');
+        }
         const fixedTag = fixTagFormat(externalTag);
-        return contentText.trimEnd() + '\n' + fixedTag;
+        const contentBody = detection.hasTag ? detection.contentWithoutLastLine : contentText;
+        return contentBody.trimEnd() + '\n' + fixedTag;
     }
 
     // Fallback to detecting tag in content
     debugLog('No external tag, detecting tag in content...');
-    const detection = detectTagLine(contentText);
     if (detection.hasTag) {
         debugLog('Tag detected in content, fixing format...');
         const fixedTag = fixTagFormat(detection.lastLine);
         // Ensure there's exactly one newline before the tag.
         return detection.contentWithoutLastLine.trimEnd() + '\n' + fixedTag;
-    } else {
-        // No tag found in either place, throw an error.
-        debugLog('No tag detected in content or as an argument. Throwing error.');
-        throw new Error("Tag is missing. Please provide a 'Tag' argument or add a 'Tag:' line at the end of the 'Content'.");
     }
+
+    if (TAG_MASTER_ENABLED) {
+        debugLog('No tag detected, TagMaster enabled; generating with AI...');
+        const generatedTag = await generateTagsWithAI(contentText);
+        if (generatedTag) {
+            const fixedTag = fixTagFormat(generatedTag);
+            debugLog('Generated and appended tag:', fixedTag);
+            return contentText.trimEnd() + '\n' + fixedTag;
+        }
+
+        console.warn('[DailyNote] TagMaster enabled but failed to generate tags. Falling back to missing-tag error.');
+    }
+
+    // No tag found in either place, throw an error.
+    debugLog('No tag detected in content or as an argument. Throwing error.');
+    throw new Error("Tag is missing. Please provide a 'Tag' argument or add a 'Tag:' line at the end of the 'Content'.");
 }
 
 // --- Local File URL Processing ---
@@ -256,17 +603,47 @@ async function processLocalFiles(content) {
 }
 
 // --- 'create' Command Logic ---
+const DIARY_TIME_PREFIX_RE =
+    /^\s*\[([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?\](?=\s|$)/;
+
+function parseLeadingDiaryTimePrefix(content) {
+    if (typeof content !== 'string') {
+        return null;
+    }
+
+    const match = DIARY_TIME_PREFIX_RE.exec(content);
+    if (!match) {
+        return null;
+    }
+
+    // Keep this syntax-based rather than enforcing real-world clock ranges:
+    // diary timestamps may represent fictional or otherwise custom time systems.
+    return {
+        hours: match[1].padStart(2, '0'),
+        minutes: match[2],
+        seconds: match[3] ?? null
+    };
+}
+
 async function handleCreateCommand(args) {
-    // 兼容 'Date'/'dateString', 'Content'/'contentText', 和 'maid'/'maidName' (case-insensitive for maid)
+    // 兼容 'Date'/'dateString', 'Content'/'contentText'/'content', 'maid'/'maidName' (case-insensitive for maid)
+    // 新增 folder 字段：用于直接指定存储目录，避免必须把目录塞进 maid 的 [文件夹]署名格式。
+    // 额外兼容 fold，降低模型误拼写导致目录未生效的概率。
     const maid = args.maid || args.maidName || args.Maid || args.MAID;
-    const dateString = args.dateString || args.Date;
-    const contentText = args.contentText || args.Content;
+    const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
+    let dateString = args.dateString || args.Date;
+    const contentText = args.contentText || args.Content || args.content;
+    // 如果没有传入 Date，则使用系统当前日期
+    if (!dateString) {
+        const d = new Date();
+        dateString = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+    }
     const tag = args.Tag || args.tag;
     const fileName = args.fileName || args.FileName;
 
-    debugLog(`Processing 'create' for Maid: ${maid}, Date: ${dateString}, fileName: ${fileName}`);
-    if (!maid || !dateString || !contentText) {
-        return { status: "error", error: 'Invalid input for create: Missing maid/maidName, dateString/Date, or contentText/Content.' };
+    debugLog(`Processing 'create' for Maid: ${maid}, Folder: ${folder || 'Not specified'}, Date: ${dateString}, fileName: ${fileName}`);
+    if (!maid || !contentText) {
+        return { status: "error", error: 'Invalid input for create: Missing maid/maidName or contentText/Content/content.' };
     }
 
     try {
@@ -276,21 +653,34 @@ async function handleCreateCommand(args) {
         debugLog('Content after tag processing (length):', processedContent.length);
 
         const trimmedMaidName = maid.trim();
-        let folderName = trimmedMaidName;
-        let actualMaidName = trimmedMaidName;
-        const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
+        const trimmedFolderName = typeof folder === 'string' ? folder.trim() : '';
+        // 解析旧式 [文件夹]作者 格式——闭括号后必须有非空作者名才视为旧格式
+        const tagMatch = trimmedMaidName.match(/^\[([^\]]*)\](.+)$/);
+        let folderName;
+        let actualMaidName;
 
         if (tagMatch) {
-            folderName = tagMatch[1].trim();
+            // maid 确实是旧式格式，提取作者
             actualMaidName = tagMatch[2].trim();
-            debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
+            // 目录：显式 folder 优先，否则用旧式 maid 中的目录部分
+            folderName = trimmedFolderName || tagMatch[1].trim() || actualMaidName;
+            debugLog(`Legacy maid format parsed. Folder: ${folderName}, Actual Maid: ${actualMaidName}, explicit folder: ${!!trimmedFolderName}`);
         } else {
-            debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
+            // maid 是普通署名
+            actualMaidName = trimmedMaidName;
+            folderName = trimmedFolderName || trimmedMaidName;
+            debugLog(`Plain maid. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
         }
 
-        const sanitizedFolderName = sanitizePathComponent(folderName);
+        const folderResolution = await resolveDiaryFolderName(folderName, {
+            allowFuzzyExisting: true,
+            fallbackName: actualMaidName || 'Untitled',
+            logContext: 'create folder',
+            ownerName: actualMaidName
+        });
+        const sanitizedFolderName = folderResolution.folderName;
         if (folderName !== sanitizedFolderName) {
-            debugLog(`Sanitized folder name from "${folderName}" to "${sanitizedFolderName}"`);
+            debugLog(`Resolved folder name from "${folderName}" to "${sanitizedFolderName}"`);
         }
 
         // 检查是否尝试写入被忽略的文件夹
@@ -300,10 +690,14 @@ async function handleCreateCommand(args) {
 
         const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
         const now = new Date();
-        const hours = now.getHours().toString().padStart(2, '0');
-        const minutes = now.getMinutes().toString().padStart(2, '0');
-        const seconds = now.getSeconds().toString().padStart(2, '0');
-        const timeStringForFile = `${hours}_${minutes}_${seconds}`;
+        const runtimeHours = now.getHours().toString().padStart(2, '0');
+        const runtimeMinutes = now.getMinutes().toString().padStart(2, '0');
+        const runtimeSeconds = now.getSeconds().toString().padStart(2, '0');
+        const explicitTime = parseLeadingDiaryTimePrefix(processedContent);
+        const fileHours = explicitTime?.hours ?? runtimeHours;
+        const fileMinutes = explicitTime?.minutes ?? runtimeMinutes;
+        const fileSeconds = explicitTime?.seconds ?? runtimeSeconds;
+        const timeStringForFile = `${fileHours}_${fileMinutes}_${fileSeconds}`;
 
         const dirPath = path.join(dailyNoteRootPath, sanitizedFolderName);
 
@@ -332,25 +726,42 @@ async function handleCreateCommand(args) {
 
         await fs.mkdir(dirPath, { recursive: true });
 
-        // 循环检查文件名冲突
-        while (true) {
+        const timeStringForContent = `${runtimeHours}:${runtimeMinutes}`;
+        const fileContent = explicitTime
+            ? `[${datePart}] - ${actualMaidName}\n${processedContent}`
+            : `[${datePart}] - ${actualMaidName}\n[${timeStringForContent}]\n${processedContent}`;
+
+        // 使用 wx 原子排他创建，避免多个调用方在 access 与 writeFile 之间同时抢到同一路径。
+        const maxFileNameAttempts = 1000;
+        while (counter <= maxFileNameAttempts) {
             try {
-                await fs.access(filePath);
-                // 如果文件已存在，增加计数器并重试
+                debugLog(`Attempting atomic create: ${filePath}`);
+                await fs.writeFile(filePath, fileContent, { encoding: 'utf-8', flag: 'wx' });
+                break;
+            } catch (err) {
+                if (err.code !== 'EEXIST') {
+                    throw err;
+                }
                 counter++;
                 finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
                 filePath = path.join(dirPath, finalFileName);
-            } catch (err) {
-                // 文件不存在，可以使用此路径
-                break;
             }
         }
 
-        debugLog(`Target file path: ${filePath}`);
-        const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
-        await fs.writeFile(filePath, fileContent);
+        if (counter > maxFileNameAttempts) {
+            throw new Error(`Unable to allocate a unique diary filename after ${maxFileNameAttempts} attempts.`);
+        }
+
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
-        return { status: "success", message: `Diary saved to ${filePath}` };
+        return {
+            status: "success",
+            result: {
+                message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})，知识库索引将在后台更新`,
+                folder: sanitizedFolderName,
+                fileName: finalFileName,
+                indexStatus: "queued"
+            }
+        };
     } catch (error) {
         console.error("[DailyNote] Error during 'create' command:", error.message);
         return { status: "error", error: error.message || "An unknown error occurred during diary creation." };
@@ -358,169 +769,892 @@ async function handleCreateCommand(args) {
 }
 
 
+// --- Fuzzy Diff Utilities (for 'update' command failure diagnostics) ---
+
+function normalizeLooseMatchChar(char) {
+    switch (char) {
+        case '\u201c': // “
+        case '\u201d': // ”
+        case '\u201e': // „
+        case '\u201f': // ‟
+        case '\uff02': // ＂
+            return '"';
+        case '\u2018': // ‘
+        case '\u2019': // ’
+        case '\u201a': // ‚
+        case '\u201b': // ‛
+        case '\uff07': // ＇
+            return "'";
+        case '\uff08': // （
+            return '(';
+        case '\uff09': // ）
+            return ')';
+        case '\uff0c': // ，
+            return ',';
+        case '\u3001': // 、
+            return ',';
+        case '\uff1a': // ：
+            return ':';
+        case '\uff1b': // ；
+            return ';';
+        case '\uff01': // ！
+            return '!';
+        case '\uff1f': // ？
+            return '?';
+        case '\u3002': // 。
+            return '.';
+        case '\uff0e': // ．
+            return '.';
+        case '\u2026': // …
+            return '...';
+        case '\u2014': // —
+        case '\u2013': // –
+            return '-';
+        default:
+            return char.toLowerCase();
+    }
+}
+
+function shouldRemoveForLooseMatch(char) {
+    return /\s/.test(char) || char === '\\';
+}
+
+function dehydrate(text) {
+    let normalized = '';
+    for (const char of text) {
+        if (shouldRemoveForLooseMatch(char)) {
+            continue;
+        }
+        normalized += normalizeLooseMatchChar(char);
+    }
+    return normalized;
+}
+
+function mapDehydratedIndexToOriginal(content, dehydratedIndex) {
+    let originalIndex = 0;
+    let count = 0;
+    while (originalIndex < content.length) {
+        const char = content[originalIndex];
+        if (shouldRemoveForLooseMatch(char)) {
+            originalIndex++;
+            continue;
+        }
+        if (count === dehydratedIndex) {
+            return originalIndex;
+        }
+        count += normalizeLooseMatchChar(char).length;
+        originalIndex++;
+    }
+    return originalIndex;
+}
+
+function extractSmartProbes(target, maxProbes = 8) {
+    const probes = [];
+    probes.push(target.substring(0, 12));
+    probes.push(target.substring(target.length - 12));
+    const structuralMatches = target.match(/[^\u4e00-\u9fa5\n]{3,}/g) || [];
+    for (const match of structuralMatches.slice(0, 4)) {
+        const idx = target.indexOf(match);
+        probes.push(target.substring(idx, idx + 12));
+    }
+    const step = Math.max(1, Math.floor(target.length / maxProbes));
+    for (let i = step; i < target.length - 12; i += step) {
+        probes.push(target.substring(i, i + 12));
+    }
+    return [...new Set(probes)].filter((p) => p.length >= 8).slice(0, maxProbes);
+}
+
+function emergencyFallback(content, target) {
+    const head = target.substring(0, 15);
+    const tail = target.substring(target.length - 15);
+    const headIdx = content.indexOf(head);
+    const tailIdx = content.indexOf(tail);
+    if (headIdx !== -1 || tailIdx !== -1) {
+        const anchor = headIdx !== -1 ? headIdx : tailIdx;
+        const start = Math.max(0, anchor - 50);
+        const end = Math.min(
+            content.length,
+            anchor + Math.min(target.length, 300) + 50
+        );
+        return { mode: 'anchor_fallback', segment: content.substring(start, end) };
+    }
+    const keywords =
+        target.match(/[a-zA-Z0-9#\[\]]{2,}|[\u4e00-\u9fa5]{2,}/g) || [];
+    const keywordHits = keywords.filter((kw) => content.includes(kw));
+    if (keywordHits.length > 0) {
+        const firstHitIdx = content.indexOf(keywordHits[0]);
+        const start = Math.max(0, firstHitIdx - 100);
+        const end = Math.min(content.length, firstHitIdx + 400);
+        return {
+            mode: 'keyword_fallback',
+            matchedKeywords: keywordHits,
+            segment: content.substring(start, end),
+        };
+    }
+    return null;
+}
+
+/**
+* 在日记内容中搜索探针命中位置。
+* @param {string} content - 日记文件全文
+* @param {string[]} probes - 探针数组
+* @returns {{ positions: number[], hitCount: number }} 命中位置数组和命中数
+*/
+function probeMatch(content, probes) {
+    const positions = [];
+    let hitCount = 0;
+    for (const probe of probes) {
+        const idx = content.indexOf(probe);
+        if (idx !== -1) {
+            positions.push(idx);
+            hitCount++;
+        }
+    }
+    return { positions, hitCount };
+}
+
+/**
+* 根据探针命中位置，从日记内容中智能截取与 target 等长的最佳匹配片段。
+* 核心思路：找到命中位置的密集聚类中心，以此为锚点截取。
+* @param {string} content - 日记文件全文
+* @param {number[]} positions - 探针命中位置数组
+* @param {number} targetLength - AI target 的长度
+* @returns {{ segment: string, startIdx: number } | null} 截取的片段及起始位置
+*/
+function extractBestSegment(content, positions, targetLength) {
+    if (positions.length === 0) return null;
+
+    // 对命中位置排序
+    const sorted = [...positions].sort((a, b) => a - b);
+
+    // 找密集聚类中心：用滑动窗口找包含最多命中点的区域
+    let bestStart = sorted[0];
+    let bestCount = 0;
+    const windowSize = targetLength;
+
+    for (let i = 0; i < sorted.length; i++) {
+        let count = 0;
+        for (let j = i; j < sorted.length; j++) {
+            if (sorted[j] - sorted[i] <= windowSize) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        if (count > bestCount) {
+            bestCount = count;
+            bestStart = sorted[i];
+        }
+    }
+
+    // 以聚类起点为锚，向前扩展一点余量，截取 targetLength 长度的片段
+    const margin = Math.floor(targetLength * 0.1); // 10% 余量
+    let segStart = Math.max(0, bestStart - margin);
+    let segEnd = Math.min(content.length, segStart + targetLength + margin * 2);
+    // 如果截取长度超出 target 的 1.5 倍，收缩到合理范围
+    if (segEnd - segStart > targetLength * 1.5) {
+        segEnd = segStart + Math.ceil(targetLength * 1.5);
+    }
+    segEnd = Math.min(segEnd, content.length);
+
+    return {
+        segment: content.substring(segStart, segEnd),
+        startIdx: segStart,
+    };
+}
+
+/**
+* 计算两个数组的最长公共子序列（LCS）索引。
+* @returns {{ lcsA: number[], lcsB: number[] }}
+*/
+function computeLCSIndices(a, b) {
+    const m = a.length;
+    const n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            if (a[i - 1] === b[j - 1]) {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+            }
+        }
+    }
+
+    const lcsA = [];
+    const lcsB = [];
+    let i = m,
+        j = n;
+    while (i > 0 && j > 0) {
+        if (a[i - 1] === b[j - 1]) {
+            lcsA.unshift(i - 1);
+            lcsB.unshift(j - 1);
+            i--;
+            j--;
+        } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+            i--;
+        } else {
+            j--;
+        }
+    }
+
+    return { lcsA, lcsB };
+}
+
+/**
+* 对比 oldText（日记内容）和 newText（AI target），生成 unified diff（git diff -u 风格）。
+* @param {string} oldText - 旧文本（日记中匹配到的最佳片段）
+* @param {string} newText - 新文本（AI 提供的目标文本）
+* @param {string} oldLabel - 旧文件标签（用于 diff 头部）
+* @param {string} newLabel - 新文件标签（用于 diff 头部）
+* @returns {string} unified diff 格式差异描述
+*/
+function generateDiff(oldText, newText, oldLabel, newLabel) {
+    const a = oldText.split('\n');
+    const b = newText.split('\n');
+
+    const { lcsA, lcsB } = computeLCSIndices(a, b);
+
+    // Build diff operations
+    const ops = [];
+    let i = 0,
+        j = 0,
+        k = 0;
+    while (i < a.length || j < b.length) {
+        if (k < lcsA.length && i === lcsA[k] && j === lcsB[k]) {
+            ops.push({ type: ' ', line: a[i] });
+            i++;
+            j++;
+            k++;
+        } else if (k < lcsA.length && i < lcsA[k]) {
+            ops.push({ type: '-', line: a[i] });
+            i++;
+        } else if (k < lcsB.length && j < lcsB[k]) {
+            ops.push({ type: '+', line: b[j] });
+            j++;
+        } else {
+            while (i < a.length) {
+                ops.push({ type: '-', line: a[i] });
+                i++;
+            }
+            while (j < b.length) {
+                ops.push({ type: '+', line: b[j] });
+                j++;
+            }
+        }
+    }
+
+    // Split into hunks with 3-line context
+    const hunks = [];
+    const context = 3;
+    let idx = 0;
+
+    while (idx < ops.length) {
+        // Skip unchanged lines
+        while (idx < ops.length && ops[idx].type === ' ') idx++;
+        if (idx >= ops.length) break;
+
+        const hunkStart = Math.max(0, idx - context);
+        let hunkEnd = idx + context + 1;
+
+        // Extend hunk to include nearby changes
+        while (true) {
+            let nextChange = hunkEnd;
+            while (nextChange < ops.length && ops[nextChange].type === ' ')
+                nextChange++;
+            if (nextChange >= ops.length) break;
+            if (nextChange - hunkEnd <= context * 2) {
+                hunkEnd = nextChange + context + 1;
+            } else {
+                break;
+            }
+        }
+
+        hunkEnd = Math.min(ops.length, hunkEnd);
+
+        // Compute line numbers
+        let aLine = 1,
+            bLine = 1;
+        for (let p = 0; p < hunkStart; p++) {
+            if (ops[p].type === ' ' || ops[p].type === '-') aLine++;
+            if (ops[p].type === ' ' || ops[p].type === '+') bLine++;
+        }
+
+        const hunkOps = ops.slice(hunkStart, hunkEnd);
+        const aCount = hunkOps.filter(
+            (o) => o.type === ' ' || o.type === '-'
+        ).length;
+        const bCount = hunkOps.filter(
+            (o) => o.type === ' ' || o.type === '+'
+        ).length;
+
+        const aRange =
+            aCount === 0
+                ? `${aLine},0`
+                : `${aLine}${aCount !== 1 ? ',' + aCount : ''}`;
+        const bRange =
+            bCount === 0
+                ? `${bLine},0`
+                : `${bLine}${bCount !== 1 ? ',' + bCount : ''}`;
+
+        hunks.push(
+            `@@ -${aRange} +${bRange} @@\n` +
+            hunkOps.map((o) => o.type + o.line).join('\n')
+        );
+
+        idx = hunkEnd;
+    }
+
+    return `--- ${oldLabel}\n+++ ${newLabel}\n` + hunks.join('\n');
+}
+
 // --- 'update' Command Logic ---
+async function atomicReplaceIfUnchanged(filePath, content, expectedStats) {
+    const currentStats = await fs.stat(filePath);
+    if (
+        !expectedStats ||
+        currentStats.size !== expectedStats.size ||
+        currentStats.mtimeMs !== expectedStats.mtimeMs
+    ) {
+        const conflict = new Error(
+            `Diary file changed concurrently before update commit: ${filePath}. ` +
+            'Please read the latest content and retry.'
+        );
+        conflict.code = 'DAILY_NOTE_WRITE_CONFLICT';
+        throw conflict;
+    }
+
+    const tempPath = path.join(
+        path.dirname(filePath),
+        `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    );
+
+    try {
+        await fs.writeFile(tempPath, content, { encoding: 'utf-8', flag: 'wx' });
+
+        // 临时文件写完后再做一次版本校验，缩小外部写入者抢占提交窗口的概率。
+        const beforeCommitStats = await fs.stat(filePath);
+        if (
+            beforeCommitStats.size !== expectedStats.size ||
+            beforeCommitStats.mtimeMs !== expectedStats.mtimeMs
+        ) {
+            const conflict = new Error(
+                `Diary file changed concurrently during update commit: ${filePath}. ` +
+                'Please read the latest content and retry.'
+            );
+            conflict.code = 'DAILY_NOTE_WRITE_CONFLICT';
+            throw conflict;
+        }
+
+        await fs.rename(tempPath, filePath);
+    } catch (error) {
+        try {
+            await fs.unlink(tempPath);
+        } catch (cleanupError) {
+            if (cleanupError.code !== 'ENOENT') {
+                console.warn(`[DailyNote] Failed to remove update temp file "${tempPath}": ${cleanupError.message}`);
+            }
+        }
+        throw error;
+    }
+}
+
+// 将宽松匹配区间映射回原文，避免用 target.length 截断不同长度的原文。
+function findDiaryUpdateMatches(content, target) {
+    let normalized = '';
+    const starts = [];
+    const ends = [];
+    let offset = 0;
+    for (const char of content) {
+        if (!shouldRemoveForLooseMatch(char)) {
+            const value = normalizeLooseMatchChar(char);
+            normalized += value;
+            for (let i = 0; i < value.length; i++) {
+                starts.push(offset);
+                ends.push(offset + char.length);
+            }
+        }
+        offset += char.length;
+    }
+    const needle = dehydrate(target);
+    if (!needle) return [];
+    const matches = new Map();
+    for (let index = normalized.indexOf(needle); index !== -1;
+        index = normalized.indexOf(needle, index + 1)) {
+        const start = starts[index];
+        const end = ends[index + needle.length - 1];
+        matches.set(`${start}:${end}`, { start, end });
+    }
+    // 精确匹配保留原文中的前后空白，且与同一处宽松匹配去重。
+    for (let index = content.indexOf(target); index !== -1;
+        index = content.indexOf(target, index + 1)) {
+        for (const [key, match] of matches) {
+            if (match.start >= index && match.end <= index + target.length) matches.delete(key);
+        }
+        matches.set(`exact:${index}`, { start: index, end: index + target.length });
+    }
+    return [...matches.values()];
+}
+
 async function handleUpdateCommand(args) {
     debugLog("Processing 'update' command with args:", args);
 
-    const { target, replace, maid } = args;
+    // 参数键名大小写不敏感：兼容 target/replace、Target/Replace、TARGET/REPLACE 等写法。
+    const target = getArgumentValue(args, 'target');
+    const replace = getArgumentValue(args, 'replace');
+    const maid = getArgumentValue(args, 'maid');
+    const folder = getArgumentValue(args, 'folder', 'folderName', 'fold');
+    const requestedFileName = getArgumentValue(args, 'fileName');
+    if (requestedFileName !== undefined &&
+        (typeof requestedFileName !== 'string' || !requestedFileName.trim() ||
+            /[\\/:*?"<>|\x00-\x1f]/.test(requestedFileName) ||
+            /^[._\s]+$/.test(requestedFileName))) {
+        return { status: 'error', error: 'fileName must be a non-empty filename fragment without a path or wildcard.' };
+    }
 
     if (typeof target !== 'string' || typeof replace !== 'string') {
-        return { status: "error", error: "Invalid arguments for update: 'target' and 'replace' must be strings." };
+        return {
+            status: 'error',
+            error:
+                "Invalid arguments for update: 'target' and 'replace' must be strings.",
+        };
     }
 
     if (target.length < 15) {
-        return { status: "error", error: `Security check failed: 'target' must be at least 15 characters long. Provided length: ${target.length}` };
+        return {
+            status: 'error',
+            error: `Security check failed: 'target' must be at least 15 characters long. Provided length: ${target.length}`,
+        };
     }
 
-    debugLog(`Validated input for update. Target length: ${target.length}. Maid: ${maid || 'Not specified'}`);
+    debugLog(
+        `Validated input for update. Target length: ${target.length}. Maid: ${maid || 'Not specified'
+        }. Folder: ${folder || 'Not specified'}`
+    );
 
     try {
         let modificationDone = false;
         let modifiedFilePath = null;
 
-        // 构建搜索顺序：优先文件夹 + 其他所有文件夹
-        const priorityDirs = [];  // 优先搜索的文件夹
-        const otherDirs = [];     // 其他文件夹
+        let uniqueMatch = null;
+        let matchCount = 0;
+        let scanIncomplete = false;
 
-        // 获取所有子文件夹，过滤掉被忽略的文件夹
-        const allDirEntries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
-        const allDirs = allDirEntries.filter(d => d.isDirectory() && !IGNORED_FOLDERS.includes(d.name));
-        debugLog(`Filtered out ignored folders: ${IGNORED_FOLDERS.join(', ')}. Remaining directories: ${allDirs.map(d => d.name).join(', ')}`);
+        // Fuzzy diff: 在遍历过程中收集最佳候选（零额外IO）
+        const probes = FUZZY_DIFF_ENABLED ? extractSmartProbes(target, 5) : [];
+        let bestCandidate = null; // { filePath, segment, hitCount }
+        const scannedFiles = []; // For emergency fallback
 
-        if (maid) {
-            const maidRegex = /^\[(.+?)\]/;
-            const match = maid.match(maidRegex);
-
-            if (match) {
-                // 格式: [小克的知识]小克 -> 优先在 "小克的知识" 文件夹找
-                const priorityFolder = sanitizePathComponent(match[1]);
-                debugLog(`Maid specifies priority folder (sanitized): '${priorityFolder}'`);
-
-                for (const dirEntry of allDirs) {
-                    const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
-
-                    // 安全检查：确保路径在 dailyNoteRootPath 内
-                    if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
-                        debugLog(`Skipping unsafe directory during update: ${dirPath}`);
-                        continue;
-                    }
-
-                    if (sanitizePathComponent(dirEntry.name) === priorityFolder) {
-                        priorityDirs.push({ name: dirEntry.name, path: dirPath });
-                    } else {
-                        otherDirs.push({ name: dirEntry.name, path: dirPath });
-                    }
-                }
-
-                if (priorityDirs.length === 0) {
-                    debugLog(`Priority folder '${priorityFolder}' not found, will search all folders.`);
-                }
-            } else {
-                // 格式: 小克 -> 优先在以 "小克" 开头的文件夹找
-                const sanitizedMaid = sanitizePathComponent(maid);
-                debugLog(`Maid specified: '${maid}' (sanitized: '${sanitizedMaid}'). Prioritizing directories starting with this name.`);
-
-                for (const dirEntry of allDirs) {
-                    const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
-
-                    // 安全检查：确保路径在 dailyNoteRootPath 内
-                    if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
-                        debugLog(`Skipping unsafe directory during update: ${dirPath}`);
-                        continue;
-                    }
-
-                    if (sanitizePathComponent(dirEntry.name).startsWith(sanitizedMaid)) {
-                        priorityDirs.push({ name: dirEntry.name, path: dirPath });
-                    } else {
-                        otherDirs.push({ name: dirEntry.name, path: dirPath });
-                    }
-                }
-            }
-        } else {
-            // 没有指定 maid，搜索所有文件夹
-            debugLog("No maid specified. Scanning all directories.");
-            for (const dirEntry of allDirs) {
-                const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
-
-                // 安全检查：确保路径在 dailyNoteRootPath 内
-                if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
-                    debugLog(`Skipping unsafe directory during update: ${dirPath}`);
-                    continue;
-                }
-
-                otherDirs.push({ name: dirEntry.name, path: dirPath });
-            }
+        // 搜索范围是硬边界，失败后不得回退到全库；诊断也复用此范围。
+        if ((folder !== undefined && typeof folder !== 'string') ||
+            (maid !== undefined && typeof maid !== 'string')) {
+            return { status: 'error', error: "Invalid arguments for update: 'folder' and 'maid' must be strings." };
+        }
+        const trimmedMaid = typeof maid === 'string' ? maid.trim() : '';
+        const legacyMatch = trimmedMaid.match(/^\[([^\]]+)\](.*)$/);
+        const ownerName = legacyMatch ? legacyMatch[2].trim() : trimmedMaid;
+        const ownerAlias = normalizeDiaryFolderAlias(ownerName);
+        const requestedFolder = (typeof folder === 'string' ? folder.trim() : '') ||
+            (legacyMatch ? legacyMatch[1].trim() : '');
+        const requestedAlias = normalizeDiaryFolderAlias(requestedFolder);
+        if ((!requestedFolder && !ownerAlias) || (requestedFolder && !requestedAlias)) {
+            return {
+                status: 'error',
+                error: 'Update requires a valid maid or folder to limit the search scope. Global search is not allowed.'
+            };
         }
 
-        // 合并搜索顺序：优先文件夹在前
-        const directoriesToScan = [...priorityDirs, ...otherDirs];
-        debugLog(`Search order: ${directoriesToScan.map(d => d.name).join(' -> ')}`);
+        const allDirEntries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+        const allDirs = allDirEntries.filter(
+            d => d.isDirectory() && !IGNORED_FOLDERS.includes(d.name)
+        );
+        const publicScope = requestedFolder && requestedAlias.startsWith('公共');
+        const ownerScope = !publicScope && ownerAlias &&
+            (!requestedFolder || requestedAlias.startsWith(ownerAlias));
+        const inScope = name => {
+            const alias = normalizeDiaryFolderAlias(name);
+            if (publicScope) return alias.startsWith('公共');
+            if (ownerScope) return alias.startsWith(ownerAlias);
+            return true; // 其他分类目录随后仅保留唯一的指定目录。
+        };
+        const scopedDirs = allDirs.filter(d => inScope(d.name));
+        let preferredDir = requestedFolder
+            ? scopedDirs.find(d => d.name === requestedFolder)
+            : null;
+        if (requestedFolder && !preferredDir) {
+            const aliasMatches = scopedDirs.filter(
+                d => normalizeDiaryFolderAlias(d.name) === requestedAlias
+            );
+            if (aliasMatches.length > 1) {
+                return { status: 'error', error: `Ambiguous diary folder '${requestedFolder}'. Please specify the exact folder name.` };
+            }
+            preferredDir = aliasMatches[0] || null;
+        }
+        const selectedDirs = publicScope || ownerScope
+            ? [
+                ...(preferredDir ? [preferredDir] : []),
+                ...scopedDirs.filter(d => d !== preferredDir)
+            ]
+            : (preferredDir ? [preferredDir] : []);
+        const realRootPath = await fs.realpath(dailyNoteRootPath);
+        const directoriesToScan = [];
+        for (const dirEntry of selectedDirs) {
+            const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
+            const realDirPath = await fs.realpath(dirPath);
+            // 拒绝目录联接/符号链接将允许的名字映射到其他目录。
+            if (!isPathWithinBase(dirPath, dailyNoteRootPath) ||
+                !isPathWithinBase(realDirPath, realRootPath) ||
+                path.relative(realRootPath, realDirPath) !== dirEntry.name) {
+                debugLog(`Skipping redirected or unsafe update directory: ${dirPath}`);
+                continue;
+            }
+            directoriesToScan.push({ name: dirEntry.name, path: dirPath, realPath: realDirPath });
+        }
+        debugLog(
+            `Search order: ${directoriesToScan.map((d) => d.name).join(' -> ')}`
+        );
 
         if (directoriesToScan.length === 0) {
-            return { status: "error", error: `No diary folders found in ${dailyNoteRootPath}` };
+            return {
+                status: 'error',
+                error: `No diary folders found within the allowed scope for folder '${requestedFolder}' and maid '${ownerName}'. ${UPDATE_FAILURE_HINT}`,
+            };
         }
 
+        const namespace = publicScope ? '公共*' : ownerScope ? `${ownerAlias}*` : requestedFolder;
         for (const dir of directoriesToScan) {
-            if (modificationDone) break;
             debugLog(`Scanning directory: ${dir.path}`);
             try {
                 const files = await fs.readdir(dir.path);
-                const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md')).sort();
+                const txtFiles = files
+                    .filter(
+                        (file) =>
+                            (!requestedFileName || file.toLowerCase().includes(requestedFileName.trim().toLowerCase())) &&
+                            (file.toLowerCase().endsWith('.txt') ||
+                            file.toLowerCase().endsWith('.md'))
+                    )
+                    .sort();
                 debugLog(`Found ${txtFiles.length} diary files for ${dir.name}`);
 
                 for (const file of txtFiles) {
-                    if (modificationDone) break;
                     const filePath = path.join(dir.path, file);
                     debugLog(`Reading file: ${filePath}`);
                     let content;
+                    let readVersion;
                     try {
+                        const realFilePath = await fs.realpath(filePath);
+                        const fileStats = await fs.lstat(filePath);
+                        if (fileStats.isSymbolicLink() || !fileStats.isFile() ||
+                            !isPathWithinBase(realFilePath, dir.realPath)) {
+                            debugLog(`Skipping redirected or unsafe diary file: ${filePath}`);
+                            continue;
+                        }
+                        const statsBeforeRead = await fs.stat(filePath);
                         content = await fs.readFile(filePath, 'utf-8');
+                        const statsAfterRead = await fs.stat(filePath);
+                        if (
+                            statsBeforeRead.size !== statsAfterRead.size ||
+                            statsBeforeRead.mtimeMs !== statsAfterRead.mtimeMs
+                        ) {
+                            debugLog(`Skipping concurrently changing diary file: ${filePath}`);
+                            scanIncomplete = true;
+                            continue;
+                        }
+                        readVersion = statsAfterRead;
                     } catch (readErr) {
-                        console.error(`[DailyNote] Error reading diary file ${filePath}:`, readErr.message);
+                        console.error(
+                            `[DailyNote] Error reading diary file ${filePath}:`,
+                            readErr.message
+                        );
+                        scanIncomplete = true;
                         continue;
                     }
 
-                    const index = content.indexOf(target);
-                    if (index !== -1) {
-                        debugLog(`Found target in file: ${filePath}`);
-                        const newContent = content.substring(0, index) + replace + content.substring(index + target.length);
-                        try {
-                            await fs.writeFile(filePath, newContent, 'utf-8');
-                            modificationDone = true;
-                            modifiedFilePath = filePath;
-                            debugLog(`Successfully modified file: ${filePath}`);
-                            break;
-                        } catch (writeErr) {
-                            console.error(`[DailyNote] Error writing to diary file ${filePath}:`, writeErr.message);
-                            break;
+                    const matches = findDiaryUpdateMatches(content, target);
+                    matchCount += matches.length;
+                    if (matches.length > 0 && !uniqueMatch) {
+                        uniqueMatch = { filePath, content, readVersion, dir, ...matches[0] };
+                    }
+                    if (matches.length === 0 && FUZZY_DIFF_ENABLED && probes.length > 0) {
+                        // 精确匹配失败，顺手做探针匹配收集候选
+                        const { positions, hitCount } = probeMatch(content, probes);
+                        if (
+                            hitCount > 0 &&
+                            (!bestCandidate || hitCount > bestCandidate.hitCount)
+                        ) {
+                            const segResult = extractBestSegment(
+                                content,
+                                positions,
+                                target.length
+                            );
+                            if (segResult) {
+                                bestCandidate = {
+                                    filePath,
+                                    segment: segResult.segment,
+                                    hitCount,
+                                };
+                                debugLog(
+                                    `Fuzzy candidate found in ${filePath}, hitCount: ${hitCount}`
+                                );
+                            }
                         }
+                    }
+
+                    if (FUZZY_DIFF_ENABLED) {
+                        scannedFiles.push({ filePath, content });
                     }
                 }
             } catch (charDirError) {
-                console.error(`[DailyNote] Error reading character directory ${dir.path}:`, charDirError.message);
+                console.error(
+                    `[DailyNote] Error reading character directory ${dir.path}:`,
+                    charDirError.message
+                );
+                scanIncomplete = true;
                 continue;
             }
         }
 
-        if (modificationDone) {
-            return { status: "success", result: `Successfully edited diary file: ${modifiedFilePath}` };
-        } else {
-            const errorMessage = maid ? `Target content not found in any diary files for maid '${maid}'.` : "Target content not found in any diary files.";
-            return { status: "error", error: errorMessage };
+        if (matchCount > 1) {
+            return {
+                status: 'error',
+                code: 'DAILY_NOTE_AMBIGUOUS_TARGET',
+                error: `[DailyNote Error] 在命名空间 [${namespace}] 中匹配到 ${matchCount} 处目标，存在歧义，请指定具体文件名或扩展 target 长度。`,
+                result: { matchCount, namespace }
+            };
+        }
+        if (scanIncomplete) {
+            return { status: 'error', code: 'DAILY_NOTE_SCAN_INCOMPLETE',
+                error: '搜索范围内有文件读取失败或正在变化，无法确认目标唯一性；未修改任何文件，请重试。' };
+        }
+        if (uniqueMatch) {
+            const { filePath, content, readVersion, dir, start, end } = uniqueMatch;
+            if (await fs.realpath(dir.path) !== dir.realPath ||
+                await fs.realpath(filePath) !== path.join(dir.realPath, path.basename(filePath)) ||
+                (await fs.lstat(filePath)).isSymbolicLink()) {
+                return { status: 'error', error: 'Diary path changed before update commit. Please retry.' };
+            }
+            try {
+                await atomicReplaceIfUnchanged(filePath,
+                    content.substring(0, start) + replace + content.substring(end), readVersion);
+                modificationDone = true;
+                modifiedFilePath = filePath;
+            } catch (error) {
+                return { status: 'error', error: error.message, code: error.code };
+            }
         }
 
+        if (modificationDone) {
+            const finalFileName = path.basename(modifiedFilePath);
+            const folderName = path.basename(path.dirname(modifiedFilePath));
+            return {
+                status: 'success',
+                result: {
+                    result: `Successfully edited diary file: ${modifiedFilePath}`,
+                    message: `${maid || 'AI'} 已成功更新 ${folderName} 文件夹中的日记文件 (${finalFileName})，知识库索引将在后台更新`,
+                    targetFile: modifiedFilePath,
+                    folder: folderName,
+                    fileName: finalFileName,
+                    indexStatus: 'queued'
+                }
+            };
+        } else {
+            const scopeDescription = folder
+                ? `folder '${folder}'`
+                : maid
+                    ? `maid '${maid}'`
+                    : '';
+            const baseErrorMessage = scopeDescription
+                ? `Target content not found in any diary files for ${scopeDescription}.`
+                : 'Target content not found in any diary files.';
+            const errorMessage = `${baseErrorMessage} ${UPDATE_FAILURE_HINT}`;
+
+            // Layer 3: Emergency Fallback
+            if (FUZZY_DIFF_ENABLED && !bestCandidate) {
+                for (const { filePath, content } of scannedFiles) {
+                    const fallbackResult = emergencyFallback(content, target);
+                    if (fallbackResult) {
+                        bestCandidate = {
+                            filePath,
+                            segment: fallbackResult.segment,
+                            hitCount: 0,
+                            fallbackMode: fallbackResult.mode,
+                            matchedKeywords: fallbackResult.matchedKeywords,
+                        };
+                        debugLog(
+                            `Emergency fallback found in ${filePath}, mode: ${fallbackResult.mode}`
+                        );
+                        break;
+                    }
+                }
+            }
+
+            // Fuzzy diff: 如果有候选，返回 schema-friendly 诊断信息
+            if (FUZZY_DIFF_ENABLED && bestCandidate) {
+                const diff = generateDiff(
+                    bestCandidate.segment,
+                    target,
+                    bestCandidate.filePath,
+                    'target'
+                );
+                debugLog(
+                    `Fuzzy diff generated for candidate in: ${bestCandidate.filePath}`
+                );
+                return {
+                    status: 'error',
+                    error: errorMessage,
+                    result: {
+                        fuzzyDiff: {
+                            candidateFile: bestCandidate.filePath,
+                            diff: diff,
+                        },
+                    },
+                };
+            }
+
+            return { status: 'error', error: errorMessage };
+        }
     } catch (error) {
         if (error.code === 'ENOENT') {
-            return { status: "error", error: `Daily note root directory not found at ${dailyNoteRootPath}` };
+            return {
+                status: 'error',
+                error: `Daily note root directory not found at ${dailyNoteRootPath}`,
+            };
         } else {
-            console.error(`[DailyNote] Unexpected error during 'update' command:`, error);
-            return { status: "error", error: `An unexpected error occurred: ${error.message}` };
+            console.error(
+                `[DailyNote] Unexpected error during 'update' command:`,
+                error
+            );
+            return {
+                status: 'error',
+                error: `An unexpected error occurred: ${error.message}`,
+            };
         }
     }
 }
 
+// --- Shared Command Dispatcher ---
+async function dispatchCommand(args) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        return { status: 'error', error: 'DailyNote request must be a JSON object.' };
+    }
 
-// --- Main Execution ---
+    const { command, ...parameters } = args;
+
+    // 鲁棒性兼容：AI 有时会遗漏 command，或把 command 拼错。
+    const rawCommand = typeof command === 'string' ? command.trim().toLowerCase() : command;
+    const hasCreateContent =
+        typeof parameters.contentText === 'string' ||
+        typeof parameters.Content === 'string' ||
+        typeof parameters.content === 'string';
+    const hasUpdateTargetReplace =
+        typeof getArgumentValue(parameters, 'target') === 'string' &&
+        typeof getArgumentValue(parameters, 'replace') === 'string';
+
+    let normalizedCommand = rawCommand;
+    if (rawCommand !== 'create' && rawCommand !== 'update') {
+        if (hasUpdateTargetReplace) {
+            normalizedCommand = 'update';
+            debugLog(`Command '${command || ''}' is missing or invalid; inferred 'update' from target/replace arguments.`);
+        } else if (hasCreateContent) {
+            normalizedCommand = 'create';
+            debugLog(`Command '${command || ''}' is missing or invalid; inferred 'create' from content arguments.`);
+        }
+    }
+
+    switch (normalizedCommand) {
+        case 'create':
+            return handleCreateCommand(parameters);
+        case 'update':
+            return handleUpdateCommand(parameters);
+        default:
+            return { status: 'error', error: `Unknown command: '${normalizedCommand}'. Use 'create' or 'update'.` };
+    }
+}
+
+function enqueueResidentRequest(args, context = {}) {
+    if (!residentAcceptingRequests) {
+        return Promise.resolve({
+            status: 'error',
+            error: 'DailyNote service is shutting down and no longer accepts new requests.'
+        });
+    }
+
+    residentPendingCount++;
+    const owner = `DailyNote:${args?.command || 'inferred'}:${Date.now()}:${residentPendingCount}`;
+
+    const execute = async () => {
+        if (context.signal?.aborted) {
+            return { status: 'error', error: 'DailyNote request was aborted before execution.' };
+        }
+
+        const operation = () => dispatchCommand(args);
+        if (
+            knowledgeBaseManager &&
+            typeof knowledgeBaseManager.runExternalFileMutation === 'function'
+        ) {
+            return knowledgeBaseManager.runExternalFileMutation(owner, operation, {
+                signal: context.signal,
+                // AI 只等待文件系统提交；Embedding、SQLite 与 Vexus 更新由 KBD 后台队列继续完成。
+                waitForIndex: false
+            });
+        }
+        return operation();
+    };
+
+    const requestPromise = residentQueue.then(execute);
+    // 队列尾必须吞掉前一任务的异常，否则一次失败会永久毒化后续请求。
+    residentQueue = requestPromise.catch(error => {
+        console.error('[DailyNote] Resident queue task failed:', error);
+    }).finally(() => {
+        residentPendingCount = Math.max(0, residentPendingCount - 1);
+    });
+
+    return requestPromise;
+}
+
+function initialize(config = {}, dependencies = {}) {
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
+    residentAcceptingRequests = true;
+    residentInitialized = true;
+    console.log(
+        `[DailyNote] ✅ Resident service initialized. Root: ${dailyNoteRootPath}, ` +
+        `KBD coordinator: ${knowledgeBaseManager ? 'connected' : 'unavailable'}`
+    );
+}
+
+function setDependencies(dependencies = {}) {
+    knowledgeBaseManager =
+        dependencies.knowledgeBaseManager ||
+        dependencies.vectorDBManager ||
+        knowledgeBaseManager;
+    if (knowledgeBaseManager) {
+        console.log('[DailyNote] 🔗 KnowledgeBaseManager coordinator connected.');
+    }
+}
+
+async function processToolCall(args, context = {}) {
+    if (!residentInitialized) {
+        return {
+            status: 'error',
+            error: 'DailyNote resident service has not been initialized.'
+        };
+    }
+    return enqueueResidentRequest(args, context);
+}
+
+async function shutdown() {
+    residentAcceptingRequests = false;
+    await residentQueue;
+    knowledgeBaseManager = null;
+    residentInitialized = false;
+    console.log('[DailyNote] Resident service shutdown complete.');
+}
+
+// --- Legacy CLI/stdin Execution ---
 async function main() {
     let inputData = '';
     process.stdin.setEncoding('utf8');
@@ -539,19 +1673,7 @@ async function main() {
             if (!inputData) {
                 throw new Error("No input data received via stdin.");
             }
-            const args = JSON.parse(inputData);
-            const { command, ...parameters } = args;
-
-            switch (command) {
-                case 'create':
-                    result = await handleCreateCommand(parameters);
-                    break;
-                case 'update':
-                    result = await handleUpdateCommand(parameters);
-                    break;
-                default:
-                    result = { status: "error", error: `Unknown command: '${command}'. Use 'create' or 'update'.` };
-            }
+            result = await dispatchCommand(JSON.parse(inputData));
         } catch (error) {
             console.error("[DailyNote] Error processing request:", error.message);
             result = { status: "error", error: error.message || "An unknown error occurred." };
@@ -568,4 +1690,16 @@ async function main() {
     });
 }
 
-main();
+if (require.main === module) {
+    main();
+}
+
+module.exports = {
+    initialize,
+    setDependencies,
+    processToolCall,
+    shutdown,
+    dispatchCommand,
+    handleCreateCommand,
+    handleUpdateCommand
+};

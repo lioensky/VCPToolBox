@@ -33,12 +33,12 @@
 
 ## 数据库核心功能
 
-VCP的RAG日记系统不仅仅是一个功能强大的信息检索工具，其背后还有一个经过深度优化的、高性能的向量数据库管理器 (`VectorDBManager.js`)。该管理器确保了日记内容的实时同步、高效检索和系统的长期稳定运行。
+VCP 的 RAG 日记系统由 `KnowledgeBaseManager.js` 统一编排 SQLite 权威存储与 Rust 向量索引，负责日记内容的同步、检索和恢复。向量索引使用项目自带的 `rust-vexus-lite`，不依赖额外的 Node 原生 HNSW 模块。
 
-### 1. 高性能的HNSW索引
+### 1. SQLite 与 Rust 派生索引
 
--   **核心技术**：采用业界领先的 `hnswlib-node` 库，基于HNSW（Hierarchical Navigable Small World）算法构建向量索引。
--   **优势**：即使在数百万级别的日记片段中，也能实现毫秒级的近似最近邻搜索，确保了RAG检索的极速响应。
+-   **权威数据**：SQLite (`better-sqlite3`) 保存文件、文本块、标签和索引元数据。
+-   **向量检索**：`rust-vexus-lite` 提供 Vexus/USearch 索引；全局标签索引和按日记本索引可按需加载，并可从 SQLite 基线重建。
 
 ### 2. 智能的增量与全量同步
 

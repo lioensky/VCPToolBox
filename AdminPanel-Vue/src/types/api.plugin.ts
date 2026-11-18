@@ -36,9 +36,25 @@ export interface PluginInvocationCommand {
   commandIdentifier?: string;
   command?: string;
   description?: string;
+  example?: string;
+}
+
+export interface PluginJevDeclaration {
+  enabled?: boolean;
+  schemaVersion?: number;
+  category?: string;
+  jevDescPrompt?: string;
+  jevPrompt?: string;
+  agentPrompt?: string;
+  commands?: Array<{
+    commandIdentifier?: string;
+    description?: string;
+    aliases?: string[];
+  }>;
 }
 
 export interface PluginManifest {
+  jev?: PluginJevDeclaration;
   name: string;
   pluginType?: string;
   displayName?: string;
@@ -62,11 +78,11 @@ export interface PluginManifest {
 export interface PluginInfo {
   name: string;
   manifest: PluginManifest;
+  hasReadme?: boolean;
   isDistributed?: boolean;
   serverId?: string;
   configEnvContent?: string;
   enabled: boolean;
-  configENVContent?: string;
   configPath?: string;
   dashboardCards?: PluginDashboardCardContribution[];
 }
@@ -74,6 +90,11 @@ export interface PluginInfo {
 export interface PluginListResponse {
   plugins: PluginInfo[];
   total: number;
+}
+
+export interface PluginReadmeResponse {
+  fileName: string;
+  content: string;
 }
 
 export interface ConfigEntry {

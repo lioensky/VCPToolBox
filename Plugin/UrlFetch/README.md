@@ -30,7 +30,17 @@ FETCH_PROXY_PORT=7890
 #### Cookies 配置（三选一）
 
 ##### 方式一：FETCH_COOKIES_RAW_MULTI（推荐，支持多网站）
-JSON 对象格式，key 是域名关键词，value 是 cookie 字符串。会根据访问的 URL 自动匹配对应的 cookies。
+JSON 对象格式，key 是域名，value 是 cookie 字符串。访问 URL 时仅匹配主机名完全相等或其合法子域名；多个匹配项会优先使用最长、最具体的域名配置。
+
+**VCPChrome 一键配置**：
+1. 在 VCPChrome Popup 中打开已登录的 HTTP/HTTPS 页面
+2. 首次点击“配置当前站点 UrlFetch Cookie”时确认风险
+3. 扩展读取当前 URL 可用的全部 Cookie（包括 HttpOnly），通过已鉴权的 VCP WebSocket 发送到服务端
+4. 服务端只更新 `Plugin/UrlFetch/config.env` 中的 `FETCH_COOKIES_RAW_MULTI`，同一站点重复配置只替换该站点，其他站点和手工配置保持不变
+
+成功后 Popup 只显示站点、Cookie 数量和更新时间，不显示 Cookie 名称或值。该操作不会新增 HTTP 接口，也不需要重启 VCP 服务。
+
+**格式限制**：一键配置使用现有的 `name=value` 原始 Cookie 字符串格式，因此不会保留 Cookie 的 `path`、`SameSite`、`HttpOnly`、`secure` 等属性。这是 `FETCH_COOKIES_RAW_MULTI` 语义本身的限制。
 
 **获取步骤**：
 1. 在浏览器中打开第一个网站并登录（如 B站）
@@ -268,3 +278,36 @@ A: 当直接访问某些网站失败时，会自动尝试通过配置的代理�
 
 - **v0.1.0**: 初始版本，支持文本和快照模式
 - **v0.1.1**: 新增 Cookies 配置支持
+- **未定版本**: VCPChrome 支持当前站点 UrlFetch Cookie 一键配置；更新 `FETCH_COOKIES_RAW_MULTI` 时保留其他站点、注释和环境变量。
+## 页面提取与完整性边界（2026-11-14）
+
+`text` 的直接 HTTP、Puppeteer 和 managed Chrome 现在共用 `pageExtraction.js`：
+- 静态响应先剔除脚本、样式、模板和显式隐藏内容；只有登录入口的 SPA 壳抛出错误，触发现有浏览器回退，禁止把脚本文本充当正文。
+- 按 DOM 讨论结构识别多条帖子/评论，不绑定域名；讨论页绕过 Readability，保留主帖、短评论、楼层、时间与侧栏元数据。
+- 普通文章仍使用 Readability；独立克隆防止其修改原 DOM。当提取片段不足语义 main 区域长度的 65% 时，回退语义区域。该阈值是保守启发式，不是完整性证明。
+- 浏览器先检查正文就绪，再对页面及语义内部滚动容器执行有界滚动，并连续检查 DOM 文本稳定性。
+- 保留链接目标、图片引用和代码块原始空白，不下载图片或附件内容。
+- 输出标记提取策略和来源；**只覆盖当前已加载 DOM**，不承诺折叠、分页、虚拟列表、封闭 Shadow DOM、跨域 iframe 或附件全文。显式 `jina` 模式由外部服务提取，不享有上述本地结构保障。
+
+取证案例：Google Issue 585707059 的初始 HTTP 是应用壳；实际浏览器 DOM 含主帖及 #2–#15 评论。旧 Readability 路径会选择长评论而丢弃讨论结构。主帖中的 “Attachments” 文本清单不等于实际下载到的附件。
+
+回归命令：`node --test tests/urlFetchExtraction.test.js`。
+## 常驻浏览器池（2026-11-14）
+
+正式工具入口为 `hybridservice/direct`，导出 `initialize/processToolCall/shutdown`，不再每次 spawn 新进程。单服务实例内按 Profile/代理出口复用浏览器；同键启动合并，请求各自拥有独立 page。
+
+- 默认全服务最多 **5 个活动页面租约**，额外请求 FIFO 排队；默认最多100个等待项，排队预算90秒。
+- 页面取得后执行预算60秒；单请求总预算160秒；manifest外层超时180秒。队列不是无限等待保证。
+- 请求结束只关自己的页面，自有浏览器最后一个租约释放后空闲30秒回收。共享 managed Chrome 只断开本插件连接，不主动关闭整个浏览器；其外部管理器仍可能影响页面寿命。
+- 请求取消关闭对应页面或销毁HTTP请求；关闭服务取消请求并清空队列。
+- 配置：`URLFETCH_MAX_TABS`、`URLFETCH_MAX_QUEUE`、`URLFETCH_QUEUE_TIMEOUT_MS`、`URLFETCH_BROWSER_IDLE_MS`。
+- 同 Profile 标签页共享 Cookie/站点存储，不是多账号隔离；不同代理出口使用不同实例。
+- `node UrlFetch.js` 保留单次stdin调用兼容，但多个CLI/多个服务进程不共享池，不能混用同一个Profile目录。
+- Profile 被旧进程或外部浏览器占用时，不强杀或删除锁，也不把占用错误重试到代理。
+
+### 部署顺序
+先排空旧版stdio调用，再同步 `UrlFetch.js`、`browserPool.js`、`pageExtraction.js` 和 `plugin-manifest.json`，最后重载插件或重启服务。必须整体切换 manifest 与代码；不能只更新入口文件。`config.env` 保留，不覆盖真实Cookie配置。
+
+### 验证
+`node --test tests/urlFetchBrowserPool.test.js tests/urlFetchExtraction.test.js`
+真实浏览器十请求：设置 `URLFETCH_LIVE_TEST=1` 后执行 `node --test tests/urlFetchBrowserLive.test.js`。测试使用临时独立持久化Profile，不接触生产浏览器配置。

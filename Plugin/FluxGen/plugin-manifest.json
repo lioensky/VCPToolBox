@@ -20,8 +20,54 @@
     "invocationCommands": [
       {
         "commandIdentifier": "FluxGenerateImage",
-        "description": "调用此工具通过SiliconFlow API的FLUX.1-schnell模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FluxGen「末」,\nprompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,\nresolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」\n(可选参数：seed:「始」整数种子「末」 - 通常省略以使用随机种子)\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含以下信息的结果：\n1. 生成图片的公开访问URL。\n2. 图片在服务器上的存储相对路径 (例如：image/fluxgen/图片名.png)。\n3. 图片的文件名。\n请在您的最终回复中，使用返回的【图片URL】为用户生成一个HTML的 `<img>` 标签来直接展示图片，例如：`<img src=\"[此处填写图片URL]\" alt=\"[此处可填写部分prompt作为描述]\" width=\"300\">`。请确保替换占位符，并可调整 `width` 属性（建议200-500像素）。同时，也可以附带图片的直接URL链接。",
+        "description": "调用此工具通过SiliconFlow API的FLUX.1-schnell模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含以下信息的结果：\n1. 生成图片的公开访问URL。\n2. 图片在服务器上的存储相对路径 (例如：image/fluxgen/图片名.png)。\n3. 图片的文件名。\n请在您的最终回复中，使用返回的【图片URL】为用户生成一个HTML的 `<img>` 标签来直接展示图片，例如：`<img src=\"[此处填写图片URL]\" alt=\"[此处可填写部分prompt作为描述]\" width=\"300\">`。请确保替换占位符，并可调整 `width` 属性（建议200-500像素）。同时，也可以附带图片的直接URL链接。",
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FluxGen「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, standing on a neon-lit city rooftop at night, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "媒体娱乐",
+    "jevDescPrompt": "调用 SiliconFlow FLUX.1-schnell 旗舰模型生成高质量特定风格图片。",
+    "jevPrompt": "根据用户的构图与画幅意图选择 resolution 分辨率：正方形或头像选 1024x1024；横屏宽幅或桌面壁纸选 1024x768 或 1024x576；手机竖屏或人物立绘选 768x1024 或 576x1024。未指明时默认 1024x1024。",
+    "agentPrompt": "当需要使用 FLUX.1 模型生成高质量插画或写实图片时，使用 {媒体娱乐} 中的 `FluxGen`，画面描述放入【主要内容】，画幅放入 []（[正方形]、[横屏]、[竖屏]）：\nJEV:「始」请使用 {媒体娱乐} 中的 `FluxGen`，生成图片【赛博朋克雨夜中的橙发少女，霓虹光影，电影感细节】[横屏]。「末」",
+    "defaultCommand": "FluxGenerateImage",
+    "commands": [
+      {
+        "commandIdentifier": "FluxGenerateImage",
+        "description": "使用 FLUX.1-schnell 生成高质量图片",
+        "aliases": ["生成图片", "Flux生图", "画图", "作画"],
+        "injectCommand": false,
+        "parameters": {
+          "prompt": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 1000,
+            "description": "详细的正面画面描述提示词"
+          },
+          "resolution": {
+            "type": "enum",
+            "required": false,
+            "description": "FLUX 生成画幅分辨率",
+            "values": {
+              "1024x1024": "1:1 标准方形画幅",
+              "1024x768": "4:3 标准横屏画幅",
+              "768x1024": "3:4 标准竖屏画幅",
+              "1024x576": "16:9 宽屏壁纸画幅",
+              "576x1024": "9:16 移动端全屏画幅"
+            },
+            "aliases": {
+              "1024x1024": ["方图", "正方形", "1:1", "1024x1024"],
+              "1024x768": ["横屏", "横版", "4:3", "1024x768"],
+              "768x1024": ["竖屏", "竖版", "3:4", "768x1024"],
+              "1024x576": ["壁纸", "宽屏", "16:9", "1024x576"],
+              "576x1024": ["长图", "手机壁纸", "9:16", "576x1024"]
+            },
+            "default": "1024x1024"
+          }
+        }
       }
     ]
   }

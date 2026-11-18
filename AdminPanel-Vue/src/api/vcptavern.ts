@@ -8,17 +8,12 @@ const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
 export type RuleType = "relative" | "depth" | "embed";
 export type RulePosition = "before" | "after";
-export type RuleTarget = "system" | "last_user";
+export type RuleTarget = "system" | "last_user" | "all_user";
 export type RuleRole = "system" | "user" | "assistant";
 
 export interface RuleContent {
   role: RuleRole;
   content: string;
-}
-
-export interface RuleUiState {
-  textareaWidth?: string;
-  textareaHeight?: string;
 }
 
 export interface TavernRule {
@@ -30,11 +25,11 @@ export interface TavernRule {
   target?: RuleTarget;
   depth?: number;
   content: RuleContent;
-  ui?: RuleUiState;
 }
 
 export interface TavernPreset {
   description?: string;
+  placeholderAllowlist?: string[];
   rules?: TavernRule[];
 }
 
@@ -44,8 +39,7 @@ export const vcptavernApi = {
   ): Promise<string[]> {
     const response = await requestWithUi<unknown>(
       {
-        url: `${API_BASE_URL}/presets`,
-      },
+        url: `${API_BASE_URL}/presets`,},
       uiOptions
     );
     return Array.isArray(response)
@@ -93,4 +87,3 @@ export const vcptavernApi = {
     );
   },
 };
-

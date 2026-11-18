@@ -9,6 +9,39 @@ const httpUrl = process.env.VarHttpUrl;
 const fileKey = process.env.File_Key;
 const port = process.env.PORT;
 
+function parseExtensionWhitelist(rawValue) {
+    if (!rawValue || !rawValue.trim()) {
+        return null;
+    }
+
+    const extensions = rawValue
+        .split(',')
+        .map(extension => extension.trim().toLowerCase())
+        .filter(Boolean)
+        .map(extension => extension.startsWith('.') ? extension : `.${extension}`);
+
+    return extensions.length > 0 ? new Set(extensions) : null;
+}
+
+function parseMaxFilesPerDirectory(rawValue) {
+    if (!rawValue || !rawValue.trim()) {
+        return Infinity;
+    }
+
+    const parsedValue = Number.parseInt(rawValue, 10);
+    if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+        console.error(
+            `[FileListGenerator] Warning: invalid MAX_FILES_PER_DIRECTORY="${rawValue}", no limit will be applied.`
+        );
+        return Infinity;
+    }
+
+    return parsedValue;
+}
+
+const extensionWhitelist = parseExtensionWhitelist(process.env.FILE_EXTENSION_WHITELIST);
+const maxFilesPerDirectory = parseMaxFilesPerDirectory(process.env.MAX_FILES_PER_DIRECTORY);
+
 if (!projectBasePath) {
     console.error("[FileListGenerator] Error: PROJECT_BASE_PATH environment variable not set.");
     process.exit(1);
@@ -21,6 +54,54 @@ const SPECIAL_DIRS_MAP = {
     'fluxgen': path.join(projectBasePath, 'image', 'fluxgen')
 };
 
+function isAllowedFile(fileName) {
+    return !extensionWhitelist || extensionWhitelist.has(path.extname(fileName).toLowerCase());
+}
+
+/**
+ * Reads and orders entries in one directory. Directories are retained, while
+ * files are filtered by extension and limited to the newest modification times.
+ * @param {string} dirPath - The path to the directory to read.
+ * @returns {Promise<Array<{entry: import('fs').Dirent, mtimeMs: number}>>}
+ */
+async function getVisibleEntries(dirPath) {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const directories = [];
+    const files = [];
+
+    await Promise.all(entries.map(async entry => {
+        if (entry.isDirectory()) {
+            directories.push({ entry, mtimeMs: 0 });
+            return;
+        }
+
+        if (!entry.isFile() || !isAllowedFile(entry.name)) {
+            return;
+        }
+
+        try {
+            const stats = await fs.stat(path.join(dirPath, entry.name));
+            files.push({ entry, mtimeMs: stats.mtimeMs });
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                console.error(
+                    `[FileListGenerator] Warning: cannot stat "${path.join(dirPath, entry.name)}": ${error.message}`
+                );
+            }
+        }
+    }));
+
+    directories.sort((left, right) =>
+        left.entry.name.localeCompare(right.entry.name, undefined, { sensitivity: 'base' })
+    );
+    files.sort((left, right) =>
+        right.mtimeMs - left.mtimeMs ||
+        left.entry.name.localeCompare(right.entry.name, undefined, { sensitivity: 'base' })
+    );
+
+    return directories.concat(files.slice(0, maxFilesPerDirectory));
+}
+
 /**
  * Recursively scans a directory and builds a tree-like string representation.
  * @param {string} dirPath - The path to the directory to scan.
@@ -30,9 +111,9 @@ const SPECIAL_DIRS_MAP = {
 async function generateDirectoryTree(dirPath, prefix = '') {
     let tree = '';
     try {
-        const entries = await fs.readdir(dirPath, { withFileTypes: true });
+        const entries = await getVisibleEntries(dirPath);
         for (let i = 0; i < entries.length; i++) {
-            const entry = entries[i];
+            const { entry } = entries[i];
             const isLast = i === entries.length - 1;
             const connector = isLast ? '└── ' : '├── ';
             const newPrefix = prefix + (isLast ? '    ' : '│   ');

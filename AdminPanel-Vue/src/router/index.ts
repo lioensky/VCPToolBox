@@ -8,6 +8,7 @@ import {
   APP_ROUTE_MANIFEST,
   getAppRouteMetaById,
 } from "@/app/routes/manifest";
+import { APP_ROUTE_COMPONENTS } from "@/app/routes/components";
 import { APP_ROUTER_BASE, resolveCanonicalAppLocation } from "@/app/routes/base";
 import { resolveSafeAppRedirect } from "@/app/routes/redirect";
 import { useAuthStore } from "@/stores/auth";
@@ -29,7 +30,7 @@ const shellRoutes: RouteRecordRaw[] = APP_ROUTE_MANIFEST.filter(
 ).map((route) => ({
   path: route.path.replace(/^\//, ""),
   name: route.routeName,
-  component: route.component,
+  component: APP_ROUTE_COMPONENTS[route.id],
   meta: { requiresAuth: route.requiresAuth },
 }));
 
@@ -37,7 +38,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: loginRoute.path,
     name: loginRoute.routeName,
-    component: loginRoute.component,
+    component: APP_ROUTE_COMPONENTS[loginRoute.id],
     meta: { requiresAuth: loginRoute.requiresAuth },
   },
   {

@@ -2,7 +2,7 @@
     "name": "VCPTavern",
     "displayName": "VCP 上下文注入器",
     "version": "0.1.0",
-    "description": "一个强大的、可视化的上下文注入插件，类似于 SillyTavern 的高级上下文编辑功能。",
+    "description": "一个强大的、可视化的上下文注入插件，类似于 SillyTavern 的高级上下文编辑功能。依赖支持解析 {{VCPTavern::PresetName::SessionID}} 格式以及 {{VCPTavern::PresetName::blacklist:规则名}} 格式的占位符来启用。",
     "author": "Kilo Code",
     "pluginType": "hybridservice",
     "entryPoint": {

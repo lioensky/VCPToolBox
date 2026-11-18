@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "http-proxy-agent": "7.0.2"
+  }
+}

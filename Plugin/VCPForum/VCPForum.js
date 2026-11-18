@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
+const { fileURLToPath } = require('url');
 
 const FORUM_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH ? path.join(process.env.KNOWLEDGEBASE_ROOT_PATH, 'VCP论坛') : path.join(__dirname, '..', '..', 'dailynote', 'VCP论坛');
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
@@ -19,207 +20,233 @@ function sanitizeFilename(name) {
 }
 
 /**
- * Processes file:// URLs in content, converting them to server URLs.
- * Uses hyper-stack-trace mechanism for distributed file fetching.
- * @param {string} content - The content containing potential file:// URLs
- * @param {object} args - The original arguments (may contain image_base64 for retries)
- * @returns {Promise<string>} - Content with file:// URLs replaced by server URLs
+ * Returns a local ISO-like timestamp string using the system timezone.
+ * Unlike Date.prototype.toISOString() which always returns UTC,
+ * this returns the local time in ISO-like format without the 'Z' suffix.
+ * @returns {string} Local timestamp, e.g., "2026-03-21T00:43:00.160"
+ */
+function getLocalISOTimestamp() {
+    const now = new Date();
+    const offset = now.getTimezoneOffset();
+    const localDate = new Date(now.getTime() - offset * 60 * 1000);
+    return localDate.toISOString().replace(/Z$/, '');
+}
+
+/**
+ * Detects a browser-safe image extension from the source path or file signature.
+ * @param {string} filePath - Source image path.
+ * @param {Buffer} buffer - Image data.
+ * @returns {string} Extension without a leading dot.
+ */
+function detectImageExtension(filePath, buffer) {
+    const allowedExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+    const sourceExtension = path.extname(filePath).slice(1).toLowerCase();
+    if (allowedExtensions.has(sourceExtension)) {
+        return sourceExtension;
+    }
+
+    if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+    if (buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'jpg';
+    if (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a') return 'gif';
+    if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
+    return 'png';
+}
+
+/**
+ * Copies an image into image/forum and returns its authenticated HTTP URL.
+ * The source may be an original local image or a .file_cache image prepared by Plugin.js.
+ * @param {string} fileUrl - Local file URL.
+ * @param {string|null} imageBase64 - Optional retry image data.
+ * @returns {Promise<string>} Public image URL.
+ */
+async function publishForumImage(fileUrl, imageBase64 = null) {
+    let filePath = '';
+    let imageBuffer;
+
+    if (imageBase64) {
+        const dataUriMatch = imageBase64.match(/^data:image\/[\w.+-]+;base64,([\s\S]+)$/);
+        imageBuffer = Buffer.from(dataUriMatch ? dataUriMatch[1] : imageBase64, 'base64');
+    } else {
+        filePath = fileURLToPath(fileUrl);
+        imageBuffer = await fs.readFile(filePath);
+    }
+
+    const imageExtension = detectImageExtension(filePath, imageBuffer);
+    const generatedFileName = `${crypto.randomBytes(16).toString('hex')}.${imageExtension}`;
+    const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
+    const localImageServerPath = path.join(forumImageDir, generatedFileName);
+
+    await fs.mkdir(forumImageDir, { recursive: true });
+    await fs.writeFile(localImageServerPath, imageBuffer);
+
+    const relativeServerPathForUrl = path.posix.join('forum', generatedFileName);
+    return `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+}
+
+/**
+ * Processes local images in Markdown and HTML, publishing them through ImageServer.
+ * Plugin.js may already have rewritten a remote file URL to a local .file_cache URL;
+ * that cached file is copied into image/forum before the URL is replaced.
+ * @param {string} content - Content containing potential file URLs.
+ * @param {object} args - Original arguments (may contain image_base64 for compatibility).
+ * @returns {Promise<string>} Content with local image URLs replaced by HTTP URLs.
  */
 async function processLocalImages(content, args = {}) {
     if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
-        // If environment variables are not set, return content as-is
         return content;
     }
 
-    // Match Markdown image syntax: ![alt](file://...)
-    const imageRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
-    const matches = [...content.matchAll(imageRegex)];
-    
-    if (matches.length === 0) {
+    const localImageUrls = [];
+    const markdownImageRegex = /!\[[^\]]*\]\((file:\/\/[^)\s]+)\)/gi;
+    const htmlImageRegex = /<img\b[^>]*\bsrc\s*=\s*(?:"(file:\/\/[^"]+)"|'(file:\/\/[^']+)'|(file:\/\/[^\s>]+))[^>]*>/gi;
+
+    for (const match of content.matchAll(markdownImageRegex)) {
+        localImageUrls.push({ index: match.index, fileUrl: match[1] });
+    }
+    for (const match of content.matchAll(htmlImageRegex)) {
+        localImageUrls.push({ index: match.index, fileUrl: match[1] || match[2] || match[3] });
+    }
+
+    localImageUrls.sort((a, b) => a.index - b.index);
+    if (localImageUrls.length === 0) {
         return content;
     }
 
     let processedContent = content;
-    
-    // Check if we have a base64 version from retry (single image case)
-    let imageBase64 = args.image_base64;
-    
-    if (imageBase64) {
-        // This is a retry with fetched file data
-        // Extract pure base64 from Data URI if needed
-        const dataUriMatch = imageBase64.match(/^data:image\/\w+;base64,(.*)$/);
-        if (dataUriMatch) {
-            imageBase64 = dataUriMatch[1];
+    const publishedUrls = new Map();
+
+    for (let index = 0; index < localImageUrls.length; index++) {
+        const fileUrl = localImageUrls[index].fileUrl;
+        if (publishedUrls.has(fileUrl)) {
+            processedContent = processedContent.split(fileUrl).join(publishedUrls.get(fileUrl));
+            continue;
         }
-        
-        // Process only the first image (the one that was fetched)
-        const match = matches[0];
-        const altText = match[1];
-        const fileUrl = match[2];
-        const fullMatch = match[0];
-        
-        // Save image to server
-        const imageBuffer = Buffer.from(imageBase64, 'base64');
-        const imageExtension = 'png'; // Default, could be improved by detecting actual type
-        const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
-        const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
-        const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
-        await fs.mkdir(forumImageDir, { recursive: true });
-        await fs.writeFile(localImageServerPath, imageBuffer);
-        
-        // Construct server URL
-        const relativeServerPathForUrl = `forum/${generatedFileName}`;
-        const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
-        // Replace in content
-        const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
-        processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
-        // If there are more images, process them recursively
-        if (matches.length > 1) {
-            // Remove the processed image from args to avoid reprocessing
-            const newArgs = { ...args };
-            delete newArgs.image_base64;
-            return await processLocalImages(processedContent, newArgs);
-        }
-        
-        return processedContent;
-    }
-    
-    // No base64 provided, try to read the first local file
-    const match = matches[0];
-    const altText = match[1];
-    const fileUrl = match[2];
-    const fullMatch = match[0];
-    
-    try {
-        // Convert file:// URL to local path - handle Windows paths
-        let filePath = fileUrl.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
-        // Handle backslashes in Windows paths
-        filePath = filePath.replace(/\//g, path.sep);
-        
-        const buffer = await fs.readFile(filePath);
-        imageBase64 = buffer.toString('base64');
-        
-        // Save image to server
-        const imageBuffer = Buffer.from(imageBase64, 'base64');
-        const imageExtension = 'png';
-        const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
-        const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
-        const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
-        await fs.mkdir(forumImageDir, { recursive: true });
-        await fs.writeFile(localImageServerPath, imageBuffer);
-        
-        // Construct server URL
-        const relativeServerPathForUrl = `forum/${generatedFileName}`;
-        const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
-        // Replace in content
-        const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
-        processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
-        // If there are more images, process them recursively
-        if (matches.length > 1) {
-            return await processLocalImages(processedContent, args);
-        }
-        
-        return processedContent;
-    } catch (e) {
-        if (e.code === 'ENOENT') {
-            // File not found locally - trigger hyper-stack-trace
-            const structuredError = new Error(`本地文件未找到，需要远程获取: ${fileUrl}`);
-            structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
-            structuredError.fileUrl = fileUrl;
-            throw structuredError;
-        } else {
-            throw new Error(`读取本地文件时发生错误: ${e.message}`);
+
+        try {
+            const imageBase64 = index === 0 ? args.image_base64 || null : null;
+            const accessibleImageUrl = await publishForumImage(fileUrl, imageBase64);
+            publishedUrls.set(fileUrl, accessibleImageUrl);
+            processedContent = processedContent.split(fileUrl).join(accessibleImageUrl);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                const structuredError = new Error(`本地文件未找到，需要远程获取: ${fileUrl}`);
+                structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
+                structuredError.fileUrl = fileUrl;
+                throw structuredError;
+            }
+            throw new Error(`发布论坛本地图片时发生错误 (${fileUrl}): ${error.message}`);
         }
     }
+
+    return processedContent;
 }
 
 /**
  * Converts HTTP image URLs in content to base64 for AI reading.
- * Filters out emoji URLs.
+ * Filters out emoji URLs, limits concurrency, enforces strict per-image & total timeouts.
  * @param {string} content - The post content
  * @returns {Promise<object>} - Structured content with text and images
  */
 async function convertImagesToBase64ForAI(content) {
-    // Match HTML img tags and Markdown images with http/https URLs
-    const htmlImageRegex = /<img\s+[^>]*src=["']?(https?:\/\/[^"'\s>]+)["']?[^>]*>/gi;
-    const markdownImageRegex = /!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
-    
-    const htmlMatches = [...content.matchAll(htmlImageRegex)];
-    const markdownMatches = [...content.matchAll(markdownImageRegex)];
-    
-    const imageUrls = [];
-    
-    // Extract URLs from HTML img tags
-    for (const match of htmlMatches) {
-        const url = match[1];
-        // Filter out emoji URLs (containing specific patterns)
-        if (!url.includes('表情包') && !url.includes('emoji')) {
-            imageUrls.push(url);
+    const fallbackTextContent = {
+        content: [
+            {
+                type: 'text',
+                text: content
+            }
+        ]
+    };
+
+    try {
+        // Match HTML img tags and Markdown images with http/https URLs
+        const htmlImageRegex = /<img\s+[^>]*src=["']?(https?:\/\/[^"'\s>]+)["']?[^>]*>/gi;
+        const markdownImageRegex = /!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
+
+        const htmlMatches = [...content.matchAll(htmlImageRegex)];
+        const markdownMatches = [...content.matchAll(markdownImageRegex)];
+
+        const rawUrls = [];
+        for (const match of htmlMatches) {
+            const url = match[1];
+            if (!url.includes('表情包') && !url.includes('emoji')) {
+                rawUrls.push(url);
+            }
         }
-    }
-    
-    // Extract URLs from Markdown images
-    for (const match of markdownMatches) {
-        const url = match[1];
-        if (!url.includes('表情包') && !url.includes('emoji')) {
-            imageUrls.push(url);
+        for (const match of markdownMatches) {
+            const url = match[1];
+            if (!url.includes('表情包') && !url.includes('emoji')) {
+                rawUrls.push(url);
+            }
         }
-    }
-    
-    // If no images, return simple text format
-    if (imageUrls.length === 0) {
+
+        // Deduplicate and limit to max 5 images
+        const imageUrls = [...new Set(rawUrls)].slice(0, 5);
+        if (imageUrls.length === 0) {
+            return fallbackTextContent;
+        }
+
+        const SINGLE_IMAGE_TIMEOUT_MS = 2500;
+        const TOTAL_BUDGET_TIMEOUT_MS = 3500;
+
+        const downloadSingleImage = async (url) => {
+            try {
+                const response = await axios({
+                    method: 'get',
+                    url: url,
+                    responseType: 'arraybuffer',
+                    timeout: SINGLE_IMAGE_TIMEOUT_MS,
+                    maxContentLength: 8 * 1024 * 1024
+                });
+
+                const base64Image = Buffer.from(response.data).toString('base64');
+                const contentType = response.headers['content-type'] || 'image/png';
+
+                return {
+                    type: 'image_url',
+                    image_url: {
+                        url: `data:${contentType};base64,${base64Image}`
+                    }
+                };
+            } catch (e) {
+                console.error(`[VCPForum] 下载图片失败或超时 (${url}): ${e.message}`);
+                return null;
+            }
+        };
+
+        // 并发执行所有图片下载，并带全局预算熔断器
+        const fetchAllWithBudget = async () => {
+            const results = await Promise.allSettled(imageUrls.map(url => downloadSingleImage(url)));
+            return results
+                .filter(res => res.status === 'fulfilled' && res.value !== null)
+                .map(res => res.value);
+        };
+
+        const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+                console.warn(`[VCPForum] 图片抓取达到总预算上限 (${TOTAL_BUDGET_TIMEOUT_MS}ms)，降级返回。`);
+                resolve([]);
+            }, TOTAL_BUDGET_TIMEOUT_MS);
+        });
+
+        const imageItems = await Promise.race([fetchAllWithBudget(), timeoutPromise]);
+
+        if (!imageItems || imageItems.length === 0) {
+            return fallbackTextContent;
+        }
+
         return {
             content: [
                 {
                     type: 'text',
                     text: content
-                }
+                },
+                ...imageItems
             ]
         };
+    } catch (err) {
+        console.error(`[VCPForum] 解析转码图片时发生意外错误: ${err.message}`);
+        return fallbackTextContent;
     }
-    
-    // Build structured content array
-    const structuredContent = [
-        {
-            type: 'text',
-            text: content
-        }
-    ];
-    
-    // Download and convert images to base64
-    for (const url of imageUrls) {
-        try {
-            const response = await axios({
-                method: 'get',
-                url: url,
-                responseType: 'arraybuffer',
-                timeout: 10000
-            });
-            
-            const base64Image = Buffer.from(response.data).toString('base64');
-            const contentType = response.headers['content-type'] || 'image/png';
-            
-            structuredContent.push({
-                type: 'image_url',
-                image_url: {
-                    url: `data:${contentType};base64,${base64Image}`
-                }
-            });
-        } catch (e) {
-            // If image download fails, skip it
-            console.error(`[VCPForum] 无法下载图片 ${url}: ${e.message}`);
-        }
-    }
-    
-    return {
-        content: structuredContent
-    };
 }
 
 /**
@@ -232,9 +259,10 @@ async function convertImagesToBase64ForAI(content) {
  * @returns {Promise<object>} - The result of the operation.
  */
 async function createPost(args) {
-    let { maid, board, title, content: rawContent } = args;
+    const rawContent = args.content || args.body || args.text;
+    let { maid, board, title } = args;
     if (!maid || !board || !title || !rawContent) {
-        throw new Error("创建帖子需要 'maid', 'board', 'title', 和 'content' 参数。");
+        throw new Error("创建帖子需要 'maid', 'board', 'title', 和 'content' (或 'body') 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
 
@@ -247,7 +275,7 @@ async function createPost(args) {
     // Process local images (file:// URLs)
     content = await processLocalImages(content, args);
 
-    const timestamp = new Date().toISOString();
+    const timestamp = getLocalISOTimestamp();
     const sanitizedTimestamp = timestamp.replace(/:/g, '-'); // Replace colons for Windows compatibility
     const uid = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -292,9 +320,10 @@ ${content}
  * @returns {Promise<object>} - The result of the operation.
  */
 async function replyToPost(args) {
-    const { maid, post_uid, content: rawContent } = args;
+    const rawContent = args.content || args.body || args.text;
+    const { maid, post_uid } = args;
     if (!maid || !post_uid || !rawContent) {
-        throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' 参数。");
+        throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' (或 'body') 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
     
@@ -315,7 +344,7 @@ async function replyToPost(args) {
     const floorMatches = [...originalContent.matchAll(/### 楼层 #(\d+)/g)];
     const nextFloor = floorMatches.length + 1;
 
-    const timestamp = new Date().toISOString();
+    const timestamp = getLocalISOTimestamp();
     const replyContent = `
 
 ---

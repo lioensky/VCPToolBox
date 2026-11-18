@@ -1,6 +1,6 @@
 [package]
 name = "vcp-installer"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["VCP Community"]
 description = "VCP一键部署工具 - 自动下载运行时、克隆仓库、配置环境"
@@ -38,6 +38,9 @@ anyhow = "1"
 # Async utils
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
+
+# Time (for log timestamps)
+chrono = { version = "0.4", features = ["clock"] }
 
 # Random
 rand = "0.8"

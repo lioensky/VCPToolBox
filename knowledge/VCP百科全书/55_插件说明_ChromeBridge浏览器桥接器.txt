@@ -1,0 +1,52 @@
+今日学习了VCPToolBox新增的ChromeBridge插件，这是一个混合型浏览器控制插件，既能让AI实时观察Chrome页面内容，又能执行浏览器控制命令（点击、输入、打开URL）。
+
+核心概念：ChromeBridge（Chrome浏览器桥接器）V2.0是VCP的浏览器控制枢纽，通过WebSocket与VCPChrome浏览器扩展通信，实现两种工作模式：Service模式下自动将当前Chrome活动标签页的Markdown化内容注入系统提示词，让AI"看到"网页；Direct模式下AI可以主动执行浏览器操作命令并获取操作后的新页面内容。
+
+插件基本信息：插件名称ChromeBridge，版本2.0.0，类型hybridservice混合服务插件，超时时间30秒，入口文件ChromeBridge.js（Node.js，直接调用协议）。系统提示词占位符{{VCPChromePageInfo}}提供当前活动标签页的实时Markdown内容。支持WebSocket推送，目标客户端类型为ChromeObserver。
+
+简明释义：ChromeBridge让AI拥有了"浏览器眼睛和手"。通过{{VCPChromePageInfo}}占位符，AI可以看到用户当前正在浏览的Chrome网页内容（Markdown格式，包含可交互的元素标识）。通过工具命令，AI可以帮用户在网页上输入文字、点击按钮或打开新链接，每次操作后还能看到更新后的页面内容。
+
+使用方法：在系统提示词中添加{{VCPChromePageInfo}}占位符即可让AI感知当前Chrome页面内容。需要浏览器操作时，AI可以调用以下三个命令：
+
+在输入框中输入文字：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ChromeBridge「末」,
+command:「始」type「末」,
+target:「始」搜索框「末」,
+text:「始」VCP Agent是什么「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+点击按钮或链接：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ChromeBridge「末」,
+command:「始」click「末」,
+target:「始」登录「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+打开新的URL：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ChromeBridge「末」,
+command:「始」open_url「末」,
+url:「始」https://www.google.com「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+每次命令执行后都会等待页面刷新完成，然后返回新页面的Markdown化内容，AI可以看到操作结果。
+
+前置条件：需要在Chrome浏览器中安装VCPChrome扩展（位于VCPChrome/目录），扩展会通过WebSocket连接到VCP主服务器，作为ChromeObserver客户端注册。
+
+可能遇到的问题：
+1. {{VCPChromePageInfo}}显示为空——VCPChrome浏览器扩展未安装或未连接到VCP WebSocket服务器。确认扩展已安装并在Chrome中启用。
+2. 点击/输入命令无响应——target参数不匹配页面上的任何元素。target使用元素的标题或标识符进行匹配，需要根据{{VCPChromePageInfo}}中显示的元素信息来确定正确的target值。
+3. 页面内容过长占用大量Token——{{VCPChromePageInfo}}的isDynamic属性为true，每次对话都会刷新。复杂网页的Markdown化内容可能很长，建议配合上下文折叠协议管理Token。
+4. WebSocket连接断开——VCPChrome扩展与VCP服务器之间的WebSocket连接不稳定，刷新Chrome扩展或重启VCP服务。
+
+可能的解决办法：
+1. 推荐工作流程：先通过{{VCPChromePageInfo}}观察页面结构 → 识别可交互元素的标识 → 使用type/click命令操作 → 查看返回的新页面内容确认操作成功。
+2. DebugMode配置项设为true可以打印详细日志，帮助排查命令执行问题。
+3. open_url命令会在新标签页中打开URL，适合需要AI主动导航到特定网页的场景。
+
+关联节点：VCPChrome浏览器扩展（前置依赖）、WebSocket分布式架构（通信通道）、CapturePreprocessor截图预处理（同类视觉感知插件）、hybridservice混合服务插件类型。
+
+信源/出处：Plugin/ChromeBridge/plugin-manifest.json，Plugin/ChromeBridge/ChromeBridge.js，VCPChrome/目录。
+
+Tag: ChromeBridge，Chrome浏览器，浏览器控制，网页感知，WebSocket，点击输入，页面Markdown化，VCPChrome扩展，hybridservice

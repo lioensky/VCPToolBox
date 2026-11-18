@@ -3,4 +3,9 @@ export interface Tool {
   pluginName: string;
   name: string;
   description?: string;
+  displayName?: string;
+  example?: string;
+  category?: string;
+  schema?: unknown;
+  searchText?: string;
 }

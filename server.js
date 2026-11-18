@@ -1,5 +1,6 @@
 // server.js
 const express = require('express');
+require('./modules/dotenvPatch.js'); // 应用 dotenv.parse 补丁以支持特殊字符
 const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
 const schedule = require('node-schedule');
@@ -13,6 +14,7 @@ dayjs.extend(timezone);
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
+const { taskPath, writeJson, createCallbackHandler } = require('./modules/asyncResultStore');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 
@@ -107,14 +109,17 @@ const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const toolboxManager = require('./modules/toolboxManager.js');
+const dynamicToolRegistry = require('./modules/dynamicToolRegistry.js');
 const messageProcessor = require('./modules/messageProcessor.js');
 const knowledgeBaseManager = require('./KnowledgeBaseManager.js'); // 新增：引入统一知识库管理器
+const tdbKnowledgeManager = require('./TDBKnowledge.js'); // 新增：引入 TriviumDB 冷知识库管理器
 const pluginManager = require('./Plugin.js');
 const sarPromptManager = require('./modules/sarPromptManager.js');
 const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const FileFetcherServer = require('./FileFetcherServer.js'); // 引入新的 FileFetcherServer 模块
 const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信息处理器
+const toolCallRecordStore = require('./modules/toolCallRecordStore.js'); // 工具调用记录独立 SQLite 存储
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
@@ -137,6 +142,214 @@ const ToolCallParser = require('./modules/vcpLoop/toolCallParser.js');
 
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
 
+const SERVER_LIFECYCLE = Object.freeze({
+    RUNNING: 'RUNNING',
+    DRAINING: 'DRAINING',
+    SHUTTING_DOWN: 'SHUTTING_DOWN',
+    EXITING: 'EXITING'
+});
+
+let serverLifecycleState = SERVER_LIFECYCLE.RUNNING;
+let shutdownPromise = null;
+let shutdownStartedAt = null;
+let shutdownReason = null;
+let lastShutdownExitCode = 0;
+let forceShutdownTimer = null;
+const trackedSockets = new Set();
+const activeHttpRequests = new Set();
+
+function getServerLifecycleStatus() {
+    return {
+        state: serverLifecycleState,
+        reason: shutdownReason,
+        startedAt: shutdownStartedAt,
+        uptimeMsInState: shutdownStartedAt ? Date.now() - shutdownStartedAt : 0,
+        activeRequestCount: activeRequests.size
+    };
+}
+
+function isServerDraining() {
+    return serverLifecycleState !== SERVER_LIFECYCLE.RUNNING;
+}
+
+function buildDrainingResponse(req) {
+    const lifecycleStatus = getServerLifecycleStatus();
+    const isStreamRequest = req?.body?.stream === true;
+    const message = '服务正在重启/关闭中，暂时不再接受新的请求。';
+
+    if (isStreamRequest) {
+        return {
+            type: 'stream',
+            status: 200,
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive'
+            },
+            body: {
+                id: `chatcmpl-draining-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: req?.body?.model || 'unknown',
+                choices: [{
+                    index: 0,
+                    delta: { content: message },
+                    finish_reason: 'stop'
+                }],
+                lifecycle: lifecycleStatus
+            }
+        };
+    }
+
+    return {
+        type: 'json',
+        status: 503,
+        body: {
+            error: 'Service Unavailable',
+            message,
+            lifecycle: lifecycleStatus
+        }
+    };
+}
+
+function sendDrainingResponse(req, res) {
+    const payload = buildDrainingResponse(req);
+
+    if (payload.type === 'stream') {
+        if (!res.headersSent) {
+            res.status(payload.status);
+            Object.entries(payload.headers).forEach(([key, value]) => res.setHeader(key, value));
+        }
+        res.write(`data: ${JSON.stringify(payload.body)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+    }
+
+    if (!res.headersSent) {
+        res.status(payload.status).json(payload.body);
+    } else if (!res.writableEnded) {
+        res.end();
+    }
+}
+
+function destroyIdleSockets() {
+    let destroyedCount = 0;
+    for (const socket of trackedSockets) {
+        try {
+            const hasActiveRequest = activeHttpRequests.has(socket);
+            if (!hasActiveRequest && !socket.destroyed) {
+                socket.destroy();
+                destroyedCount++;
+            }
+        } catch (error) {
+            console.error('[Server] Failed to destroy idle socket:', error.message);
+        }
+    }
+    console.log(`[Server] Destroyed ${destroyedCount} idle socket(s).`);
+}
+
+async function closeHttpServerGracefully() {
+    if (!server || typeof server.close !== 'function') {
+        return;
+    }
+
+    console.log(`[Server] Preparing to close HTTP server. trackedSockets=${trackedSockets.size}, activeHttpRequests=${activeHttpRequests.size}`);
+
+    destroyIdleSockets();
+
+    await new Promise((resolve) => {
+        try {
+            server.close((error) => {
+                if (error) {
+                    console.error('[Server] Error while closing HTTP server:', error);
+                } else {
+                    console.log('[Server] HTTP server stopped accepting new connections.');
+                }
+                resolve();
+            });
+        } catch (error) {
+            console.error('[Server] Failed to invoke server.close():', error);
+            resolve();
+        }
+    });
+}
+
+async function waitForActiveRequestsToDrain(timeoutMs = 30000) {
+    const start = Date.now();
+
+    while (activeRequests.size > 0 && (Date.now() - start) < timeoutMs) {
+        console.log(`[Shutdown] Waiting for ${activeRequests.size} active request(s) to finish...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    return activeRequests.size === 0;
+}
+
+async function abortAllActiveRequests(reason = '服务器正在关闭') {
+    console.log(`[Shutdown] Aborting ${activeRequests.size} active request(s)...`);
+
+    for (const [id, context] of activeRequests.entries()) {
+        try {
+            if (!context.aborted) {
+                context.aborted = true;
+            }
+
+            if (context.abortController && !context.abortController.signal.aborted) {
+                context.abortController.abort();
+            }
+
+            if (context.res && !context.res.writableEnded && !context.res.destroyed) {
+                const isStreamRequest = context.req?.body?.stream === true;
+
+                if (!context.res.headersSent) {
+                    if (isStreamRequest) {
+                        context.res.status(200);
+                        context.res.setHeader('Content-Type', 'text/event-stream');
+                        context.res.setHeader('Cache-Control', 'no-cache');
+                        context.res.setHeader('Connection', 'keep-alive');
+
+                        const shutdownChunk = {
+                            id: `chatcmpl-shutdown-${Date.now()}`,
+                            object: 'chat.completion.chunk',
+                            created: Math.floor(Date.now() / 1000),
+                            model: context.req?.body?.model || 'unknown',
+                            choices: [{
+                                index: 0,
+                                delta: { content: reason },
+                                finish_reason: 'stop'
+                            }]
+                        };
+
+                        context.res.write(`data: ${JSON.stringify(shutdownChunk)}\n\n`);
+                        context.res.write('data: [DONE]\n\n');
+                        context.res.end();
+                    } else {
+                        context.res.status(503).json({
+                            error: 'Service Unavailable',
+                            message: reason
+                        });
+                    }
+                } else if (String(context.res.getHeader('Content-Type') || '').includes('text/event-stream')) {
+                    context.res.write('data: [DONE]\n\n');
+                    context.res.end();
+                } else {
+                    context.res.end();
+                }
+            }
+        } catch (error) {
+            console.error(`[Shutdown] Failed to abort active request ${id}:`, error.message);
+            try {
+                if (context.res && !context.res.destroyed) {
+                    context.res.destroy();
+                }
+            } catch (destroyError) {
+                console.error(`[Shutdown] Failed to destroy response for request ${id}:`, destroyError.message);
+            }
+        }
+    }
+}
+
 // 新增：定时清理 activeRequests 防止内存泄漏
 setInterval(() => {
     const now = Date.now();
@@ -157,9 +370,19 @@ const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const CHAT_LOG_ENABLED = (process.env.CHAT_LOG_ENABLED || "false").toLowerCase() === "true";
+// 只控制已通过现有 IP 映射识别的 VChat 节点的常规 POST 追踪日志，不影响鉴权与安全日志。
+const LOG_VCHAT_POST_IP_ENABLED = (process.env.LOG_VCHAT_POST_IP_ENABLED || "true").trim().toLowerCase() !== "false";
 const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
-const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：RAG日记刷新开关
+const REASONING_TO_CONTENT_ENABLED = (process.env.ReasoningToContentEnabled || "false").toLowerCase() === "true";
+const REASONING_TO_CONTENT_TAG = String(process.env.ReasoningToContentTag || "think").trim().toLowerCase() === "thinking"
+    ? "thinking"
+    : "think";
+const REASONING_TO_CONTENT_MODELS = String(process.env.ReasoningToContentModel || "")
+    .split(',')
+    .map(model => model.trim().toLowerCase())
+    .filter(Boolean);
+const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：传递RAG日记刷新开关
 const ENABLE_ROLE_DIVIDER = (process.env.EnableRoleDivider || "false").toLowerCase() === "true"; // 新增：角色分割开关
 const ENABLE_ROLE_DIVIDER_IN_LOOP = (process.env.EnableRoleDividerInLoop || "false").toLowerCase() === "true"; // 新增：循环栈角色分割开关
 const ROLE_DIVIDER_SYSTEM = (process.env.RoleDividerSystem || "true").toLowerCase() === "true"; // 新增：System角色分割开关
@@ -186,9 +409,44 @@ try {
 }
 const CHINA_MODEL_1_COT = (process.env.ChinaModel1Cot || "false").toLowerCase() === "true";
 
+// 多模态配置 JSON 真相源（multimodal-config.json）：优先级高于 config.env，支持热更新
+// 在初始化阶段先确保文件存在并加载内存配置；运行时由 chatCompletionHandler / image-processor 直接调用 store。
+const multiModalConfigStore = require('./modules/multiModalConfigStore.js');
+try {
+    multiModalConfigStore.init();
+    console.log('[Server] multimodal-config.json 配置真相源已加载，路径：', multiModalConfigStore.CONFIG_PATH);
+} catch (multiModalInitErr) {
+    console.error('[Server] 初始化 multimodal-config.json 失败：', multiModalInitErr);
+}
+
+// 纯文本模型强制翻译多模态：tag 列表，命中即无视 {{TransBase64}}/{{TransBase64+}} 占位符
+// 用于配合模型动态路由（VCPModelAuto/SemanticModelRouter），避免把 base64 多模态传给纯文本模型
+// 仅作为启动快照保留；运行时 chatCompletionHandler 会从 multiModalConfigStore 拉取最新值
+let MULTIMODAL_FORCE_TRANSLATE_MODELS = [];
+try {
+    const storeTags = multiModalConfigStore.getForceTranslateModels();
+    if (Array.isArray(storeTags) && storeTags.length > 0) {
+        MULTIMODAL_FORCE_TRANSLATE_MODELS = storeTags;
+    } else {
+        MULTIMODAL_FORCE_TRANSLATE_MODELS = (process.env.MultiModalForceTranslateModels || "")
+            .split(',')
+            .map(tag => tag.trim().toLowerCase())
+            .filter(tag => tag !== "");
+    }
+    if (MULTIMODAL_FORCE_TRANSLATE_MODELS.length > 0) {
+        console.log(`[Server] MultiModalForceTranslateModels 启动快照已加载 ${MULTIMODAL_FORCE_TRANSLATE_MODELS.length} 个 tag: [${MULTIMODAL_FORCE_TRANSLATE_MODELS.join(', ')}]`);
+    }
+} catch (e) {
+    console.error("Failed to parse MultiModalForceTranslateModels:", e);
+}
+
 // 新增：模型重定向功能
 const ModelRedirectHandler = require('./modelRedirectHandler.js');
 const modelRedirectHandler = new ModelRedirectHandler();
+
+// 语义任务智能模型路由器
+const SemanticModelRouter = require('./modules/semanticModelRouter.js');
+const semanticModelRouter = new SemanticModelRouter();
 
 // ensureDebugLogDir is now ensureDebugLogDirSync and called by initializeServerLogger
 // writeDebugLog remains for specific debug purposes, it uses fs.promises.
@@ -274,7 +532,7 @@ for (const key in process.env) {
     if (/^Detector\d+$/.test(key)) {
         const index = key.substring(8);
         const outputKey = `Detector_Output${index}`;
-        if (process.env[outputKey]) {
+        if (process.env[outputKey] !== undefined) {
             detectors.push({ detector: process.env[key], output: process.env[outputKey] });
         }
     }
@@ -287,7 +545,7 @@ for (const key in process.env) {
     if (/^SuperDetector\d+$/.test(key)) {
         const index = key.substring(13);
         const outputKey = `SuperDetector_Output${index}`;
-        if (process.env[outputKey]) {
+        if (process.env[outputKey] !== undefined) {
             superDetectors.push({ detector: process.env[key], output: process.env[outputKey] });
         }
     }
@@ -314,12 +572,15 @@ app.use((req, res, next) => {
             clientIp = clientIp.substr(7);
         }
 
-        // 始终记录收到的POST请求IP
-        console.log(`[IP Tracker] Received POST request from IP: ${clientIp}`);
-
         const serverName = webSocketServer.findServerByIp(clientIp);
-        if (serverName) {
-            console.log(`[IP Tracker] SUCCESS: Post request is from known Distributed Server: '${serverName}' (IP: ${clientIp})`);
+        const suppressVchatPostIpLog = !LOG_VCHAT_POST_IP_ENABLED
+            && serverName === 'VCPChat-Desktop-Client-Distributed-Server';
+
+        if (!suppressVchatPostIpLog) {
+            console.log(`[IP Tracker] Received POST request from IP: ${clientIp}`);
+            if (serverName) {
+                console.log(`[IP Tracker] SUCCESS: Post request is from known Distributed Server: '${serverName}' (IP: ${clientIp})`);
+            }
         }
     }
     next();
@@ -370,9 +631,28 @@ app.use((req, res, next) => {
     next();
 });
 
+app.use((req, res, next) => {
+    if (isServerDraining()) {
+        const allowDuringShutdownPaths = new Set([
+            '/admin_api/server/restart',
+            '/admin_api/server/lifecycle',
+            '/v1/interrupt'
+        ]);
+        const allowDuringShutdown =
+            allowDuringShutdownPaths.has(req.path) ||
+            req.path.startsWith('/plugin-callback/');
+
+        if (!allowDuringShutdown) {
+            console.warn(`[Server] Rejecting new request during ${serverLifecycleState}: ${req.method} ${req.path}`);
+            return sendDrainingResponse(req, res);
+        }
+    }
+    next();
+});
+
 // 引入并使用特殊模型路由
 const specialModelRouter = require('./routes/specialModelRouter');
-app.use(specialModelRouter); // 这个将处理所有白名单模型的请求
+// Mounted after general API authentication below.
 
 const port = process.env.PORT;
 const apiKey = process.env.API_Key;
@@ -593,17 +873,17 @@ app.use((req, res, next) => {
         return next();
     }
 
-    // Skip bearer token check for plugin callbacks
-    if (req.path.startsWith('/plugin-callback')) {
-        return next();
-    }
+    // Plugin callbacks require the same Bearer credential as other API calls.
 
     const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
+    if (!serverKey || !authHeader || authHeader !== `Bearer ${serverKey}`) {
         return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
     }
     next();
 });
+
+// Model allowlists are routing policy, not authentication.
+app.use(specialModelRouter);
 
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
@@ -612,6 +892,27 @@ app.use((req, res, next) => {
 
 app.get('/v1/models', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
+    const appendSemanticRouterModels = (modelsData) => {
+        const virtualModels = semanticModelRouter.getVirtualModels();
+        if (!virtualModels.length) return modelsData;
+
+        if (!modelsData || typeof modelsData !== 'object') {
+            modelsData = { object: 'list', data: [] };
+        }
+        if (!Array.isArray(modelsData.data)) {
+            modelsData.data = [];
+        }
+
+        const existingIds = new Set(modelsData.data.map(model => model && model.id).filter(Boolean));
+        for (const virtualModel of virtualModels) {
+            if (!existingIds.has(virtualModel.id)) {
+                modelsData.data.push(virtualModel);
+                existingIds.add(virtualModel.id);
+            }
+        }
+        return modelsData;
+    };
+
     try {
         const modelsApiUrl = `${apiUrl}/v1/models`;
         const apiResponse = await fetch(modelsApiUrl, {
@@ -623,27 +924,30 @@ app.get('/v1/models', async (req, res) => {
             },
         });
 
-        // 新增：如果启用了模型重定向，需要处理模型列表响应
-        if (modelRedirectHandler.isEnabled() && apiResponse.ok) {
+        if (apiResponse.ok) {
             const responseText = await apiResponse.text();
             try {
-                const modelsData = JSON.parse(responseText);
+                let modelsData = JSON.parse(responseText);
 
-                // 替换模型列表中的内部模型名为公开模型名
-                if (modelsData.data && Array.isArray(modelsData.data)) {
-                    modelsData.data = modelsData.data.map(model => {
-                        if (model.id) {
-                            const publicModelName = modelRedirectHandler.redirectModelForClient(model.id);
-                            if (publicModelName !== model.id) {
-                                if (DEBUG_MODE) {
-                                    console.log(`[ModelRedirect] 模型列表重定向: ${model.id} -> ${publicModelName}`);
+                // 新增：如果启用了模型重定向，需要处理模型列表响应
+                if (modelRedirectHandler.isEnabled()) {
+                    if (modelsData.data && Array.isArray(modelsData.data)) {
+                        modelsData.data = modelsData.data.map(model => {
+                            if (model.id) {
+                                const publicModelName = modelRedirectHandler.redirectModelForClient(model.id);
+                                if (publicModelName !== model.id) {
+                                    if (DEBUG_MODE) {
+                                        console.log(`[ModelRedirect] 模型列表重定向: ${model.id} -> ${publicModelName}`);
+                                    }
+                                    return { ...model, id: publicModelName };
                                 }
-                                return { ...model, id: publicModelName };
                             }
-                        }
-                        return model;
-                    });
+                            return model;
+                        });
+                    }
                 }
+
+                modelsData = appendSemanticRouterModels(modelsData);
 
                 // 设置响应头
                 res.status(apiResponse.status);
@@ -657,22 +961,24 @@ app.get('/v1/models', async (req, res) => {
                 res.json(modelsData);
                 return;
             } catch (parseError) {
-                console.warn('[ModelRedirect] 解析模型列表响应失败，使用原始响应:', parseError.message);
-                // 如果解析失败，回退到原始流式转发
+                console.warn('[Models] 解析模型列表响应失败，返回语义路由虚拟模型列表:', parseError.message);
+                const fallbackModelsData = appendSemanticRouterModels({ object: 'list', data: [] });
+                if (fallbackModelsData.data.length > 0) {
+                    return res.status(200).json(fallbackModelsData);
+                }
+                // 如果解析失败且没有虚拟模型，回退到错误响应
             }
         }
 
-        // 原始的流式转发逻辑（当模型重定向未启用或解析失败时使用）
-        res.status(apiResponse.status);
-        apiResponse.headers.forEach((value, name) => {
-            // Avoid forwarding hop-by-hop headers
-            if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                res.setHeader(name, value);
-            }
-        });
+        // 上游模型列表不可用时，仍返回语义路由虚拟模型，避免前端无法选择 VCPModelAuto。
+        const fallbackModelsData = appendSemanticRouterModels({ object: 'list', data: [] });
+        if (fallbackModelsData.data.length > 0) {
+            return res.status(200).json(fallbackModelsData);
+        }
 
-        // Stream the response body back to the client
-        apiResponse.body.pipe(res);
+        res.status(apiResponse.status);
+        const errorText = await apiResponse.text();
+        res.type('text/plain').send(errorText);
 
     } catch (error) {
         console.error('转发 /v1/models 请求时出错:', error.message, error.stack);
@@ -715,7 +1021,7 @@ app.post('/v1/schedule_task', async (req, res) => {
         // 确保目录存在
         await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
 
-        const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
+        const taskFilePath = taskPath(VCP_TIMED_CONTACTS_DIR, task_id);
 
         const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
 
@@ -726,7 +1032,7 @@ app.post('/v1/schedule_task', async (req, res) => {
             requestor: `Plugin: ${tool_call.tool_name}`,
         };
 
-        await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
+        await writeJson(VCP_TIMED_CONTACTS_DIR, taskFilePath, taskData);
         if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
 
         // 返回成功的响应，插件可以基于此生成最终的用户回执
@@ -741,8 +1047,17 @@ app.post('/v1/schedule_task', async (req, res) => {
 
     } catch (error) {
         console.error(`[Server] 通过API创建定时任务文件时出错:`, error);
-        res.status(500).json({ status: "error", error: "在服务器上保存定时任务时发生内部错误。" });
+        res.status(error.code === 'UNSAFE_PATH' ? 400 : 500).json({ status: "error", error: error.code === 'UNSAFE_PATH' ? "无效的 task_id 或任务文件路径。" : "在服务器上保存定时任务时发生内部错误。" });
     }
+});
+
+// 新增：生命周期状态查询路由
+app.get('/admin_api/server/lifecycle', (req, res) => {
+    res.status(200).json({
+        status: 'success',
+        lifecycle: getServerLifecycleStatus(),
+        shutdownExitCode: lastShutdownExitCode
+    });
 });
 
 // 新增：紧急停止路由
@@ -753,6 +1068,23 @@ app.post('/v1/interrupt', (req, res) => {
     }
 
     const context = activeRequests.get(id);
+    if (Object.prototype.hasOwnProperty.call(req.body, 'action')) {
+        const { action } = req.body;
+        if (!['prepare_handoff', 'cancel_handoff'].includes(action)) {
+            return res.status(400).json({ success: false, code: 'INVALID_ACTION' });
+        }
+        if (!context || context.res?.writableEnded || context.res?.destroyed) {
+            return res.status(404).json({ success: false, code: 'REQUEST_NOT_FOUND' });
+        }
+        if (context.aborted || context.abortController?.signal.aborted || !context.handoffGate) {
+            return res.status(409).json({ success: false, code: 'REQUEST_STOPPED' });
+        }
+        const receipt = context.handoffGate.control(req.body);
+        if (receipt.success && !receipt.duplicate && action === 'prepare_handoff') {
+            console.log(`[Handoff] READY received: requestId=${id}, handoffId=${req.body.handoffId}, revision=${req.body.revision}. 已登记预约，当前工具继续执行。`);
+        }
+        return res.status(receipt.success ? 200 : 409).json(receipt);
+    }
     if (context) {
         console.log(`[Interrupt] Received stop signal for ID: ${id}`);
 
@@ -760,6 +1092,7 @@ app.post('/v1/interrupt', (req, res) => {
         // 1. 设置中止标志，防止 chatCompletionHandler 继续写入
         if (!context.aborted) {
             context.aborted = true; // 标记为已中止
+            context.abortReason = 'explicit_interrupt';
 
             // 2. 立即触发 abort 信号（中断正在进行的 fetch 请求）
             if (context.abortController && !context.abortController.signal.aborted) {
@@ -843,17 +1176,17 @@ app.post('/v1/interrupt', (req, res) => {
 
         // 最后从 activeRequests 中移除，防止内存泄漏
         setTimeout(() => {
-            if (activeRequests.has(id)) {
+            if (activeRequests.get(id) === context) {
                 activeRequests.delete(id);
                 console.log(`[Interrupt] Cleaned up request ${id} from activeRequests`);
             }
         }, 1000); // 延迟1秒删除，确保所有异步操作完成
 
-        // 向中断请求的发起者返回成功响应
-        res.status(200).json({ status: 'success', message: `Interrupt signal sent for request ${id}.` });
+        // 向中断请求的发起者返回成功响应（同时携带 success 布尔值与 status 字段兼容单聊/群聊调用方）
+        res.status(200).json({ success: true, status: 'success', message: `Interrupt signal sent for request ${id}.` });
     } else {
         console.log(`[Interrupt] Received stop signal for non-existent or completed ID: ${id}`);
-        res.status(404).json({ status: 'error', message: `Request ${id} not found or already completed.` });
+        res.status(404).json({ success: false, status: 'error', code: 'REQUEST_NOT_FOUND', message: `Request ${id} not found or already completed.` });
     }
 });
 
@@ -867,10 +1200,12 @@ const chatCompletionHandler = new ChatCompletionHandler({
     activeRequests,
     writeDebugLog,
     writeChatLog,
-    handleDiaryFromAIResponse,
     webSocketServer,
     DEBUG_MODE,
     SHOW_VCP_OUTPUT,
+    reasoningToContentEnabled: REASONING_TO_CONTENT_ENABLED,
+    reasoningToContentTag: REASONING_TO_CONTENT_TAG,
+    reasoningToContentModels: REASONING_TO_CONTENT_MODELS,
     VCPToolCode, // 新增：传递VCP工具调用验证码开关
     RAGMemoRefresh: RAG_MEMO_REFRESH, // 新增：传递RAG日记刷新开关
     enableRoleDivider: ENABLE_ROLE_DIVIDER, // 新增：传递角色分割开关
@@ -891,11 +1226,14 @@ const chatCompletionHandler = new ChatCompletionHandler({
     maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
     apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数
     apiRetryDelay: parseInt(process.env.ApiRetryDelay) || 1000, // 新增：API重试延迟
+    apiConnectionTimeoutMs: parseInt(process.env.ApiConnectionTimeoutMs) || 900000, // 单次上游连接/首包超时，默认15分钟
     cachedEmojiLists,
     detectors,
     superDetectors,
     chinaModel1: CHINA_MODEL_1,
-    chinaModel1Cot: CHINA_MODEL_1_COT
+    chinaModel1Cot: CHINA_MODEL_1_COT,
+    semanticModelRouter,
+    multiModalForceTranslateModels: MULTIMODAL_FORCE_TRANSLATE_MODELS // 纯文本模型 tag 命中后强制翻译多模态
 });
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
@@ -925,6 +1263,11 @@ app.post('/v1/chatvcp/completions', async (req, res) => {
         }
     }
 });
+
+// 协议桥接路由：支持 OpenAI Responses API、Anthropic Messages、Gemini GenerateContent
+// 将这些协议格式的请求转换为标准 messages 数组后内部转发到 /v1/chat/completions
+const protocolBridge = require('./routes/protocolBridge');
+app.use(protocolBridge);
 
 // 新增：人类直接调用工具的端点
 app.post('/v1/human/tool', async (req, res) => {
@@ -958,7 +1301,7 @@ app.post('/v1/human/tool', async (req, res) => {
         if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
             clientIp = clientIp.substr(7);
         }
-        const result = await pluginManager.processToolCall(requestedToolName, parsedToolArgs, clientIp);
+        const result = await pluginManager.processToolCall(requestedToolName, parsedToolArgs, clientIp, 'human/tool');
 
         // processToolCall 的结果已经是正确的对象格式
         res.status(200).json(result);
@@ -980,133 +1323,23 @@ app.post('/v1/human/tool', async (req, res) => {
 });
 
 
-async function handleDiaryFromAIResponse(responseText) {
-    let fullAiResponseTextForDiary = '';
-    let successfullyParsedForDiary = false;
-    if (!responseText || typeof responseText !== 'string' || responseText.trim() === "") {
-        return;
-    }
-    const lines = responseText.trim().split('\n');
-    const looksLikeSSEForDiary = lines.some(line => line.startsWith('data: '));
-    if (looksLikeSSEForDiary) {
-        let sseContent = '';
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                const jsonData = line.substring(5).trim();
-                if (jsonData === '[DONE]') continue;
-                try {
-                    const parsedData = JSON.parse(jsonData);
-                    const contentChunk = parsedData.choices?.[0]?.delta?.content || parsedData.choices?.[0]?.message?.content || '';
-                    if (contentChunk) sseContent += contentChunk;
-                } catch (e) { /* ignore */ }
-            }
-        }
-        if (sseContent) {
-            fullAiResponseTextForDiary = sseContent;
-            successfullyParsedForDiary = true;
-        }
-    }
-    if (!successfullyParsedForDiary) {
-        try {
-            const parsedJson = JSON.parse(responseText);
-            const jsonContent = parsedJson.choices?.[0]?.message?.content;
-            if (jsonContent && typeof jsonContent === 'string') {
-                fullAiResponseTextForDiary = jsonContent;
-                successfullyParsedForDiary = true;
-            }
-        } catch (e) { /* ignore */ }
-    }
-    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) {
-        fullAiResponseTextForDiary = responseText;
-    }
-
-    if (fullAiResponseTextForDiary.trim()) {
-        const dailyNoteRegex = /<<<DailyNoteStart>>>(.*?)<<<DailyNoteEnd>>>/s;
-        const match = fullAiResponseTextForDiary.match(dailyNoteRegex);
-        if (match && match[1]) {
-            const noteBlockContent = match[1].trim();
-            if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
-
-            const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
-            const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
-
-            const maidName = maidMatch ? maidMatch[1].trim() : null;
-            const dateString = dateMatch ? dateMatch[1].trim() : null;
-
-            let contentText = null;
-            const contentMatch = noteBlockContent.match(/^\s*Content:\s*([\s\S]*)$/m);
-            if (contentMatch) {
-                contentText = contentMatch[1].trim();
-            }
-
-            if (maidName && dateString && contentText) {
-                const diaryPayload = { maidName, dateString, contentText };
-                try {
-                    if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Calling DailyNoteWrite plugin with payload:', diaryPayload);
-                    // pluginManager.executePlugin is expected to handle JSON stringification if the plugin expects a string
-                    // and to parse the JSON response from the plugin.
-                    // The third argument to executePlugin in Plugin.js is inputData, which can be a string or object.
-                    // For stdio, it's better to stringify here.
-                    const pluginResult = await pluginManager.executePlugin("DailyNoteWrite", JSON.stringify(diaryPayload));
-                    // pluginResult is the direct parsed JSON object from the DailyNoteWrite plugin's stdout.
-                    // Example success: { status: "success", message: "Diary saved to /path/to/your/file.txt" }
-                    // Example error:   { status: "error", message: "Error details" }
-
-                    if (pluginResult && pluginResult.status === "success" && pluginResult.message) {
-                        const dailyNoteWriteResponse = pluginResult; // Use pluginResult directly
-
-                        if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${dailyNoteWriteResponse.message}`);
-
-                        let filePath = '';
-                        const successMessage = dailyNoteWriteResponse.message; // e.g., "Diary saved to /path/to/file.txt"
-                        const pathMatchMsg = /Diary saved to (.*)/;
-                        const matchedPath = successMessage.match(pathMatchMsg);
-                        if (matchedPath && matchedPath[1]) {
-                            filePath = matchedPath[1];
-                        }
-
-                        const notification = {
-                            type: 'daily_note_created',
-                            data: {
-                                maidName: diaryPayload.maidName,
-                                dateString: diaryPayload.dateString,
-                                filePath: filePath,
-                                status: 'success',
-                                message: `日记 '${filePath || '未知路径'}' 已为 '${diaryPayload.maidName}' (${diaryPayload.dateString}) 创建成功。`
-                            }
-                        };
-                        webSocketServer.broadcast(notification, 'VCPLog');
-                        if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Broadcasted daily_note_created notification:', notification);
-
-                    } else if (pluginResult && pluginResult.status === "error") {
-                        // Handle errors reported by the plugin's JSON response
-                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported an error:`, pluginResult.message || pluginResult);
-                    } else {
-                        // Handle cases where pluginResult is null, or status is not "success"/"error", or message is missing on success.
-                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin returned an unexpected response structure or failed:`, pluginResult);
-                    }
-                } catch (pluginError) {
-                    // This catches errors from pluginManager.executePlugin itself (e.g., process spawn error, timeout)
-                    console.error('[handleDiaryFromAIResponse] Error executing DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
-                }
-            } else {
-                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0, 50) });
-            }
-        }
-    }
-}
-
 // --- Admin API Router (Moved to routes/adminPanelRoutes.js) ---
 
 // Define dailyNoteRootPath here as it's needed by the adminPanelRoutes module
 // and was previously defined within the moved block.
 const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote');
+const knowledgeRootPath = process.env.TDB_KNOWLEDGE_ROOT_PATH
+    ? (path.isAbsolute(process.env.TDB_KNOWLEDGE_ROOT_PATH)
+        ? process.env.TDB_KNOWLEDGE_ROOT_PATH
+        : path.resolve(__dirname, process.env.TDB_KNOWLEDGE_ROOT_PATH))
+    : path.join(__dirname, 'knowledge');
 
 // Import and use the admin panel routes, passing the getter for currentServerLogPath
 const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     DEBUG_MODE,
     dailyNoteRootPath,
     pluginManager,
+    knowledgeRootPath,
     logger.getServerLogPath, // Pass the getter function
     knowledgeBaseManager, // Pass the knowledgeBaseManager instance
     AGENT_DIR, // Pass the Agent directory path
@@ -1114,11 +1347,16 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     TVS_DIR, // Pass the TVStxt directory path
     (code = 1) => {
         console.log(`[Server] Restart triggered from admin API (exit code: ${code}).`);
-        gracefulShutdown(code).catch(err => {
+        gracefulShutdown(code, 'admin_restart').catch(err => {
             console.error('[Server] Fatal error during graceful restart:', err);
             process.exit(code);
         });
-    }
+    },
+    semanticModelRouter,
+    modelRedirectHandler,
+    apiUrl,
+    apiKey,
+    tdbKnowledgeManager
 );
 
 // 新增：引入 VCP 论坛 API 路由
@@ -1129,68 +1367,35 @@ const forumApiRoutes = require('./routes/forumApi');
 // 新增：异步插件回调路由
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
 
-async function ensureAsyncResultsDir() {
-    try {
-        await fs.mkdir(VCP_ASYNC_RESULTS_DIR, { recursive: true });
-    } catch (error) {
-        console.error(`[ServerSetup] 创建 VCPAsyncResults 目录失败: ${VCP_ASYNC_RESULTS_DIR}`, error);
-    }
-}
-
-app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
-    const { pluginName, taskId } = req.params;
-    const callbackData = req.body; // 这是插件回调时发送的 JSON 数据
-
-    if (DEBUG_MODE) {
-        console.log(`[Server] Received callback for plugin: ${pluginName}, taskId: ${taskId}`);
-        console.log(`[Server] Callback data:`, JSON.stringify(callbackData, null, 2));
-    }
-
-    // 1. Save callback data to a file
-    await ensureAsyncResultsDir();
-    const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${taskId}.json`);
-    try {
-        await fs.writeFile(resultFilePath, JSON.stringify(callbackData, null, 2), 'utf-8');
-        if (DEBUG_MODE) console.log(`[Server Callback] Saved async result for ${pluginName}-${taskId} to ${resultFilePath}`);
-    } catch (fileError) {
-        console.error(`[Server Callback] Error saving async result file for ${pluginName}-${taskId}:`, fileError);
-        // Continue with WebSocket push even if file saving fails for now
-    }
-
-    const pluginManifest = pluginManager.getPlugin(pluginName);
-
-    if (!pluginManifest) {
-        console.error(`[Server Callback] Plugin manifest not found for: ${pluginName}`);
-        // Still attempt to acknowledge the callback if possible, but log error
-        return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
-    }
-
-    // 2. WebSocket push (existing logic)
-    if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
-        const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
-        const wsMessage = {
-            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification',
-            data: callbackData
-        };
-        webSocketServer.broadcast(wsMessage, targetClientType);
-        if (DEBUG_MODE) {
-            console.log(`[Server Callback] WebSocket push for ${pluginName} (taskId: ${taskId}) processed. Message:`, JSON.stringify(wsMessage, null, 2));
-        }
-    } else if (DEBUG_MODE) {
-        console.log(`[Server Callback] WebSocket push not configured or disabled for plugin: ${pluginName}`);
-    }
-
-    res.status(200).json({ status: "success", message: "Callback received and processed" });
-});
+app.post('/plugin-callback/:pluginName/:taskId', createCallbackHandler({
+    root: VCP_ASYNC_RESULTS_DIR,
+    pluginManager,
+    broadcast: (message, target) => webSocketServer.broadcast(message, target),
+    debug: DEBUG_MODE
+}));
 
 
 async function initialize() {
+    console.log('开始初始化工具调用记录存储...');
+    toolCallRecordStore.initialize();
+    console.log('工具调用记录存储初始化完成。');
+
     console.log('开始初始化向量数据库...');
     await knowledgeBaseManager.initialize(); // 在加载插件之前启动，确保服务就绪
     console.log('向量数据库初始化完成。');
 
+    console.log('开始初始化 TDB 冷知识库...');
+    await tdbKnowledgeManager.initialize();
+    console.log('TDB 冷知识库初始化完成。');
+
     pluginManager.setProjectBasePath(__dirname);
     pluginManager.setVectorDBManager(knowledgeBaseManager); // 注入 knowledgeBaseManager
+    pluginManager.setTdbKnowledgeManager(tdbKnowledgeManager); // 注入冷知识库管理器
+    await dynamicToolRegistry.initialize({
+        pluginManager,
+        projectBasePath: __dirname,
+        debugMode: DEBUG_MODE
+    });
 
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
@@ -1214,6 +1419,7 @@ async function initialize() {
     try {
         const dependencies = {
             knowledgeBaseManager,
+            tdbKnowledgeManager,
             vcpLogFunctions: pluginManager.getVCPLogFunctions()
         };
         if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
@@ -1279,6 +1485,10 @@ async function initialize() {
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
 
+    // 所有插件运行时、服务路由和静态任务就绪后再启动清单监听，
+    // 避免启动阶段的文件写入触发多余重载。
+    pluginManager.startPluginWatcher();
+
     // 初始化通用任务调度器
     taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
 }
@@ -1299,6 +1509,10 @@ async function startServer() {
     modelRedirectHandler.setDebugMode(DEBUG_MODE);
     await modelRedirectHandler.loadModelRedirectConfig(path.join(__dirname, 'ModelRedirect.json'));
     console.log('模型重定向配置加载完成。');
+
+    console.log('正在加载语义模型路由配置...');
+    await semanticModelRouter.initialize(path.join(__dirname, 'SemanticModelRouter.json'), DEBUG_MODE);
+    console.log('语义模型路由配置加载完成。');
 
     // 新增：初始化Agent管理器
     console.log('正在初始化Agent管理器...');
@@ -1332,10 +1546,38 @@ async function startServer() {
         console.log(`中间层服务器正在监听端口 ${port}`);
         console.log(`API 服务器地址: ${apiUrl}`);
 
+        server.on('connection', (socket) => {
+            trackedSockets.add(socket);
+
+            socket.on('close', () => {
+                trackedSockets.delete(socket);
+                activeHttpRequests.delete(socket);
+            });
+        });
+
+        server.on('request', (req, res) => {
+            if (req.socket) {
+                activeHttpRequests.add(req.socket);
+                res.on('finish', () => {
+                    activeHttpRequests.delete(req.socket);
+                });
+                res.on('close', () => {
+                    activeHttpRequests.delete(req.socket);
+                });
+            }
+        });
+
         // Initialize the new WebSocketServer
         if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
         const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
-        webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
+        const distributedMusicPlaylistSyncEnabled = (process.env.DISTRIBUTED_MUSIC_PLAYLIST_SYNC_ENABLED || 'false').toLowerCase() === 'true';
+        const webSocketHeartbeatEnabled = (process.env.WEBSOCKET_HEARTBEAT_ENABLED || 'false').toLowerCase() === 'true';
+        webSocketServer.initialize(server, {
+            debugMode: DEBUG_MODE,
+            vcpKey: vcpKeyValue,
+            distributedMusicPlaylistSyncEnabled,
+            heartbeatEnabled: webSocketHeartbeatEnabled
+        });
 
         // --- 注入依赖 ---
         webSocketServer.setPluginManager(pluginManager);
@@ -1353,42 +1595,138 @@ startServer().catch(err => {
 });
 
 
-async function gracefulShutdown(exitCode = 0) {
-    console.log('Initiating graceful shutdown...');
-
-    if (taskScheduler) {
-        taskScheduler.shutdown();
+async function gracefulShutdown(exitCode = 0, reason = 'signal') {
+    if (shutdownPromise) {
+        console.log(`[Server] gracefulShutdown already in progress. Reusing existing shutdown promise. Current state: ${serverLifecycleState}`);
+        return shutdownPromise;
     }
 
-    if (webSocketServer) {
-        console.log('[Server] Shutting down WebSocketServer...');
-        webSocketServer.shutdown();
-    }
-    if (pluginManager) {
-        await pluginManager.shutdownAllPlugins();
-    }
+    lastShutdownExitCode = exitCode;
+    shutdownReason = reason;
+    shutdownStartedAt = Date.now();
+    serverLifecycleState = SERVER_LIFECYCLE.DRAINING;
 
-    if (knowledgeBaseManager) {
-        await knowledgeBaseManager.shutdown();
-    }
+    console.log(`[Server] Initiating graceful shutdown. reason=${reason}, exitCode=${exitCode}`);
+    console.log(`[Server][ShutdownTrace] Phase 0/10 - shutdown requested. activeRequests=${activeRequests.size}`);
 
-    const serverLogWriteStream = logger.getLogWriteStream();
-    if (serverLogWriteStream) {
-        logger.originalConsoleLog('[Server] Closing server log file stream...');
-        const logClosePromise = new Promise((resolve) => {
-            serverLogWriteStream.end(`[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server gracefully shut down.\n`, () => {
-                logger.originalConsoleLog('[Server] Server log stream closed.');
-                resolve();
-            });
-        });
-        await logClosePromise;
-    }
+    forceShutdownTimer = setTimeout(() => {
+        console.error('[Server] Graceful shutdown timed out. Forcing process exit.');
+        serverLifecycleState = SERVER_LIFECYCLE.EXITING;
+        process.exit(exitCode);
+    }, 60000);
+    forceShutdownTimer.unref();
 
-    process.exit(exitCode);
+    shutdownPromise = (async () => {
+        try {
+            if (webSocketServer && typeof webSocketServer.beginDrain === 'function') {
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - begin WebSocket drain`);
+                console.log('[Server] Draining WebSocket upgrade handling...');
+                await webSocketServer.beginDrain();
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - WebSocket drain ready`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - WebSocket drain skipped`);
+            }
+
+            console.log(`[Server][ShutdownTrace] Phase 2/10 - closing HTTP server listener`);
+            await closeHttpServerGracefully();
+            console.log(`[Server][ShutdownTrace] Phase 2/10 - HTTP server listener closed. trackedSockets=${trackedSockets.size}, activeHttpRequests=${activeHttpRequests.size}`);
+
+            console.log(`[Server][ShutdownTrace] Phase 3/10 - waiting active requests to drain (initial=${activeRequests.size})`);
+            const drainedNaturally = await waitForActiveRequestsToDrain(30000);
+            console.log(`[Server][ShutdownTrace] Phase 3/10 - drain wait result=${drainedNaturally}, remaining=${activeRequests.size}`);
+
+            if (!drainedNaturally) {
+                console.warn(`[Server] Active requests did not drain within timeout. Remaining: ${activeRequests.size}`);
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - aborting remaining active requests`);
+                await abortAllActiveRequests('服务正在重启，当前请求已被服务器安全中止。');
+                const drainedAfterAbort = await waitForActiveRequestsToDrain(5000);
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - abort complete. drainedAfterAbort=${drainedAfterAbort}, remaining=${activeRequests.size}`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - abort skipped, no remaining active requests`);
+            }
+
+            serverLifecycleState = SERVER_LIFECYCLE.SHUTTING_DOWN;
+            console.log(`[Server][ShutdownTrace] Phase 5/10 - lifecycle switched to SHUTTING_DOWN`);
+
+            if (taskScheduler) {
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown start`);
+                taskScheduler.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler shutdown skipped`);
+            }
+
+            if (webSocketServer) {
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - webSocketServer.shutdown start`);
+                console.log('[Server] Shutting down WebSocketServer...');
+                await Promise.resolve(webSocketServer.shutdown());
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - webSocketServer.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - WebSocketServer shutdown skipped`);
+            }
+
+            if (pluginManager) {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins start`);
+                await pluginManager.shutdownAllPlugins();
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager shutdown skipped`);
+            }
+
+            if (toolCallRecordStore) {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - toolCallRecordStore.shutdown start`);
+                toolCallRecordStore.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - toolCallRecordStore.shutdown done`);
+            }
+
+            if (tdbKnowledgeManager) {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - tdbKnowledgeManager.shutdown start`);
+                await tdbKnowledgeManager.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - tdbKnowledgeManager.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - tdbKnowledgeManager shutdown skipped`);
+            }
+
+            if (knowledgeBaseManager) {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager.shutdown start`);
+                await knowledgeBaseManager.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager shutdown skipped`);
+            }
+
+            const serverLogWriteStream = logger.getLogWriteStream();
+            if (serverLogWriteStream) {
+                logger.originalConsoleLog('[Server][ShutdownTrace] Phase 10/10 - closing server log file stream');
+                logger.originalConsoleLog('[Server] Closing server log file stream...');
+                const logClosePromise = new Promise((resolve) => {
+                    serverLogWriteStream.end(`[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server gracefully shut down. reason=${reason}\n`, () => {
+                        logger.originalConsoleLog('[Server] Server log stream closed.');
+                        logger.originalConsoleLog('[Server][ShutdownTrace] Phase 10/10 - server log file stream closed');
+                        resolve();
+                    });
+                });
+                await logClosePromise;
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 10/10 - log stream close skipped`);
+            }
+        } finally {
+            if (forceShutdownTimer) {
+                clearTimeout(forceShutdownTimer);
+                forceShutdownTimer = null;
+            }
+            serverLifecycleState = SERVER_LIFECYCLE.EXITING;
+        }
+
+        console.log(`[Server][ShutdownTrace] Final - process.exit(${exitCode})`);
+        process.exit(exitCode);
+    })();
+
+    return shutdownPromise;
 }
 
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', () => gracefulShutdown(0, 'SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown(0, 'SIGTERM'));
 
 // 新增：捕获未处理的异常，防止服务器崩溃
 process.on('uncaughtException', (error) => {

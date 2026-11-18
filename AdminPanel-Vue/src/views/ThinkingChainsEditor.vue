@@ -1,53 +1,103 @@
 <template>
-  <section class="config-section active-section">
-    <p class="description">
-      管理 RAGDiaryPlugin 使用的元思考链。按住左侧手柄拖动时会实时预览插入位置，
-      释放后再提交最终顺序。
-    </p>
-
-    <div id="thinking-chains-editor-controls" class="form-actions">
-      <button type="button" class="btn-primary" @click="saveThinkingChains">
-        保存所有更改
-      </button>
-      <button type="button" class="btn-secondary" @click="addThinkingChain">
-        添加新主题
-      </button>
-      <span v-if="statusMessage" :class="['status-message', statusType]">
-        {{ statusMessage }}
-      </span>
-    </div>
+  <section class="config-section active-section thinking-chains-page">
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <p class="thinking-page-summary">
+          管理 RAGDiaryPlugin 使用的元思考链，拖动模块可实时预览排序。
+        </p>
+        <UiBadge v-if="statusMessage" :variant="statusBadgeVariant">
+          {{ statusMessage }}
+        </UiBadge>
+        <UiButton variant="outline" size="lg" @click="addThinkingChain">
+          <template #leading>
+            <span class="material-symbols-outlined">add</span>
+          </template>
+          添加主题
+        </UiButton>
+        <UiButton variant="primary" size="lg" @click="saveThinkingChains">
+          <template #leading>
+            <span class="material-symbols-outlined">save</span>
+          </template>
+          保存更改
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
     <div id="thinking-chains-container" class="thinking-chains-layout">
-      <div class="thinking-chains-editor">
-        <h3>思考主题列表</h3>
+      <main class="thinking-chains-editor" aria-label="思考主题列表">
+        <header class="thinking-pane-header">
+          <div>
+            <h3>思考主题列表</h3>
+            <p>配置主题名称、思维模块顺序和每个模块的 K 值。</p>
+          </div>
+          <UiBadge variant="outline">{{ thinkingChains.length }} 个主题</UiBadge>
+        </header>
 
-        <div
+        <article
           v-for="(chain, index) in thinkingChains"
           :key="chain.uiId"
-          class="thinking-chain-item card"
+          :class="[
+            'thinking-chain-item',
+            { 'thinking-chain-item--active': index === pickerChainIndex },
+          ]"
         >
           <details open>
             <summary class="chain-header">
               <span class="theme-name">主题：{{ chain.theme || '未命名主题' }}</span>
-              <button
-                type="button"
-                class="btn-danger btn-sm"
-                @click.stop.prevent="removeChain(index)"
-              >
-                删除
-              </button>
+              <div class="chain-header-actions">
+                <UiBadge variant="outline">{{ getRenderedClusters(index).length }} 个模块</UiBadge>
+                <UiButton
+                  variant="danger"
+                  size="sm"
+                  @click.stop.prevent="removeChain(index)"
+                >
+                  删除
+                </UiButton>
+              </div>
             </summary>
 
             <div class="chain-content">
-              <div class="form-group theme-editor">
-                <label :for="`thinking-theme-${index}`">主题名称</label>
-                <input
+              <UiField
+                class="theme-editor"
+                label="主题名称"
+                :for-id="`thinking-theme-${index}`"
+                size="sm"
+              >
+                <UiInput
                   :id="`thinking-theme-${index}`"
                   v-model.trim="chain.theme"
                   type="text"
+                  size="sm"
                   placeholder="请输入主题名称"
                   @click.stop
                 />
+              </UiField>
+
+              <UiField
+                class="theme-description-editor"
+                label="Auto模式描述"
+                :for-id="`thinking-desc-${index}`"
+                size="sm"
+              >
+                <UiInput
+                  :id="`thinking-desc-${index}`"
+                  v-model.trim="chain.description"
+                  type="text"
+                  size="sm"
+                  placeholder="关键词描述，用于Auto选链向量化（留空则用主题名）"
+                  @click.stop
+                />
+              </UiField>
+
+              <div class="cluster-picker-entry">
+                <UiButton
+                  variant="outline"
+                  size="sm"
+                  @click="openClusterPicker(index)"
+                >
+                  添加思维模块
+                </UiButton>
+                <span class="cluster-picker-entry-tip">点击模块即可勾选，支持多选后批量加入当前主题</span>
               </div>
 
               <TransitionGroup
@@ -77,39 +127,35 @@
                   :data-cluster-index="clusterIndex"
                   :data-cluster-name="cluster"
                 >
-                  <button
-                    type="button"
-                    class="drag-handle"
-                    aria-label="拖动思维簇排序"
-                    title="拖动思维簇排序"
+                  <DragHandle
+                    label="拖动思维簇排序"
                     @pointerdown="startChainPointerDrag(index, clusterIndex, $event)"
-                  >
-                    ☰
-                  </button>
+                  />
                   <div class="cluster-content">
                     <span class="cluster-name">{{ cluster }}</span>
                     <label class="cluster-k-control" :for="`cluster-k-value-${index}-${cluster}`">
                       <span class="cluster-k-label">K 值</span>
-                      <input
+                      <UiInput
                         :id="`cluster-k-value-${index}-${cluster}`"
                         type="number"
                         min="1"
                         max="20"
+                        size="sm"
                         class="cluster-k-input"
-                        :value="getRenderedKValue(index, cluster)"
+                        :model-value="getRenderedKValue(index, cluster)"
                         @input="handleKValueInput(index, cluster, $event)"
                         @click.stop
                         @pointerdown.stop
                       />
                     </label>
                   </div>
-                  <button
-                    type="button"
-                    class="btn-danger btn-sm"
+                  <UiButton
+                    variant="danger"
+                    size="sm"
                     @click="removeClusterByName(index, cluster)"
                   >
                     移除
-                  </button>
+                  </UiButton>
                 </li>
 
                 <li
@@ -125,12 +171,17 @@
               </TransitionGroup>
             </div>
           </details>
-        </div>
-      </div>
+        </article>
+      </main>
 
-      <div class="available-clusters-panel card">
-        <h3>可用的思维簇模块</h3>
-        <p class="description">将模块从这里拖拽到左侧的主题列表中。</p>
+      <aside class="available-clusters-panel" aria-label="可用的思维簇模块">
+        <header class="thinking-pane-header">
+          <div>
+            <h3>可用模块</h3>
+            <p>拖到左侧主题，或通过主题内的添加按钮批量选择。</p>
+          </div>
+          <UiBadge variant="outline">{{ availableClusters.length }} 个</UiBadge>
+        </header>
         <ul class="draggable-list available-clusters-list">
           <li
             v-for="cluster in availableClusters"
@@ -142,23 +193,117 @@
             ]"
             data-available-cluster="true"
           >
-            <button
-              type="button"
-              class="drag-handle"
-              aria-label="拖动可用思维簇"
-              title="拖动可用思维簇"
+            <DragHandle
+              label="拖动可用思维簇"
               @pointerdown="startAvailablePointerDrag(cluster, $event)"
-            >
-              ☰
-            </button>
+            />
             <span class="cluster-name">{{ cluster }}</span>
           </li>
           <li v-if="availableClusters.length === 0" class="no-clusters">
             未找到可用的思维簇模块
           </li>
         </ul>
-      </div>
+      </aside>
     </div>
+
+    <BaseModal
+      v-model="isClusterPickerOpen"
+      transition-name="cluster-picker-cockpit"
+      aria-label="添加思维模块"
+      @close="closeClusterPicker"
+    >
+      <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+        <div v-bind="overlayAttrs" class="cluster-picker-overlay">
+          <div :ref="panelRef" v-bind="panelAttrs" class="cluster-picker-modal">
+      <header class="cluster-picker-header">
+        <div>
+          <h3>添加思维模块</h3>
+          <p class="description">
+            当前主题：{{ pickerChain?.theme || "未命名主题" }}
+          </p>
+        </div>
+        <UiButton
+          variant="ghost"
+          size="sm"
+          @click="closeClusterPicker"
+        >
+          关闭
+        </UiButton>
+      </header>
+
+      <div class="cluster-picker-toolbar">
+        <UiButton variant="outline" size="sm" @click="selectAllPickerClusters">
+          全选可用
+        </UiButton>
+        <UiButton
+          variant="outline"
+          size="sm"
+          :disabled="pendingClusterSelection.length === 0"
+          @click="clearPickerSelection"
+        >
+          清空选择
+        </UiButton>
+      </div>
+
+      <ul class="cluster-picker-list">
+        <li
+          v-for="cluster in pickerClusters"
+          :key="cluster.name"
+          class="cluster-picker-item"
+        >
+          <button
+            type="button"
+            :class="[
+              'cluster-picker-option',
+              {
+                'cluster-picker-option--disabled': cluster.disabled,
+                'cluster-picker-option--selected': pickerSelectionSet.has(cluster.name),
+              },
+            ]"
+            :disabled="cluster.disabled"
+            @click="togglePickerCluster(cluster.name)"
+          >
+            <span
+              :class="[
+                'cluster-picker-check',
+                'app-check-indicator',
+                { 'app-check-indicator--active': pickerSelectionSet.has(cluster.name) },
+              ]"
+              aria-hidden="true"
+            >
+              <span v-if="pickerSelectionSet.has(cluster.name)" class="cluster-picker-order">
+                {{ pickerSelectionOrderMap.get(cluster.name) }}
+              </span>
+            </span>
+            <span class="cluster-picker-option-label">{{ cluster.name }}</span>
+            <UiBadge v-if="cluster.disabled" class="cluster-picker-badge" variant="warning">已在主题中</UiBadge>
+          </button>
+        </li>
+
+        <li v-if="pickerClusters.length === 0" class="no-clusters">
+          未找到可用的思维簇模块
+        </li>
+      </ul>
+
+      <footer class="cluster-picker-footer">
+        <span class="cluster-picker-count">已选 {{ pendingClusterSelection.length }} 项</span>
+        <div class="cluster-picker-footer-actions">
+          <UiButton variant="outline" @click="closeClusterPicker">
+            取消
+          </UiButton>
+          <UiButton
+            variant="primary"
+            :disabled="!canConfirmPicker"
+            @click="confirmAddClusters"
+          >
+            添加选中项
+          </UiButton>
+        </div>
+      </footer>
+          </div>
+        </div>
+      </template>
+    </BaseModal>
 
     <div
       v-if="dragGhost"
@@ -174,7 +319,15 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import { useThinkingChainsEditor } from "@/features/thinking-chains-editor/useThinkingChainsEditor";
+import BaseModal from "@/components/ui/BaseModal.vue";
+import DragHandle from "@/components/ui/DragHandle.vue";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
 
 const {
   thinkingChains,
@@ -188,6 +341,7 @@ const {
   addThinkingChain,
   removeChain,
   removeClusterByName,
+  addClusters,
   getRenderedClusters,
   getRenderedKValue,
   updateClusterKValue,
@@ -200,7 +354,100 @@ const {
   isChainDropAfter,
 } = useThinkingChainsEditor();
 
-void dragGhostElement
+void dragGhostElement;
+
+const isClusterPickerOpen = ref(false);
+const pickerChainIndex = ref<number | null>(null);
+const pendingClusterSelection = ref<string[]>([]);
+
+const pickerSelectionSet = computed(() => new Set(pendingClusterSelection.value));
+const statusBadgeVariant = computed(() =>
+  statusType.value === "error" ? "danger" : statusType.value
+);
+const pickerSelectionOrderMap = computed(() => {
+  const selectionOrderMap = new Map<string, number>();
+  pendingClusterSelection.value.forEach((clusterName, index) => {
+    selectionOrderMap.set(clusterName, index + 1);
+  });
+  return selectionOrderMap;
+});
+
+const pickerChain = computed(() => {
+  const chainIndex = pickerChainIndex.value;
+  if (chainIndex === null) {
+    return null;
+  }
+
+  return thinkingChains.value[chainIndex] ?? null;
+});
+
+const pickerClusters = computed(() => {
+  const activeChain = pickerChain.value;
+  const selectedClusters = new Set(activeChain?.clusters ?? []);
+
+  return availableClusters.value.map((clusterName) => ({
+    name: clusterName,
+    disabled: selectedClusters.has(clusterName),
+  }));
+});
+
+const canConfirmPicker = computed(
+  () => pickerChainIndex.value !== null && pendingClusterSelection.value.length > 0
+);
+
+function openClusterPicker(chainIndex: number): void {
+  if (chainIndex < 0 || chainIndex >= thinkingChains.value.length) {
+    return;
+  }
+
+  pickerChainIndex.value = chainIndex;
+  pendingClusterSelection.value = [];
+  isClusterPickerOpen.value = true;
+}
+
+function closeClusterPicker(): void {
+  isClusterPickerOpen.value = false;
+  pickerChainIndex.value = null;
+  pendingClusterSelection.value = [];
+}
+
+function togglePickerCluster(clusterName: string): void {
+  if (!clusterName || pickerSelectionSet.value.has(clusterName)) {
+    pendingClusterSelection.value = pendingClusterSelection.value.filter(
+      (candidate) => candidate !== clusterName
+    );
+    return;
+  }
+
+  pendingClusterSelection.value = [...pendingClusterSelection.value, clusterName];
+}
+
+function selectAllPickerClusters(): void {
+  const existingSelection = pickerSelectionSet.value;
+  const additions = pickerClusters.value
+    .filter((cluster) => !cluster.disabled && !existingSelection.has(cluster.name))
+    .map((cluster) => cluster.name);
+
+  if (additions.length === 0) {
+    return;
+  }
+
+  pendingClusterSelection.value = [...pendingClusterSelection.value, ...additions];
+}
+
+function clearPickerSelection(): void {
+  pendingClusterSelection.value = [];
+}
+
+function confirmAddClusters(): void {
+  const chainIndex = pickerChainIndex.value;
+  if (chainIndex === null || pendingClusterSelection.value.length === 0) {
+    return;
+  }
+
+  addClusters(chainIndex, pendingClusterSelection.value);
+  closeClusterPicker();
+}
 
 function handleKValueInput(chainIndex: number, clusterName: string, event: Event) {
   const target = event.target;
@@ -213,64 +460,136 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 </script>
 
 <style scoped>
+.thinking-chains-page {
+  min-height: 0;
+}
+
+.thinking-page-summary {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
 .thinking-chains-layout {
   display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: var(--space-4);
+  align-items: stretch;
+  min-height: 0;
 }
 
 .thinking-chains-editor {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
 }
 
-.thinking-chains-editor > h3 {
+.thinking-pane-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.thinking-pane-header h3 {
   margin: 0;
   color: var(--primary-text);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.thinking-pane-header p {
+  margin: var(--space-1) 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
 }
 
 .thinking-chain-item {
-  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 1.4%, transparent);
+  overflow: hidden;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.thinking-chain-item--active {
+  border-color: color-mix(in srgb, var(--highlight-text) 52%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 6%, transparent);
+}
+
+.thinking-chain-item--active .theme-name {
+  color: var(--highlight-text);
 }
 
 .chain-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: 0 var(--space-3);
   cursor: pointer;
   user-select: none;
+}
+
+.chain-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 .theme-name {
   font-weight: 600;
   font-size: var(--font-size-emphasis);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chain-content {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-top: 16px;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 .theme-editor {
   margin-bottom: 0;
 }
 
+.cluster-picker-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.cluster-picker-entry-tip {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
 .draggable-list {
   list-style: none;
-  padding: 8px;
+  padding: 0;
   margin: 0;
-  min-height: 60px;
-  border: 2px dashed var(--border-color);
+  min-height: 56px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
   border-radius: var(--radius-md);
-  background: var(--secondary-bg);
+  background: transparent;
+  overflow: hidden;
 }
 
 .draggable-list--active-target {
-  border-color: var(--highlight-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 62%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 5%, transparent);
 }
 
 .chain-item {
@@ -278,27 +597,28 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
-  margin-bottom: var(--space-2);
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: 0;
+  min-height: 40px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: 0;
   will-change: transform;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
+    background-color 0.2s ease,
     opacity 0.18s ease,
     filter 0.18s ease;
 }
 
 .chain-item:last-child {
-  margin-bottom: 0;
+  border-bottom: 0;
 }
 
 .chain-item:hover {
-  border-color: var(--highlight-text);
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
 }
 
 .chain-item--dragging {
@@ -327,47 +647,31 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   bottom: -6px;
 }
 
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
 .cluster-content {
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .cluster-name {
   min-width: 0;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cluster-k-control {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  min-height: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -379,20 +683,8 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .cluster-k-input {
-  width: 56px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--input-bg);
-  color: var(--primary-text);
-  font-size: var(--font-size-body);
+  width: 58px;
   text-align: center;
-}
-
-.cluster-k-input:focus {
-  outline: none;
-  border-color: var(--highlight-text);
-  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .chain-item--available {
@@ -400,7 +692,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .drop-placeholder {
-  padding: 20px;
+  padding: var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
@@ -411,30 +703,222 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
 }
 
 .available-clusters-panel {
-  height: fit-content;
-}
-
-.available-clusters-panel > h3 {
-  margin: 0 0 8px;
-  font-size: var(--font-size-emphasis);
-  color: var(--primary-text);
-}
-
-.available-clusters-panel > .description {
-  margin: 0 0 16px;
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
 }
 
 .available-clusters-list .chain-item {
   cursor: grab;
 }
 
+.available-clusters-list {
+  overflow: auto;
+}
+
 .no-clusters {
-  padding: 20px;
+  padding: var(--space-4);
   text-align: center;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
+}
+
+.cluster-picker-cockpit-enter-active,
+.cluster-picker-cockpit-leave-active {
+  transition: opacity var(--transition-fast);
+}
+
+.cluster-picker-cockpit-enter-from,
+.cluster-picker-cockpit-leave-to {
+  opacity: 0;
+}
+
+.cluster-picker-cockpit-enter-active .cluster-picker-modal,
+.cluster-picker-cockpit-leave-active .cluster-picker-modal {
+  transition:
+    transform var(--transition-fast),
+    opacity var(--transition-fast),
+    filter var(--transition-fast);
+}
+
+.cluster-picker-cockpit-enter-from .cluster-picker-modal,
+.cluster-picker-cockpit-leave-to .cluster-picker-modal {
+  opacity: 0;
+  transform: translateY(14px) scale(0.985);
+  filter: saturate(0.92);
+}
+
+.cluster-picker-cockpit-enter-active .cluster-picker-header,
+.cluster-picker-cockpit-enter-active .cluster-picker-toolbar,
+.cluster-picker-cockpit-enter-active .cluster-picker-list,
+.cluster-picker-cockpit-enter-active .cluster-picker-footer,
+.cluster-picker-cockpit-leave-active .cluster-picker-header,
+.cluster-picker-cockpit-leave-active .cluster-picker-toolbar,
+.cluster-picker-cockpit-leave-active .cluster-picker-list,
+.cluster-picker-cockpit-leave-active .cluster-picker-footer {
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.cluster-picker-cockpit-enter-from .cluster-picker-header,
+.cluster-picker-cockpit-enter-from .cluster-picker-toolbar,
+.cluster-picker-cockpit-enter-from .cluster-picker-list,
+.cluster-picker-cockpit-enter-from .cluster-picker-footer,
+.cluster-picker-cockpit-leave-to .cluster-picker-header,
+.cluster-picker-cockpit-leave-to .cluster-picker-toolbar,
+.cluster-picker-cockpit-leave-to .cluster-picker-list,
+.cluster-picker-cockpit-leave-to .cluster-picker-footer {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.cluster-picker-cockpit-enter-active .cluster-picker-toolbar {
+  transition-delay: 40ms;
+}
+
+.cluster-picker-cockpit-enter-active .cluster-picker-list {
+  transition-delay: 70ms;
+}
+
+.cluster-picker-cockpit-enter-active .cluster-picker-footer {
+  transition-delay: 100ms;
+}
+
+.cluster-picker-overlay {
+  z-index: var(--z-index-modal);
+  padding: var(--space-6);
+  background: var(--overlay-backdrop-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.cluster-picker-modal {
+  width: min(760px, 100%);
+  max-height: min(84vh, 780px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--secondary-bg);
+  box-shadow: var(--overlay-panel-shadow);
+}
+
+.cluster-picker-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+}
+
+.cluster-picker-header h3 {
+  margin: 0;
+}
+
+.cluster-picker-header .description {
+  margin: 4px 0 0;
+}
+
+.cluster-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.cluster-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow: auto;
+}
+
+.cluster-picker-item {
+  list-style: none;
+}
+
+.cluster-picker-option {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--primary-text);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.cluster-picker-option--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cluster-picker-option:hover {
+  background: color-mix(in srgb, var(--primary-text) 3%, transparent);
+}
+
+.cluster-picker-option--selected {
+  border-color: color-mix(in srgb, var(--highlight-text) 62%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
+}
+
+.cluster-picker-check {
+  flex-shrink: 0;
+}
+
+.cluster-picker-order {
+  min-width: 1ch;
+  text-align: center;
+}
+
+.cluster-picker-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cluster-picker-badge {
+  justify-self: flex-end;
+}
+
+.cluster-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
+}
+
+.cluster-picker-count {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.cluster-picker-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .thinking-chain-drag-ghost {
@@ -449,7 +933,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   flex-direction: column;
   justify-content: center;
   min-height: 100%;
-  padding: 16px;
+  padding: var(--space-3);
   border: 1px solid color-mix(in srgb, var(--highlight-text) 35%, var(--border-color));
   border-radius: var(--radius-md);
   background: var(--secondary-bg);
@@ -507,7 +991,7 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-content,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     grid-column: 1 / -1;
   }
 
@@ -517,12 +1001,59 @@ function handleKValueInput(chainIndex: number, clusterName: string, event: Event
   }
 
   .cluster-k-control,
-  .chain-item .btn-danger {
+  .chain-item :deep(.ui-button) {
     width: 100%;
   }
 
   .cluster-k-control {
     justify-content: space-between;
+  }
+
+  .cluster-picker-overlay {
+    padding: 16px;
+  }
+
+  .cluster-picker-header,
+  .cluster-picker-toolbar,
+  .cluster-picker-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .cluster-picker-list {
+    padding: 12px 16px;
+  }
+
+  .cluster-picker-option {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cluster-picker-badge {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+    margin-left: 30px;
+  }
+
+  .cluster-picker-footer-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cluster-picker-cockpit-enter-active,
+  .cluster-picker-cockpit-leave-active,
+  .cluster-picker-cockpit-enter-active .cluster-picker-modal,
+  .cluster-picker-cockpit-leave-active .cluster-picker-modal,
+  .cluster-picker-cockpit-enter-active .cluster-picker-header,
+  .cluster-picker-cockpit-enter-active .cluster-picker-toolbar,
+  .cluster-picker-cockpit-enter-active .cluster-picker-list,
+  .cluster-picker-cockpit-enter-active .cluster-picker-footer,
+  .cluster-picker-cockpit-leave-active .cluster-picker-header,
+  .cluster-picker-cockpit-leave-active .cluster-picker-toolbar,
+  .cluster-picker-cockpit-leave-active .cluster-picker-list,
+  .cluster-picker-cockpit-leave-active .cluster-picker-footer {
+    transition: none !important;
   }
 }
 </style>

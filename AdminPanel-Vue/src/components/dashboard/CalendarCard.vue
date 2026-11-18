@@ -2,7 +2,7 @@
   <div class="dashboard-card-shell dashboard-card-shell--amber calendar-card">
     <h3 class="dashboard-card-title">即将进行的日程</h3>
     <div v-if="loading" class="dashboard-card-empty calendar-loading">
-      <span class="loading-spinner"></span>
+      <span class="loading-spinner loading-spinner--sm loading-spinner--mb-3"></span>
       <p>正在加载日程...</p>
     </div>
     <div v-else-if="upcomingSchedules.length === 0" class="dashboard-card-empty calendar-empty">
@@ -14,11 +14,11 @@
         :key="schedule.id"
         class="dashboard-card-panel schedule-item"
       >
-        <div class="dashboard-card-panel schedule-time">
+        <div class="schedule-time">
           <span class="schedule-date">{{ schedule.date }}</span>
           <span class="schedule-clock">{{ schedule.time }}</span>
         </div>
-        <div class="schedule-content">{{ schedule.content }}</div>
+        <div class="schedule-content" :title="schedule.content">{{ schedule.content }}</div>
       </div>
     </div>
   </div>
@@ -66,7 +66,7 @@ async function loadUpcomingSchedules() {
       })
       .filter((schedule) => schedule.dateTime.getTime() >= now.getTime())
       .sort((left, right) => left.dateTime.getTime() - right.dateTime.getTime())
-      .slice(0, 5);
+      .slice(0, 10);
   } catch (error) {
     logger.error("Failed to load schedules:", error);
     upcomingSchedules.value = [];
@@ -94,24 +94,7 @@ onMounted(() => {
 
 .calendar-loading,
 .calendar-empty {
-  min-height: 220px;
-}
-
-.loading-spinner {
-  display: inline-block;
-  width: 32px;
-  height: 32px;
-  margin-bottom: 12px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--highlight-text);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  min-height: 140px;
 }
 
 .calendar-widget {
@@ -119,7 +102,7 @@ onMounted(() => {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: 12px;
+  gap: 8px;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
@@ -141,10 +124,12 @@ onMounted(() => {
 }
 
 .schedule-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(78px, auto) minmax(0, 1fr);
   min-width: 0;
-  gap: 12px;
-  padding: 10px 12px 10px 15px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px 7px 13px;
   position: relative;
 }
 
@@ -161,88 +146,57 @@ onMounted(() => {
 }
 
 .schedule-time {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-width: 60px;
-  padding: 8px;
-  box-shadow: none;
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .schedule-date {
   font-size: var(--font-size-helper);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--secondary-text);
 }
 
 .schedule-clock {
-  font-size: var(--font-size-emphasis);
+  font-size: var(--font-size-helper);
   font-weight: 700;
   color: var(--primary-text);
 }
 
 .schedule-content {
-  display: flex;
-  flex: 1;
   min-width: 0;
-  align-items: center;
-  font-size: var(--font-size-body);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
   color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* 断点 1: ≥520px - 网格布局 */
+/* 断点 1: ≥520px - 保持单列紧凑列表，避免宽卡片被切成左右两块导致扫描效率下降 */
 @container dashboard-card (min-width: 520px) {
-  .calendar-widget {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  .schedule-item {
+    grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
   }
 }
 
-/* 断点 2: ≤420px - 垂直布局 */
-@container dashboard-card (max-width: 420px) {
+/* 断点 2: ≤360px - 极窄卡片压缩时间列 */
+@container dashboard-card (max-width: 360px) {
   .schedule-item {
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(68px, auto) minmax(0, 1fr);
+    gap: 6px;
+    padding: 6px 8px 6px 11px;
   }
 
   .schedule-time {
-    flex-direction: row;
-    justify-content: space-between;
-    gap: 12px;
-    width: 100%;
-    min-width: 0;
+    gap: 4px;
   }
 
-  .schedule-content {
-    align-items: flex-start;
-  }
-}
-
-/* 断点 3: ≤280px - 紧凑模式 */
-@container dashboard-card (max-width: 280px) {
-  .calendar-widget {
-    gap: 10px;
-  }
-
-  .schedule-item {
-    gap: 10px;
-    padding: 10px;
-  }
-
-  .schedule-time {
-    padding: 6px 8px;
-  }
-
-  .schedule-date,
-  .schedule-content {
-    font-size: var(--font-size-helper);
-  }
-
-  .schedule-clock {
-    font-size: var(--font-size-body);
+  .schedule-date {
+    font-size: 11px;
   }
 }
 </style>

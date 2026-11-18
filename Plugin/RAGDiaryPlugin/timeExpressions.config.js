@@ -9,14 +9,11 @@ const TIME_EXPRESSIONS = {
             '昨天': { days: 1 },
             '前天': { days: 2 },
             '大前天': { days: 3 },
+
             
-            // 模糊时间词
-            '之前': { days: 3 }, // “之前”通常指代不久前，暂定3天
-            '最近': { days: 5 },
+            // 相对短期时间词
             '前几天': { days: 5 },
-            '前一阵子': { days: 15 },
-            '近期': { days: 7 },
-            
+
             // 周/月相关
             '上周': { type: 'lastWeek' },
             '上个月': { type: 'lastMonth' },
@@ -27,15 +24,7 @@ const TIME_EXPRESSIONS = {
             '月初': { type: 'thisMonthStart' }, // 例如本月初
             '上个月初': { type: 'lastMonthStart' },
             '上个月中': { type: 'lastMonthMid' },
-            '上个月末': { type: 'lastMonthEnd' },
-
-            // 🌟 寒暄语触发 (用于唤起最近记忆)
-            '在吗': { days: 1 },
-            '在不': { days: 1 },
-            '在不在': { days: 1 },
-            '你好': { days: 1 },
-            '哈喽': { days: 1 },
-            '早上好': { days: 0 }
+            '上个月末': { type: 'lastMonthEnd' }
         },
         patterns: [
             {
@@ -65,9 +54,6 @@ const TIME_EXPRESSIONS = {
         hardcoded: {
             'today': { days: 0 },
             'yesterday': { days: 1 },
-            'recently': { days: 5 },
-            'lately': { days: 7 },
-            'a while ago': { days: 15 },
             'last week': { type: 'lastWeek' },
             'last month': { type: 'lastMonth' },
             'this week': { type: 'thisWeek' },

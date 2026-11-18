@@ -1,0 +1,90 @@
+[2026-03-03] - Agent-B
+[VCP百科全书] MusicController - 音乐播放器控制器
+
+一、插件基本信息
+1. 插件名称：MusicController / 音乐播放器控制器
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：通过指令控制VChat内置音乐播放器，实现播放、暂停、切歌等功能
+
+二、功能定位
+MusicController是一个音乐播放器控制插件，允许AI通过VCP协议指令控制VChat内置的音乐播放器。支持根据歌曲名称在用户的播放列表中搜索并播放对应的歌曲。该插件作为AI与音乐播放系统的桥梁，使AI能够响应用户的音乐播放请求。
+
+适用场景：
+- AI根据用户请求播放指定歌曲
+- 音乐点歌功能
+- AI娱乐互动中的音乐控制
+- VChat内置播放器的远程控制
+
+三、配置参数
+本插件无config.env配置文件，所有参数在plugin-manifest.json中定义。
+
+四、调用命令列表
+
+1. playSong - 根据歌曲名称播放歌曲
+   功能描述：在用户的播放列表中搜索指定歌曲名称，找到后播放该歌曲
+   参数列表：
+   - songname (字符串, 必需): 要播放的歌曲的准确标题或部分标题
+   - command (字符串, 可选): 此字段为可选，可以忽略。程序会自动识别意图
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MusicController「末」,
+   command:「始」playSong「末」,
+   songname:「始」星の余韻「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回播放状态确认信息，包含歌曲名称和播放状态
+
+五、使用示例
+
+示例1：播放指定歌曲（完整歌名）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」星の余韻「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：播放指定歌曲（部分歌名）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」星「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：播放歌曲（带中文歌名）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」晴天「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：播放歌曲（带艺术家信息）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」周杰伦 - 晴天「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 歌曲搜索机制：
+   - 支持完整歌名搜索和部分歌名搜索
+   - 搜索基于用户的播放列表，只能播放列表中存在的歌曲
+   - 如果列表中不存在该歌曲，播放会失败
+
+2. 参数说明：
+   - songname参数是必需的，不能为空
+   - command参数为可选，插件会自动识别意图，无需显式指定
+
+3. 播放列表依赖：
+   - 插件依赖VChat内置播放器的播放列表
+   - 播放列表需要提前加载到VChat中
+
+4. 返回值：
+   - 成功播放返回确认信息
+   - 歌曲不存在返回错误提示
+
+七、关联插件
+- 无直接关联插件
+
+Tag: 音乐控制, 播放器, 歌曲播放, 娱乐互动, VChat集成

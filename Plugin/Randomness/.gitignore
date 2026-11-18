@@ -1,3 +1,0 @@
-# Ignore local environment configurations
-config.env
-data/active_decks.json

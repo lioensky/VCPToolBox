@@ -27,6 +27,97 @@ const DMX_API_CONFIG = {
 };
 
 // Helper to validate input arguments
+function parseImageArrayInput(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string') return value ? [value] : [];
+
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.filter(Boolean);
+        } catch {
+            // Keep as a single image string if JSON parsing fails.
+        }
+    }
+
+    return [trimmed];
+}
+
+function collectImageInputs(args) {
+    const images = [];
+    const pushImage = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                images.push({ image: item.trim(), image_base64: null });
+            }
+        }
+    };
+    const pushBase64 = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                images.push({ image: null, image_base64: item.trim() });
+            }
+        }
+    };
+
+    pushImage(args.image || args.Image || args.image_url || args.source_image);
+    pushBase64(args.image_base64);
+
+    const indexedKeys = Object.keys(args)
+        .map((key) => {
+            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
+            return match ? { key, index: parseInt(match[1], 10) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+    for (const { key } of indexedKeys) {
+        if (/^image_base64_/i.test(key)) {
+            pushBase64(args[key]);
+        } else {
+            pushImage(args[key]);
+        }
+    }
+
+    return images;
+}
+
+function normalizeDoubaoArgs(rawArgs) {
+    const args = { ...(rawArgs || {}) };
+    args.prompt = args.prompt || args.Prompt || args.text || '';
+    args.resolution = args.resolution || args.Resolution || args.size || args.Size || args.image_size || args.imageSize || '2K';
+
+    const collectedImages = collectImageInputs(args);
+    const rawCommand = String(args.command || args.Command || args.cmd || '').toLowerCase();
+    const wantsCompose = rawCommand.includes('compose') || rawCommand.includes('合成');
+    const wantsEdit = rawCommand.includes('edit') || rawCommand.includes('image2image') || rawCommand.includes('i2i') || rawCommand.includes('修图') || rawCommand.includes('改图');
+    const wantsGenerate = rawCommand.includes('generate') || rawCommand.includes('txt2img') || rawCommand.includes('t2i') || rawCommand.includes('生成');
+
+    if (wantsCompose || (wantsEdit && collectedImages.length > 1) || (!wantsGenerate && collectedImages.length > 1)) {
+        args.command = 'DoubaoComposeImage';
+    } else if (wantsEdit || (wantsCompose && collectedImages.length === 1) || (!wantsGenerate && collectedImages.length === 1)) {
+        args.command = 'DoubaoEditImage';
+    } else {
+        args.command = 'DoubaoGenerateImage';
+    }
+
+    if (collectedImages.length > 0) {
+        args.image = collectedImages[0].image || args.image;
+        args.image_base64 = collectedImages[0].image_base64 || args.image_base64;
+
+        collectedImages.forEach((item, index) => {
+            const n = index + 1;
+            if (item.image) args[`image_${n}`] = item.image;
+            if (item.image_base64) args[`image_base64_${n}`] = item.image_base64;
+        });
+    }
+
+    return args;
+}
+
 function isValidDoubaoGenArgs(args) {
     if (!args || typeof args !== 'object' || !args.command) return false;
 
@@ -58,7 +149,7 @@ function isValidDoubaoGenArgs(args) {
         if (!isResolutionValid(args.resolution, args.command)) return false;
 
     } else if (args.command === 'DoubaoEditImage') {
-        if (typeof args.image !== 'string' || !args.image.trim()) return false;
+        if (!((typeof args.image === 'string' && args.image.trim()) || (typeof args.image_base64 === 'string' && args.image_base64.trim()))) return false;
         if (!isResolutionValid(args.resolution, args.command)) return false;
         if (args.guidance_scale !== undefined) {
             const scale = parseFloat(args.guidance_scale);
@@ -101,6 +192,21 @@ async function signRequest() {
     };
 }
 
+function isPrivateOrLocalHost(hostname) {
+    if (!hostname) return false;
+    const h = hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.local')) return true;
+    const parts = h.split('.').map(Number);
+    if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
+        if (parts[0] === 10) return true;
+        if (parts[0] === 127) return true;
+        if (parts[0] === 192 && parts[1] === 168) return true;
+        if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+        if (parts[0] === 169 && parts[1] === 254) return true;
+    }
+    return false;
+}
+
 // --- Helper function to process the 'image' parameter ---
 async function getImageData(imageUrl, imageBase64) {
     // Priority to imageBase64 if provided (on retry from file fetch)
@@ -119,9 +225,47 @@ async function getImageData(imageUrl, imageBase64) {
         return imageUrl;
     }
 
-    // Handle public https URL
+    // Handle HTTP / HTTPS URL
     if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-        return imageUrl;
+        try {
+            const parsedUrl = new URL(imageUrl);
+            const isLocal = isPrivateOrLocalHost(parsedUrl.hostname);
+
+            // 1. 本地图床直接读盘加速 (/pw=.../images/... 或 /images/...)
+            const imageMatch = parsedUrl.pathname.match(/(?:\/pw=[^/]+)?\/images\/(.+)$/);
+            if (imageMatch && imageMatch[1] && PROJECT_BASE_PATH) {
+                const subPath = decodeURIComponent(imageMatch[1]);
+                const localDiskPath = path.join(PROJECT_BASE_PATH, 'image', subPath);
+                try {
+                    const stats = await fs.stat(localDiskPath);
+                    if (stats.isFile()) {
+                        const buffer = await fs.readFile(localDiskPath);
+                        const mimeType = mime.lookup(localDiskPath) || 'image/png';
+                        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+                    }
+                } catch {
+                    // 本地未命中，继续网络下载
+                }
+            }
+
+            // 2. 局域网地址：必须本地下载转 Base64（云端无法访问私有网段）
+            if (isLocal) {
+                const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+                const mimeType = resp.headers['content-type']?.split(';')[0]?.trim() || 'image/png';
+                return `data:${mimeType};base64,${Buffer.from(resp.data).toString('base64')}`;
+            }
+
+            // 3. 公网地址：尝试预先下载转 Base64，失败则安全回退原 URL
+            try {
+                const resp = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 15000 });
+                const mimeType = resp.headers['content-type']?.split(';')[0]?.trim() || 'image/png';
+                return `data:${mimeType};base64,${Buffer.from(resp.data).toString('base64')}`;
+            } catch {
+                return imageUrl;
+            }
+        } catch {
+            return imageUrl;
+        }
     }
 
     // Handle local file URL
@@ -158,6 +302,9 @@ async function getImageData(imageUrl, imageBase64) {
 
 
 async function generateImageAndSave(args) {
+    // 解析 showbase64 参数，默认为 false
+    const showBase64 = args.showbase64 === 'true' || args.showbase64 === true;
+
     // Check for essential environment variables
     if (!VOLCENGINE_API_KEY) {
         throw new Error("DoubaoGen Plugin Error: API_KEY (e.g., VOLCENGINE_API_KEY in config.env) environment variable is required.");
@@ -175,6 +322,7 @@ async function generateImageAndSave(args) {
         throw new Error("DoubaoGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
     }
 
+    args = normalizeDoubaoArgs(args);
     const command = args.command;
     if (!command) {
         throw new Error(`DoubaoGen Plugin Error: 'command' not specified in arguments.`);
@@ -195,7 +343,7 @@ async function generateImageAndSave(args) {
             throw new Error("DoubaoGen Plugin Error: 'image' parameter is required and must be processed for the DoubaoEditImage command.");
         }
     } else if (command === 'DoubaoComposeImage') {
-        const imageKeys = Object.keys(args).filter(k => k.startsWith('image_'));
+        const imageKeys = Object.keys(args).filter(k => /^image(?:_base64)?_\d+$/i.test(k));
         
         const indices = imageKeys.map(k => {
             const num = k.split('_').pop();
@@ -368,26 +516,33 @@ async function generateImageAndSave(args) {
     const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
 
 
-    const result = {
-        content: [
-            {
-                type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${args.resolution}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${imageMimeType};base64,${base64Image}`
-                }
+    const content = [
+        {
+            type: 'text',
+            text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
+        }
+    ];
+
+    // 只有当 showbase64 为 true 时才添加 base64 图片数据
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${imageMimeType};base64,${base64Image}`
             }
-        ],
+        });
+    }
+
+    const result = {
+        content: content,
         details: { // Keep details for logging or other purposes if needed
             serverPath: `image/doubaogen/${generatedFileName}`,
             fileName: generatedFileName,
             prompt: args.prompt,
-            resolution: args.resolution,
+            resolution: size,
             seed: finalSeed,
-            imageUrl: accessibleImageUrl
+            imageUrl: accessibleImageUrl,
+            showBase64: showBase64
         }
     };
 

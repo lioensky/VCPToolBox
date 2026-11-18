@@ -1,0 +1,424 @@
+@layer vcp-ui.appearance {
+    .vcp-material-optics {
+        position: fixed;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+        pointer-events: none;
+    }
+
+    html {
+        --vcp-appearance-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+        --vcp-appearance-font-scale: 1;
+        --vcp-appearance-content-max: none;
+        --vcp-appearance-space-factor: 1;
+        --vcp-ui-radius-xs: 4px;
+        --vcp-ui-shell-radius: 12px;
+        --vcp-ui-shell-curve-1: 9.2px;
+        --vcp-ui-shell-curve-2: 6px;
+        --vcp-ui-shell-curve-3: 3.5px;
+        --vcp-ui-shell-curve-4: 1.7px;
+        --vcp-ui-shell-curve-5: 0.3px;
+    }
+
+    html[data-vcp-typography="humanist"] {
+        --vcp-appearance-font-family: "Maven Pro", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    html[data-vcp-typography="serif"] {
+        --vcp-appearance-font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+    }
+
+    html[data-vcp-font-scale="small"] { --vcp-appearance-font-scale: 0.92; }
+    html[data-vcp-font-scale="large"] { --vcp-appearance-font-scale: 1.1; }
+    html[data-vcp-density="compact"] { --vcp-appearance-space-factor: 0.82; }
+    html[data-vcp-density="relaxed"] { --vcp-appearance-space-factor: 1.18; }
+
+    html[data-vcp-radius="square"],
+    html[data-vcp-radius="square"] .vcp-ui-scope {
+        --vcp-ui-radius-xs: 0;
+        --vcp-ui-radius-sm: 0;
+        --vcp-ui-radius-md: 0;
+        --vcp-ui-radius-lg: 0;
+        --vcp-ui-radius-xl: 0;
+        --vcp-ui-radius-control: 0;
+        --vcp-ui-radius-card: 0;
+        --vcp-ui-sidebar-item-radius: 0;
+        --vcp-ui-shell-radius: 0px;
+        --vcp-ui-shell-curve-1: 0px;
+        --vcp-ui-shell-curve-2: 0px;
+        --vcp-ui-shell-curve-3: 0px;
+        --vcp-ui-shell-curve-4: 0px;
+        --vcp-ui-shell-curve-5: 0px;
+    }
+
+    html[data-vcp-radius="small"],
+    html[data-vcp-radius="small"] .vcp-ui-scope {
+        --vcp-ui-radius-xs: 3px;
+        --vcp-ui-radius-sm: 4px;
+        --vcp-ui-radius-md: 6px;
+        --vcp-ui-radius-lg: 8px;
+        --vcp-ui-radius-xl: 12px;
+        --vcp-ui-radius-control: 6px;
+        --vcp-ui-radius-card: 6px;
+        --vcp-ui-sidebar-item-radius: 6px;
+        --vcp-ui-shell-radius: 8px;
+        --vcp-ui-shell-curve-1: 6.1px;
+        --vcp-ui-shell-curve-2: 4px;
+        --vcp-ui-shell-curve-3: 2.3px;
+        --vcp-ui-shell-curve-4: 1.1px;
+        --vcp-ui-shell-curve-5: 0.2px;
+    }
+
+    html[data-vcp-radius="medium"],
+    html[data-vcp-radius="medium"] .vcp-ui-scope {
+        --vcp-ui-radius-xs: 4px;
+        --vcp-ui-radius-sm: 6px;
+        --vcp-ui-radius-md: 8px;
+        --vcp-ui-radius-lg: 12px;
+        --vcp-ui-radius-xl: 18px;
+        --vcp-ui-radius-control: 10px;
+        --vcp-ui-radius-card: 8px;
+        --vcp-ui-sidebar-item-radius: 10px;
+        --vcp-ui-shell-radius: 12px;
+        --vcp-ui-shell-curve-1: 9.2px;
+        --vcp-ui-shell-curve-2: 6px;
+        --vcp-ui-shell-curve-3: 3.5px;
+        --vcp-ui-shell-curve-4: 1.7px;
+        --vcp-ui-shell-curve-5: 0.3px;
+    }
+
+    html[data-vcp-radius="round"],
+    html[data-vcp-radius="round"] .vcp-ui-scope {
+        --vcp-ui-radius-xs: 6px;
+        --vcp-ui-radius-sm: 10px;
+        --vcp-ui-radius-md: 14px;
+        --vcp-ui-radius-lg: 18px;
+        --vcp-ui-radius-xl: 24px;
+        --vcp-ui-radius-control: 14px;
+        --vcp-ui-radius-card: 14px;
+        --vcp-ui-sidebar-item-radius: 14px;
+        --vcp-ui-shell-radius: 18px;
+        --vcp-ui-shell-curve-1: 13.8px;
+        --vcp-ui-shell-curve-2: 9px;
+        --vcp-ui-shell-curve-3: 5.3px;
+        --vcp-ui-shell-curve-4: 2.6px;
+        --vcp-ui-shell-curve-5: 0.5px;
+    }
+
+    html[data-vcp-radius="custom"],
+    html[data-vcp-radius="custom"] .vcp-ui-scope {
+        --vcp-ui-radius-xs: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-sm: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-md: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-lg: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-xl: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-control: var(--vcp-appearance-custom-radius);
+        --vcp-ui-radius-card: var(--vcp-appearance-custom-radius);
+        --vcp-ui-sidebar-item-radius: var(--vcp-appearance-custom-radius);
+        --vcp-ui-shell-radius: var(--vcp-appearance-custom-radius);
+        --vcp-ui-shell-curve-1: var(--vcp-appearance-shell-curve-1);
+        --vcp-ui-shell-curve-2: var(--vcp-appearance-shell-curve-2);
+        --vcp-ui-shell-curve-3: var(--vcp-appearance-shell-curve-3);
+        --vcp-ui-shell-curve-4: var(--vcp-appearance-shell-curve-4);
+        --vcp-ui-shell-curve-5: var(--vcp-appearance-shell-curve-5);
+    }
+
+    html[data-vcp-shell-radius="tuned"],
+    html[data-vcp-shell-radius="tuned"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: 14px;
+        --vcp-ui-shell-curve-1: 10.7px;
+        --vcp-ui-shell-curve-2: 7px;
+        --vcp-ui-shell-curve-3: 4.1px;
+        --vcp-ui-shell-curve-4: 2px;
+        --vcp-ui-shell-curve-5: 0.4px;
+    }
+
+    html[data-vcp-shell-radius="square"],
+    html[data-vcp-shell-radius="square"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: 0px;
+        --vcp-ui-shell-curve-1: 0px;
+        --vcp-ui-shell-curve-2: 0px;
+        --vcp-ui-shell-curve-3: 0px;
+        --vcp-ui-shell-curve-4: 0px;
+        --vcp-ui-shell-curve-5: 0px;
+    }
+
+    html[data-vcp-shell-radius="small"],
+    html[data-vcp-shell-radius="small"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: 8px;
+        --vcp-ui-shell-curve-1: 6.1px;
+        --vcp-ui-shell-curve-2: 4px;
+        --vcp-ui-shell-curve-3: 2.3px;
+        --vcp-ui-shell-curve-4: 1.1px;
+        --vcp-ui-shell-curve-5: 0.2px;
+    }
+
+    html[data-vcp-shell-radius="medium"],
+    html[data-vcp-shell-radius="medium"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: 12px;
+        --vcp-ui-shell-curve-1: 9.2px;
+        --vcp-ui-shell-curve-2: 6px;
+        --vcp-ui-shell-curve-3: 3.5px;
+        --vcp-ui-shell-curve-4: 1.7px;
+        --vcp-ui-shell-curve-5: 0.3px;
+    }
+
+    html[data-vcp-shell-radius="round"],
+    html[data-vcp-shell-radius="round"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: 18px;
+        --vcp-ui-shell-curve-1: 13.8px;
+        --vcp-ui-shell-curve-2: 9px;
+        --vcp-ui-shell-curve-3: 5.3px;
+        --vcp-ui-shell-curve-4: 2.6px;
+        --vcp-ui-shell-curve-5: 0.5px;
+    }
+    html[data-vcp-shell-radius="custom"],
+    html[data-vcp-shell-radius="custom"] .vcp-ui-scope {
+        --vcp-ui-shell-radius: var(--vcp-appearance-custom-radius);
+        --vcp-ui-shell-curve-1: var(--vcp-appearance-shell-curve-1);
+        --vcp-ui-shell-curve-2: var(--vcp-appearance-shell-curve-2);
+        --vcp-ui-shell-curve-3: var(--vcp-appearance-shell-curve-3);
+        --vcp-ui-shell-curve-4: var(--vcp-appearance-shell-curve-4);
+        --vcp-ui-shell-curve-5: var(--vcp-appearance-shell-curve-5);
+    }
+
+    html[data-vcp-composer-radius="tuned"],
+    html[data-vcp-composer-radius="tuned"] .vcp-ui-scope { --vcp-ui-composer-radius: 28px; }
+    html[data-vcp-composer-radius="follow"],
+    html[data-vcp-composer-radius="follow"] .vcp-ui-scope { --vcp-ui-composer-radius: var(--vcp-ui-radius-xl); }
+    html[data-vcp-composer-radius="square"],
+    html[data-vcp-composer-radius="square"] .vcp-ui-scope { --vcp-ui-composer-radius: 0; }
+    html[data-vcp-composer-radius="small"],
+    html[data-vcp-composer-radius="small"] .vcp-ui-scope { --vcp-ui-composer-radius: 12px; }
+    html[data-vcp-composer-radius="medium"],
+    html[data-vcp-composer-radius="medium"] .vcp-ui-scope { --vcp-ui-composer-radius: 18px; }
+    html[data-vcp-composer-radius="round"],
+    html[data-vcp-composer-radius="round"] .vcp-ui-scope { --vcp-ui-composer-radius: 24px; }
+    html[data-vcp-composer-radius="custom"],
+    html[data-vcp-composer-radius="custom"] .vcp-ui-scope { --vcp-ui-composer-radius: var(--vcp-appearance-custom-radius); }
+
+    html[data-vcp-sidebar-radius="tuned"],
+    html[data-vcp-sidebar-radius="tuned"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: 10px; }
+    html[data-vcp-sidebar-radius="square"],
+    html[data-vcp-sidebar-radius="square"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: 0; }
+    html[data-vcp-sidebar-radius="small"],
+    html[data-vcp-sidebar-radius="small"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: 6px; }
+    html[data-vcp-sidebar-radius="medium"],
+    html[data-vcp-sidebar-radius="medium"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: 10px; }
+    html[data-vcp-sidebar-radius="round"],
+    html[data-vcp-sidebar-radius="round"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: 14px; }
+    html[data-vcp-sidebar-radius="custom"],
+    html[data-vcp-sidebar-radius="custom"] .vcp-ui-scope { --vcp-ui-sidebar-item-radius: var(--vcp-appearance-custom-radius); }
+
+    html[data-vcp-card-radius="tuned"],
+    html[data-vcp-card-radius="tuned"] .vcp-ui-scope { --vcp-ui-radius-card: 8px; }
+    html[data-vcp-card-radius="square"],
+    html[data-vcp-card-radius="square"] .vcp-ui-scope { --vcp-ui-radius-card: 0; }
+    html[data-vcp-card-radius="small"],
+    html[data-vcp-card-radius="small"] .vcp-ui-scope { --vcp-ui-radius-card: 6px; }
+    html[data-vcp-card-radius="medium"],
+    html[data-vcp-card-radius="medium"] .vcp-ui-scope { --vcp-ui-radius-card: 8px; }
+    html[data-vcp-card-radius="round"],
+    html[data-vcp-card-radius="round"] .vcp-ui-scope { --vcp-ui-radius-card: 14px; }
+    html[data-vcp-card-radius="custom"],
+    html[data-vcp-card-radius="custom"] .vcp-ui-scope { --vcp-ui-radius-card: var(--vcp-appearance-custom-radius); }
+
+    html[data-vcp-content-width="centered"] { --vcp-appearance-content-max: 1120px; }
+
+    html[data-vcp-surface="solid"] body {
+        --next-shell-bg: var(--secondary-bg);
+        --next-material-sheen: none;
+        --next-backdrop-filter: none;
+    }
+
+    html[data-vcp-surface="custom"] body {
+        --vcp-material-texture:
+            linear-gradient(
+                135deg,
+                color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen-soft), transparent),
+                transparent 46%,
+                color-mix(in srgb, var(--secondary-bg) 14%, transparent)
+            );
+        --next-shell-bg: color-mix(in srgb, var(--secondary-bg) var(--vcp-material-opacity), transparent);
+        --next-material-sheen: var(--vcp-material-texture);
+        --next-backdrop-filter:
+            blur(var(--vcp-material-blur))
+            saturate(var(--vcp-material-saturation))
+            brightness(var(--vcp-material-brightness));
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="vibrancy"] body {
+        --vcp-material-texture:
+            linear-gradient(128deg, color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen-soft), transparent), transparent 38% 72%, color-mix(in srgb, var(--highlight-text) 4%, transparent));
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="mica"] body {
+        --next-shell-bg: color-mix(in srgb, var(--secondary-bg) var(--vcp-material-opacity), var(--primary-bg));
+        --vcp-material-texture:
+            radial-gradient(circle at 28% 0%, color-mix(in srgb, var(--highlight-text) var(--vcp-material-sheen-soft), transparent), transparent 46%);
+        --next-backdrop-filter: none;
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="acrylic"] body {
+        --vcp-material-texture:
+            url('../assets/svg/acrylic-noise.svg'),
+            linear-gradient(135deg, color-mix(in srgb, var(--primary-text) 5%, transparent), transparent 44% 70%, color-mix(in srgb, var(--highlight-text) 4%, transparent));
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="liquid"] body {
+        --vcp-material-texture:
+            linear-gradient(118deg, color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen), transparent), transparent 18% 76%, color-mix(in srgb, var(--highlight-text) var(--vcp-material-sheen-soft), transparent)),
+            radial-gradient(ellipse at 42% -18%, color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen-soft), transparent), transparent 58%);
+    }
+
+    html[data-vcp-surface="custom"] .next-ui-main-panel {
+        --next-panel-edge: color-mix(in srgb, var(--border-color) var(--vcp-material-border), transparent);
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="acrylic"] .next-ui-navigation-material {
+        background-blend-mode: soft-light, normal;
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="liquid"] .next-ui-navigation-material {
+        overflow: hidden;
+    }
+
+    @supports (backdrop-filter: url("#vcpLiquidGlassOptics")) {
+        html[data-vcp-surface="custom"][data-vcp-surface-effect="liquid"] .next-ui-navigation-material {
+            backdrop-filter:
+                url("#vcpLiquidGlassOptics")
+                blur(var(--vcp-material-blur))
+                saturate(var(--vcp-material-saturation))
+                brightness(var(--vcp-material-brightness));
+            -webkit-backdrop-filter:
+                url("#vcpLiquidGlassOptics")
+                blur(var(--vcp-material-blur))
+                saturate(var(--vcp-material-saturation))
+                brightness(var(--vcp-material-brightness));
+        }
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="liquid"] .next-ui-navigation-material::before {
+        content: "";
+        position: absolute;
+        inset: -8px;
+        pointer-events: none;
+        background: linear-gradient(118deg, color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen), transparent), transparent 20% 78%, color-mix(in srgb, var(--highlight-text) var(--vcp-material-sheen-soft), transparent));
+        filter: url("#vcpLiquidGlassOptics");
+        mix-blend-mode: screen;
+        opacity: 0.56;
+    }
+
+    html[data-vcp-surface="custom"][data-vcp-surface-effect="liquid"] .next-ui-navigation-material::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        border: 1px solid color-mix(in srgb, var(--primary-text) var(--vcp-material-border), transparent);
+        border-radius: inherit;
+        box-shadow:
+            inset 0 1px 0 color-mix(in srgb, var(--primary-text) var(--vcp-material-sheen), transparent),
+            inset 1px 0 0 color-mix(in srgb, var(--highlight-text) var(--vcp-material-sheen-soft), transparent);
+        opacity: 0.52;
+    }
+
+    html body {
+        font-family: var(--vcp-appearance-font-family);
+        font-size: calc(16px * var(--vcp-appearance-font-scale));
+    }
+
+    html .vcp-ui-scope {
+        --vcp-ui-font-family: var(--vcp-appearance-font-family);
+        --vcp-ui-font-size: calc(14px * var(--vcp-appearance-font-scale));
+        --vcp-ui-text-xl: calc(var(--vcp-ui-font-size) + 4px);
+        --vcp-ui-text-lg: calc(var(--vcp-ui-font-size) + 2px);
+        --vcp-ui-text-base: var(--vcp-ui-font-size);
+        --vcp-ui-text-caption: calc(var(--vcp-ui-font-size) - 1px);
+        --vcp-ui-text-sm: calc(var(--vcp-ui-font-size) - 2px);
+        --vcp-ui-text-xs: calc(var(--vcp-ui-font-size) - 4px);
+        /* Compatibility aliases for the existing VCPUI components. */
+        --vcp-ui-font-caption: var(--vcp-ui-text-sm);
+        --vcp-ui-font-micro: var(--vcp-ui-text-xs);
+        --vcp-ui-font-helper: var(--vcp-ui-text-caption);
+        --vcp-ui-font-body: var(--vcp-ui-text-base);
+        --vcp-ui-font-emphasis: var(--vcp-ui-text-base);
+        --vcp-ui-font-section: var(--vcp-ui-text-lg);
+        --vcp-ui-font-title: var(--vcp-ui-text-xl);
+        --vcp-ui-font-display: var(--vcp-ui-text-xl);
+        font-family: var(--vcp-ui-font-family);
+    }
+
+    html .vcp-ui-scope .chat-input-card {
+        border-radius: var(--vcp-ui-composer-radius, 28px);
+    }
+
+    html[data-vcp-content-width="centered"] .chat-messages {
+        width: min(100%, var(--vcp-appearance-content-max));
+        margin-inline: auto;
+        box-sizing: border-box;
+    }
+
+    .appearance-settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px 16px;
+    }
+
+    .appearance-settings-grid .vcp-settings-row {
+        min-width: 0;
+        margin: 0;
+    }
+
+    .appearance-settings-grid .vcp-settings-row > span {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--vcp-ui-text-1, var(--primary-text));
+        font-size: var(--vcp-ui-font-helper, 13px);
+    }
+
+    .appearance-settings-grid select {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+
+    @media (max-width: 720px) {
+        .appearance-settings-grid { grid-template-columns: 1fr; }
+    }
+}
+
+/* Advanced-reply popover (+ button / send right-click): same surface as the
+   composer card it opens from, with the soft composer-popover lift and a
+   superellipse corner; rows inset 4px take 12px to stay concentric. */
+html body .tavern-popover {
+    border: 1px solid var(--vcp-ui-composer-border);
+    border-radius: 16px;
+    background: var(--vcp-ui-composer-input);
+    box-shadow: var(--vcp-ui-composer-popover-shadow);
+}
+
+html body .tavern-popover .tavern-rule-row {
+    border-radius: 12px;
+}
+
+html body .tavern-popover .tavern-popover-search-input:not(:focus) {
+    border-color: var(--vcp-ui-composer-border);
+}
+
+/* The light theme gives the mini switch track a 1px border, but the knob kept
+   its borderless 2px offset, which is measured inside that border: it sat 3px
+   from the top and 1px from the bottom. 1px inside the border puts it 2px
+   from every edge, in both positions. */
+html body:is(.light-theme, [data-vcp-theme="light"]) .tavern-popover .tavern-switch .tavern-slider::before {
+    top: 1px;
+    left: 1px;
+}
+
+/* stylelint-disable property-no-unknown, function-no-unknown */
+@supports (corner-shape: superellipse(1.5)) {
+    html body .tavern-popover {
+        corner-shape: superellipse(1.5);
+    }
+}
+/* stylelint-enable property-no-unknown, function-no-unknown */

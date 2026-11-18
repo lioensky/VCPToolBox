@@ -1,7 +1,14 @@
 // modules/vcpLoop/toolExecutor.js
+const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
+const toolCallRecordStore = require('../toolCallRecordStore');
+const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
+const jevToolCallExp = require('../jevToolCallExp');
+
+const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
 /**
  * 提取消息的纯文本字符串
@@ -130,8 +137,12 @@ class ToolExecutor {
    */
   async _resolveVRefFiles(vrefValue, contextMessages = []) {
     const kbManager = this.pluginManager?.vectorDBManager;
-    if (!kbManager || !kbManager.db) {
-      console.warn('[VRef] VectorDBManager 不可用，跳过 vref。');
+    if (
+      !kbManager
+      || typeof kbManager.listDistinctDiaries !== 'function'
+      || typeof kbManager.search !== 'function'
+    ) {
+      console.warn('[VRef] VectorDBManager 原生知识库接口不可用，跳过 vref。');
       return [];
     }
 
@@ -143,14 +154,14 @@ class ToolExecutor {
     const parsedN = parseInt(vrefValue, 10);
     const n = Number.isFinite(parsedN) && parsedN > 0 ? parsedN : 3;
 
-    // Step 2: 获取所有知识库分区名，在每个分区中并行检索
-    const diaryRows = kbManager.db.prepare('SELECT DISTINCT diary_name FROM files').all();
-    if (!Array.isArray(diaryRows) || diaryRows.length === 0) {
+    // Step 2: 通过 Rust 高层接口获取所有知识库分区名，在每个分区中并行检索。
+    const diaryNames = await kbManager.listDistinctDiaries();
+    if (!Array.isArray(diaryNames) || diaryNames.length === 0) {
       return [];
     }
 
     const resultGroups = await Promise.all(
-      diaryRows.map(({ diary_name }) => kbManager.search(diary_name, contextVector, n))
+      diaryNames.map(diaryName => kbManager.search(diaryName, contextVector, n))
     );
 
     // Step 3: 按文件路径去重 — 同一文件可能有多个 chunk 命中，只保留最高分
@@ -185,7 +196,41 @@ class ToolExecutor {
    * @returns {Promise<{success: boolean, content: Array, error?: string, raw?: any}>}
    */
   async execute(toolCall, clientIp, contextMessages = []) {
-    const { name, args, river, vref } = toolCall;
+    const { name, args, river, vref, archeryNoReply } = toolCall;
+
+    // === JEV 实验性虚拟工具展开 ===
+    // JEV 本身不是插件。规划器仅生成白名单真实工具调用，随后递归进入
+    // 本执行链，使验证码、人工审核、工具记录、隐私过滤与分布式桥保持生效。
+    if (jevToolCallExp.isVirtualToolName(name)) {
+      try {
+        // 传入完整虚拟调用，使规划器在展开后保留通用调用协议：
+        // timely_contact/tool_password 参数及 archery/ink/river/vref 元数据。
+        const expandedCalls = await jevToolCallExp.plan(args?.expression, toolCall);
+        if (expandedCalls.length === 0) {
+          return this._createErrorResult(name, 'JEV 没有生成可执行的真实工具调用。');
+        }
+
+        const expandedResults = await this.executeAll(expandedCalls, clientIp, contextMessages);
+        if (expandedResults.length === 1) return expandedResults[0];
+
+        const successful = expandedResults.filter(result => result?.success);
+        return {
+          success: successful.length === expandedResults.length,
+          content: expandedResults.flatMap(result => Array.isArray(result?.content) ? result.content : []),
+          raw: {
+            status: successful.length === expandedResults.length ? 'success' : 'partial',
+            virtualTool: 'JEV',
+            expandedTools: expandedCalls.map(call => call.name),
+            results: expandedResults.map(result => result?.raw ?? {
+              success: result?.success,
+              error: result?.error
+            })
+          }
+        };
+      } catch (error) {
+        return this._createErrorResult(name, `JEV 规划错误: ${error.message}`);
+      }
+    }
 
     // === river 上下文注入 ===
     // river 协议允许 AI 在工具调用时携带对话上下文，支持四种模式：
@@ -274,7 +319,27 @@ class ToolExecutor {
         scored.sort((a, b) => b.score - a.score);
         
         // 5. 取 Top-N，按原始顺序排列
-        const topN = scored.slice(0, n);
+        // 若开启 JevRiverRerank，则 embedding 只负责"别漏"（出 Top-K），
+        // 由 Jev 在 K 内重排出 N 条（负责"别滥"）；任何失败都保留 embedding 的 Top-N。
+        let topN = scored.slice(0, n);
+        if (jevRiverReranker.isEnabled()) {
+          try {
+            const rerank = await jevRiverReranker.rerankTopN({
+              queryText,
+              items: scored,
+              n,
+              debug: this.debugMode
+            });
+            if (rerank.applied && Array.isArray(rerank.selected) && rerank.selected.length > 0) {
+              topN = rerank.selected;
+            } else if (this.debugMode && rerank && !rerank.applied) {
+              console.log(`[River] Jev 重排未生效(${rerank.reason})，保留 embedding 的 Top-${n}`);
+            }
+          } catch (e) {
+            // 绝不能让重排异常冒泡到外层 catch——那会连带丢掉 embedding 结果、退回 last:N
+            if (this.debugMode) console.log(`[River] Jev 重排异常，保留 embedding 结果: ${e && e.message}`);
+          }
+        }
         topN.sort((a, b) => a.index - b.index);
         
         args.river_context = topN.map(m => ({
@@ -314,26 +379,77 @@ class ToolExecutor {
       }
     }
 
+    const recordHandle = toolCallRecordStore.beginRecord({
+      toolName: name,
+      args,
+      requestIp: clientIp,
+      sourceNode: 'post'
+    });
+
+    // 通用未来任务拦截：
+    // 任意工具只要携带 timely_contact，就先写入 VCPTimedContacts 由任务调度器到点执行。
+    // 到点执行时由 TaskScheduler 注入 __vcp_timed_call 标准元信息；
+    // 插件可基于该字段判断原始发起时间、计划触发时间与实际触发时间。
+    if (args && Object.prototype.hasOwnProperty.call(args, 'timely_contact')) {
+      const scheduledResult = await this._scheduleTimedToolCall(toolCall);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: scheduledResult.success,
+        result: scheduledResult.raw || scheduledResult.content,
+        error: scheduledResult.success ? null : scheduledResult.error
+      });
+      return this._attachRecordIdToResult(scheduledResult, recordHandle);
+    }
+
     // 验证码校验
     if (this.vcpToolCode) {
       const authResult = await this._verifyAuth(args);
       if (!authResult.valid) {
-        return this._createErrorResult(name, authResult.message);
+        const errorResult = this._createErrorResult(name, authResult.message);
+        toolCallRecordStore.finishRecord(recordHandle, {
+          success: false,
+          result: errorResult.content,
+          error: authResult.message
+        });
+        return this._attachRecordIdToResult(errorResult, recordHandle);
       }
     }
 
     // 检查插件是否存在
     if (!this.pluginManager.getPlugin(name)) {
-      return this._createErrorResult(name, `未找到名为 "${name}" 的插件`);
+      const message = `未找到名为 "${name}" 的插件`;
+      const errorResult = this._createErrorResult(name, message);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: false,
+        result: errorResult.content,
+        error: message
+      });
+      return this._attachRecordIdToResult(errorResult, recordHandle);
     }
 
     // 执行插件
     try {
       if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
-      const result = await this.pluginManager.processToolCall(name, args, clientIp);
-      return this._processResult(name, result);
+      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', {
+        archeryNoReply: !!archeryNoReply,
+        toolCallRecordHandle: recordHandle
+      });
+      const processedResult = this._processResult(name, result);
+      // 与 _processResult 的 success 判定保持一致：
+      // 插件若显式返回 { success: false }，记录必须落为失败，不能硬编码成功。
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: processedResult.success,
+        result,
+        error: processedResult.error || null
+      });
+      return this._attachRecordIdToResult(processedResult, recordHandle);
     } catch (error) {
-      return this._createErrorResult(name, `执行错误: ${error.message}`);
+      const errorResult = this._createErrorResult(name, `执行错误: ${error.message}`);
+      toolCallRecordStore.finishRecord(recordHandle, {
+        success: false,
+        result: errorResult.content,
+        error
+      });
+      return this._attachRecordIdToResult(errorResult, recordHandle);
     }
   }
 
@@ -346,15 +462,56 @@ class ToolExecutor {
     );
   }
 
+  _attachRecordIdToResult(result, recordHandle) {
+    if (!recordHandle || !recordHandle.id || !result || typeof result !== 'object') {
+      return result;
+    }
+    result.recordId = recordHandle.id;
+    if (result.raw && typeof result.raw === 'object' && !result.raw.tool_call_record_id) {
+      result.raw.tool_call_record_id = recordHandle.id;
+    }
+    return result;
+  }
+
   _processResult(toolName, result) {
     const formatted = this._formatResult(result);
     
-    // WebSocket广播
+    // WebSocket广播：即使是 archery no-reply 静默结果，也保留 VCPLog 可见性。
     this._broadcast(toolName, 'success', formatted.text);
+
+    // archery no-reply 的“静默”只表示不回灌给 AI / 不触发二次 loop；
+    // 用户侧仍应通过 VCPInfo WS 看到工具已被接收，后续真实进度由插件自己的 VCPLog/VCPInfo 继续推送。
+    if (result && typeof result === 'object' && result.__vcpArcheryNoReplySilent) {
+      try {
+        const vcpLogFunctions = this.pluginManager?.getVCPLogFunctions?.();
+        if (vcpLogFunctions && typeof vcpLogFunctions.pushVcpInfo === 'function') {
+          vcpLogFunctions.pushVcpInfo({
+            type: 'TOOL_NO_REPLY_ACCEPTED',
+            toolName,
+            status: 'success',
+            noReply: true,
+            message: result.message || `Async no-reply tool "${toolName}" accepted silently.`,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (broadcastError) {
+        if (this.debugMode) {
+          console.warn(`[ToolExecutor] Failed to broadcast no-reply VCPInfo for ${toolName}: ${broadcastError.message}`);
+        }
+      }
+    }
     
+    // 内层显式声明 success:false 时必须透传：审核带用户反馈的拒绝依赖该标志，
+    // 否则 archery 循环的 isError 判定会把反馈当作成功结果静默丢弃。
+    const innerFailed = !!(result && typeof result === 'object' && result.success === false);
+
     return {
-      success: true,
+      success: !innerFailed,
+      error: innerFailed ? (result.error || formatted.text) : undefined,
       content: formatted.content,
+      approvalFeedbackContent: result?.__vcpApprovalFeedback
+        ? [{ type: 'text', text: `【用户审核留言：已允许工具 "${toolName}" 调用】\n${result.__vcpApprovalFeedback}` }]
+        : [],
       raw: result
     };
   }
@@ -364,21 +521,42 @@ class ToolExecutor {
       return { text: '(无返回内容)', content: [{ type: 'text', text: '(无返回内容)' }] };
     }
 
-    // 检查是否为富内容格式
+    const feedback = typeof result?.__vcpApprovalFeedback === 'string'
+      ? result.__vcpApprovalFeedback.trim()
+      : '';
+    const suffix = feedback ? `\n\n【用户审核留言：已允许本次工具调用】\n${feedback}` : '';
+
+    // 标准多模态回执只修改最后一个 text 块，绝不字符串化或改写图片等非文本块。
     if (typeof result === 'object') {
-      const richContent = result.data?.content || result.content;
+      const richContent = Array.isArray(result) ? result : (result.data?.content || result.content);
       if (Array.isArray(richContent)) {
-        const textPart = richContent.find(p => p.type === 'text');
+        let content = richContent;
+        if (suffix) {
+          content = richContent.slice();
+          const lastTextIndex = content.findLastIndex(part => part?.type === 'text' && typeof part.text === 'string');
+          if (lastTextIndex >= 0) {
+            content[lastTextIndex] = { ...content[lastTextIndex], text: content[lastTextIndex].text + suffix };
+          } else {
+            content.push({ type: 'text', text: suffix.trimStart() });
+          }
+        }
+        const textPart = content.find(p => p?.type === 'text');
         return {
           text: textPart?.text || '[Rich Content]',
-          content: richContent
+          content
         };
       }
     }
 
-    const text = typeof result === 'object' 
-      ? JSON.stringify(result, null, 2) 
-      : String(result);
+    // 内部审核元信息不作为业务字段重复展示，旧回执统一在文本尾部附加留言。
+    let displayResult = result;
+    if (feedback && typeof result === 'object') {
+      const { __vcpApprovalFeedback, ...businessResult } = result;
+      displayResult = businessResult;
+    }
+    const text = (typeof displayResult === 'object'
+      ? JSON.stringify(displayResult, null, 2)
+      : String(displayResult)) + suffix;
     
     return {
       text,
@@ -388,10 +566,39 @@ class ToolExecutor {
 
   _createErrorResult(toolName, message) {
     this._broadcast(toolName, 'error', message);
+
+    // 上层抛出的业务错误通常是 JSON 字符串（plugin_error / error_type / user_feedback…）。
+    // 直接把转义串喂给 AI 会变成噪声，这里解出可读文本，并保留结构化原文到 raw。
+    //
+    // 注意：真实调用链里 ToolExecutor 的 catch 会给 error.message 套上 `执行错误: ` 前缀，
+    // 若直接对 message 做 startsWith('{') 判断将恒为 false，JSON 解析分支永不生效。
+    // 因此先剥掉已知的包装前缀，再对剩余部分尝试解析。
+    const rawMessage = typeof message === 'string' ? message : String(message);
+    const jsonCandidate = rawMessage.replace(/^执行错误:\s*/, '');
+    let displayText = rawMessage;
+    let parsedPayload = null;
+    if (jsonCandidate.trim().startsWith('{')) {
+      try {
+        parsedPayload = JSON.parse(jsonCandidate);
+        const readableParts = [];
+        if (parsedPayload.plugin_error) readableParts.push(parsedPayload.plugin_error);
+        if (parsedPayload.user_feedback && !String(parsedPayload.plugin_error || '').includes(parsedPayload.user_feedback)) {
+          readableParts.push('用户反馈: ' + parsedPayload.user_feedback);
+        }
+        if (readableParts.length > 0) displayText = readableParts.join('\n');
+        if (parsedPayload.__vcpApprovalFeedback) {
+          displayText += `\n\n【用户审核留言：已允许工具 "${toolName}" 调用】\n${parsedPayload.__vcpApprovalFeedback}`;
+        }
+      } catch (_parseError) {
+        // 不是合法 JSON，保持原字符串。
+      }
+    }
+
     return {
       success: false,
       error: message,
-      content: [{ type: 'text', text: `[错误] ${message}` }]
+      content: [{ type: 'text', text: `[错误] ${displayText}` }],
+      ...(parsedPayload ? { raw: parsedPayload } : {})
     };
   }
 
@@ -400,6 +607,107 @@ class ToolExecutor {
       type: 'vcp_log',
       data: { tool_name: toolName, status, content }
     }, 'VCPLog');
+  }
+
+  async _scheduleTimedToolCall(toolCall) {
+    const { name, args } = toolCall;
+    const timelyContact = args?.timely_contact;
+    const targetDate = this._parseAndValidateTimedContact(timelyContact);
+    if (!targetDate) {
+      return this._createErrorResult(name, `无效的 'timely_contact' 时间格式: '${timelyContact}'。请使用 YYYY-MM-DD-HH:mm 格式，或可被 Date 解析的未来时间。`);
+    }
+    if (targetDate === 'past') {
+      return this._createErrorResult(name, `无效的 'timely_contact' 时间: '${timelyContact}'。不能设置为过去或当前时间。`);
+    }
+
+    if (!this.pluginManager.getPlugin(name)) {
+      return this._createErrorResult(name, `未找到名为 "${name}" 的插件`);
+    }
+
+    const scheduledArgs = JSON.parse(JSON.stringify(args || {}));
+    const requestedAt = this._formatToLocalDateTimeWithOffset(new Date());
+
+    const taskId = `task-${targetDate.getTime()}-${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')}`;
+    const taskData = {
+      taskId,
+      createdAt: requestedAt,
+      scheduledLocalTime: this._formatToLocalDateTimeWithOffset(targetDate),
+      tool_call: {
+        tool_name: name,
+        arguments: scheduledArgs
+      },
+      requestor: `ToolExecutor: ${name}`
+    };
+
+    try {
+      await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
+      const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${taskId}.json`);
+      await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2), 'utf-8');
+
+      const receipt = `任务已成功调度。\n工具: ${name}\n任务ID: ${taskId}\n发起时间: ${requestedAt}\n计划时间: ${taskData.scheduledLocalTime}\n到点执行时系统会注入 __vcp_timed_call 标准元信息。`;
+      this._broadcast(name, 'success', receipt);
+      return {
+        success: true,
+        content: [{ type: 'text', text: receipt }],
+        raw: {
+          status: 'success',
+          scheduled: true,
+          taskId,
+          tool_name: name,
+          requestedAt,
+          scheduledTime: taskData.scheduledLocalTime
+        }
+      };
+    } catch (error) {
+      return this._createErrorResult(name, `创建定时任务失败: ${error.message}`);
+    }
+  }
+
+  _parseAndValidateTimedContact(value) {
+    if (!value) return null;
+
+    const raw = String(value).trim();
+    const standardized = raw.replace(/[\/\.]/g, '-');
+    const compactMatch = standardized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})-(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+
+    let date;
+    if (compactMatch) {
+      const [, yearRaw, monthRaw, dayRaw, hourRaw, minuteRaw, secondRaw] = compactMatch;
+      const year = Number(yearRaw);
+      const month = Number(monthRaw);
+      const day = Number(dayRaw);
+      const hour = Number(hourRaw);
+      const minute = Number(minuteRaw);
+      const second = secondRaw === undefined ? 0 : Number(secondRaw);
+
+      date = new Date(year, month - 1, day, hour, minute, second);
+      if (
+        date.getFullYear() !== year ||
+        date.getMonth() !== month - 1 ||
+        date.getDate() !== day ||
+        date.getHours() !== hour ||
+        date.getMinutes() !== minute ||
+        date.getSeconds() !== second
+      ) {
+        return null;
+      }
+    } else {
+      date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return null;
+    }
+
+    if (date.getTime() <= Date.now()) return 'past';
+    return date;
+  }
+
+  _formatToLocalDateTimeWithOffset(date) {
+    const pad = (value, length = 2) => String(value).padStart(length, '0');
+    const timezoneOffsetMinutes = date.getTimezoneOffset();
+    const offsetSign = timezoneOffsetMinutes > 0 ? '-' : '+';
+    const offsetHours = pad(Math.floor(Math.abs(timezoneOffsetMinutes) / 60));
+    const offsetMinutes = pad(Math.abs(timezoneOffsetMinutes) % 60);
+
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offsetSign}${offsetHours}:${offsetMinutes}`;
   }
 
   async _verifyAuth(args) {

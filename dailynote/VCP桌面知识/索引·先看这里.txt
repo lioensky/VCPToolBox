@@ -1,0 +1,22 @@
+# VCP桌面知识 · 索引
+
+## 最新权威来源
+- 沙箱 API、DesktopRemote 全部参数、持久化分层：VCPChat 仓库的 Desktopmodules/挂件运行时与远控参考.md。它随源码维护，内容冲突时以它为准。
+- 当前挂件目录清单：VCPChat 根目录下的 AppData/DesktopWidgets/CATALOG.md。由系统自动生成并更新，只读参考，不要手动编辑。
+
+## 本日记本各文件管什么
+- 桌面基础api：沙箱可用变量、vcpAPI、musicAPI、天气数据结构；末尾补充 widgetFS、定时器回收与 vcpAPI.post 默认模型及成本。
+- 使用示例：翻译、天气、音乐条三个推送示例。
+- 分布式操作：DesktopRemote CreateWidget 参数（对应 1.5.0）。
+- 桌面图标与启动API指南：dock.launch 与 builtinId 全表（15 个内置挂件）。
+- 壁纸操作：SetWallpaper。
+- 桌面感知：QueryDesktop、ViewWidgetSource。
+- 图标创建：自制应用图标的规范与存放目录。
+
+## 本日记本未覆盖、请查参考手册的主题
+- 推送归档 dw-*、archived 回执与 savedId、收藏写回原目录不复制。
+- 离线待上屏队列（上限 5，开窗全部上屏）。
+- 目录前缀：dw-* 为推送归档，fav_* 为无 savedId 时的收藏，saved-* 为带 scriptFiles 或 autoSave 的 CreateWidget。
+- styleAutomation 指标驱动样式、metrics 系统指标、performanceManager 按挂件计时。
+- SetStyleAutomation、GetStyleAutomationStatus 命令。
+- 外部脚本相对路径解析规则。

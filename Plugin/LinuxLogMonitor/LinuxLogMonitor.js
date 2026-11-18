@@ -15,7 +15,7 @@
  */
 
 const path = require('path');
-const fs = require('fs').promises;
+const util = require('util');
 
 // 加载配置
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
@@ -29,8 +29,31 @@ const DEBUG_MODE = (process.env.DebugMode || 'false').toLowerCase() === 'true';
 const CALLBACK_BASE_URL = process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SERVER_PORT || 5000}`;
 const PLUGIN_NAME = 'LinuxLogMonitor';
 
-// 存储当前请求的 requestId
-let currentRequestId = null;
+let pluginConfig = {};
+let serviceManager = null;
+let serviceInitPromise = null;
+let serviceInitMode = null;
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function writeInfoLog(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 /**
  * 格式化 VCP 标准响应
@@ -57,7 +80,7 @@ function formatVCPResponse(status, data = null, error = null) {
  */
 function debugLog(msg, ...args) {
     if (DEBUG_MODE) {
-        console.error(`[${PLUGIN_NAME}][Debug] ${msg}`, ...args);
+        writeInfoLog(`[${PLUGIN_NAME}][Debug] ${msg}`, ...args);
     }
 }
 
@@ -65,7 +88,118 @@ function debugLog(msg, ...args) {
  * 信息日志
  */
 function infoLog(msg, ...args) {
-    console.error(`[${PLUGIN_NAME}] ${msg}`, ...args);
+    writeInfoLog(`[${PLUGIN_NAME}] ${msg}`, ...args);
+}
+
+function createManager() {
+    return new MonitorManager({
+        callbackBaseUrl: pluginConfig.CALLBACK_BASE_URL || CALLBACK_BASE_URL,
+        pluginName: PLUGIN_NAME,
+        debug: pluginConfig.DebugMode ?? DEBUG_MODE
+    });
+}
+
+async function initializeServiceManager(mode) {
+    serviceManager = createManager();
+    serviceInitMode = mode;
+    serviceInitPromise = serviceManager.init({ mode });
+    await serviceInitPromise;
+    serviceInitPromise = null;
+    return serviceManager;
+}
+
+async function ensureServiceManager(mode = 'readonly') {
+    if (serviceInitPromise) {
+        await serviceInitPromise;
+        serviceInitPromise = null;
+    }
+
+    if (!serviceManager) {
+        return initializeServiceManager(mode);
+    }
+
+    if (mode === 'full' && serviceInitMode !== 'full') {
+        await serviceManager.stopAll();
+        serviceManager = null;
+        serviceInitMode = null;
+        return initializeServiceManager('full');
+    }
+
+    return serviceManager;
+}
+
+async function createCliManager(command) {
+    const manager = createManager();
+    const initMode = getInitMode(command);
+    debugLog(`初始化模式: ${initMode}`);
+    await manager.init({ mode: initMode });
+    return manager;
+}
+
+function unwrapVCPResponse(response) {
+    if (!response || response.status !== 'success') {
+        throw new Error(response?.error || 'LinuxLogMonitor 执行失败');
+    }
+    return response.result;
+}
+
+async function dispatchCommand(manager, args, options = {}) {
+    const command = args.command || args.action;
+    debugLog(`执行命令: ${command}`, args);
+
+    switch (command) {
+        case 'start':
+            return handleStart(manager, args);
+
+        case 'stop':
+            return handleStop(manager, args);
+
+        case 'status':
+            return handleStatus(manager, args, options);
+
+        case 'list_rules':
+            return handleListRules(manager, args);
+
+        case 'add_rule':
+            return handleAddRule(manager, args);
+
+        case 'searchLog':
+            return handleSearchLog(manager, args);
+
+        case 'lastErrors':
+            return handleLastErrors(manager, args);
+
+        case 'logStats':
+            return handleLogStats(manager, args);
+
+        default:
+            return formatVCPResponse('error', null, `未知命令: ${command}。可用命令: start, stop, status, list_rules, add_rule, searchLog, lastErrors, logStats`);
+    }
+}
+
+async function initialize(config = {}) {
+    pluginConfig = config || {};
+    debugLog('初始化 hybridservice/direct 插件...');
+    await ensureServiceManager('readonly');
+}
+
+async function processToolCall(args = {}) {
+    const command = args.command || args.action;
+    const manager = await ensureServiceManager(command === 'start' ? 'full' : 'readonly');
+    const response = await dispatchCommand(manager, args, {
+        direct: true,
+        serviceMode: serviceInitMode
+    });
+    return unwrapVCPResponse(response);
+}
+
+async function shutdown() {
+    if (!serviceManager) return;
+
+    await serviceManager.stopAll();
+    serviceManager = null;
+    serviceInitPromise = null;
+    serviceInitMode = null;
 }
 
 /**
@@ -117,63 +251,9 @@ async function main() {
         
         try {
             const args = JSON.parse(input);
-            // 提取并保存 requestId
-            currentRequestId = args.requestId || null;
             const command = args.command || args.action;
-            
-            debugLog(`执行命令: ${command}`, args);
-            
-            // 根据命令确定 init 模式
-            const initMode = getInitMode(command);
-            debugLog(`初始化模式: ${initMode}`);
-            
-            // 初始化监控管理器
-            const manager = new MonitorManager({
-                callbackBaseUrl: CALLBACK_BASE_URL,
-                pluginName: PLUGIN_NAME,
-                debug: DEBUG_MODE
-            });
-            
-            await manager.init({ mode: initMode });
-            
-            let result;
-            
-            switch (command) {
-                case 'start':
-                    result = await handleStart(manager, args);
-                    break;
-                    
-                case 'stop':
-                    result = await handleStop(manager, args);
-                    break;
-                    
-                case 'status':
-                    result = await handleStatus(manager, args);
-                    break;
-                    
-                case 'list_rules':
-                    result = await handleListRules(manager, args);
-                    break;
-                    
-                case 'add_rule':
-                    result = await handleAddRule(manager, args);
-                    break;
-                    
-                case 'searchLog':
-                    result = await handleSearchLog(manager, args);
-                    break;
-                    
-                case 'lastErrors':
-                    result = await handleLastErrors(manager, args);
-                    break;
-                    
-                case 'logStats':
-                    result = await handleLogStats(manager, args);
-                    break;
-                    
-                default:
-                    result = formatVCPResponse('error', null, `未知命令: ${command}。可用命令: start, stop, status, list_rules, add_rule, searchLog, lastErrors, logStats`);
-            }
+            const manager = await createCliManager(command);
+            const result = await dispatchCommand(manager, args, { direct: false });
             
             console.log(JSON.stringify(result));
             
@@ -214,7 +294,7 @@ async function main() {
  * 使用 'full' 模式初始化，会恢复之前的任务
  */
 async function handleStart(manager, args) {
-    const { hostId, logPath, rules, contextLines } = args;
+    const { hostId, logPath, rules, contextLines, afterContextLines } = args;
     
     if (!hostId) {
         return formatVCPResponse('error', null, '缺少必需参数: hostId');
@@ -225,11 +305,14 @@ async function handleStart(manager, args) {
     }
     
     try {
+        const effectiveContextLines = contextLines ?? 10;
+        const effectiveAfterContextLines = afterContextLines ?? effectiveContextLines;
         const taskId = await manager.startMonitor({
             hostId,
             logPath,
             rules: rules || [],
-            contextLines: contextLines || 10
+            contextLines: effectiveContextLines,
+            afterContextLines: effectiveAfterContextLines
         });
         
         return formatVCPResponse('success', {
@@ -238,7 +321,8 @@ async function handleStart(manager, args) {
             config: {
                 hostId,
                 logPath,
-                contextLines: contextLines || 10,
+                contextLines: effectiveContextLines,
+                afterContextLines: effectiveAfterContextLines,
                 rulesCount: (rules || []).length || 'default'
             }
         }, null);
@@ -281,8 +365,12 @@ async function handleStop(manager, args) {
  * 处理 status 命令 - 查询状态
  * 使用 'readonly' 模式，从状态文件读取，不启动任务
  */
-async function handleStatus(manager, args) {
+async function handleStatus(manager, args, options = {}) {
     try {
+        if (options.direct && options.serviceMode === 'full') {
+            return formatVCPResponse('success', manager.getStatus(), null);
+        }
+
         // 使用 getStatusFromFile 从文件读取状态
         // 而不是 getStatus()，因为当前进程没有运行中的任务
         const status = await manager.getStatusFromFile();
@@ -437,5 +525,16 @@ async function handleLogStats(manager, args) {
     }
 }
 
-// 启动
-main();
+module.exports = {
+    initialize,
+    processToolCall,
+    shutdown,
+    _internal: {
+        dispatchCommand,
+        ensureServiceManager
+    }
+};
+
+if (require.main === module) {
+    main();
+}

@@ -1,0 +1,107 @@
+[2026-03-03] - Agent-B
+[VCP百科全书] OldPowerShellExecutor - PowerShell命令执行器
+
+一、插件基本信息
+1. 插件名称：OldPowerShellExecutor / PowerShell命令执行器
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：允许AI执行PowerShell命令并返回其输出，支持阻塞式、后台式和管理员权限执行
+
+二、功能定位
+OldPowerShellExecutor是一个PowerShell命令执行插件，允许AI通过VCP协议执行Windows PowerShell命令。支持三种执行模式：阻塞式（立即返回结果）、后台式（打开可见窗口）和管理员权限执行（需UAC确认）。该插件为AI提供了与Windows系统交互的能力。
+
+适用场景：
+- 执行系统管理命令
+- 文件和目录操作
+- 进程管理
+- 系统信息查询
+- 后台任务启动
+
+三、配置参数
+本插件无config.env配置文件，所有参数在plugin-manifest.json中定义。
+
+四、调用命令列表
+
+1. PowerShellExecutor - 执行PowerShell命令
+   功能描述：调用此工具执行指定的PowerShell命令并返回其输出。可以选择阻塞或后台执行，或请求管理员权限
+   参数列表：
+   - command (字符串, 必需): 要执行的PowerShell命令内容
+   - executionType (字符串, 必需): 执行类型。'blocking'用于短期运行并立即返回结果；'background'用于长期运行的服务类任务，将打开一个用户可见的PowerShell窗口
+   - requireAdmin (布尔值, 可选): 如果为true，则尝试以管理员权限执行命令。这将向用户显示一个UAC（用户帐户控制）确认对话框。默认为false
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」OldPowerShellExecutor「末」,
+   command:「始」Get-ChildItem「末」,
+   executionType:「始」blocking「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：阻塞式执行返回命令输出；后台式或管理员权限执行返回任务提交状态
+
+五、使用示例
+
+示例1：阻塞式执行 - 列出当前目录文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」OldPowerShellExecutor「末」,
+command:「始」Get-ChildItem「末」,
+executionType:「始」blocking「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：阻塞式执行 - 查询进程信息
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」OldPowerShellExecutor「末」,
+command:「始」Get-Process -Name 'notepad'「末」,
+executionType:「始」blocking「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：后台式执行 - 启动长期运行的任务
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」OldPowerShellExecutor「末」,
+command:「始」Start-Service -Name 'MyService'「末」,
+executionType:「始」background「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：管理员权限执行 - 查询系统进程
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」OldPowerShellExecutor「末」,
+command:「始」Get-Process -Name 'winlogon'「末」,
+executionType:「始」blocking「末」,
+requireAdmin:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例5：后台式 + 管理员权限执行
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」OldPowerShellExecutor「末」,
+command:「始」Restart-Computer -Force「末」,
+executionType:「始」background「末」,
+requireAdmin:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 执行模式说明：
+   - blocking（阻塞式）：命令立即执行，等待完成后返回输出结果
+   - background（后台式）：打开一个用户可见的PowerShell窗口，命令在后台执行，不直接返回结果
+
+2. 管理员权限执行：
+   - requireAdmin为true时，系统会弹出UAC确认对话框
+   - 用户需要确认才能执行命令
+   - 后台式或管理员权限执行不会将结果直接返回给VCP，只返回任务提交状态
+
+3. 返回值差异：
+   - 阻塞式执行：返回完整的命令输出
+   - 后台式执行：返回任务提交确认，不返回命令输出
+   - 管理员权限执行：返回任务提交状态
+
+4. 命令执行限制：
+   - 长期运行的命令建议使用background模式
+   - 短期命令使用blocking模式以获得即时反馈
+   - 某些系统命令可能需要管理员权限
+
+5. 安全提示：
+   - 执行系统命令时需谨慎，避免执行危险操作
+   - 管理员权限执行需要用户确认
+
+七、关联插件
+- PowerShellExecutor (新版本，支持持久化会话)
+
+Tag: PowerShell, 命令执行, 系统管理, Windows命令, 进程管理

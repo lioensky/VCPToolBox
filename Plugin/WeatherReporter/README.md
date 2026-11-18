@@ -1,57 +1,48 @@
-# WeatherReporter 插件 (天气预报员)
+# WeatherReporter 天气预报员
 
-这是一个 `static` 类型的插件，其主要目的是定期获取指定城市的详细天气信息，并将这些信息提供给系统，以便在处理用户请求时通过系统提示词中的占位符注入。
+定期获取天气、空气质量和预报，通过 `{{VCPWeatherInfo}}` 注入提示词，并提供管理面板使用的天气缓存。
 
-## 功能
+## 数据源与配置
 
-- 使用 **和风天气 API** 获取丰富的天气数据，包括：
-  - 实时空气质量 (AQI, PM2.5 等)
-  - 天气预警
-  - 未来逐小时天气预报
-  - 未来多日天气预报 (最多15天)
-  - 月相和月升月落时间
-  - 太阳高度角和方位角
-- 将获取到的天气信息通过 `{{VCPWeatherInfo}}` 占位符在系统提示词中提供。
-- 智能缓存机制，包括城市信息、格式化文本和原始JSON数据，以提高性能和API请求失败时的容错能力。
+配置可放在根目录或插件目录的 `config.env` 中。插件目录配置由插件管理器优先传入。
 
-## 配置
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `VarCity` | 必填 | 查询城市，例如 `惠城`、`北京`；已有城市缓存中的 `Huicheng` 会转换成 `惠城` |
+| `WeatherProvider` | `auto` | `auto`、`uapi` 或 `qweather` |
+| `WeatherKey` | 和风天气需要 | 和风天气 API Key |
+| `WeatherUrl` | 和风天气需要 | 和风控制台“设置”中的账号专属 API Host，例如 `xxxxxxxx.xy.qweatherapi.com` |
+| `forecastDays` | `7` | 预报展示天数；UAPI 最多 7 天，和风天气最多 15 天 |
+| `hourlyForecastInterval` | `2` | 逐小时预报展示间隔，单位小时 |
+| `hourlyForecastCount` | `12` | 逐小时预报最多展示条数 |
 
-插件的配置分为两部分：
+`auto` 优先使用已配置的和风天气专属 Host，失败后尝试 UAPI。缺少和风配置或仍使用 `devapi.qweather.com` 等旧公共域名时，直接使用 UAPI。`uapi` 固定使用免 Key 接口；`qweather` 固定使用和风天气，配置错误时会输出修正提示。
 
-### 1. 全局配置
+### UAPI
 
-请在主项目的 `config.env` 文件中配置以下**必需**变量：
+接口：`https://uapis.cn/api/v1/misc/weather`。每次刷新使用一条请求，参数为 `city`、`extended=true`、`forecast=true`、`hourly=true`、`lang=zh`。截至 2026-10-27，本机实测无需 Key，惠城可返回实时天气、空气质量、7 日及逐小时预报。服务可用性、调用限制和字段以提供方当前规则为准。
 
-- `VarCity`: 需要获取天气的城市名称 (例如: `北京`).
-- `WeatherKey`: 您的和风天气 API Key.
-- `WeatherUrl`: 和风天气 API 的请求域名 (例如: `devapi.qweather.com`).
+响应会转换为现有的 `now`、`hourly`、`daily`、`warning` 等字段，供现有消费者读取。记录来源、查询城市、获取时间 `lastUpdate` 和观测时间 `sourceUpdatedAt`。服务返回的无时区时间按北京时间解析。
 
-### 2. 插件特定配置 (可选)
+提供方返回 `alerts` 时转换为预警列表；省略该字段时保留“预警信息未知”状态。月相与太阳角度在和风天气成功返回时展示。
 
-在 `Plugin/WeatherReporter/config.env` 文件中，您可以自定义以下选项：
+## 刷新与缓存
 
-- `forecastDays`: 设置获取未来天气预报的天数。
-  - **支持范围**: `3`, `7`, `10`, `15`。插件会根据设定的天数自动选择最合适的API端点。
-  - **默认值**: `7`
+默认每小时刷新一次。每个 HTTP 请求通过 `AbortSignal` 限制为 10 秒，和风天气的独立数据请求并行执行。
 
-- `hourlyForecastInterval`: 设置24小时天气预报的**显示间隔**。
-  - **说明**: 控制在最终输出中，每隔多少小时显示一条预报。
-  - **默认值**: `2` (小时)
+- `city_cache.txt`：城市 ID、经纬度和名称缓存。
+- `weather_cache.json`：统一数据缓存。检查获取时间、观测时间、预报有效时段及预警有效期。
+- `weather_cache.txt`：便于阅读的天气报告；失败回退从 JSON 重新生成。
 
-- `hourlyForecastCount`: 设置24小时天气预报总共**显示**的条目数。
-  - **说明**: 与 `hourlyForecastInterval` 结合使用，决定了预报的时间跨度和密度。
-  - **默认值**: `12`
+缓存有效期为 3 小时。回退时每个折叠层级都会标明来源、时间和刷新失败状态。过期、缺失有效时间、城市或指定数据源不匹配时，输出天气暂不可用状态，替换提示词中的上一份天气。
 
-**示例**: `hourlyForecastInterval=2`, `hourlyForecastCount=12` 将会获取并展示未来24小时内、每2小时一次的天气数据。
+预警会过滤已结束、取消、解除、尚未开始或时间无效的条目。缺少结束时间的预警最多保留到发布后 24 小时。实时简报和管理面板接口使用同一套有效期规则；管理接口遇到过期数据返回 HTTP 503。
 
-## 更新频率
+## 验证
 
-根据 `plugin-manifest.json` 中的 `refreshIntervalCron` 设置，插件默认为每 8 小时自动更新一次天气信息。
+```powershell
+node --test Plugin/WeatherReporter/weather-reporter.test.js
+node Plugin/WeatherReporter/weather-reporter.js
+```
 
-## 缓存机制
-
-插件使用三种不同的缓存文件来优化性能和数据可靠性：
-
-- `city_cache.txt`: 缓存城市的地理位置信息 (ID, 经纬度, 时区等)。当城市名称相同时，避免重复请求地理位置API。
-- `weather_cache.txt`: 缓存最终格式化好的、用于注入到 `{{VCPWeatherInfo}}` 的**纯文本天气报告**。当API请求失败时，会使用此缓存作为备用数据。
-- `weather_cache.json`: 缓存从和风天气API获取的**原始JSON数据**。这主要用于调试，并为未来可能的功能扩展提供数据源。
+运行主程序会刷新两个天气缓存文件。排查时先备份需要保留的旧缓存。

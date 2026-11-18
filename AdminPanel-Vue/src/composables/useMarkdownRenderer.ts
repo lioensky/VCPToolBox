@@ -1,6 +1,82 @@
 import { ref, computed } from "vue";
 import type * as DOMPurifyModule from "dompurify";
 import type * as Marked from "marked";
+import type HLJS from "highlight.js";
+
+const MARKDOWN_SANITIZE_OPTIONS: DOMPurifyModule.Config = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: [
+    "style",
+    "script",
+    "iframe",
+    "object",
+    "embed",
+    "form",
+    "input",
+    "button",
+    "textarea",
+    "select",
+  ],
+  FORBID_ATTR: ["style"],
+  ALLOW_DATA_ATTR: false,
+  ADD_ATTR: ["class"],
+};
+
+const PLAIN_TEXT_CODE_LANGUAGES = new Set([
+  "",
+  "text",
+  "txt",
+  "plain",
+  "plaintext",
+  "none",
+]);
+
+const VCP_TOOL_PROTOCOL_PATTERN =
+  /<<<\[(?:END_)?TOOL_REQUEST(?:_EXP)?\]>>>|「始(?:exp)?」|「末(?:exp)?」/;
+
+export function escapeMarkdownCodeHtml(content: string): string {
+  return content
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+interface MarkdownCodeHighlighter {
+  getLanguage(languageName: string): unknown;
+  highlight(
+    code: string,
+    options: { language: string; ignoreIllegals: boolean }
+  ): { value: string };
+}
+
+export function renderMarkdownCodeBlock(
+  code: string,
+  language: string,
+  highlighter: MarkdownCodeHighlighter | null
+): string {
+  const safeLanguage = (language || "").trim().split(/\s+/)[0].toLowerCase();
+
+  if (
+    !highlighter ||
+    PLAIN_TEXT_CODE_LANGUAGES.has(safeLanguage) ||
+    VCP_TOOL_PROTOCOL_PATTERN.test(code) ||
+    !highlighter.getLanguage(safeLanguage)
+  ) {
+    return escapeMarkdownCodeHtml(code);
+  }
+
+  try {
+    return highlighter.highlight(code, {
+      language: safeLanguage,
+      ignoreIllegals: true,
+    }).value;
+  } catch (error) {
+    console.warn("[useMarkdownRenderer] highlight 失败，回退原文:", error);
+    return escapeMarkdownCodeHtml(code);
+  }
+}
 
 /**
  * Markdown 渲染 Composable
@@ -22,12 +98,13 @@ import type * as Marked from "marked";
 export function useMarkdownRenderer() {
   let markedModule: typeof Marked | null = null;
   let dompurifyModule: typeof DOMPurifyModule | null = null;
+  let hljsModule: typeof HLJS | null = null;
   const isReady = ref(false);
   const lastRenderedContent = ref("");
 
   /**
    * 初始化 Markdown 渲染引擎
-   * 懒加载 marked 和 DOMPurify，减少初始包体积
+   * 懒加载 marked、DOMPurify 与 highlight.js（代码块高亮），减少初始包体积
    */
   async function initializeRenderer(): Promise<void> {
     if (isReady.value) {
@@ -35,13 +112,39 @@ export function useMarkdownRenderer() {
     }
 
     try {
-      const [marked, DOMPurify] = await Promise.all([
+      const [marked, DOMPurify, hljs, markedHighlight] = await Promise.all([
         import("marked"),
         import("dompurify"),
+        import("highlight.js"),
+        import("marked-highlight"),
       ]);
 
       markedModule = marked;
       dompurifyModule = DOMPurify;
+      hljsModule = (hljs.default ?? hljs) as typeof HLJS;
+
+      // 通过官方 marked-highlight 适配器接入 highlight.js
+      // 该适配器会在生成的 <code> 上自动加 hljs / language-xxx class，
+      // 内部 token 也都带上 .hljs-keyword / .hljs-string 等类。
+      const mh = (markedHighlight as { markedHighlight?: typeof markedHighlight.markedHighlight }).markedHighlight
+        ?? (markedHighlight as unknown as { default: typeof markedHighlight.markedHighlight }).default;
+
+      if (typeof mh === "function") {
+        markedModule.marked.use(
+          mh({
+            langPrefix: "hljs language-",
+            highlight(code: string, lang: string): string {
+              // 围栏代码块首先是“原文展示”区域。纯文本、未标注语言、
+              // 未知语言及 VCP 工具协议均不做自动语言猜测，避免 highlight.js
+              // 将 <<<[TOOL_REQUEST]>>> 等内容误判成 XML 并拆成额外 span。
+              return renderMarkdownCodeBlock(code, lang, hljsModule);
+            },
+          })
+        );
+      } else {
+        console.warn("[useMarkdownRenderer] marked-highlight 适配器加载失败，代码块将不会高亮");
+      }
+
       isReady.value = true;
     } catch (error) {
       console.error("[useMarkdownRenderer] 初始化失败:", error);
@@ -62,8 +165,10 @@ export function useMarkdownRenderer() {
     }
 
     if (!markedModule || !dompurifyModule) {
-      console.warn("[useMarkdownRenderer] 渲染引擎未就绪，返回原始内容");
-      return content;
+      console.warn("[useMarkdownRenderer] 渲染引擎未就绪，降级为文本转义输出");
+      const escapedHtml = escapeMarkdownCodeHtml(content);
+      lastRenderedContent.value = escapedHtml;
+      return escapedHtml;
     }
 
     // 解析 Markdown
@@ -71,7 +176,10 @@ export function useMarkdownRenderer() {
     const html = typeof parsed === "string" ? parsed : content;
     
     // 消毒 HTML
-    const sanitizedHtml = dompurifyModule.default.sanitize(html);
+    const sanitizedHtml = dompurifyModule.default.sanitize(
+      html,
+      MARKDOWN_SANITIZE_OPTIONS
+    );
     
     // 缓存最后渲染结果
     lastRenderedContent.value = sanitizedHtml;

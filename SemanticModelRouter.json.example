@@ -1,0 +1,55 @@
+{
+  "enabled": true,
+  "autoModelName": "VCPModelAuto",
+  "defaultPreset": "default",
+  "matchThreshold": 0.18,
+  "contextWeights": [0.7, 0.3],
+  "presets": {
+    "default": {
+      "displayName": "VCPModelAuto",
+      "defaultModel": "gemini-2.5-flash",
+      "fallbackModels": [
+        "gemini-2.5-pro",
+        "gpt-4.1"
+      ],
+      "routes": [
+        {
+          "name": "coding",
+          "model": "claude-sonnet-4",
+          "description": "编程、代码修改、软件架构、调试、命令行、工程实现、技术方案"
+        },
+        {
+          "name": "creative",
+          "model": "gemini-2.5-pro",
+          "description": "文学创作、角色扮演、剧情续写、情感表达、长文本润色、世界观设定"
+        },
+        {
+          "name": "fast_chat",
+          "model": "gemini-2.5-flash",
+          "description": "日常问答、快速响应、摘要、翻译、轻量推理、普通聊天"
+        }
+      ]
+    },
+    "VCPModelCoding": {
+      "displayName": "VCPModelCoding",
+      "defaultModel": "claude-sonnet-4",
+      "fallbackModels": [
+        "gemini-2.5-pro",
+        "gpt-4.1"
+      ],
+      "matchThreshold": 0.12,
+      "routes": [
+        {
+          "name": "implementation",
+          "model": "claude-sonnet-4",
+          "description": "代码实现、修改文件、修复错误、重构、增加测试、工程落地"
+        },
+        {
+          "name": "architecture",
+          "model": "gemini-2.5-pro",
+          "description": "系统设计、架构评审、方案比较、复杂技术决策、长上下文分析"
+        }
+      ]
+    }
+  }
+}

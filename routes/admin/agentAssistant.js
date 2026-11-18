@@ -30,8 +30,22 @@ module.exports = function(options) {
         try {
             await fs.mkdir(ASSISTANT_DIR, { recursive: true });
             
-            // 直接保存 JSON
-            const config = req.body;
+            // 合并旧配置后保存，避免旧版/移动端面板未提交的字段被覆盖丢失
+            let existingConfig = {};
+            try {
+                const existingContent = await fs.readFile(AGENT_ASSISTANT_CONFIG_FILE, 'utf-8');
+                existingConfig = JSON.parse(existingContent || '{}');
+            } catch (readErr) {
+                if (readErr.code !== 'ENOENT') {
+                    console.warn('[AgentAssistant Route] Failed to read existing config before save, using request body only:', readErr.message);
+                }
+            }
+
+            const incomingConfig = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+            const config = {
+                ...existingConfig,
+                ...incomingConfig
+            };
             await fs.writeFile(AGENT_ASSISTANT_CONFIG_FILE, JSON.stringify(config, null, 4), 'utf-8');
 
             // 触发插件热重载
@@ -51,6 +65,51 @@ module.exports = function(options) {
         } catch (error) { 
             console.error('[AgentAssistant Route] Save Config Error:', error);
             res.status(500).json({ error: 'Failed to save config.json' }); 
+        }
+    });
+
+    router.get('/agent-assistant/delegations', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.listDelegations !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            res.json({ success: true, data: assistantModule.listDelegations() });
+        } catch (error) {
+            console.error('[AgentAssistant Route] List Delegations Error:', error);
+            res.status(500).json({ error: 'Failed to list delegations' });
+        }
+    });
+
+    router.get('/agent-assistant/delegations/:delegationId', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.getDelegationDetail !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            const task = assistantModule.getDelegationDetail(req.params.delegationId);
+            if (!task) {
+                return res.status(404).json({ error: 'Delegation task not found.' });
+            }
+            res.json({ success: true, data: task });
+        } catch (error) {
+            console.error('[AgentAssistant Route] Get Delegation Error:', error);
+            res.status(500).json({ error: 'Failed to get delegation detail' });
+        }
+    });
+
+    router.post('/agent-assistant/delegations/:delegationId/cancel', async (req, res) => {
+        try {
+            const assistantModule = options.pluginManager?.getServiceModule('AgentAssistant');
+            if (!assistantModule || typeof assistantModule.cancelDelegation !== 'function') {
+                return res.status(503).json({ error: 'AgentAssistant service is not available.' });
+            }
+            const reason = req.body?.reason || '用户从管理面板请求取消。';
+            const result = assistantModule.cancelDelegation(req.params.delegationId, reason);
+            res.status(result.success ? 200 : 404).json(result);
+        } catch (error) {
+            console.error('[AgentAssistant Route] Cancel Delegation Error:', error);
+            res.status(500).json({ error: 'Failed to cancel delegation' });
         }
     });
 

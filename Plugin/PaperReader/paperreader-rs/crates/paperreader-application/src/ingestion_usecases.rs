@@ -10,20 +10,27 @@ impl PaperReaderApplication {
         let display_name = payload_string(payload, "document_name")
             .or_else(|| payload_string(payload, "display_name"))
             .or_else(|| guess_display_name(&source_ref));
-        let raw = self.gateway.generate_raw_result(
+        let document_id = DocumentId::new(
+            payload_string(payload, "document_id")
+                .or_else(|| payload_string(payload, "paper_id"))
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        );
+        let document_paths = repo.document_paths(&document_id);
+        let raw = self.gateway.generate_raw_result_with_artifact_root(
             source_type.clone(),
             &source_ref,
             display_name.clone(),
+            Some(
+                document_paths
+                    .source_manifest
+                    .parent()
+                    .context("source_manifest path has no parent")?,
+            ),
         )?;
         let mut normalized = Normalizer::new().normalize(raw.clone())?;
-        if let Some(document_id) =
-            payload_string(payload, "document_id").or_else(|| payload_string(payload, "paper_id"))
-        {
-            normalized.document_id = DocumentId::new(document_id);
-        }
+        normalized.document_id = document_id;
         let structure_tree = build_structure_tree(&normalized);
         let segment_set = build_segment_set(&normalized, &self.config);
-        let document_paths = repo.document_paths(&normalized.document_id);
         let source_manifest = paperreader_workspace::SourceManifest {
             document_id: normalized.document_id.clone(),
             source_type: normalize_source_type(&source_type),

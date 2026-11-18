@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # NAPI-RS核心依赖
-napi = "2.16"
+napi = { version = "2.16", features = ["napi4", "tokio_rt"] }
 napi-derive = "2.16"
 
 # 异步运行时
@@ -16,19 +16,40 @@ tokio = { version = "1", features = ["full"] }
 
 # 序列化（bincode替代JSON）
 bincode = "1.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+dotenvy = "0.15"
 serde = { version = "1.0", features = ["derive"] }
+# float_roundtrip: parse floats back to the bits they were written with, so an
+# artifact restored from its stored payload matches the one the build published.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+base64 = "0.21"
+sha2 = "0.10"
+md5 = "0.7"
+regex = "1.13.1"
+# 与现有 TextChunker.js 的 cl100k_base 保持一致
+tiktoken-rs = "0.12.1"
+flate2 = "1.0"
+# Build-only SQL-derived geometry workspace; no precision conversion.
+memmap2 = "0.9"
+bytemuck = "1"
 
-# HNSW向量索引
-usearch = "2.8"
+# TDB retrieval kernels are statically linked into the same N-API module.
+vcp-tdb-index = { path = "crates/vcp-tdb-index" }
 
 # 哈希Map优化
 hashbrown = "0.14"
+
+# RiverMemo Topology V3 候选级并行计算
+rayon = "1.10"
 
 # 线性代数 (用于 SVD)
 nalgebra = "0.32"
 
 # SQLite 数据库驱动
 rusqlite = { version = "0.29", features = ["bundled"] }
+
+# 高性能跨平台文件监听
+notify = "6.1"
 
 [build-dependencies]
 napi-build = "2.1"

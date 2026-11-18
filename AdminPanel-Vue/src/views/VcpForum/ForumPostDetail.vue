@@ -2,13 +2,19 @@
   <div v-if="selectedPost" class="forum-post-detail">
     <div class="post-detail-header">
       <div class="post-detail-actions">
-        <button @click="emit('backToList')" class="btn-secondary btn-sm">
-          <span class="material-symbols-outlined">arrow_back</span>
+        <UiButton variant="outline" size="sm" @click="emit('backToList')">
+          <template #leading><span class="material-symbols-outlined">arrow_back</span></template>
           返回列表
-        </button>
-        <button @click="emit('deletePost')" class="btn-danger btn-sm">
-          删除整个帖子
-        </button>
+        </UiButton>
+        <UiButton
+          v-if="canDelete"
+          @click="emit('deletePost')"
+          variant="danger"
+          size="sm"
+          :disabled="isDeletingPost"
+        >
+          {{ isDeletingPost ? "删除中..." : "删除整个帖子" }}
+        </UiButton>
       </div>
       <span class="post-title">{{ selectedPost.title }}</span>
     </div>
@@ -19,7 +25,7 @@
       <span>板块：{{ selectedPost.board }}</span>
     </div>
 
-    <div class="post-detail-content card" v-html="selectedPost.contentHtml"></div>
+    <UiCard class="post-detail-content" variant="flat" v-html="selectedPost.contentHtml"></UiCard>
 
     <div class="post-replies">
       <h3>回复 ({{ selectedPost.replies }})</h3>
@@ -30,7 +36,8 @@
       </p>
       <div
         v-for="reply in selectedPost.repliesList"
-        :key="reply.floor"
+        :id="getReplyAnchorId(reply.floor)"
+        :key="`${reply.floor}-${reply.createdAt}`"
         class="reply-item"
       >
         <div class="reply-header">
@@ -39,37 +46,67 @@
             <span class="reply-author">{{ reply.author }}</span>
             <span class="reply-time">{{ formatDate(reply.createdAt) }}</span>
           </div>
-          <button
-            class="btn-danger btn-sm"
+          <UiButton
+            v-if="canDelete"
+            variant="danger"
+            size="sm"
+            :disabled="deletingReplyFloor === reply.floor"
             @click="emit('deleteReply', reply.floor)"
           >
-            删除此楼层
-          </button>
+            {{ deletingReplyFloor === reply.floor ? "删除中..." : "删除此楼层" }}
+          </UiButton>
         </div>
         <div class="reply-content" v-html="reply.contentHtml"></div>
       </div>
     </div>
 
-    <div class="reply-form card">
-      <h3>发表回复</h3>
-      <textarea
-        :value="newReplyContent"
+    <UiCard class="reply-form" title="发表回复" variant="subtle">
+      <UiField label="昵称">
+        <UiInput
+          type="text"
+          maxlength="50"
+          :model-value="replyAuthor"
+          placeholder="请输入回复昵称"
+          @update:model-value="value => emit('update:replyAuthor', String(value))"
+        />
+      </UiField>
+      <UiField label="回复内容">
+      <UiTextarea
+        :model-value="newReplyContent"
         rows="4"
         placeholder="输入您的回复内容（支持 Markdown）..."
-        @input="emit('update:newReplyContent', ($event.target as HTMLTextAreaElement).value)"
-      ></textarea>
-      <button @click="emit('submitReply')" class="btn-primary">发表回复</button>
-    </div>
+        @update:model-value="value => emit('update:newReplyContent', String(value))"
+      />
+      </UiField>
+      <UiButton
+        @click="emit('submitReply')"
+        :disabled="isSubmitting || !newReplyContent.trim() || !replyAuthor.trim()"
+      >
+        {{ isSubmitting ? "提交中..." : "发表回复" }}
+      </UiButton>
+    </UiCard>
   </div>
 </template>
 
 <script setup lang="ts">
+import { nextTick, watch } from "vue";
 import { formatDate } from "@/utils";
 import type { ForumPostDetail } from "@/features/vcp-forum/types";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiCard from "@/components/ui/UiCard.vue";
+import UiField from "@/components/ui/UiField.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiTextarea from "@/components/ui/UiTextarea.vue";
 
-defineProps<{
+const props = defineProps<{
   selectedPost: ForumPostDetail | null;
   newReplyContent: string;
+  replyAuthor: string;
+  isSubmitting: boolean;
+  canDelete: boolean;
+  isDeletingPost: boolean;
+  deletingReplyFloor: number | null;
+  scrollToReplyFloor: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -78,7 +115,44 @@ const emit = defineEmits<{
   deletePost: [];
   deleteReply: [floor: number];
   "update:newReplyContent": [value: string];
+  "update:replyAuthor": [value: string];
 }>();
+
+function getReplyAnchorId(floor: number): string {
+  return `forum-reply-floor-${floor}`;
+}
+
+watch(
+  () => props.scrollToReplyFloor,
+  async (floor) => {
+    if (!floor || floor <= 0) {
+      return;
+    }
+
+    await nextTick();
+    const target = document.getElementById(getReplyAnchorId(floor));
+    if (!target) return;
+
+    const scrollContainer =
+      target.closest<HTMLElement>(".content-scroll-region") ||
+      document.querySelector<HTMLElement>(".content-scroll-region");
+
+    if (scrollContainer) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const relativeTop = targetRect.top - containerRect.top;
+      const targetScrollTop =
+        scrollContainer.scrollTop +
+        relativeTop -
+        Math.max(0, (containerRect.height - targetRect.height) / 2);
+
+      scrollContainer.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: "smooth",
+      });
+    }
+  }
+);
 </script>
 
 <style scoped>
@@ -100,7 +174,8 @@ const emit = defineEmits<{
   font-size: var(--font-size-display);
   font-weight: 600;
   line-height: 1.3;
-  max-width: 65ch;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .post-detail-meta {
@@ -113,10 +188,15 @@ const emit = defineEmits<{
 }
 
 .post-detail-content {
-  padding: var(--space-5);
   margin-bottom: var(--space-6);
   line-height: 1.6;
-  max-width: 90ch;
+  width: 100%;
+  max-width: none;
+}
+
+.post-detail-content :deep(img) {
+  max-width: 100%;
+  height: auto;
 }
 
 .post-replies h3 {
@@ -149,6 +229,7 @@ const emit = defineEmits<{
   margin-bottom: 0;
   border-bottom: 1px solid var(--border-color);
   background: transparent;
+  scroll-margin-top: var(--space-6);
 }
 
 .reply-item:last-child {
@@ -189,24 +270,10 @@ const emit = defineEmits<{
 }
 
 .reply-form {
-  padding: var(--space-5);
   margin-top: var(--space-6);
-}
-
-.reply-form h3 {
-  margin: 0 0 var(--space-4);
-}
-
-.reply-form textarea {
-  width: 100%;
-  padding: 12px;
-  background: var(--input-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--primary-text);
-  font-family: inherit;
-  resize: vertical;
-  margin-bottom: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .material-symbols-outlined {

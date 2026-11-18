@@ -1,29 +1,34 @@
 <template>
   <section class="config-section active-section rag-lab">
-    <header class="rag-lab__hero card">
-      <div class="rag-lab__hero-copy">
-        <span class="rag-lab__eyebrow">Wave RAG Parameter Lab</span>
-        <h2>浪潮 RAG 参数调优工作台</h2>
-        <p class="description">
-          集中查看和调整浪潮 RAG 的核心参数，支持按模块浏览、快速定位高影响项，并对虫洞脉冲路由等复杂参数进入独立控制舱进行细化编辑。
-        </p>
-      </div>
-
-      <div class="rag-lab__hero-stats">
-        <div class="hero-stat">
-          <span class="hero-stat__value">{{ groupSections.length }}</span>
-          <span class="hero-stat__label">参数组</span>
-        </div>
-        <div class="hero-stat">
-          <span class="hero-stat__value">{{ totalLeafCount }}</span>
-          <span class="hero-stat__label">可调节点</span>
-        </div>
-        <div class="hero-stat" :class="{ 'hero-stat--warning': isDirty }">
-          <span class="hero-stat__value">{{ changedLeafCount }}</span>
-          <span class="hero-stat__label">未保存修改</span>
-        </div>
-      </div>
-    </header>
+    <Teleport to="#page-header-actions">
+      <UiPageActions>
+        <UiDirtyIndicator
+          label="未保存"
+          :is-dirty="isDirty"
+        />
+        <UiButton
+          variant="secondary"
+          :disabled="isThemeLoading"
+          @click="loadThemes"
+        >
+          {{ isThemeLoading ? "刷新中…" : "刷新预设" }}
+        </UiButton>
+        <UiButton
+          variant="secondary"
+          :disabled="!isDirty"
+          @click="resetParams"
+        >
+          重置修改
+        </UiButton>
+        <UiButton
+          type="submit"
+          :form="formId"
+          :disabled="isSaving || !hasParams || !isDirty"
+        >
+          {{ isSaving ? "保存中…" : "保存参数配置" }}
+        </UiButton>
+      </UiPageActions>
+    </Teleport>
 
     <div v-if="isLoading" class="rag-lab__state card">
       <span class="material-symbols-outlined">hourglass_top</span>
@@ -39,26 +44,467 @@
         <strong>参数加载失败</strong>
         <p>{{ loadError }}</p>
       </div>
-      <button type="button" class="btn-secondary" @click="loadParams">重新加载</button>
+      <UiButton variant="secondary" @click="loadParams">重新加载</UiButton>
     </div>
 
     <form v-else :id="formId" class="rag-lab__workspace" @submit.prevent="saveParams">
+      <aside class="rag-lab__aside">
+        <div
+          class="rag-console"
+          aria-label="RAG 调优操作台"
+        >
+            <div class="rag-console__section rag-console__section--themes">
+              <div class="rag-console__themes-header">
+                <div>
+                  <span class="rag-console__label">参数预设</span>
+                  <p>以 <code>rag_params_模型名.json</code> 保存不同向量模型方案。</p>
+                </div>
+              </div>
+
+              <label class="theme-field">
+                <span>选择预设</span>
+                <UiSelect v-model="selectedThemeName" :disabled="isThemeLoading || isThemeSaving">
+                  <option value="">未选择预设</option>
+                  <option
+                    v-for="theme in ragParamThemes"
+                    :key="theme.fileName"
+                    :value="theme.name"
+                  >
+                    {{ theme.name }}
+                  </option>
+                </UiSelect>
+              </label>
+
+              <div class="rag-console__actions rag-console__theme-actions">
+                <UiButton
+                  variant="secondary"
+                  :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
+                  @click="openSelectedTheme"
+                >
+                  打开预设调参
+                </UiButton>
+                <UiButton
+                  variant="secondary"
+                  :disabled="!selectedThemeName || isThemeLoading || isThemeSaving || !hasParams"
+                  @click="saveCurrentToSelectedTheme"
+                >
+                  保存到所选预设
+                </UiButton>
+                <UiButton
+                  :disabled="!selectedThemeName || isThemeLoading || isThemeSaving"
+                  @click="applySelectedTheme"
+                >
+                  应用所选预设
+                </UiButton>
+              </div>
+
+              <UiBadge
+                v-if="statusMessage"
+                class="rag-console__status"
+                :variant="statusBadgeVariant"
+                role="status"
+                aria-live="polite"
+              >
+                {{ statusMessage }}
+              </UiBadge>
+
+              <label class="theme-field">
+                <span>新预设名称 / 向量模型名</span>
+                <UiInput
+                  v-model.trim="newThemeName"
+                  type="text"
+                  placeholder="例如 gemini-embedding-2-preview"
+                  :disabled="isThemeSaving"
+                />
+              </label>
+
+              <UiButton
+                :disabled="!canSaveNewTheme"
+                block
+                @click="saveCurrentAsNewTheme"
+              >
+                {{ isThemeSaving ? "保存预设中…" : "保存当前为新预设" }}
+              </UiButton>
+            </div>
+
+            <div class="rag-console__section rag-console__section--simulation">
+              <span class="rag-console__label">语义沙盘</span>
+              <div class="semantic-sim-card">
+                <div class="semantic-sim-card__copy">
+                  <strong>浪潮语义地形模拟器 · RiverMemo</strong>
+                  <p>预览有界传播核、枢纽校正、软非回溯、预算内虫洞与有限时域能量场。</p>
+                </div>
+                <UiButton @click="openSemanticSimulation">
+                  打开沙盘
+                </UiButton>
+              </div>
+            </div>
+
+            <div class="rag-console__section rag-console__section--consistency">
+              <span class="rag-console__label">Tag 一致性维护</span>
+              <div class="tag-consistency-card">
+                <div class="tag-consistency-card__copy">
+                  <strong>按当前规则核对旧 Tag 库</strong>
+                  <p>预检读取文件与数据库并保存临时确认计划，不请求向量、不修改 Tag 事实。确认后只向量化差分 Tag，并自动排队重训练。</p>
+                </div>
+
+                <div
+                  v-if="isTagConsistencyScanning"
+                  class="tag-consistency-scanning"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">progress_activity</span>
+                  <div>
+                    <strong>正在后台扫描 Tag 一致性</strong>
+                    <p>可离开本页；重新打开后会自动恢复扫描状态与结果。</p>
+                  </div>
+                </div>
+
+                <UiButton
+                  variant="secondary"
+                  :disabled="isTagConsistencyScanning || isTagConsistencyApplying"
+                  block
+                  @click="previewTagConsistency"
+                >
+                  {{ isTagConsistencyScanning ? "扫描任务运行中" : "扫描 Tag 一致性" }}
+                </UiButton>
+
+                <template v-if="tagConsistencyPreview">
+                  <div class="tag-consistency-stats">
+                    <article class="tag-consistency-stat tag-consistency-stat--add">
+                      <span>待新增 / 补向量</span>
+                      <strong>{{ tagConsistencyPreview.summary.vectorsToCreate }}</strong>
+                    </article>
+                    <article class="tag-consistency-stat tag-consistency-stat--remove">
+                      <span>待移除向量</span>
+                      <strong>{{ tagConsistencyPreview.summary.vectorsToRemove }}</strong>
+                    </article>
+                    <article>
+                      <span>新增关系</span>
+                      <strong>{{ tagConsistencyPreview.summary.relationsToAdd }}</strong>
+                    </article>
+                    <article>
+                      <span>移除关系</span>
+                      <strong>{{ tagConsistencyPreview.summary.relationsToRemove }}</strong>
+                    </article>
+                    <article>
+                      <span>序位修正</span>
+                      <strong>{{ tagConsistencyPreview.summary.positionsToUpdate }}</strong>
+                    </article>
+                    <article>
+                      <span>受影响文件</span>
+                      <strong>{{ tagConsistencyPreview.summary.affectedFiles }}</strong>
+                    </article>
+                  </div>
+
+                  <details
+                    v-if="tagConsistencyPreview.additions.length > 0"
+                    class="tag-consistency-details"
+                  >
+                    <summary>查看待向量化 Tag（{{ tagConsistencyPreview.summary.vectorsToCreate }}）</summary>
+                    <div class="tag-consistency-tags tag-consistency-tags--add">
+                      <code v-for="tag in tagConsistencyPreview.additions" :key="`add-${tag}`">
+                        {{ tag }}
+                      </code>
+                    </div>
+                  </details>
+
+                  <details
+                    v-if="tagConsistencyPreview.removals.length > 0"
+                    class="tag-consistency-details"
+                  >
+                    <summary>查看待移除 Tag（{{ tagConsistencyPreview.summary.orphanTagsToRemove }}）</summary>
+                    <div class="tag-consistency-tags tag-consistency-tags--remove">
+                      <code v-for="tag in tagConsistencyPreview.removals" :key="`remove-${tag}`">
+                        {{ tag }}
+                      </code>
+                    </div>
+                  </details>
+
+                  <p v-if="tagConsistencyPreview.detailTruncated" class="tag-consistency-note">
+                    名单较长，面板仅展示前 200 项；上方统计是完整精确数量。
+                  </p>
+                  <p class="tag-consistency-note">
+                    快照有效至 {{ formatConsistencyExpiry(tagConsistencyPreview.expiresAt) }}。
+                  </p>
+
+                  <UiButton
+                    v-if="tagConsistencyPreview.requiresConfirmation"
+                    :disabled="isTagConsistencyApplying || isTagConsistencyScanning"
+                    block
+                    @click="applyTagConsistency"
+                  >
+                    {{ isTagConsistencyApplying ? "正在向量化并修复…" : "确认向量化并应用差分" }}
+                  </UiButton>
+                  <UiBadge v-else variant="success">
+                    当前 Tag 库与最新规则一致，无需修复
+                  </UiBadge>
+                </template>
+
+                <div v-if="tagMemoAssetsStale" class="tag-consistency-warning" role="alert">
+                  <span class="material-symbols-outlined">warning</span>
+                  <p>
+                    Tag 真相层已更新，RiverAGS 派生资产尚待确认发布。
+                    自动重训练排队结果见上方提示；若排队失败，可在下方手动重试。排队不代表训练完成，请查看主服务日志。
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="rag-console__section rag-console__section--training">
+              <span class="rag-console__label">主动自学习</span>
+              <div class="active-training-card">
+                <div class="active-training-card__copy">
+                  <strong>RiverAGS全量重训练</strong>
+                  <p>由 Rust 重算 AGS 双尺度统一几何、发布 Memo/River 图资产，再强制重建生产预设 Tag 双曲场与全局 Chunk 双曲场。下方显示分阶段结果；基础图已发布后若双曲失败，会明确报告未完成，不回滚已发布图。重复手动请求不会追加训练。</p>
+                </div>
+                <UiButton
+                  variant="secondary"
+                  :disabled="isActiveTraining || trainingBusy"
+                  @click="triggerActiveFullTraining"
+                >
+                  {{ isActiveTraining ? "正在请求排队…" : trainingBusy ? "后台训练进行中…" : "RiverAGS全量重训练" }}
+                </UiButton>
+                <p role="status" aria-live="polite">{{ trainingMessage }}</p>
+              </div>
+            </div>
+
+            <div class="rag-console__section">
+              <span class="rag-console__label">快速跳转</span>
+              <div class="rag-console__jump-list">
+                <UiButton
+                  v-for="section in groupSections"
+                  :key="`${section.name}-jump`"
+                  variant="ghost"
+                  class="rag-console__jump-btn"
+                  @click="scrollToGroup(section.anchor)"
+                >
+                  <span>{{ section.meta.title }}</span>
+                  <small>{{ section.changedLeaves }}/{{ section.totalLeaves }}</small>
+                </UiButton>
+              </div>
+            </div>
+
+            <div class="rag-console__section">
+              <span class="rag-console__label">风险提示</span>
+              <ul class="rag-console__tips">
+                <li><strong>RiverMemo 已联合校准，仅保留现役参数；资产参数保存后需重训练。</strong></li>
+                <li>高风险参数建议单独修改并观察效果。</li>
+                <li>虫洞路由参数耦合较强，不建议一次联动改太多项。</li>
+                <li>
+                  召回漂移时优先回看 <code>tensionThreshold</code>、
+                  <code>baseMomentum</code> 和 <code>dynamicBoostRange</code>。
+                </li>
+              </ul>
+            </div>
+        </div>
+      </aside>
+
       <div class="rag-lab__main">
+        <header class="rag-lab__summary">
+          <div class="rag-lab__summary-copy">
+            <h2>浪潮 RAG 参数调优工作台</h2>
+            <p>
+              按模块浏览和调整核心参数；复杂的虫洞脉冲、有序共现与语义地形模拟可进入独立控制舱细化。
+            </p>
+          </div>
+
+          <div class="rag-lab__summary-stats">
+            <div class="hero-stat">
+              <span class="hero-stat__value">{{ groupSections.length }}</span>
+              <span class="hero-stat__label">参数组</span>
+            </div>
+            <div class="hero-stat">
+              <span class="hero-stat__value">{{ totalLeafCount }}</span>
+              <span class="hero-stat__label">可调节点</span>
+            </div>
+            <div class="hero-stat" :class="{ 'hero-stat--warning': isDirty }">
+              <span class="hero-stat__value">{{ changedLeafCount }}</span>
+              <span class="hero-stat__label">未保存修改</span>
+            </div>
+          </div>
+        </header>
+
+        <section v-if="resultDeduplicationParams" class="dedup-console">
+          <header class="dedup-console__header">
+            <div class="dedup-console__identity">
+              <span class="material-symbols-outlined">filter_alt</span>
+              <div>
+                <span class="dedup-console__eyebrow">Result Deduplication</span>
+                <h3>查询结果去重控制台</h3>
+                <p>
+                  在多路召回结果合并后执行语义去重，并按来源优先级决定相似候选的保留顺序。
+                  阈值越高，只有越相似的结果才会被判定为重复。
+                </p>
+              </div>
+            </div>
+            <div class="dedup-console__status">
+              <UiBadge variant="info">召回后处理</UiBadge>
+              <UiBadge variant="warning">影响最终结果集</UiBadge>
+            </div>
+          </header>
+
+          <div class="dedup-console__grid">
+            <article class="dedup-card dedup-card--thresholds">
+              <header class="dedup-card__header">
+                <div>
+                  <span class="dedup-console__eyebrow">Semantic Gates</span>
+                  <h4>语义判重门槛</h4>
+                </div>
+                <UiBadge variant="warning">敏感参数</UiBadge>
+              </header>
+
+              <div class="dedup-field-grid">
+                <label class="dedup-field">
+                  <span>初次语义去重阈值</span>
+                  <code>semanticThreshold</code>
+                  <small>主结果合并阶段的相似度门槛。降低会更积极地合并近似结果。</small>
+                  <UiInput
+                    :model-value="dedupNumber('semanticThreshold', 0.92)"
+                    type="number"
+                    :min="-1"
+                    :max="1"
+                    :step="0.01"
+                    @update:model-value="updateDedupNumber('semanticThreshold', $event)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最终语义去重阈值</span>
+                  <code>finalSemanticThreshold</code>
+                  <small>输出前二次去重门槛，通常应不低于初次阈值以避免过度裁剪。</small>
+                  <UiInput
+                    :model-value="dedupNumber('finalSemanticThreshold', 0.97)"
+                    type="number"
+                    :min="-1"
+                    :max="1"
+                    :step="0.01"
+                    @update:model-value="updateDedupNumber('finalSemanticThreshold', $event)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最大结果处理数</span>
+                  <code>maxResults</code>
+                  <small>允许进入去重流程的结果上限，过高会增加语义比较成本。</small>
+                  <UiInput
+                    :model-value="dedupNumber('maxResults', 1000)"
+                    type="number"
+                    :min="1"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('maxResults', $event, 1)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>最少语义候选数</span>
+                  <code>minSemanticCandidates</code>
+                  <small>达到该候选数量后才启用语义判重，避免对极小结果集做无效计算。</small>
+                  <UiInput
+                    :model-value="dedupNumber('minSemanticCandidates', 2)"
+                    type="number"
+                    :min="0"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('minSemanticCandidates', $event, 0)"
+                  />
+                </label>
+                <label class="dedup-field">
+                  <span>候选向量补取批大小</span>
+                  <code>hydrationBatchSize</code>
+                  <small>去重时分批补取候选向量。默认 500，最大 900；调大可减少补取次数。</small>
+                  <UiInput
+                    :model-value="dedupNumber('hydrationBatchSize', 500)"
+                    type="number"
+                    :min="1"
+                    :max="900"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('hydrationBatchSize', $event, 1, 900)"
+                  />
+                </label>
+
+                <label class="dedup-field">
+                  <span>详细耗时统计门槛</span>
+                  <code>slowLogMs</code>
+                  <small>总耗时达到该毫秒数时，日志附加分阶段耗时；默认 25，0 表示始终附加。</small>
+                  <UiInput
+                    :model-value="dedupNumber('slowLogMs', 25)"
+                    type="number"
+                    :min="0"
+                    :step="1"
+                    @update:model-value="updateDedupInteger('slowLogMs', $event, 0)"
+                  />
+                </label>
+              </div>
+            </article>
+
+            <article class="dedup-card dedup-card--priority">
+              <header class="dedup-card__header">
+                <div>
+                  <span class="dedup-console__eyebrow">Source Arbitration</span>
+                  <h4>重复候选来源优先级</h4>
+                </div>
+                <UiBadge variant="info">数值越高越优先</UiBadge>
+              </header>
+
+              <p class="dedup-card__description">
+                两条结果被判定为重复时，优先保留分值更高的来源。该设置只决定同类候选的保留权，
+                不直接改变原始相似度分数。
+              </p>
+
+              <div class="dedup-priority-grid">
+                <label
+                  v-for="source in DEDUP_SOURCE_OPTIONS"
+                  :key="source.key"
+                  class="dedup-priority-field"
+                >
+                  <span class="material-symbols-outlined">{{ source.icon }}</span>
+                  <span>
+                    <strong>{{ source.label }}</strong>
+                    <code>{{ source.key }}</code>
+                  </span>
+                  <UiInput
+                    :model-value="dedupSourcePriority(source.key, source.fallback)"
+                    type="number"
+                    :step="1"
+                    @update:model-value="updateDedupSourcePriority(source.key, $event)"
+                  />
+                </label>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <TagMemoV9ControlPanel
+          v-if="knowledgeBaseParams"
+          v-model="knowledgeBaseParams"
+        />
+
+        <RiverMemoV3ControlPanel
+          v-if="riverMemoParams"
+          v-model="riverMemoParams"
+        />
+
         <article
           v-for="section in groupSections"
           :id="section.anchor"
           :key="section.name"
-          class="group-panel card"
+          :class="[
+            'group-panel',
+            `group-panel--${section.name}`,
+          ]"
           :style="{ '--group-accent': section.meta.accent }"
         >
           <header class="group-panel__header">
             <div class="group-panel__header-main">
-              <span class="group-panel__badge">{{ section.meta.badge }}</span>
               <div class="group-panel__title-row">
                 <span class="material-symbols-outlined">{{ section.meta.icon }}</span>
-                <div>
+                <div class="group-panel__title-copy">
                   <h3>{{ section.meta.title }}</h3>
-                  <p class="group-panel__name">{{ section.name }}</p>
+                  <div class="group-panel__meta-row">
+                    <UiBadge class="group-panel__badge" variant="outline">{{ section.meta.badge }}</UiBadge>
+                    <span class="group-panel__name">{{ section.name }}</span>
+                  </div>
                 </div>
               </div>
               <p class="group-panel__description">{{ section.meta.description }}</p>
@@ -86,6 +532,7 @@
                 {
                   'param-row--changed': entry.changedLeaves > 0,
                   'param-row--wormhole': isWormholeEntry(section.name, entry),
+                  'param-row--ordered': isOrderedCooccurrenceEntry(section.name, entry),
                 },
               ]"
             >
@@ -95,19 +542,25 @@
                     <div class="param-row__heading">
                       <div class="param-row__title-block">
                         <h4>{{ entry.meta.label }}</h4>
+                        <details v-if="entry.meta.logic" class="param-row__details param-row__details--inline">
+                          <summary>展开调优逻辑</summary>
+                          <div class="param-row__details-body">
+                            <p>{{ entry.meta.logic }}</p>
+                          </div>
+                        </details>
                         <p class="param-row__key">{{ entry.key }}</p>
                       </div>
 
                       <div class="param-row__pills">
-                        <span class="mini-pill mini-pill--critical">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
                           {{ getToneLabel(entry.meta.tone) }}
-                        </span>
-                        <span
+                        </UiBadge>
+                        <UiBadge
                           v-if="entry.changedLeaves > 0"
-                          class="mini-pill mini-pill--changed"
+                          variant="info"
                         >
                           已修改 {{ entry.changedLeaves }}
-                        </span>
+                        </UiBadge>
                       </div>
                     </div>
 
@@ -118,12 +571,6 @@
                       {{ entry.meta.range }}
                     </p>
 
-                    <details v-if="entry.meta.logic" class="param-row__details">
-                      <summary>展开调优逻辑</summary>
-                      <div class="param-row__details-body">
-                        <p>{{ entry.meta.logic }}</p>
-                      </div>
-                    </details>
                   </div>
 
                   <div class="wormhole-launchpad__control">
@@ -139,9 +586,78 @@
                     </div>
 
                     <div class="wormhole-launchpad__footer">
-                      <button type="button" class="btn-primary" @click="openWormholeModal">
+                      <UiButton @click="openWormholeModal">
                         打开虫洞控制舱
-                      </button>
+                      </UiButton>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else-if="isOrderedCooccurrenceEntry(section.name, entry)">
+                <div class="wormhole-launchpad ordered-launchpad">
+                  <div class="wormhole-launchpad__copy">
+                    <div class="param-row__heading">
+                      <div class="param-row__title-block">
+                        <h4>{{ entry.meta.label }}</h4>
+                        <details v-if="entry.meta.logic" class="param-row__details param-row__details--inline">
+                          <summary>展开有序事实矩阵逻辑</summary>
+                          <div class="param-row__details-body">
+                            <p>{{ entry.meta.logic }}</p>
+                          </div>
+                        </details>
+                        <p class="param-row__key">{{ entry.key }}</p>
+                      </div>
+
+                      <div class="param-row__pills">
+                        <UiBadge :variant="getToneBadgeVariant(entry.meta.tone)">
+                          {{ getToneLabel(entry.meta.tone) }}
+                        </UiBadge>
+                        <UiBadge
+                          v-if="entry.changedLeaves > 0"
+                          variant="info"
+                        >
+                          已修改 {{ entry.changedLeaves }}
+                        </UiBadge>
+                      </div>
+                    </div>
+
+                    <p class="param-row__summary">{{ entry.meta.summary }}</p>
+
+                    <p v-if="entry.meta.range" class="param-row__range">
+                      <span class="material-symbols-outlined">account_tree</span>
+                      {{ entry.meta.range }}
+                    </p>
+
+                  </div>
+
+                  <div class="wormhole-launchpad__control ordered-launchpad__control">
+                    <div class="ordered-launchpad__axis">
+                      <article
+                        v-for="axis in ORDERED_COOCCURRENCE_PANELS.slice(0, 3)"
+                        :key="axis.id"
+                        class="ordered-launchpad__axis-card"
+                      >
+                        <span>{{ axis.title }}</span>
+                        <strong>{{ axis.axis }}</strong>
+                      </article>
+                    </div>
+
+                    <div class="wormhole-launchpad__stats">
+                      <article
+                        v-for="subKey in ORDERED_COOCCURRENCE_PRIMARY_KEYS"
+                        :key="subKey"
+                        class="wormhole-launchpad__stat"
+                      >
+                        <span>{{ getOrderedQuickLabel(subKey) }}</span>
+                        <strong>{{ getOrderedQuickValue(entry, subKey) }}</strong>
+                      </article>
+                    </div>
+
+                    <div class="wormhole-launchpad__footer">
+                      <UiButton @click="openOrderedCooccurrenceModal">
+                        打开事实矩阵控制舱
+                      </UiButton>
                     </div>
                   </div>
                 </div>
@@ -152,25 +668,31 @@
                   <div class="param-row__heading">
                     <div class="param-row__title-block">
                       <h4>{{ entry.meta.label }}</h4>
+                      <details v-if="entry.meta.logic" class="param-row__details param-row__details--inline">
+                        <summary>展开调优逻辑</summary>
+                        <div class="param-row__details-body">
+                          <p>{{ entry.meta.logic }}</p>
+                        </div>
+                      </details>
                       <p class="param-row__key">{{ entry.key }}</p>
                     </div>
 
                     <div class="param-row__pills">
-                      <span class="mini-pill mini-pill--neutral">
+                      <UiBadge variant="secondary">
                         {{ getKindLabel(entry.kind) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.meta.tone"
-                        :class="['mini-pill', `mini-pill--${entry.meta.tone}`]"
+                        :variant="getToneBadgeVariant(entry.meta.tone)"
                       >
                         {{ getToneLabel(entry.meta.tone) }}
-                      </span>
-                      <span
+                      </UiBadge>
+                      <UiBadge
                         v-if="entry.changedLeaves > 0"
-                        class="mini-pill mini-pill--changed"
+                        variant="info"
                       >
                         已修改 {{ entry.changedLeaves }}
-                      </span>
+                      </UiBadge>
                     </div>
                   </div>
 
@@ -181,22 +703,17 @@
                     {{ entry.meta.range }}
                   </p>
 
-                  <details v-if="entry.meta.logic" class="param-row__details">
-                    <summary>展开调优逻辑</summary>
-                    <div class="param-row__details-body">
-                      <p>{{ entry.meta.logic }}</p>
-                    </div>
-                  </details>
                 </div>
 
                 <div class="param-row__control">
                   <div v-if="entry.kind === 'number'" class="control-shell">
                     <label class="control-shell__label" :for="entry.fieldId">当前数值</label>
-                    <input
+                    <UiInput
                       :id="entry.fieldId"
-                      v-model.number="section.raw[entry.key]"
+                      v-model.number="(section.raw as Record<string, number>)[entry.key]"
                       type="number"
-                      :step="getNumberStep(entry.value)"
+                      :min="section.name === 'RAGDiaryPlugin' && entry.key === 'base64MemoLimit' ? 1 : undefined"
+                      :step="section.name === 'RAGDiaryPlugin' && entry.key === 'base64MemoLimit' ? 1 : getNumberStep(entry.value)"
                     />
                   </div>
 
@@ -211,7 +728,7 @@
                         class="tuple-field"
                       >
                         <span>{{ getTupleFieldLabel(entry, index) }}</span>
-                        <input
+                        <UiInput
                           v-model.number="(section.raw[entry.key] as number[])[index]"
                           type="number"
                           :step="getNumberStep(itemValue)"
@@ -243,19 +760,16 @@
                           </p>
 
                           <div class="nested-item__meta">
-                            <span
+                            <UiBadge
                               v-if="getNestedMeta(section.name, entry.key, subKey).tone"
-                              :class="[
-                                'mini-pill',
-                                `mini-pill--${getNestedMeta(section.name, entry.key, subKey).tone}`,
-                              ]"
+                              :variant="getToneBadgeVariant(getNestedMeta(section.name, entry.key, subKey).tone)"
                             >
                               {{
                                 getToneLabel(
                                   getNestedMeta(section.name, entry.key, subKey).tone
                                 )
                               }}
-                            </span>
+                            </UiBadge>
                             <span
                               v-if="getNestedMeta(section.name, entry.key, subKey).range"
                               class="nested-item__range"
@@ -273,20 +787,20 @@
                             class="nested-item__slider"
                             type="range"
                             :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 滑杆`"
-                            :min="getSubParamRange(subKey).min"
-                            :max="getSubParamRange(subKey).max"
-                            :step="getSubParamRange(subKey).step"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
-                          <input
+                          <UiInput
                             v-model.number="
                               (section.raw[entry.key] as Record<string, number>)[subKey]
                             "
                             class="nested-item__number"
                             type="number"
                             :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 数值输入`"
-                            :min="getSubParamRange(subKey).min"
-                            :max="getSubParamRange(subKey).max"
-                            :step="getSubParamRange(subKey).step"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
                         </div>
                       </div>
@@ -299,70 +813,6 @@
         </article>
       </div>
 
-      <aside class="rag-lab__aside">
-        <div class="rag-console card">
-          <div class="rag-console__section">
-            <span class="rag-console__label">操作台</span>
-            <h3>保存与回退</h3>
-            <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
-          </div>
-
-          <div class="rag-console__actions">
-            <button
-              type="submit"
-              class="btn-primary"
-              :disabled="isSaving || !hasParams || !isDirty"
-            >
-              {{ isSaving ? "保存中…" : "保存参数配置" }}
-            </button>
-            <button
-              type="button"
-              class="btn-secondary"
-              :disabled="!isDirty"
-              @click="resetParams"
-            >
-              重置未保存修改
-            </button>
-          </div>
-
-          <p
-            v-if="statusMessage"
-            :class="['rag-console__status', `rag-console__status--${statusType}`]"
-            role="status"
-            aria-live="polite"
-          >
-            {{ statusMessage }}
-          </p>
-
-          <div class="rag-console__section">
-            <span class="rag-console__label">快速跳转</span>
-            <div class="rag-console__jump-list">
-              <button
-                v-for="section in groupSections"
-                :key="`${section.name}-jump`"
-                type="button"
-                class="rag-console__jump-btn"
-                @click="scrollToGroup(section.anchor)"
-              >
-                <span>{{ section.meta.title }}</span>
-                <small>{{ section.changedLeaves }}/{{ section.totalLeaves }}</small>
-              </button>
-            </div>
-          </div>
-
-          <div class="rag-console__section">
-            <span class="rag-console__label">风险提示</span>
-            <ul class="rag-console__tips">
-              <li>标记为“高风险”的参数建议单独修改并观察效果。</li>
-              <li>虫洞路由参数之间耦合较强，不建议一次联动改太多项。</li>
-              <li>
-                如果召回突然漂移，优先回看 <code>tensionThreshold</code>、
-                <code>baseMomentum</code> 和 <code>dynamicBoostRange</code>。
-              </li>
-            </ul>
-          </div>
-        </div>
-      </aside>
     </form>
 
     <WormholeRoutingModal
@@ -381,15 +831,92 @@
       @restore="resetWormholeParams"
       @update-field="updateWormholeField"
     />
+
+    <OrderedCooccurrenceModal
+      v-if="orderedCooccurrenceEntry"
+      :model-value="orderedCooccurrenceModalOpen"
+      :group-name="ORDERED_COOCCURRENCE_GROUP_NAME"
+      :param-key="ORDERED_COOCCURRENCE_PARAM_KEY"
+      :values="orderedCooccurrenceCurrentValues"
+      :original-values="orderedCooccurrenceOriginalValues"
+      :changed-leaves="orderedCooccurrenceEntry.changedLeaves"
+      :total-leaves="orderedCooccurrenceEntry.totalLeaves"
+      :is-saving="isSaving"
+      :is-dirty="isDirty"
+      :form-id="formId"
+      @close="closeOrderedCooccurrenceModal"
+      @restore="resetOrderedCooccurrenceParams"
+      @update-field="updateOrderedCooccurrenceField"
+    />
+
+    <Teleport to="body">
+      <div
+        v-if="semanticSimulationOpen"
+        class="semantic-sim-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="semantic-sim-modal-title"
+      >
+        <div class="semantic-sim-modal__backdrop" @click="closeSemanticSimulation"></div>
+        <section class="semantic-sim-modal__panel">
+          <header class="semantic-sim-modal__header">
+            <div>
+              <span class="semantic-sim-modal__eyebrow">RiverMemo Terrain Sandbox</span>
+              <h3 id="semantic-sim-modal-title">浪潮语义地形沙盘 · RiverMemo</h3>
+              <p>
+                沙盘会接收尚未保存的有序事实矩阵、RiverMemo 有界核与软非回溯参数，模拟固定出流预算、
+                入流枢纽校正、预算内虫洞和归一化有限时域场。它是前端教学近似，不读取真实数据库资产。
+              </p>
+            </div>
+            <div class="semantic-sim-modal__actions">
+              <UiButton variant="secondary" @click="postSemanticSimulationParams">
+                同步当前参数
+              </UiButton>
+              <UiButton variant="secondary" @click="closeSemanticSimulation">
+                关闭沙盘
+              </UiButton>
+            </div>
+          </header>
+          <iframe
+            ref="semanticSimulationFrame"
+            class="semantic-sim-modal__frame"
+            :src="semanticSimulationUrl"
+            title="浪潮语义地形沙盘"
+            @load="postSemanticSimulationParams"
+          ></iframe>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { ragApi, type ParamGroup, type ParamValue, type RagParams } from "@/api";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  ragApi,
+  type TrainingTask,
+  type ParamGroup,
+  type TagConsistencyPreview,
+  type TagConsistencyPreviewTask,
+  type ParamValue,
+  type RagParamTheme,
+  type RagParams,
+} from "@/api";
+import { useAppStore } from "@/stores/app";
+import UiBadge from "@/components/ui/UiBadge.vue";
+import UiButton from "@/components/ui/UiButton.vue";
+import UiDirtyIndicator from "@/components/ui/UiDirtyIndicator.vue";
+import UiInput from "@/components/ui/UiInput.vue";
+import UiPageActions from "@/components/ui/UiPageActions.vue";
+import UiSelect from "@/components/ui/UiSelect.vue";
+import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
+import RiverMemoV3ControlPanel from "@/features/rag-tuning/RiverMemoV3ControlPanel.vue";
+import TagMemoV9ControlPanel from "@/features/rag-tuning/TagMemoV9ControlPanel.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
   GROUP_ORDER,
+  ORDERED_COOCCURRENCE_PANELS,
+  ORDERED_COOCCURRENCE_PRIMARY_KEYS,
   WORMHOLE_PRIMARY_KEYS,
   getGroupMeta,
   getParamMeta,
@@ -398,13 +925,17 @@ import {
   getTupleLabel,
   type GroupMeta,
   type ParamMeta,
+  type ParamTone,
+  type OrderedCooccurrencePrimaryKey,
   type WormholePrimaryKey,
 } from "@/features/rag-tuning/metadata";
 import { showMessage } from "@/utils";
 
 type NumericRecord = Record<string, number>;
+type DedupSourceKey = "rag" | "time" | "bm25_body" | "bm25_tag" | "continuity" | "associate" | "unknown";
 type ParamEntryKind = "number" | "tuple" | "nested";
 type StatusType = "info" | "success" | "error";
+type BadgeVariant = "default" | "secondary" | "success" | "warning" | "danger" | "info" | "outline";
 
 interface ParamEntryBase {
   key: string;
@@ -443,9 +974,38 @@ interface GroupSection {
 }
 
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
+const V9_KERNEL_PARAM_KEY = "v9";
+const TAGMEMO_DEDICATED_KEYS = new Set([
+  "resultDeduplication",
+  "v9",
+  "epaGateMode",
+  "geometry",
+  "riverMemo",
+]);
+const DEDUP_SOURCE_OPTIONS: ReadonlyArray<{
+  key: DedupSourceKey;
+  label: string;
+  icon: string;
+  fallback: number;
+}> = [
+  { key: "rag", label: "语义 RAG", icon: "neurology", fallback: 50 },
+  { key: "time", label: "时间召回", icon: "schedule", fallback: 45 },
+  { key: "bm25_body", label: "正文 BM25", icon: "description", fallback: 40 },
+  { key: "bm25_tag", label: "标签 BM25", icon: "sell", fallback: 40 },
+  { key: "continuity", label: "上下文连续性", icon: "timeline", fallback: 35 },
+  { key: "associate", label: "关联发现", icon: "hub", fallback: 10 },
+  { key: "unknown", label: "未知来源", icon: "help", fallback: 0 },
+];
 const WORMHOLE_PARAM_KEY = "spikeRouting";
+const ORDERED_COOCCURRENCE_GROUP_NAME = "KnowledgeBaseManager";
+const ORDERED_COOCCURRENCE_PARAM_KEY = "orderedCooccurrence";
 const formId = "rag-tuning-form";
+const CONTENT_CONTAINER_ID = "config-details-container";
+const GROUP_SCROLL_OFFSET = 16;
+const TAG_CONSISTENCY_POLL_INTERVAL_MS = 2_000;
+const semanticSimulationUrl = `${import.meta.env.BASE_URL}tagmemo-simulation.html`;
 
+const appStore = useAppStore();
 const params = ref<RagParams>({});
 const originalParams = ref<RagParams>({});
 const isLoading = ref(true);
@@ -454,22 +1014,83 @@ const loadError = ref("");
 const statusMessage = ref("");
 const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
+const orderedCooccurrenceModalOpen = ref(false);
+const semanticSimulationOpen = ref(false);
+const semanticSimulationFrame = ref<HTMLIFrameElement | null>(null);
+const ragParamThemes = ref<RagParamTheme[]>([]);
+const selectedThemeName = ref("");
+const newThemeName = ref("");
+const isThemeLoading = ref(false);
+const isThemeSaving = ref(false);
+const isActiveTraining = ref(false);
+const trainingRequestError = ref("");
+const trainingTask = ref<TrainingTask | null>(null);
+const trainingBusy = computed(() => ["queued", "running"].includes(trainingTask.value?.status || ""));
+const trainingMessage = computed(() => {
+  if (trainingRequestError.value) return trainingRequestError.value;
+  const task = trainingTask.value;
+  if (!task || task.status === "idle") return "当前无训练任务。";
+  const phases: Record<string, string> = {
+    queued: "已排队", geometry: "正在计算 AGS 双尺度几何",
+    artifact: "正在构建图资产", publishing: "正在发布资产",
+    "warped-tags": "正在强制重建 Tag 双曲场",
+    "warped-chunks": "正在强制重建全局 Chunk 双曲场",
+    completed: "训练完成", failed: "训练失败", "retry-wait": "等待重试",
+  };
+  return `${phases[task.phase] || task.status} · ${task.taskId || ""}`
+    + (task.error ? `：${task.error}` : "")
+    + (task.failedPhase ? ` · 失败阶段 ${phases[task.failedPhase] || task.failedPhase}` : "")
+    + (task.artifactSig ? ` · 资产 ${task.artifactSig}` : "")
+    + (task.warped?.tag ? ` · Tag双曲 ${task.warped.tag.nodes ?? 0} 节点 / ${task.warped.tag.source || "未知"}` : "")
+    + (task.warped?.chunks ? ` · Chunk双曲 ${task.warped.chunks.nodes ?? 0} 节点 / ${task.warped.chunks.source || "未知"}` : "");
+});
+let trainingPollTimer: number | null = null;
+let trainingPollingStopped = false;
+async function refreshTrainingStatus(): Promise<void> {
+  try {
+    const response = await ragApi.getTrainingStatus();
+    if (!trainingPollingStopped && response.task) {
+      trainingTask.value = response.task;
+      if (response.task.status === "completed") tagMemoAssetsStale.value = false;
+    }
+  } catch (error) {
+    console.warn("Training status unavailable:", error);
+  } finally {
+    if (!trainingPollingStopped) {
+      trainingPollTimer = window.setTimeout(() => { void refreshTrainingStatus(); }, 3000);
+    }
+  }
+}
+const isTagConsistencyScanning = ref(false);
+const isTagConsistencyApplying = ref(false);
+const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
+const tagMemoAssetsStale = ref(false);
+let tagConsistencyPollTimer: number | null = null;
+let tagConsistencyStatusRequestPending = false;
 
 function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
 }
 
-function isNumericRecord(value: ParamValue | undefined): value is NumericRecord {
+function isParamRecord(value: ParamValue | undefined): value is Record<string, ParamValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNumericRecord(value: ParamValue | undefined): value is NumericRecord {
+  return isParamRecord(value)
+    && Object.values(value).every((item) => typeof item === "number" && Number.isFinite(item));
 }
 
 function countLeafValues(value: ParamValue): number {
   if (Array.isArray(value)) {
-    return value.length;
+    return value.reduce<number>((total, item) => total + countLeafValues(item), 0);
   }
 
-  if (isNumericRecord(value)) {
-    return Object.keys(value).length;
+  if (isParamRecord(value)) {
+    return Object.values(value).reduce<number>(
+      (total, item) => total + countLeafValues(item),
+      0
+    );
   }
 
   return 1;
@@ -483,26 +1104,26 @@ function countChangedLeaves(current: ParamValue, original?: ParamValue): number 
   if (Array.isArray(current) && Array.isArray(original)) {
     const maxLength = Math.max(current.length, original.length);
     let changedCount = 0;
-
     for (let index = 0; index < maxLength; index += 1) {
-      if (current[index] !== original[index]) {
-        changedCount += 1;
-      }
+      const currentItem = current[index];
+      const originalItem = original[index];
+      if (currentItem === undefined) changedCount += countLeafValues(originalItem);
+      else if (originalItem === undefined) changedCount += countLeafValues(currentItem);
+      else changedCount += countChangedLeaves(currentItem, originalItem);
     }
-
     return changedCount;
   }
 
-  if (isNumericRecord(current) && isNumericRecord(original)) {
+  if (isParamRecord(current) && isParamRecord(original)) {
     const keys = new Set([...Object.keys(current), ...Object.keys(original)]);
     let changedCount = 0;
-
     keys.forEach((key) => {
-      if (current[key] !== original[key]) {
-        changedCount += 1;
-      }
+      const currentItem = current[key];
+      const originalItem = original[key];
+      if (currentItem === undefined) changedCount += countLeafValues(originalItem);
+      else if (originalItem === undefined) changedCount += countLeafValues(currentItem);
+      else changedCount += countChangedLeaves(currentItem, originalItem);
     });
-
     return changedCount;
   }
 
@@ -546,7 +1167,8 @@ function buildEntry(
   paramKey: string,
   value: ParamValue,
   original: ParamValue | undefined
-): ParamEntry {
+): ParamEntry | null {
+  if (groupName === "KnowledgeBaseManager" && ["geodesicRerank", "potentialFieldRerank"].includes(paramKey)) return null;
   const base = {
     key: paramKey,
     fieldId: createFieldId(groupName, paramKey),
@@ -555,24 +1177,33 @@ function buildEntry(
     totalLeaves: countLeafValues(value),
   };
 
-  if (Array.isArray(value)) {
-    return { ...base, kind: "tuple", value };
+  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+    return { ...base, kind: "tuple", value: value as number[] };
   }
 
   if (isNumericRecord(value)) {
     return { ...base, kind: "nested", value };
   }
 
-  return { ...base, kind: "number", value };
+  if (typeof value === "number") {
+    return { ...base, kind: "number", value };
+  }
+
+  return null;
 }
 
 const groupSections = computed<GroupSection[]>(() =>
   Object.entries(params.value)
     .sort(([left], [right]) => compareGroupOrder(left, right))
     .map(([groupName, groupParams]) => {
-      const entries = Object.entries(groupParams).map(([paramKey, value]) =>
-        buildEntry(groupName, paramKey, value, originalParams.value[groupName]?.[paramKey])
-      );
+      const entries = Object.entries(groupParams)
+        .filter(([paramKey]) =>
+          groupName !== "KnowledgeBaseManager" || !TAGMEMO_DEDICATED_KEYS.has(paramKey)
+        )
+        .map(([paramKey, value]) =>
+          buildEntry(groupName, paramKey, value, originalParams.value[groupName]?.[paramKey])
+        )
+        .filter((entry): entry is ParamEntry => entry !== null);
 
       return {
         name: groupName,
@@ -586,16 +1217,124 @@ const groupSections = computed<GroupSection[]>(() =>
     })
 );
 
+const resultDeduplicationParams = computed<Record<string, ParamValue> | null>(() => {
+  const value = params.value.KnowledgeBaseManager?.resultDeduplication;
+  return isParamRecord(value) ? value : null;
+});
+
+function dedupNumber(key: string, fallback: number): number {
+  const value = resultDeduplicationParams.value?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function dedupSourcePriority(key: DedupSourceKey, fallback: number): number {
+  const sourcePriority = resultDeduplicationParams.value?.sourcePriority;
+  if (!isParamRecord(sourcePriority)) return fallback;
+  const value = sourcePriority[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function updateDedupNumber(key: string, rawValue: string | number): void {
+  const value = Number(rawValue);
+  const current = resultDeduplicationParams.value;
+  if (!Number.isFinite(value) || !current || !params.value.KnowledgeBaseManager) return;
+
+  params.value.KnowledgeBaseManager.resultDeduplication = {
+    ...current,
+    [key]: value,
+  };
+}
+
+function updateDedupInteger(
+  key: string,
+  rawValue: string | number,
+  minimum: number,
+  maximum = Number.POSITIVE_INFINITY
+): void {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return;
+  updateDedupNumber(key, Math.min(maximum, Math.max(minimum, Math.round(value))));
+}
+
+function updateDedupSourcePriority(
+  key: DedupSourceKey,
+  rawValue: string | number
+): void {
+  const value = Number(rawValue);
+  const current = resultDeduplicationParams.value;
+  if (!Number.isFinite(value) || !current || !params.value.KnowledgeBaseManager) return;
+
+  const sourcePriority = isParamRecord(current.sourcePriority)
+    ? current.sourcePriority
+    : {};
+  params.value.KnowledgeBaseManager.resultDeduplication = {
+    ...current,
+    sourcePriority: {
+      ...sourcePriority,
+      [key]: Math.round(value),
+    },
+  };
+}
+
+const knowledgeBaseParams = computed<ParamGroup>({
+  get: () => params.value.KnowledgeBaseManager || {},
+  set: (value) => {
+    params.value.KnowledgeBaseManager = value;
+  },
+});
+
+const riverMemoParams = computed<ParamGroup>({
+  get: () => {
+    const value = params.value.KnowledgeBaseManager?.riverMemo;
+    return isParamRecord(value) ? value : {};
+  },
+  set: (value) => {
+    params.value.KnowledgeBaseManager = {
+      ...(params.value.KnowledgeBaseManager || {}),
+      riverMemo: value,
+    };
+  },
+});
+
+const dedicatedLeafCount = computed(() => {
+  const current = params.value.KnowledgeBaseManager || {};
+  return [...TAGMEMO_DEDICATED_KEYS].reduce((total, key) => {
+    const value = current[key];
+    return total + (value === undefined ? 0 : countLeafValues(value));
+  }, 0);
+});
+
+const dedicatedChangedLeafCount = computed(() => {
+  const current = params.value.KnowledgeBaseManager || {};
+  const original = originalParams.value.KnowledgeBaseManager || {};
+  return [...TAGMEMO_DEDICATED_KEYS].reduce((total, key) => {
+    const value = current[key];
+    if (value === undefined) return total;
+    return total + countChangedLeaves(value, original[key]);
+  }, 0);
+});
+
 const totalLeafCount = computed(() =>
   groupSections.value.reduce((total, section) => total + section.totalLeaves, 0)
+  + dedicatedLeafCount.value
 );
 
 const changedLeafCount = computed(() =>
   groupSections.value.reduce((total, section) => total + section.changedLeaves, 0)
+  + dedicatedChangedLeafCount.value
 );
 
 const isDirty = computed(() => changedLeafCount.value > 0);
 const hasParams = computed(() => groupSections.value.length > 0);
+const statusBadgeVariant = computed<BadgeVariant>(() => {
+  if (statusType.value === "success") return "success";
+  if (statusType.value === "error") return "danger";
+  return "info";
+});
+
+const canSaveNewTheme = computed(
+  () => hasParams.value && newThemeName.value.trim().length > 0 && !isThemeSaving.value
+);
 
 const wormholeEntry = computed<NestedParamEntry | null>(() => {
   const section = groupSections.value.find((item) => item.name === WORMHOLE_GROUP_NAME);
@@ -613,12 +1352,54 @@ const wormholeOriginalValues = computed<NumericRecord>(() => {
   return isNumericRecord(raw) ? raw : {};
 });
 
+const orderedCooccurrenceEntry = computed<NestedParamEntry | null>(() => {
+  const section = groupSections.value.find((item) => item.name === ORDERED_COOCCURRENCE_GROUP_NAME);
+  const entry = section?.entries.find((item) => item.key === ORDERED_COOCCURRENCE_PARAM_KEY);
+  return entry && entry.kind === "nested" ? entry : null;
+});
+
+const orderedCooccurrenceCurrentValues = computed<NumericRecord>(() => {
+  const raw = params.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+  return isNumericRecord(raw) ? raw : {};
+});
+
+const orderedCooccurrenceOriginalValues = computed<NumericRecord>(() => {
+  const raw = originalParams.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+  return isNumericRecord(raw) ? raw : {};
+});
+
+const v9KernelCurrentValues = computed<NumericRecord>(() => {
+  const raw = params.value[WORMHOLE_GROUP_NAME]?.[V9_KERNEL_PARAM_KEY];
+  if (!isParamRecord(raw)) return {};
+
+  return Object.fromEntries(
+    Object.entries(raw).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1])
+    )
+  );
+});
+
+const semanticSimulationParams = computed<NumericRecord>(() => ({
+  ...orderedCooccurrenceCurrentValues.value,
+  ...wormholeCurrentValues.value,
+  ...v9KernelCurrentValues.value,
+}));
+
 function isWormholeNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
   return entry.kind === "nested" && entry.key === WORMHOLE_PARAM_KEY;
 }
 
 function isWormholeEntry(sectionName: string, entry: ParamEntry): boolean {
   return sectionName === WORMHOLE_GROUP_NAME && isWormholeNestedEntry(entry);
+}
+
+function isOrderedCooccurrenceNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
+  return entry.kind === "nested" && entry.key === ORDERED_COOCCURRENCE_PARAM_KEY;
+}
+
+function isOrderedCooccurrenceEntry(sectionName: string, entry: ParamEntry): boolean {
+  return sectionName === ORDERED_COOCCURRENCE_GROUP_NAME && isOrderedCooccurrenceNestedEntry(entry);
 }
 
 function getKindLabel(kind: ParamEntryKind): string {
@@ -632,6 +1413,12 @@ function getKindLabel(kind: ParamEntryKind): string {
     default:
       return "参数";
   }
+}
+
+function getToneBadgeVariant(tone?: ParamTone): BadgeVariant {
+  if (tone === "critical") return "danger";
+  if (tone === "sensitive") return "warning";
+  return "secondary";
 }
 
 function formatNumber(value: number | undefined): string {
@@ -683,11 +1470,58 @@ function getWormholeQuickValue(entry: ParamEntry, subKey: WormholePrimaryKey): s
   return formatNumber(entry.value[subKey]);
 }
 
+function getOrderedQuickLabel(subKey: OrderedCooccurrencePrimaryKey): string {
+  return getNestedMeta(
+    ORDERED_COOCCURRENCE_GROUP_NAME,
+    ORDERED_COOCCURRENCE_PARAM_KEY,
+    subKey
+  ).label;
+}
+
+function getOrderedQuickValue(entry: ParamEntry, subKey: OrderedCooccurrencePrimaryKey): string {
+  if (!isOrderedCooccurrenceNestedEntry(entry)) {
+    return "--";
+  }
+
+  return formatNumber(entry.value[subKey]);
+}
+
+function resolveContentContainer(target?: HTMLElement): HTMLElement | null {
+  const container = document.getElementById(CONTENT_CONTAINER_ID);
+  if (container instanceof HTMLElement) {
+    return container;
+  }
+
+  if (target) {
+    const fallbackContainer = target.closest<HTMLElement>(".content");
+    if (fallbackContainer) {
+      return fallbackContainer;
+    }
+  }
+
+  return null;
+}
+
 function scrollToGroup(anchor: string): void {
-  document.getElementById(anchor)?.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  });
+  const target = document.getElementById(anchor);
+  if (!target) {
+    return;
+  }
+
+  const contentContainer = resolveContentContainer(target);
+  if (contentContainer) {
+    const containerRect = contentContainer.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const targetTop =
+      contentContainer.scrollTop +
+      (targetRect.top - containerRect.top) -
+      GROUP_SCROLL_OFFSET;
+
+    contentContainer.scrollTo({
+      top: Math.max(targetTop, 0),
+      behavior: "smooth",
+    });
+  }
 }
 
 function openWormholeModal(): void {
@@ -698,6 +1532,29 @@ function openWormholeModal(): void {
 
 function closeWormholeModal(): void {
   wormholeModalOpen.value = false;
+}
+
+function updateSimulationField(subKey: string, value: number): void {
+  if (subKey in v9KernelCurrentValues.value) {
+    updateV9KernelField(subKey, value);
+    return;
+  }
+
+  if (subKey in orderedCooccurrenceCurrentValues.value) {
+    updateOrderedCooccurrenceField(subKey, value);
+    return;
+  }
+
+  if (subKey in wormholeCurrentValues.value) {
+    updateWormholeField(subKey, value);
+  }
+}
+
+function updateV9KernelField(subKey: string, value: number): void {
+  const raw = params.value[WORMHOLE_GROUP_NAME]?.[V9_KERNEL_PARAM_KEY];
+  if (isParamRecord(raw) && typeof raw[subKey] === "number") {
+    raw[subKey] = value;
+  }
 }
 
 function updateWormholeField(subKey: string, value: number): void {
@@ -718,6 +1575,409 @@ function resetWormholeParams(): void {
   params.value[WORMHOLE_GROUP_NAME][WORMHOLE_PARAM_KEY] = { ...original };
   statusMessage.value = "已恢复虫洞脉冲路由的未保存修改。";
   statusType.value = "info";
+}
+
+function openOrderedCooccurrenceModal(): void {
+  if (orderedCooccurrenceEntry.value) {
+    orderedCooccurrenceModalOpen.value = true;
+  }
+}
+
+function closeOrderedCooccurrenceModal(): void {
+  orderedCooccurrenceModalOpen.value = false;
+}
+
+function updateOrderedCooccurrenceField(subKey: string, value: number): void {
+  const raw = params.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+
+  if (isNumericRecord(raw)) {
+    raw[subKey] = value;
+  }
+}
+
+function resetOrderedCooccurrenceParams(): void {
+  const original =
+    originalParams.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+
+  if (!params.value[ORDERED_COOCCURRENCE_GROUP_NAME] || !isNumericRecord(original)) {
+    return;
+  }
+
+  params.value[ORDERED_COOCCURRENCE_GROUP_NAME][ORDERED_COOCCURRENCE_PARAM_KEY] = {
+    ...original,
+  };
+  statusMessage.value = "已恢复有序双向事实矩阵的未保存修改。";
+  statusType.value = "info";
+}
+
+function handleSemanticSimulationMessage(event: MessageEvent): void {
+  if (event.origin !== window.location.origin) {
+    return;
+  }
+
+  if (!event.data || event.data.type !== "tagmemo-simulation-params-changed") {
+    return;
+  }
+
+  const nextParams = event.data.params;
+
+  if (!nextParams || typeof nextParams !== "object") {
+    return;
+  }
+
+  Object.entries(nextParams as Record<string, unknown>).forEach(([subKey, rawValue]) => {
+    if (typeof rawValue !== "number" || Number.isNaN(rawValue)) {
+      return;
+    }
+
+    updateSimulationField(subKey, rawValue);
+  });
+
+  statusMessage.value = "已从 RiverMemo 浪潮语义沙盘同步未保存参数。";
+  statusType.value = "info";
+}
+
+function postSemanticSimulationParams(): void {
+  const frameWindow = semanticSimulationFrame.value?.contentWindow;
+
+  if (!frameWindow) {
+    return;
+  }
+
+  frameWindow.postMessage(
+    {
+      type: "tagmemo-simulation-params",
+      params: semanticSimulationParams.value,
+      theme: appStore.theme,
+    },
+    window.location.origin
+  );
+}
+
+async function openSemanticSimulation(): Promise<void> {
+  semanticSimulationOpen.value = true;
+  await nextTick();
+  postSemanticSimulationParams();
+}
+
+function closeSemanticSimulation(): void {
+  semanticSimulationOpen.value = false;
+}
+
+async function loadThemes(): Promise<void> {
+  isThemeLoading.value = true;
+
+  try {
+    ragParamThemes.value = await ragApi.getRagParamThemes({
+      showLoader: false,
+      loadingKey: "rag-tuning.themes.load",
+    });
+
+    if (
+      selectedThemeName.value &&
+      !ragParamThemes.value.some((theme) => theme.name === selectedThemeName.value)
+    ) {
+      selectedThemeName.value = "";
+    }
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `预设列表加载失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeLoading.value = false;
+  }
+}
+
+async function openSelectedTheme(): Promise<void> {
+  if (!selectedThemeName.value || isThemeLoading.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeLoading.value = true;
+
+  try {
+    const data = await ragApi.getRagParamTheme(selectedThemeName.value, {
+      loadingKey: "rag-tuning.themes.open",
+    });
+
+    params.value = cloneParams(data);
+    originalParams.value = cloneParams(data);
+    statusMessage.value = `已打开预设「${selectedThemeName.value}」，可继续调参后保存到该预设。`;
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `打开预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeLoading.value = false;
+  }
+}
+
+async function saveTheme(themeName: string, successMessage: string): Promise<void> {
+  if (!themeName || !hasParams.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeSaving.value = true;
+
+  try {
+    const response = await ragApi.saveRagParamTheme(themeName, params.value, {
+      loadingKey: "rag-tuning.themes.save",
+    });
+
+    const savedThemeName = response.theme?.name || themeName;
+    selectedThemeName.value = savedThemeName;
+    newThemeName.value = "";
+    originalParams.value = cloneParams(params.value);
+    await loadThemes();
+    statusMessage.value = successMessage.replace("{theme}", savedThemeName);
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `保存预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeSaving.value = false;
+  }
+}
+
+async function saveCurrentAsNewTheme(): Promise<void> {
+  await saveTheme(newThemeName.value, "已保存当前参数为预设「{theme}」。");
+}
+
+async function saveCurrentToSelectedTheme(): Promise<void> {
+  await saveTheme(selectedThemeName.value, "已更新预设「{theme}」。");
+}
+
+async function applySelectedTheme(): Promise<void> {
+  if (!selectedThemeName.value || isThemeLoading.value || isThemeSaving.value) {
+    return;
+  }
+
+  isThemeSaving.value = true;
+
+  try {
+    const response = await ragApi.applyRagParamTheme(selectedThemeName.value, {
+      loadingKey: "rag-tuning.themes.apply",
+    });
+
+    if (response.params) {
+      params.value = cloneParams(response.params);
+      originalParams.value = cloneParams(response.params);
+    } else {
+      await loadParams();
+    }
+
+    const appliedThemeName = response.theme?.name || selectedThemeName.value;
+    selectedThemeName.value = appliedThemeName;
+    statusMessage.value = `已应用预设「${appliedThemeName}」到主 RAG 参数。`;
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `应用预设失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isThemeSaving.value = false;
+  }
+}
+
+function formatConsistencyExpiry(timestamp: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function clearTagConsistencyPolling(): void {
+  if (tagConsistencyPollTimer !== null) {
+    window.clearTimeout(tagConsistencyPollTimer);
+    tagConsistencyPollTimer = null;
+  }
+}
+
+function scheduleTagConsistencyPolling(): void {
+  clearTagConsistencyPolling();
+  tagConsistencyPollTimer = window.setTimeout(() => {
+    tagConsistencyPollTimer = null;
+    void refreshTagConsistencyTask();
+  }, TAG_CONSISTENCY_POLL_INTERVAL_MS);
+}
+
+function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
+  if (task.status === "running") {
+    isTagConsistencyScanning.value = true;
+    scheduleTagConsistencyPolling();
+    return;
+  }
+
+  clearTagConsistencyPolling();
+  isTagConsistencyScanning.value = false;
+
+  if (task.status === "completed" && task.preview) {
+    tagConsistencyPreview.value = task.preview;
+    const summary = task.preview.summary;
+    statusMessage.value = task.preview.requiresConfirmation
+      ? `Tag 预检完成：需新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。请核对后确认执行。`
+      : "Tag 预检完成：当前数据库与最新清洗、屏蔽规则一致。";
+    statusType.value = task.preview.requiresConfirmation ? "info" : "success";
+    return;
+  }
+
+  if (task.status === "failed") {
+    tagConsistencyPreview.value = null;
+    statusMessage.value = `Tag 一致性预检失败：${task.error?.message || "未知错误"}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+    return;
+  }
+
+  if (task.status === "expired") {
+    tagConsistencyPreview.value = null;
+    statusMessage.value = "上次 Tag 一致性预检快照已过期，请重新扫描。";
+    statusType.value = "info";
+  }
+}
+
+async function refreshTagConsistencyTask(): Promise<void> {
+  if (tagConsistencyStatusRequestPending) {
+    return;
+  }
+
+  tagConsistencyStatusRequestPending = true;
+  try {
+    const response = await ragApi.getTagConsistencyPreviewStatus({
+      showLoader: false,
+      loadingKey: "rag-tuning.tag-consistency.status",
+      suppressErrorMessage: true,
+    });
+    if (response.task) {
+      acceptTagConsistencyTask(response.task);
+    }
+  } catch (error: unknown) {
+    if (isTagConsistencyScanning.value) {
+      scheduleTagConsistencyPolling();
+    }
+    console.warn("Failed to restore Tag consistency preview task:", error);
+  } finally {
+    tagConsistencyStatusRequestPending = false;
+  }
+}
+
+async function previewTagConsistency(): Promise<void> {
+  if (isTagConsistencyScanning.value || isTagConsistencyApplying.value) {
+    return;
+  }
+
+  clearTagConsistencyPolling();
+  isTagConsistencyScanning.value = true;
+  tagConsistencyPreview.value = null;
+
+  try {
+    const response = await ragApi.previewTagConsistency({
+      showLoader: false,
+      loadingKey: "rag-tuning.tag-consistency.preview",
+    });
+    if (!response.task) {
+      throw new Error(response.error || "主服务未返回一致性扫描任务");
+    }
+
+    acceptTagConsistencyTask(response.task);
+  } catch (error: unknown) {
+    isTagConsistencyScanning.value = false;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    statusMessage.value = `Tag 一致性预检启动失败：${errorMessage}`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  }
+}
+
+async function applyTagConsistency(): Promise<void> {
+  const preview = tagConsistencyPreview.value;
+  if (
+    !preview
+    || !preview.requiresConfirmation
+    || isTagConsistencyApplying.value
+    || isTagConsistencyScanning.value
+  ) {
+    return;
+  }
+
+  isTagConsistencyApplying.value = true;
+
+  try {
+    const response = await ragApi.applyTagConsistency(preview.token, {
+      loadingKey: "rag-tuning.tag-consistency.apply",
+    });
+    if (!response.result?.applied) {
+      throw new Error(response.error || "主服务未确认 Tag 差分修复成功");
+    }
+
+    const summary = response.result.summary;
+    tagMemoAssetsStale.value = response.result.waveAssetsStale;
+    tagConsistencyPreview.value = null;
+    const indexReady = response.result.indexReady === true;
+    const trainingQueued = response.result.training?.queued === true;
+    statusMessage.value =
+      `Tag 事实已提交：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
+      + (indexReady ? "全局 Tag 索引差分已就绪；" : "全局 Tag 索引尚未就绪，请检查主服务恢复日志；")
+      + (trainingQueued
+        ? "RiverAGS全量重训练已自动排队，完成情况请查看主服务日志。"
+        : `RiverAGS重训练未确认排队，请手动重试。${response.result.training?.error || ""}`);
+    statusType.value = indexReady && trainingQueued ? "success" : "info";
+    showMessage(statusMessage.value, statusType.value);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    tagConsistencyPreview.value = null;
+    statusMessage.value = `Tag 差分修复失败：${errorMessage}。请重新扫描后再确认。`;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isTagConsistencyApplying.value = false;
+  }
+}
+
+async function triggerActiveFullTraining(): Promise<void> {
+  if (isActiveTraining.value || trainingBusy.value) {
+    return;
+  }
+
+  isActiveTraining.value = true;
+  trainingRequestError.value = "";
+
+  try {
+    const response = await ragApi.triggerActiveFullTraining({
+      loadingKey: "rag-tuning.active-full-training",
+    });
+    const result = response.result;
+    if (response.success !== true || result?.queued !== true) {
+      throw new Error(response.error || result?.error || "主服务未确认重训练排队");
+    }
+
+    trainingTask.value = result.task || {
+      taskId: result.taskId || null, status: "queued", phase: "queued",
+    };
+    statusMessage.value = result.alreadyRunning
+      ? "已有后台训练任务，已复用，不会重复排队。"
+      : "RiverAGS全量重训练已排队，阶段与完成结果显示在训练按钮下方。";
+    statusType.value = "success";
+    showMessage(statusMessage.value, "success");
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    trainingRequestError.value = `触发全量自学习失败：${errorMessage}`;
+    statusMessage.value = trainingRequestError.value;
+    statusType.value = "error";
+    showMessage(statusMessage.value, "error");
+  } finally {
+    isActiveTraining.value = false;
+  }
 }
 
 async function loadParams(): Promise<void> {
@@ -757,7 +2017,7 @@ async function saveParams(): Promise<void> {
     });
 
     originalParams.value = cloneParams(params.value);
-    statusMessage.value = "RAG 参数已保存。";
+    statusMessage.value = "RAG 参数已保存；几何或构图参数修改后，请手动执行 RiverAGS 全量重训练。";
     statusType.value = "success";
     showMessage("RAG 参数已保存。", "success");
   } catch (error: unknown) {
@@ -776,8 +2036,38 @@ function resetParams(): void {
   statusType.value = "info";
 }
 
+watch(
+  semanticSimulationParams,
+  () => {
+    if (semanticSimulationOpen.value) {
+      postSemanticSimulationParams();
+    }
+  },
+  { deep: true }
+);
+
+watch(
+  () => appStore.theme,
+  () => {
+    if (semanticSimulationOpen.value) {
+      postSemanticSimulationParams();
+    }
+  }
+);
+
 onMounted(() => {
+  window.addEventListener("message", handleSemanticSimulationMessage);
   void loadParams();
+  void loadThemes();
+  void refreshTagConsistencyTask();
+  void refreshTrainingStatus();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("message", handleSemanticSimulationMessage);
+  clearTagConsistencyPolling();
+  trainingPollingStopped = true;
+  if (trainingPollTimer !== null) window.clearTimeout(trainingPollTimer);
 });
 </script>
 
@@ -785,70 +2075,45 @@ onMounted(() => {
 .rag-lab {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
-.rag-lab__hero {
-  position: relative;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) auto;
-  gap: var(--space-5);
-  padding: var(--space-6);
-  border-radius: var(--radius-xl);
-}
-
-.rag-lab__hero::before {
-  content: "";
-  position: absolute;
-  inset: auto -10% -30% 55%;
-  height: 260px;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--highlight-text) 24%, transparent),
-    transparent 68%
-  );
-  pointer-events: none;
-}
-
-.rag-lab__eyebrow {
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-full);
-  background: var(--info-bg);
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.rag-lab__hero-copy {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.rag-lab__hero-copy h2 {
+.rag-lab__summary-copy h2 {
   margin: 0;
-  font-size: var(--font-size-section-title-fluid);
-  line-height: 1.2;
+  font-size: 1.125rem;
+  line-height: 1.35;
 }
 
-.rag-lab__hero-copy .description {
+.rag-lab__summary-copy p {
   max-width: 68ch;
   margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
 }
 
-.rag-lab__hero-stats {
+.rag-lab__summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 1.2%, transparent);
+}
+
+.rag-lab__summary-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.rag-lab__summary-stats {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(3, minmax(96px, 120px));
-  gap: var(--space-3);
+  grid-template-columns: repeat(3, minmax(88px, 108px));
+  gap: var(--space-2);
   align-content: start;
 }
 
@@ -856,10 +2121,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  min-height: 58px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .hero-stat--warning {
@@ -903,8 +2169,8 @@ onMounted(() => {
 
 .rag-lab__workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: var(--space-5);
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -913,59 +2179,244 @@ onMounted(() => {
   gap: var(--space-5);
 }
 
-.group-panel {
-  overflow: hidden;
+.dedup-console {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 26%, var(--border-color));
   border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--highlight-text) 8%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.dedup-console__header,
+.dedup-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.dedup-console__identity {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.dedup-console__identity > .material-symbols-outlined {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  height: 44px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-text) 13%, transparent);
+  color: var(--highlight-text);
+  font-size: 25px;
+}
+
+.dedup-console h3,
+.dedup-console h4,
+.dedup-console p {
+  margin: 0;
+}
+
+.dedup-console h3 {
+  margin-top: 4px;
+  font-size: var(--font-size-section-title-strong);
+}
+
+.dedup-console__identity p {
+  max-width: 76ch;
+  margin-top: 8px;
+  color: var(--secondary-text);
+  line-height: 1.6;
+}
+
+.dedup-console__eyebrow {
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dedup-console__status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dedup-console__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: var(--space-4);
+}
+
+.dedup-card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-bg) 44%, transparent);
+}
+
+.dedup-card__header h4 {
+  margin-top: 4px;
+  font-size: var(--font-size-title);
+}
+
+.dedup-card__description {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+}
+
+.dedup-field-grid,
+.dedup-priority-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.dedup-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dedup-field {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.dedup-field > span,
+.dedup-priority-field strong {
+  font-weight: 600;
+}
+
+.dedup-field code,
+.dedup-priority-field code {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.dedup-field small {
+  min-height: 3em;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
+}
+
+.dedup-field :deep(.ui-input),
+.dedup-priority-field :deep(.ui-input) {
+  width: 100%;
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.dedup-priority-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dedup-priority-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 86px;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  padding: 10px var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.dedup-priority-field > .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 20px;
+}
+
+.dedup-priority-field > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.group-panel {
+  position: relative;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   scroll-margin-top: calc(var(--app-top-bar-height, 60px) + 16px);
+}
+
+.group-panel + .group-panel {
+  margin-top: var(--space-2);
+}
+
+.group-panel--ContextFoldingV2 {
+  background: transparent;
 }
 
 .group-panel__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-4);
-  padding: var(--space-5) var(--space-5) 20px var(--space-6);
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
   position: relative;
-  background: linear-gradient(90deg, var(--surface-overlay-soft), transparent);
+  border: 1px solid color-mix(in srgb, var(--group-accent) 24%, var(--border-color));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--group-accent) 4%, transparent),
+    transparent 52%
+  );
 }
 
-.group-panel__header::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 4px;
-  height: 70%;
-  background: var(--group-accent);
-  border-radius: 2px;
+.group-panel--ContextFoldingV2 .group-panel__header {
+  border-color: color-mix(in srgb, var(--group-accent) 28%, var(--border-color));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--group-accent) 5%, transparent),
+    transparent 56%
+  );
 }
 
 .group-panel__header-main {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .group-panel__badge {
-  display: inline-flex;
   width: fit-content;
-  padding: 5px var(--space-3);
+  border-color: color-mix(in srgb, var(--group-accent) 32%, var(--border-color));
   border-radius: var(--radius-full);
-  background: var(--surface-overlay-strong);
-  color: var(--secondary-text);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
+  background: color-mix(in srgb, var(--group-accent) 7%, transparent);
 }
 
 .group-panel__title-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--space-3);
 }
 
 .group-panel__title-row .material-symbols-outlined {
-  font-size: var(--font-size-section-icon);
-  color: var(--highlight-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--group-accent) 28%, var(--border-color));
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--group-accent) 9%, transparent);
+  color: color-mix(in srgb, var(--highlight-text) 84%, var(--primary-text));
+  font-size: 22px;
 }
 
 .group-panel__title-row h3 {
@@ -973,38 +2424,55 @@ onMounted(() => {
   font-size: var(--font-size-title);
 }
 
+.group-panel__title-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.group-panel__meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .group-panel__name {
-  margin: var(--space-1) 0 0;
+  margin: 0;
   color: var(--secondary-text);
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
+  line-height: 1;
 }
 
 .group-panel__description {
   max-width: 70ch;
   margin: 0;
   color: var(--secondary-text);
-  line-height: 1.7;
+  font-size: var(--font-size-body);
+  line-height: 1.55;
 }
 
 .group-panel__metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(96px, 110px));
-  gap: 10px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .group-panel__metric {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
   justify-content: center;
-  padding: 14px var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .group-panel__metric span {
-  font-size: var(--font-size-title);
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-emphasis);
   font-weight: 700;
 }
 
@@ -1014,24 +2482,71 @@ onMounted(() => {
 
 .group-panel__list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
 }
 
 .param-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.72fr);
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-5) var(--space-5) var(--space-6);
-  border-top: 1px solid var(--border-color);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.62fr);
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 58%, transparent);
+}
+
+/* 第一行去除上边框：第一个项总要去掉；
+   如果第一个是简单卡片且第二个也是简单卡片（两者并排为第一行），第二个也要去掉。 */
+.group-panel__list > .param-row:first-child {
+  border-top: 0;
+}
+.group-panel__list > .param-row--number:first-child + .param-row--number,
+.group-panel__list > .param-row--number:first-child + .param-row--tuple,
+.group-panel__list > .param-row--tuple:first-child + .param-row--number,
+.group-panel__list > .param-row--tuple:first-child + .param-row--tuple {
+  border-top: 0;
 }
 
 .param-row--changed {
-  background: var(--info-bg);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
+}
+
+/* 简单卡片（单值 / 区间）：在 2 列父网格中占 1 列，
+   内部从左右两栏改为单列上下堆叠，提高窄宽度下的可读性。 */
+.param-row--number,
+.param-row--tuple {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  align-content: start;
+  align-items: stretch;
+}
+
+.param-row--number .param-row__control,
+.param-row--tuple .param-row__control {
+  align-self: stretch;
+}
+
+/* 复杂卡片：跨满父网格两列，内部仍保留原左右两栏布局。 */
+.param-row--nested,
+.param-row--wormhole,
+.param-row--ordered,
+.param-row--geodesic {
+  grid-column: 1 / -1;
+}
+
+.param-row--nested {
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+.param-row--nested .param-row__control {
+  padding-top: 0;
 }
 
 .param-row__copy {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: 10px;
 }
 
 .param-row__heading {
@@ -1043,11 +2558,20 @@ onMounted(() => {
 
 .param-row__title-block h4 {
   margin: 0;
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-emphasis);
+  line-height: 1.35;
+}
+
+.param-row__title-block {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px var(--space-3);
 }
 
 .param-row__key {
-  margin: var(--space-1) 0 0;
+  flex-basis: 100%;
+  margin: 0;
   color: var(--secondary-text);
   font-family: "Consolas", "Monaco", monospace;
   font-size: var(--font-size-helper);
@@ -1060,46 +2584,11 @@ onMounted(() => {
   gap: var(--space-2);
 }
 
-.mini-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-}
-
-.mini-pill--neutral {
-  background: var(--surface-overlay);
-  color: var(--secondary-text);
-}
-
-.mini-pill--stable {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.mini-pill--sensitive {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-}
-
-.mini-pill--critical {
-  background: var(--danger-bg);
-  color: var(--danger-text);
-}
-
-.mini-pill--changed {
-  background: var(--info-bg);
-  color: var(--info-text);
-}
-
 .param-row__summary {
   margin: 0;
   color: color-mix(in srgb, var(--primary-text) 84%, transparent);
-  line-height: 1.7;
+  font-size: var(--font-size-body);
+  line-height: 1.55;
 }
 
 .param-row__range {
@@ -1107,9 +2596,11 @@ onMounted(() => {
   align-items: center;
   gap: var(--space-2);
   width: fit-content;
-  padding: 7px var(--space-3);
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: var(--radius-full);
-  background: var(--surface-overlay-soft);
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-helper);
 }
@@ -1119,31 +2610,55 @@ onMounted(() => {
 }
 
 .param-row__details summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
   cursor: pointer;
   color: var(--highlight-text);
+  font-size: var(--font-size-helper);
+  line-height: 1;
+}
+
+.param-row__details--inline {
+  display: contents;
+}
+
+.param-row__details--inline summary {
+  gap: 4px;
+  color: var(--secondary-text);
+}
+
+.param-row__details--inline summary:hover {
+  color: var(--highlight-text);
+}
+
+.param-row__details--inline[open] .param-row__details-body {
+  flex-basis: 100%;
+  order: 3;
 }
 
 .param-row__details-body {
   max-width: 68ch;
   margin-top: var(--space-2);
   color: var(--secondary-text);
-  line-height: 1.7;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
 }
 
 .param-row__control {
   display: flex;
-  align-items: stretch;
+  align-items: center;
 }
 
 .control-shell {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--space-3);
+  display: grid;
+  gap: 6px;
   width: 100%;
-  padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .control-shell__label,
@@ -1153,22 +2668,32 @@ onMounted(() => {
   font-size: var(--font-size-helper);
 }
 
-.control-shell input,
-.tuple-field input,
+.control-shell :deep(.ui-input),
+.tuple-field :deep(.ui-input),
 .nested-item__number {
-  width: 100%;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-  color: var(--primary-text);
   font-family: "Consolas", "Monaco", monospace;
+  min-height: 32px;
+}
+
+.control-shell > :deep(.ui-input) {
+  width: min(100%, 180px);
+  justify-self: end;
+  min-height: 30px;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: right;
+}
+
+.control-shell > :deep(.ui-input:hover),
+.control-shell > :deep(.ui-input:focus) {
+  border-color: color-mix(in srgb, var(--border-color) 78%, var(--highlight-text));
+  background: color-mix(in srgb, var(--input-bg) 46%, transparent);
 }
 
 .tuple-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-3);
 }
 
@@ -1179,7 +2704,12 @@ onMounted(() => {
 }
 
 .control-shell--nested {
-  gap: var(--space-4);
+  gap: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 64%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 64%, transparent);
   container: nested-shell / inline-size;
 }
 
@@ -1187,26 +2717,39 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: var(--space-3);
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 58%, transparent);
+  background: transparent;
+  font-weight: 600;
 }
 
 .nested-list {
   display: grid;
-  gap: var(--space-3);
 }
 
 .nested-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 160px;
-  gap: 14px;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-strong);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.56fr);
+  gap: var(--space-5);
+  align-items: center;
+  padding: 10px var(--space-3);
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 54%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.nested-item:first-child {
+  border-top: 0;
 }
 
 .nested-item__copy {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .nested-item__title {
@@ -1219,6 +2762,7 @@ onMounted(() => {
 .nested-item__title h5 {
   margin: 0;
   font-size: var(--font-size-body);
+  line-height: 1.35;
 }
 
 .nested-item__key {
@@ -1228,10 +2772,13 @@ onMounted(() => {
 }
 
 .nested-item__summary {
+  overflow: hidden;
   margin: 0;
   color: var(--secondary-text);
-  font-size: var(--font-size-body);
-  line-height: 1.6;
+  font-size: var(--font-size-helper);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nested-item__meta {
@@ -1243,28 +2790,105 @@ onMounted(() => {
 .nested-item__range {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
-  border-radius: var(--radius-full);
-  background: var(--surface-overlay);
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
 }
 
 .nested-item__control {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: var(--space-3);
+  align-items: center;
 }
 
 .nested-item__slider {
   width: 100%;
+  height: 16px;
   margin: 0;
-  accent-color: var(--highlight-text);
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.nested-item__slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary-text) 18%, transparent);
+}
+
+.nested-item__slider::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 50%, var(--border-color));
+  border-radius: 50%;
+  background: var(--primary-bg);
+  transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.nested-item__slider::-moz-range-track {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary-text) 18%, transparent);
+}
+
+.nested-item__slider::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--highlight-text);
+}
+
+.nested-item__slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 50%, var(--border-color));
+  border-radius: 50%;
+  background: var(--primary-bg);
+  transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.nested-item__slider:focus-visible {
+  outline: none;
+}
+
+.nested-item__slider:focus-visible::-webkit-slider-thumb,
+.nested-item__slider:hover::-webkit-slider-thumb {
+  border-color: var(--highlight-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 16%, transparent);
+}
+
+.nested-item__slider:focus-visible::-moz-range-thumb,
+.nested-item__slider:hover::-moz-range-thumb {
+  border-color: var(--highlight-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 16%, transparent);
 }
 
 .nested-item__number {
+  min-width: 0;
   text-align: right;
+}
+
+.nested-item__number :deep(.ui-input) {
+  min-height: 28px;
+  padding-inline: var(--space-2);
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: right;
+}
+
+.nested-item__number :deep(.ui-input:hover),
+.nested-item__number :deep(.ui-input:focus) {
+  border-color: color-mix(in srgb, var(--border-color) 80%, var(--highlight-text));
+  background: color-mix(in srgb, var(--input-bg) 54%, transparent);
 }
 
 @container nested-shell (max-width: 480px) {
@@ -1302,9 +2926,9 @@ onMounted(() => {
   justify-content: space-between;
   width: 100%;
   padding: var(--space-4);
-  border-radius: var(--radius-xl);
-  background: var(--surface-overlay-soft);
-  border: 1px solid var(--surface-overlay-soft);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--primary-text) 2%, transparent);
 }
 
 .wormhole-launchpad__stats {
@@ -1317,9 +2941,11 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay);
+  min-height: 64px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
 }
 
 .wormhole-launchpad__stat span {
@@ -1339,29 +2965,381 @@ onMounted(() => {
   gap: 0;
 }
 
-.wormhole-launchpad__footer .btn-primary,
-.wormhole-launchpad__control .btn-primary {
+.wormhole-launchpad__footer :deep(.ui-button),
+.wormhole-launchpad__control :deep(.ui-button) {
   width: 100%;
   justify-content: center;
 }
 
+.ordered-launchpad__control {
+  border-color: color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  background:
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 4%, transparent), transparent 42%),
+    color-mix(in srgb, var(--primary-text) 2%, transparent);
+}
+
+.ordered-launchpad__axis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.ordered-launchpad__axis-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.ordered-launchpad__axis-card span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.ordered-launchpad__axis-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geodesic-workbench {
+  display: grid;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.geodesic-workbench__hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.34fr);
+  gap: var(--space-5);
+  align-items: center;
+}
+
+.geodesic-balance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 4%, transparent);
+}
+
+.geodesic-balance > span,
+.geodesic-balance > small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-balance > strong {
+  color: var(--highlight-text);
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.geodesic-balance > small,
+.geodesic-balance__track {
+  grid-column: 1 / -1;
+}
+
+.geodesic-balance__track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--secondary-text) 18%, transparent);
+}
+
+.geodesic-balance__track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--highlight-text), var(--warning-color));
+  transition: width 280ms ease;
+}
+
+.geodesic-story {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.geodesic-story::before {
+  position: absolute;
+  top: 50%;
+  right: 4%;
+  left: 4%;
+  height: 1px;
+  background: color-mix(in srgb, var(--highlight-text) 24%, var(--border-color));
+  content: "";
+}
+
+.geodesic-story__step {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  min-height: 64px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.geodesic-story__step:hover,
+.geodesic-story__step--active {
+  border-color: color-mix(in srgb, var(--highlight-text) 55%, var(--border-color));
+  background: color-mix(in srgb, var(--highlight-text) 7%, var(--primary-bg));
+  transform: translateY(-2px);
+}
+
+.geodesic-story__step--active {
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--highlight-text) 10%, transparent);
+}
+
+.geodesic-story__step > .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 20px;
+}
+
+.geodesic-story__step > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.geodesic-story__step strong,
+.geodesic-story__step small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geodesic-story__step small,
+.geodesic-story__index {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-stage {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 22%, var(--border-color));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--highlight-text) 6%, transparent), transparent 34%),
+    color-mix(in srgb, var(--primary-text) 1.5%, transparent);
+}
+
+.geodesic-stage__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 0.46fr);
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.geodesic-stage__icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
+  color: var(--highlight-text);
+}
+
+.geodesic-stage__header h5,
+.geodesic-stage__header p,
+.geodesic-control h6,
+.geodesic-control p {
+  margin: 0;
+}
+
+.geodesic-stage__header h5 {
+  margin: 3px 0 5px;
+  font-size: var(--font-size-title);
+}
+
+.geodesic-stage__header p,
+.geodesic-control p {
+  color: var(--secondary-text);
+  line-height: 1.5;
+}
+
+.geodesic-stage__eyebrow {
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.geodesic-stage__metaphor {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning-bg) 55%, transparent);
+}
+
+.geodesic-stage__metaphor .material-symbols-outlined {
+  color: var(--warning-color);
+  font-size: 20px;
+}
+
+.geodesic-stage__metaphor p {
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-stage__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.geodesic-control {
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  gap: 7px;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-bg) 55%, transparent);
+}
+
+.geodesic-control__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.geodesic-control h6 {
+  font-size: var(--font-size-body);
+}
+
+.geodesic-control code,
+.geodesic-control > small {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-control code {
+  font-family: "Consolas", "Monaco", monospace;
+}
+
+.geodesic-control > p {
+  min-height: 2.9em;
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-control__input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: 2px;
+}
+
+.geodesic-control__input input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--highlight-text);
+}
+
+.geodesic-control__input :deep(.ui-input) {
+  min-height: 30px;
+  padding-inline: var(--space-2);
+  font-family: "Consolas", "Monaco", monospace;
+  text-align: right;
+}
+
+.geodesic-control details {
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 70%, transparent);
+  padding-top: 6px;
+}
+
+.geodesic-control summary {
+  color: var(--highlight-text);
+  cursor: pointer;
+  font-size: var(--font-size-caption);
+}
+
+.geodesic-control details p {
+  margin-top: 6px;
+  font-size: var(--font-size-helper);
+}
+
+.geodesic-stage__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .geodesic-stage {
+    animation: geodesic-stage-enter 240ms ease both;
+  }
+
+  .geodesic-story__step--active .material-symbols-outlined {
+    animation: geodesic-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes geodesic-stage-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes geodesic-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--highlight-text) 65%, transparent)); }
+}
+
 .rag-lab__aside {
   position: sticky;
-  top: var(--space-4);
+  top: var(--space-2);
+  max-height: calc(100vh - var(--app-top-bar-height, 48px) - 28px);
+  overflow: auto;
 }
 
 .rag-console {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
+  gap: var(--space-3);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: padding 0.2s ease;
 }
 
 .rag-console__section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 8px;
 }
 
 .rag-console__section h3,
@@ -1371,21 +3349,22 @@ onMounted(() => {
 
 .rag-console__section p {
   color: var(--secondary-text);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-helper);
+  line-height: 1.45;
 }
 
 .rag-console__label {
-  color: var(--highlight-text);
+  color: var(--secondary-text);
   font-size: var(--font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .rag-console__actions,
 .rag-console__jump-list {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .rag-console__actions button {
@@ -1400,55 +3379,65 @@ onMounted(() => {
 }
 
 .rag-console__status {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid transparent;
-  font-size: var(--font-size-body);
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.4;
 }
 
-.rag-console__status--info {
-  background: var(--info-bg);
-  border-color: var(--info-border);
+.rag-console__themes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
-.rag-console__status--success {
-  background: var(--success-bg);
-  border-color: var(--success-border);
-  color: var(--success-text);
+.rag-console__themes-header code {
+  font-family: "Consolas", "Monaco", monospace;
 }
 
-.rag-console__status--error {
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
-  color: var(--danger-text);
+.theme-field {
+  display: grid;
+  gap: 6px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.rag-console__theme-actions {
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.rag-console__theme-actions :deep(.ui-button) {
+  min-width: 0;
+  padding-inline: var(--space-2);
+}
+
+.rag-console__theme-actions :deep(.ui-button):last-child {
+  grid-column: 1 / -1;
+}
+
+.rag-console__section--themes {
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary-text) 1%, transparent);
 }
 
 .rag-console__jump-btn {
+  width: 100%;
+  border-color: transparent;
+  color: var(--primary-text);
+  text-align: left;
+}
+
+.rag-console__jump-btn :deep(.ui-button__content) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--surface-overlay-soft);
-  color: var(--primary-text);
-  cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
-  text-align: left;
-}
-
-.rag-console__jump-btn:hover {
-  border-color: var(--highlight-text);
-  background: var(--info-bg);
-  transform: translateY(-1px);
-}
-
-.rag-console__jump-btn:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .rag-console__jump-btn small,
@@ -1467,12 +3456,344 @@ onMounted(() => {
   padding-left: var(--space-4);
 }
 
+.tag-consistency-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 25%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--highlight-text) 3%, transparent);
+}
+
+.tag-consistency-card__copy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tag-consistency-card__copy p,
+.tag-consistency-note,
+.tag-consistency-warning p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.55;
+}
+
+.tag-consistency-card :deep(.ui-button) {
+  justify-content: center;
+  width: 100%;
+}
+
+.tag-consistency-scanning {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 32%, var(--border-color));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--highlight-text) 7%, transparent);
+}
+
+.tag-consistency-scanning > .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--highlight-text);
+  font-size: 24px;
+  animation: tag-consistency-spin 1.1s linear infinite;
+}
+
+.tag-consistency-scanning > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tag-consistency-scanning strong {
+  font-size: var(--font-size-helper);
+}
+
+.tag-consistency-scanning p {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+}
+
+@keyframes tag-consistency-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tag-consistency-scanning > .material-symbols-outlined {
+    animation: none;
+  }
+}
+
+.tag-consistency-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.tag-consistency-stats article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.tag-consistency-stats span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.tag-consistency-stats strong {
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-title);
+}
+
+.tag-consistency-stat--add strong {
+  color: var(--success-color);
+}
+
+.tag-consistency-stat--remove strong {
+  color: var(--danger-color);
+}
+
+.tag-consistency-details {
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent);
+  padding-top: var(--space-2);
+}
+
+.tag-consistency-details summary {
+  color: var(--highlight-text);
+  cursor: pointer;
+  font-size: var(--font-size-helper);
+}
+
+.tag-consistency-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 150px;
+  margin-top: var(--space-2);
+  overflow: auto;
+}
+
+.tag-consistency-tags code {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--highlight-text) 8%, transparent);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-consistency-tags--remove code {
+  background: color-mix(in srgb, var(--danger-bg) 72%, transparent);
+}
+
+.tag-consistency-warning {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+}
+
+.tag-consistency-warning .material-symbols-outlined {
+  flex: 0 0 auto;
+  color: var(--warning-color);
+  font-size: 20px;
+}
+
+.active-training-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--warning-border) 58%, var(--border-color));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning-bg) 54%, transparent);
+}
+
+.active-training-card__copy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.active-training-card__copy strong {
+  font-size: var(--font-size-emphasis);
+}
+
+.active-training-card__copy p {
+  margin: 0;
+  color: var(--secondary-text);
+  line-height: 1.6;
+}
+
+.active-training-card :deep(.ui-button) {
+  justify-content: center;
+  width: 100%;
+}
+
+.semantic-sim-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.group-panel--ContextFoldingV2 .group-panel__metric {
+  border-color: transparent;
+  background: transparent;
+}
+
+.semantic-sim-card__copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.semantic-sim-card__copy strong {
+  font-size: var(--font-size-emphasis);
+}
+
+.semantic-sim-card__copy p {
+  margin: 0;
+  color: var(--secondary-text);
+  line-height: 1.6;
+}
+
+.semantic-sim-card :deep(.ui-button) {
+  position: relative;
+  z-index: 1;
+  justify-content: center;
+  width: 100%;
+}
+
+.semantic-sim-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-index-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.semantic-sim-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--overlay-backdrop-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.semantic-sim-modal__panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1480px, calc(100vw - (var(--space-4) * 2)));
+  height: min(920px, calc(var(--app-viewport-height) - (var(--space-4) * 2)));
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--highlight-text) 14%, transparent), transparent 34%),
+    linear-gradient(0deg, var(--secondary-bg), var(--secondary-bg)),
+    var(--primary-bg);
+  box-shadow: var(--overlay-panel-shadow);
+}
+
+.semantic-sim-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+  background: linear-gradient(180deg, var(--surface-overlay-soft), transparent);
+}
+
+.semantic-sim-modal__header h3,
+.semantic-sim-modal__header p {
+  margin: 0;
+}
+
+.semantic-sim-modal__header h3 {
+  margin-top: 8px;
+  font-size: var(--font-size-section-title-strong);
+  line-height: 1.1;
+}
+
+.semantic-sim-modal__header p {
+  max-width: 82ch;
+  margin-top: 10px;
+  color: var(--secondary-text);
+  line-height: 1.7;
+}
+
+.semantic-sim-modal__eyebrow {
+  display: inline-flex;
+  width: fit-content;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--highlight-text) 12%, transparent);
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.semantic-sim-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.semantic-sim-modal__frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--primary-bg);
+}
+
+@media (max-width: 860px) {
+  .semantic-sim-modal__header {
+    flex-direction: column;
+  }
+
+  .semantic-sim-modal__actions {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 1180px) {
-  .rag-lab__hero {
+  .dedup-console__grid {
     grid-template-columns: 1fr;
   }
 
-  .rag-lab__hero-stats {
+  .rag-lab__summary {
+    grid-template-columns: 1fr;
+  }
+
+  .rag-lab__summary-stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -1486,6 +3807,36 @@ onMounted(() => {
 }
 
 @media (max-width: 960px) {
+  .dedup-field-grid,
+  .dedup-priority-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .geodesic-workbench__hero,
+  .geodesic-stage__header {
+    grid-template-columns: 1fr;
+  }
+
+  .geodesic-stage__icon {
+    display: none;
+  }
+
+  .geodesic-story {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .geodesic-story::before {
+    display: none;
+  }
+
+  .geodesic-stage__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .group-panel__list {
+    grid-template-columns: 1fr;
+  }
+
   .group-panel__header,
   .param-row,
   .wormhole-launchpad,
@@ -1509,12 +3860,45 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
-  .rag-lab__hero,
-  .rag-console {
+  .dedup-console {
     padding: var(--space-4);
   }
 
-  .rag-lab__hero-stats {
+  .dedup-console__header,
+  .dedup-card__header {
+    flex-direction: column;
+  }
+
+  .dedup-console__status {
+    justify-content: flex-start;
+  }
+
+  .dedup-priority-field {
+    grid-template-columns: auto minmax(0, 1fr) 76px;
+  }
+
+  .geodesic-story {
+    grid-template-columns: 1fr;
+  }
+
+  .geodesic-stage {
+    padding: var(--space-3);
+  }
+
+  .geodesic-stage__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .geodesic-control__input {
+    grid-template-columns: 1fr 96px;
+  }
+
+  .rag-lab__summary {
+    padding: var(--space-4);
+  }
+
+  .rag-lab__summary-stats {
     grid-template-columns: 1fr;
   }
 
@@ -1535,7 +3919,8 @@ onMounted(() => {
   }
 
   .tuple-grid,
-  .wormhole-launchpad__stats {
+  .wormhole-launchpad__stats,
+  .ordered-launchpad__axis {
     grid-template-columns: 1fr;
   }
 }

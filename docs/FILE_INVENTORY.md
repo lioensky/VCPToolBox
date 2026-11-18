@@ -112,7 +112,7 @@
 |---------|------|---------|---------|
 | `modules/SSHManager/index.js` | SSH管理入口 | `SSHManager` | Plugin/LinuxShellExecutor |
 | `modules/SSHManager/SSHManager.js` | SSH连接管理 | `SSHManager` 类 | index.js |
-| `modules/SSHManager/hosts.json` | SSH主机配置 | - | SSHManager |
+| `Plugin/LinuxShellExecutor/hosts.json` | SSH主机唯一主配置；默认模板 MD5 未变化时不启动 SSH 远程功能 | - | SSHManager |
 
 ---
 
@@ -208,13 +208,15 @@
 | `VCPForum` | service | VCP论坛服务 | - |
 | `VCPTaskAssistant` | static | 论坛小助手 | - |
 
-### 4.7 系统监控与Shell类 (5个)
+### 4.7 系统监控与Shell类 (7个)
 
 | 插件目录 | 类型 | 职责 | 主要文件 |
 |---------|------|------|---------|
-| `LinuxShellExecutor` | synchronous | Linux Shell执行 | - |
+| `LinuxShellExecutor` | hybridservice | Linux Shell direct 工具入口；常驻模块执行本地/远程命令，受 manifest direct timeout 约束，默认 hosts 模板时仅保留本地执行 | LinuxShellExecutor.js |
+| `SSHManagerService` | service | 常驻 SSH 连接池服务；通过 UDS 为短生命周期插件提供 RPC，默认 hosts 模板或无有效 SSH 资产时不启动并清理全局 IPC 指针 | SSHManagerService.js |
 | `PowerShellExecutor` | synchronous | PowerShell执行 | - |
-| `LinuxLogMonitor` | service | Linux日志监控 | LinuxLogMonitor.js, core/*.js |
+| `LinuxLogMonitor` | hybridservice | Linux日志监控 direct 工具入口；模块常驻管理任务，优先通过 `modules/LogMonitor/proxy.js` 携带 token 调用常驻服务，必要时 legacy fallback | LinuxLogMonitor.js, core/*.js |
+| `LinuxLogMonitorServer` | service | 常驻日志监控服务；持有 watcher 状态、内存缓冲和规则检测器，查询 fallback 可返回 `partial/fallbackError` | LinuxLogMonitorServer.js, core/*.js |
 | `1PanelInfoProvider` | static | 1Panel信息 | 1PanelInfoProvider.js, utils.js |
 | `FRPSInfoProvider` | static | FRPS信息 | - |
 

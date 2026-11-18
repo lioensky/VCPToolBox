@@ -1,0 +1,83 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] VchatManager - VChat管理器模块
+
+一、模块基本信息
+1. 模块名称：VchatManager / VChat管理器模块
+2. 模块类型：前端管理模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供Agent和Group的集中管理、数据一致性检查、聊天历史查看
+
+二、功能定位
+VchatManager是VCPChat的管理器模块，提供Agent和Group的集中管理界面。支持查看Agent/Group列表、聊天历史、JSON编辑、附件查看、数据一致性检查等功能。
+
+三、核心功能
+1. Agent管理：
+   - Agent列表显示
+   - Agent配置查看
+   - Agent头像显示
+
+2. Group管理：
+   - Group列表显示
+   - Group配置查看
+   - Group头像显示
+
+3. 聊天历史：
+   - 查看聊天记录
+   - 历史搜索
+   - 分页显示
+
+4. JSON编辑：
+   - 配置文件编辑
+   - JSON格式化
+   - 实时保存
+
+5. 附件查看：
+   - 附件列表
+   - 附件预览
+
+6. 一致性检查：
+   - 扫描Agent/Group话题
+   - 对比配置文件与文件系统
+   - 识别不一致问题
+   - 安全修复机制
+
+四、主要文件结构
+- script.js：核心逻辑（36KB）
+- consistency-checker.js：一致性检查模块（10KB）
+- index.html：UI布局
+- style.css：样式定义
+- main.js：Electron主进程
+- preload.js：预加载脚本
+
+五、关键API接口
+1. window.api.readFile(path)
+   - 读取文件内容
+
+2. window.api.listDir(path)
+   - 列出目录内容
+
+3. window.api.writeFile(path, content)
+   - 写入文件
+
+4. ConsistencyChecker类：
+   - performCheck(agents, groups)：执行检查
+   - fixIssues(selectedIssues, fixOptions)：修复问题
+
+六、使用场景
+1. Agent管理：查看和管理所有Agent
+2. Group管理：查看和管理所有Group
+3. 数据维护：检查和修复数据一致性
+4. 配置编辑：编辑Agent/Group配置
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 管理 Agent/Group 数据
+
+八、注意事项
+1. 一致性检查只修改config.json中的topics数组
+2. 保留所有其他配置项
+3. 支持选择性修复
+4. 提供详细的检查报告
+
+Tag: VChat管理, Agent管理, Group管理, 一致性检查, 聊天历史, JSON编辑

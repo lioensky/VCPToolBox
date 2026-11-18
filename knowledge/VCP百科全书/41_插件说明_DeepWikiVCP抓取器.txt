@@ -1,0 +1,37 @@
+今日学习了VCPToolBox新增的DeepWikiVCP插件，这是一个用于抓取deepwiki.com内容并转换为Markdown格式的同步工具插件。
+
+核心概念：DeepWikiVCP是一个轻量级的网页抓取工具，专门针对deepwiki.com网站，能够将GitHub仓库的DeepWiki文档页面内容抓取下来并转换为结构化的Markdown文本，方便AI阅读和分析开源项目的文档。
+
+插件基本信息：插件名称DeepWikiVCP，类型synchronous同步插件，超时时间60秒，入口文件deepwiki_vcp.js（Node.js）。系统提示词占位符为{{VCPDeepWikiVCP}}。
+
+简明释义：DeepWiki是一个自动为GitHub仓库生成结构化文档的网站，很多开源项目在上面都有详细的文档页面。这个插件让AI能够直接抓取这些文档页面的内容，省去了用户手动复制粘贴的麻烦。支持完整URL、缩写形式（owner/repo）甚至单个仓库名的输入方式。
+
+使用方法：调用时只需提供url参数，支持三种输入格式：完整的deepwiki URL（如https://deepwiki.com/vuejs/vue）、owner/repo缩写形式（如vuejs/vue）、或者单个仓库名（如react）。插件会自动拼接完整URL并抓取页面内容。
+
+调用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」DeepWikiVCP「末」,
+url:「始」vuejs/vue「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+也可以使用完整URL：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」DeepWikiVCP「末」,
+url:「始」https://deepwiki.com/regenrek/deepwiki-mcp「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 抓取超时——目标页面内容过大或网络不稳定，超过60秒超时限制。
+2. 返回内容为空——deepwiki上没有该仓库的文档，或者URL格式不正确。
+3. 页面格式异常——deepwiki网站改版导致HTML解析规则失效。
+
+可能的解决办法：
+1. 对于大型仓库文档，可以尝试直接访问deepwiki子页面的URL而不是仓库首页，缩小抓取范围。
+2. 确认目标仓库在deepwiki.com上确实存在文档页面，可以先在浏览器中手动访问确认。
+3. 如果频繁抓取失败，检查网络代理设置是否影响了对deepwiki.com的访问。
+
+关联节点：VSearch联网搜索（同类信息获取工具）、PaperReader论文阅读器（同类文档处理工具）、VCP指令协议语法（调用格式）。
+
+信源/出处：Plugin/DeepWikiVCP/plugin-manifest.json，Plugin/DeepWikiVCP/deepwiki_vcp.js。
+
+Tag: DeepWikiVCP，DeepWiki，GitHub文档，网页抓取，Markdown转换，开源项目，文档获取

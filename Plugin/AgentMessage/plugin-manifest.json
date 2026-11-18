@@ -24,8 +24,33 @@
     "invocationCommands": [
       {
         "commandIdentifier": "AgentMessage",
-        "description": "调用此工具向用户的前端发送一条消息。AI需要提供消息内容，并可选择提供发送者（Maid）的名称。插件会将这些信息格式化并通过WebSocket发送。请在您的回复中，使用以下精确格式来请求发送消息，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nMaid:「始」(可选) 消息发送者的名称。如果省略，则为匿名消息。「末」,\nmessage:「始」(必需) 要发送的消息内容。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n如果提供Maid，其署名就是你的名字（发件人）。message是要发出的信息。当此工具执行完毕后，表示消息已尝试通过WebSocket发送。您通常不需要等待用户的直接回复，除非任务本身要求。",
+        "description": "调用此工具向用户的前端发送一条消息。AI需要提供消息内容，并可选择提供发送者（Maid）的名称。插件会将这些信息格式化并通过WebSocket发送。请在您的回复中，使用以下精确格式来请求发送消息，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n如果提供Maid，其署名就是你的名字（发件人）。message是要发出的信息。当此工具执行完毕后，表示消息已尝试通过WebSocket发送。您通常不需要等待用户的直接回复，除非任务本身要求。",
         "example": "```text\n发送署名消息:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nMaid:「始」小克「末」,\nmessage:「始」主人，您的咖啡已经准备好了，请到餐厅享用哦～ ❤️「末」\n<<<[END_TOOL_REQUEST]>>>\n\n发送匿名消息:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nmessage:「始」一条重要的匿名通知。「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  },
+  "jev": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "category": "便利操作",
+    "jevDescPrompt": "通过 WebSocket 向用户前端桌面即时推送格式化通知或署名提醒消息。",
+    "jevPrompt": "用户希望向前端桌面发送提醒、推送通知或发送消息时调用 AgentMessage。推送消息正文放入主要内容。",
+    "agentPrompt": "当需要向主屏幕或桌面推送即时通知时，使用 {便利操作} 中的 `AgentMessage`，消息正文放入【主要内容】：\nJEV:「始」请使用 {便利操作} 中的 `AgentMessage`，推送桌面通知【主人，咖啡已经泡好了哦～】。「末」",
+    "defaultCommand": "AgentMessage",
+    "commands": [
+      {
+        "commandIdentifier": "AgentMessage",
+        "description": "向用户前端桌面推送即时通知",
+        "aliases": ["发送消息", "推送通知", "桌面通知", "通知用户", "发消息"],
+        "parameters": {
+          "message": {
+            "type": "text",
+            "required": true,
+            "source": "primary",
+            "maxLength": 500,
+            "description": "向用户前端推送的消息正文文本"
+          }
+        }
       }
     ]
   }

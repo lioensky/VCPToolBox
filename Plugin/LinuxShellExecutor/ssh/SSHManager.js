@@ -16,6 +16,30 @@ const { Client } = require('ssh2');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const util = require('util');
+const { createSanitizedUserCommandEnv } = require('../../../modules/sensitiveEnv');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class SSHManager {
     constructor(hostsConfig) {
@@ -51,7 +75,7 @@ class SSHManager {
     _log(message) {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] ${message}`;
-        console.error(logEntry);  // 输出到 stderr（VCP 会在 DebugMode 下显示）
+        logInfo(logEntry);  // stdio 插件模式仍写 stderr，避免污染 stdout 响应
         this.debugLogs.push(logEntry);  // 收集到数组
     }
     
@@ -406,7 +430,8 @@ class SSHManager {
             
             const child = spawn('/bin/bash', ['-c', command], {
                 timeout,
-                stdio: ['pipe', 'pipe', 'pipe']
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env: createSanitizedUserCommandEnv()
             });
             
             const timeoutId = setTimeout(() => {

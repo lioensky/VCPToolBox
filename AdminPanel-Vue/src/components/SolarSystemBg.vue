@@ -9,28 +9,28 @@
     <div class="stars2"></div>
     <div class="stars3"></div>
     <div class="sun"></div>
-    <div class="orbit orbit-mercury">
+    <div class="orbit orbit-mercury" :style="getRealtimeOrbitStyle('mercury')">
       <div class="planet planet-mercury"></div>
     </div>
-    <div class="orbit orbit-venus">
+    <div class="orbit orbit-venus" :style="getRealtimeOrbitStyle('venus')">
       <div class="planet planet-venus"></div>
     </div>
-    <div class="orbit orbit-earth">
+    <div class="orbit orbit-earth" :style="getRealtimeOrbitStyle('earth')">
       <div class="planet planet-earth"></div>
     </div>
-    <div class="orbit orbit-mars">
+    <div class="orbit orbit-mars" :style="getRealtimeOrbitStyle('mars')">
       <div class="planet planet-mars"></div>
     </div>
-    <div class="orbit orbit-jupiter">
+    <div class="orbit orbit-jupiter" :style="getRealtimeOrbitStyle('jupiter')">
       <div class="planet planet-jupiter"></div>
     </div>
-    <div class="orbit orbit-saturn">
+    <div class="orbit orbit-saturn" :style="getRealtimeOrbitStyle('saturn')">
       <div class="planet planet-saturn"></div>
     </div>
-    <div class="orbit orbit-uranus">
+    <div class="orbit orbit-uranus" :style="getRealtimeOrbitStyle('uranus')">
       <div class="planet planet-uranus"></div>
     </div>
-    <div class="orbit orbit-neptune">
+    <div class="orbit orbit-neptune" :style="getRealtimeOrbitStyle('neptune')">
       <div class="planet planet-neptune"></div>
     </div>
     <div class="shooting-stars">
@@ -42,12 +42,98 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch, type CSSProperties } from 'vue'
 import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 const animationsEnabled = computed(() => appStore.animationsEnabled)
 const isImmersiveMode = computed(() => appStore.isImmersiveMode)
+const celestialAngles = computed(() => appStore.immersiveCelestialAngles)
+
+const ORBIT_PERIOD_SECONDS: Record<string, number> = {
+  mercury: 8.8,
+  venus: 22.5,
+  earth: 36.5,
+  mars: 68.7,
+  jupiter: 118.6,
+  saturn: 294.5,
+  uranus: 840.1,
+  neptune: 1647.9,
+}
+
+const orbitAngles = ref<Record<string, number>>({})
+const orbitTransitionFrameIds = new Map<string, number>()
+
+function normalizeAngle(angle: number): number {
+  return ((angle % 360) + 360) % 360
+}
+
+function getAnimatedOrbitAngle(planet: string): number {
+  const periodSeconds = ORBIT_PERIOD_SECONDS[planet] || 60
+  return normalizeAngle((performance.now() / 1000 / periodSeconds) * 360)
+}
+
+function getShortestTargetAngle(fromAngle: number, toAngle: number): number {
+  const normalizedDelta = ((normalizeAngle(toAngle) - normalizeAngle(fromAngle) + 540) % 360) - 180
+  return fromAngle + normalizedDelta
+}
+
+function setOrbitAngle(planet: string, angle: number) {
+  orbitAngles.value = {
+    ...orbitAngles.value,
+    [planet]: angle,
+  }
+}
+
+function clearOrbitTransitionFrames() {
+  for (const frameId of orbitTransitionFrameIds.values()) {
+    cancelAnimationFrame(frameId)
+  }
+  orbitTransitionFrameIds.clear()
+}
+
+function getRealtimeOrbitStyle(planet: string): CSSProperties {
+  const angle = orbitAngles.value[planet]
+  if (!Number.isFinite(angle)) {
+    return {}
+  }
+
+  return {
+    '--orbit-angle': `${angle}deg`,
+  }
+}
+
+watch(
+  celestialAngles,
+  (nextAngles) => {
+    clearOrbitTransitionFrames()
+
+    if (Object.keys(nextAngles).length === 0) {
+      orbitAngles.value = {}
+      return
+    }
+
+    for (const [planet, targetAngle] of Object.entries(nextAngles)) {
+      if (!Number.isFinite(targetAngle)) {
+        continue
+      }
+
+      const currentAngle = Number.isFinite(orbitAngles.value[planet])
+        ? orbitAngles.value[planet]
+        : getAnimatedOrbitAngle(planet)
+      const easedTargetAngle = getShortestTargetAngle(currentAngle, targetAngle)
+
+      setOrbitAngle(planet, currentAngle)
+
+      const frameId = requestAnimationFrame(() => {
+        setOrbitAngle(planet, easedTargetAngle)
+        orbitTransitionFrameIds.delete(planet)
+      })
+      orbitTransitionFrameIds.set(planet, frameId)
+    }
+  },
+  { deep: true }
+)
 </script>
 
 <style scoped>
@@ -93,6 +179,7 @@ const isImmersiveMode = computed(() => appStore.isImmersiveMode)
   transition:
     width 2.5s cubic-bezier(0.4, 0, 0.2, 1),
     height 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 2.2s cubic-bezier(0.22, 1, 0.36, 1),
     border-color 2s ease;
 }
 
@@ -170,6 +257,11 @@ const isImmersiveMode = computed(() => appStore.isImmersiveMode)
 .orbit-saturn { width: 640px; height: 640px; animation: rotate 294.5s linear infinite; }
 .orbit-uranus { width: 800px; height: 800px; animation: rotate 840.1s linear infinite; }
 .orbit-neptune { width: 960px; height: 960px; animation: rotate 1647.9s linear infinite; }
+
+.solar-system-bg.immersive-mode .orbit[style*="--orbit-angle"] {
+  animation: none;
+  transform: translate(-50%, -50%) rotate(var(--orbit-angle));
+}
 
 .planet-mercury { width: 4px; height: 4px; background: var(--mercury-color); }
 .planet-venus { width: 8px; height: 8px; background: var(--venus-color); }

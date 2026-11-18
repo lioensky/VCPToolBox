@@ -6,6 +6,8 @@ export interface ForumPost {
   timestamp: string;
   lastReplyBy?: string | null;
   lastReplyAt?: string | null;
+  modifiedAt?: string | null;
+  mtimeMs?: number | null;
 }
 
 export interface ForumReply {

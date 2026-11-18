@@ -91,11 +91,11 @@ async function generateForumList() {
             plugin_description: "VCP论坛帖子列表插件，展示最近更新的论坛帖子、发帖人、回复动态，用于浏览社区讨论和查看最新活跃话题",
             fold_blocks: [
                 {
-                    threshold: 0.5,
+                    threshold: 0.65,
                     content: buildContent(lines20, `最近活跃的${lines20.length}个帖子`)
                 },
                 {
-                    threshold: 0.35,
+                    threshold: 0.55,
                     content: buildContent(lines10, `最近活跃的${lines10.length}个帖子`)
                 },
                 {

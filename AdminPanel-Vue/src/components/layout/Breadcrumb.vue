@@ -1,9 +1,9 @@
 <template>
-  <nav class="breadcrumb" aria-label="面包屑导航">
+  <nav class="breadcrumb" :class="{ 'breadcrumb--compact': compact }" aria-label="面包屑导航">
     <ol>
       <li>
-        <a href="#" @click.prevent="goToDashboard" aria-label="返回首页">
-          <span class="material-symbols-outlined">home</span>
+        <a class="breadcrumb-home" href="#" @click.prevent="goToDashboard" aria-label="返回首页">
+          <span class="material-symbols-outlined">space_dashboard</span>
         </a>
       </li>
 
@@ -44,6 +44,13 @@ interface BreadcrumbItem {
   route: RouteLocationRaw;
 }
 
+withDefaults(
+  defineProps<{
+    compact?: boolean;
+  }>(),
+  { compact: false }
+);
+
 const router = useRouter();
 const route = useRoute();
 const appStore = useAppStore();
@@ -69,12 +76,10 @@ const currentNavGroup = computed<AppRouteGroup | undefined>(() => {
 
 // 导航分组标签映射（本地定义，因为 manifest 未导出）
 const NAV_GROUP_LABELS: Record<AppRouteGroup, string> = {
-  core: "核心功能",
-  agent: "Agent 相关",
-  tools: "工具相关",
-  rag: "RAG 相关",
-  plugins: "插件中心",
-  other: "其他",
+  core: "核心",
+  agentContent: "Agent & 内容",
+  knowledge: "知识 & RAG",
+  toolsPlugins: "工具 & 插件",
 };
 
 const breadcrumbs = computed<BreadcrumbItem[]>(() => {
@@ -137,7 +142,7 @@ function navigateTo(location: RouteLocationRaw) {
   color: var(--secondary-text);
   text-decoration: none;
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition:
     color var(--transition-fast),
     background-color var(--transition-fast);
@@ -164,11 +169,57 @@ function navigateTo(location: RouteLocationRaw) {
   font-weight: 500;
   padding: 6px 10px;
   background-color: var(--accent-bg);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   max-width: 400px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 顶栏内嵌模式：单行、去 margin、紧凑尺寸 */
+.breadcrumb--compact {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.breadcrumb--compact ol {
+  height: 32px;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.breadcrumb.breadcrumb--compact a,
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.875rem;
+  line-height: 1;
+  border-radius: var(--radius-md);
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-home {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-current {
+  max-width: 240px;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-home .material-symbols-outlined {
+  display: block;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.breadcrumb.breadcrumb--compact .breadcrumb-separator .material-symbols-outlined {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
 }
 
 @media (max-width: 768px) {

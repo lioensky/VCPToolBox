@@ -1,0 +1,129 @@
+[2026-03-03] - Agent-C
+[VCP百科全书] WaitingForUrReply (等待用户回复) - 对话中暂停等待用户输入插件
+
+一、插件基本信息
+1. 插件名称：WaitingForUrReply / 等待用户回复
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：在AI对话中暂停并等待用户输入，支持预设选项和超时处理
+
+二、功能定位
+WaitingForUrReply是一个对话流程控制插件，允许AI在生成回复过程中主动暂停，弹出交互窗口征求用户意见。支持预设选项（通过数字键1-9快速选择）、自定义提示信息、输入框占位符和超时处理机制。适用于需要用户确认、选择或补充信息的对话场景。
+
+适用场景：
+- AI需要用户确认决策的对话流程
+- 多选项决策和分支对话
+- 收集用户补充信息或反馈
+- 交互式问卷和调查
+
+三、配置参数
+
+1. DEFAULT_TIMEOUT (整数, 可选)
+   - 类型：integer
+   - 默认值：1200（秒）
+   - 作用：设置默认的等待超时时间，超过此时间后自动返回超时结果
+
+四、调用命令列表
+
+1. WaitForUserInput - 等待用户输入
+   功能描述：在对话中暂停并弹出窗口等待用户输入或选择
+   参数列表：
+   - title (字符串, 可选): 弹出窗口的标题，默认为"等待用户回复"
+   - prompt (字符串, 可选): 显示给用户的提示信息
+   - option01 到 option09 (字符串, 可选): 预设选项，用户可通过数字键1-9快速选择
+   - placeholder (字符串, 可选): 输入框中的默认内容，会被全选中，可用于建议用户的回应方向
+   - timeout (整数, 可选): 超时时间（秒），默认1200秒（20分钟）
+
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」WaitingForUrReply「末」,
+   commandIdentifier:「始」WaitForUserInput「末」,
+   title:「始」请做出选择「末」,
+   prompt:「始」请选择你的回应:「末」,
+   option01:「始」我同意这个建议「末」,
+   option02:「始」我需要更多信息「末」,
+   option03:「始」我不同意「末」,
+   placeholder:「始」可以在此输入你的想法「末」,
+   timeout:「始」600「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+   返回值说明：返回用户的选择结果（选项编号或自由输入文本）或超时提示
+
+五、使用示例
+
+示例1：简单的是/否选择
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」WaitingForUrReply「末」,
+commandIdentifier:「始」WaitForUserInput「末」,
+title:「始」确认操作「末」,
+prompt:「始」你确定要继续吗？「末」,
+option01:「始」确定「末」,
+option02:「始」取消「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：多选项决策
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」WaitingForUrReply「末」,
+commandIdentifier:「始」WaitForUserInput「末」,
+title:「始」选择处理方式「末」,
+prompt:「始」你希望如何处理这个问题？「末」,
+option01:「始」立即处理「末」,
+option02:「始」稍后处理「末」,
+option03:「始」需要更多信息「末」,
+timeout:「始」300「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：收集用户补充信息
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」WaitingForUrReply「末」,
+commandIdentifier:「始」WaitForUserInput「末」,
+title:「始」补充信息「末」,
+prompt:「始」请提供更多细节：「末」,
+placeholder:「始」例如：具体的时间、地点或其他相关信息「末」,
+timeout:「始」600「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：带预设选项和自由输入的混合模式
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」WaitingForUrReply「末」,
+commandIdentifier:「始」WaitForUserInput「末」,
+title:「始」反馈收集「末」,
+prompt:「始」请评价这个建议：「末」,
+option01:「始」非常好「末」,
+option02:「始」一般「末」,
+option03:「始」需要改进「末」,
+placeholder:「始」或者输入你的具体意见「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 选项限制：
+   - 最多支持9个预设选项（option01到option09）
+   - 用户可通过按数字键1-9快速选择对应选项
+   - 如果提供了选项，用户也可以自由输入其他内容
+
+2. 超时处理：
+   - 默认超时时间为1200秒（20分钟）
+   - 超时后系统会返回超时提示，对话继续进行
+   - timeout参数单位为秒
+
+3. 占位符使用：
+   - placeholder中的文本会在输入框中被全选中
+   - 用户可直接开始输入来替换占位符内容
+   - 占位符用于引导用户的回应方向
+
+4. 窗口交互：
+   - 弹出窗口为模态窗口，用户必须做出选择或等待超时
+   - 窗口关闭前对话流程会被阻塞
+   - 支持键盘快捷键（数字1-9）快速选择
+
+5. 通信超时：
+   - manifest中定义的通信超时为1200000毫秒（20分钟）
+   - 确保网络连接稳定，避免长时间无响应
+
+七、关联插件
+- BladeGame (华山论剑)：可在游戏中使用此插件等待用户决策
+- 其他需要用户交互的插件
+
+Tag: 用户交互, 对话流程控制, 选项选择, 输入收集, 同步插件, 超时处理, 模态窗口

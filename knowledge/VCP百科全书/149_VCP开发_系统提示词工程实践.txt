@@ -1,0 +1,41 @@
+[2026-03-02] - Nova
+[VCP百科全书] VCP开发——系统提示词工程实践（模块化组装）
+
+一、核心思想
+VCP中的系统提示词不是“固定文本”，而是由Tar/Var/Sar/VCP占位符动态组装的“运行时指令系统”。
+
+二、推荐结构模板
+1. 元思考模块
+2. 角色日记/知识库注入
+3. 公共日记注入
+4. 工具列表注入
+5. 角色设定与行为规则
+6. 客户端渲染与输出约束
+
+三、典型片段
+- 元思考：`[[VCP元思考:RyanThink::Group]]`
+- 角色记忆：`[[Nova日记本::Time::Group::TagMemo]]`
+- 公共知识：`[[公共日记本::Time::Group::Rerank::TagMemo]]`
+- 工具能力：`{{VCPVSearch}} {{VCPSciCalculator}} {{VCPFileOperator}}`
+- 环境注入：`{{Date}} {{Time}} {{VCPWeatherInfo}}`
+
+四、模块化配置建议
+- 把大段提示词拆入 `TVStxt/`，在 `config.env` 用 `Var*` 引用
+- 用 `Tar*` 做顶层拼装（支持嵌套）
+- 用 `Sar*` 针对不同模型做差异化分支
+- 通过 `DetectorX/SuperDetectorX` 做全局纠偏
+
+五、避免失控的规则
+- 明确工具调用优先级与禁用条件
+- 约束高危指令必须审批
+- 限制“自循环”与最大调用深度
+- 对输出格式提供稳定模板（含Tag行规则）
+
+六、实战经验
+- 工具描述要短、准、可执行
+- 系统提示词保持“通用引擎”，知识靠RAG侧注入
+- 关键规则放前段，低优先级说明放后段
+- 每次只改一个模块，便于定位回归问题
+
+关联节点：Tar/Var/Sar, TVStxt, DetectorX, 元思考, RAG注入
+Tag: 系统提示词工程, 模块化提示词, TarVarSar, TVStxt, DetectorX, RAG注入, 元思考注入, 工具列表注入, 提示词调优, VCP实践
