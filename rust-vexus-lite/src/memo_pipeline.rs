@@ -2442,7 +2442,19 @@ fn run_pipeline_with_connection(
                 .collect();
             let (differentia_vector, superseded_ids, differentia_confidence) =
                 differentia_direction(&input.query_vector, &level_tags, &input.config, &explicit_names);
+            // Readout-only witness: do not infer a complete focus from a
+            // lexical seed's boosted weight or from a sponsored alias.
+            let query_name = input.query_text.trim().to_lowercase();
+            let exact_focus_id = level_tags.first().and_then(|tags| {
+                tags.iter().filter(|t| !query_name.is_empty()
+                    && t.name.trim().to_lowercase() == query_name
+                    && t.similarity > 0.0 && t.contribution > 0.0)
+                    .max_by(|a, b| a.contribution.total_cmp(&b.contribution)
+                        .then_with(|| b.id.cmp(&a.id)))
+                    .map(|t| t.id)
+            });
             crate::rivermemo_topology_v3::QueryCalibration {
+                exact_focus_id,
                 differentia_vector, superseded_ids, differentia_confidence,
                 explained_ratio: Some(clamp01(pyramid.total_explained_energy)),
             }
