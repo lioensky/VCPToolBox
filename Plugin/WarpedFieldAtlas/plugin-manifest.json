@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "WarpedFieldAtlas",
+  "version": "0.1.0",
+  "displayName": "双曲场图",
+  "description": "只读读取知识库里 RiverMemo V5 的双曲场快照，向本机的双曲场图界面提供节点、连线和精确距离。不写知识库，不调用嵌入或模型接口。",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "WarpedFieldAtlas.js"
+  },
+  "communication": { "protocol": "direct" },
+  "hasApiRoutes": true,
+  "configSchema": {
+    "WARPED_ATLAS_LIBRARY": "string",
+    "WARPED_ATLAS_MESSAGES": "string",
+    "WARPED_ATLAS_EXACT_MB": "string"
+  }
+}
