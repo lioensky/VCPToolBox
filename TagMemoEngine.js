@@ -243,13 +243,13 @@ class TagMemoEngine {
         ));
     }
 
-    async recomputeGeometry() {
+    async recomputeGeometry(options = {}) {
         if (typeof this.tagIndex?.computeMemoGeometry !== 'function') {
             throw this._nativeUnavailable('computeMemoGeometry');
         }
         const dbPath = this.getDbPath();
         if (!dbPath) throw new Error('TagMemoEngine requires a native database path');
-        const config = JSON.stringify(this._geometryConfig());
+        const config = JSON.stringify({ ...this._geometryConfig(), ...options });
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
                 const result = await this.tagIndex.computeMemoGeometry(dbPath, this.modelSig, config);
@@ -281,7 +281,7 @@ class TagMemoEngine {
             }
             this.knowledgeBaseManager?._captureMemoryStage?.('training:geometry-begin');
             if (this._currentDerivedTask) this._currentDerivedTask.phase = 'geometry';
-            const geometry = await this.recomputeGeometry();
+            const geometry = await this.recomputeGeometry(options.geometryOptions);
             this.knowledgeBaseManager?._captureMemoryStage?.('training:geometry-end');
             if (!geometry) return false;
 
@@ -457,6 +457,7 @@ class TagMemoEngine {
             if (!this._shutdownRequested) {
                 this._enqueueDerivedTask('threshold-rebuild', () => this.doMatrixRebuild({
                     reason: 'threshold',
+                    geometryOptions: { reuseAppendOnly: true },
                     includeWarped: true,
                 }));
             }
