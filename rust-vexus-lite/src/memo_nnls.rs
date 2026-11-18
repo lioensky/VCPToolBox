@@ -5,7 +5,7 @@ const DUAL_TOL: f64 = 1e-10;
 const RANK_TOL: f64 = 1e-12;
 const CHECK_TOL: f64 = 2e-8;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Diagnostics {
     pub(crate) iterations: usize,
