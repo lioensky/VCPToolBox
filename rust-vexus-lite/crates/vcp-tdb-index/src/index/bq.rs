@@ -1166,6 +1166,17 @@ impl Bq2Store {
         self.strong.shrink_to_fit();
     }
 
+    /// Append already encoded signatures in place, without growth slack and without
+    /// copying the stored ones into a second buffer.
+    pub fn extend_exact(&mut self, pos: &[u64], strong: &[u64]) {
+        assert!(pos.len() == strong.len() && pos.len() % self.chunks == 0);
+        self.pos.reserve_exact(pos.len());
+        self.strong.reserve_exact(strong.len());
+        self.pos.extend_from_slice(pos);
+        self.strong.extend_from_slice(strong);
+        self.n += pos.len() / self.chunks;
+    }
+
     /// 底层数据访问（序列化用）
     pub fn pos_data(&self) -> &[u64] {
         &self.pos

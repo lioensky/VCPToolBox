@@ -1,4 +1,5 @@
 //! Deterministic little-endian index payload. The owner supplies identity and CRC.
+//! The snapshot holds the trained graph only; a converted tail is a separate payload.
 use super::*;
 
 fn put(out: &mut Vec<u8>, value: u64) { out.extend_from_slice(&value.to_le_bytes()); }
@@ -37,6 +38,46 @@ impl<'a> Reader<'a> {
         Ok(self.take(n*4)?.chunks_exact(4).map(|b|f32::from_le_bytes(b.try_into().unwrap())).collect())
     }
     fn f64(&mut self) -> io::Result<f64> { Ok(f64::from_bits(self.u64()?)) }
+    fn meta(&mut self, config: &WarpedFieldConfig, dim: usize) -> io::Result<PolarNodeMeta> {
+        let data=self.take(32)?;
+        let f=|i|f32::from_le_bytes(data[i..i+4].try_into().unwrap());
+        let m=PolarNodeMeta {radius:f(0),boundary_factor:f(4),depth:f(8),
+            sm_weak:f(12),sm_delta:f(16),sm_sigma:f(20),
+            packed_strong_cone:u32::from_le_bytes(data[24..28].try_into().unwrap()),
+            cone_alpha:f(28)};
+        if [m.radius,m.boundary_factor,m.depth,m.sm_weak,m.sm_delta,m.sm_sigma,m.cone_alpha]
+            .iter().any(|v|!v.is_finite() || *v<0.)
+            || m.depth as f64>config.radius_max || m.sm_sigma<=0.
+            || m.sm().strong_ones>dim as u32 {
+            return Err(invalid("snapshot polar metadata"));
+        }
+        Ok(m)
+    }
+    fn planes(&mut self, dim: usize, meta: &PolarNodeMeta) -> io::Result<Bq2Signature> {
+        let chunks=dim.div_ceil(64);
+        let mask=if dim%64==0 {u64::MAX} else {(1u64<<(dim%64))-1};
+        let mut sig=Bq2Signature::empty();
+        for plane in [&mut sig.pos,&mut sig.strong] {
+            for word in &mut plane[..chunks] { *word=self.u64()?; }
+            if plane[chunks-1]&!mask!=0 { return Err(invalid("snapshot nonzero padding bits")); }
+        }
+        let count=sig.strong[..chunks].iter().map(|w|w.count_ones()).sum::<u32>();
+        if count!=meta.sm().strong_ones { return Err(invalid("snapshot magnitude count")); }
+        Ok(sig)
+    }
+}
+fn put_meta(out: &mut Vec<u8>, m: &PolarNodeMeta) {
+    for x in [m.radius,m.boundary_factor,m.depth,m.sm_weak,m.sm_delta,m.sm_sigma] {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out.extend_from_slice(&m.packed_strong_cone.to_le_bytes());
+    out.extend_from_slice(&m.cone_alpha.to_le_bytes());
+}
+fn put_planes(out: &mut Vec<u8>, store: &Bq2Store, node: usize, chunks: usize) {
+    let sig=store.get_sig(node);
+    for plane in [&sig.pos,&sig.strong] {
+        for &word in &plane[..chunks] { put(out,word); }
+    }
 }
 
 impl WarpedFieldIndex {
@@ -56,26 +97,18 @@ impl WarpedFieldIndex {
         put(&mut out,self.config.degree as u64);
         put(&mut out,self.config.construction_width as u64);
         put(&mut out,self.config.adaptive_compass as u64);
-        ints(&mut out,self.ids.iter().copied());
-        ints(&mut out,self.slots.iter().map(|&x|x as u64));
+        let trained=self.trained_len();
+        let slots=if self.slots.iter().take(trained).enumerate().all(|(i,&slot)|i==slot) {&[][..]}
+            else {&self.slots[..trained]};
+        ints(&mut out,self.ids[..trained].iter().copied());
+        ints(&mut out,slots.iter().map(|&x|x as u64));
         ints(&mut out,self.mean_axis.iter().map(|x|x.to_bits()));
         floats(&mut out,self.table.snapshot_data());
-        put(&mut out,self.meta.len() as u64);
-        for m in &self.meta {
-            for x in [m.radius,m.boundary_factor,m.depth,m.sm_weak,m.sm_delta,m.sm_sigma] {
-                out.extend_from_slice(&x.to_le_bytes());
-            }
-            out.extend_from_slice(&m.packed_strong_cone.to_le_bytes());
-            out.extend_from_slice(&m.cone_alpha.to_le_bytes());
-        }
+        put(&mut out,trained as u64);
+        for m in &self.meta[..trained] { put_meta(&mut out,m); }
         let chunks=self.dim.div_ceil(64);
-        put(&mut out,(self.ids.len()*chunks*2) as u64);
-        for i in 0..self.ids.len() {
-            let sig=self.store.get_sig(i);
-            for plane in [&sig.pos,&sig.strong] {
-                for &word in &plane[..chunks] { put(&mut out,word); }
-            }
-        }
+        put(&mut out,(trained*chunks*2) as u64);
+        for node in 0..trained { put_planes(&mut out,&self.store,node,chunks); }
         for array in [&self.graph,&self.offsets,&self.entries,
             &self.direction_landmarks,&self.shell_landmarks] {
             put(&mut out,array.len() as u64);
@@ -128,37 +161,13 @@ impl WarpedFieldIndex {
         let table=WarpedProxyTable::from_snapshot(config.radius_max,r.floats()?)?;
         if r.count(32)?!=n { return Err(invalid("snapshot metadata length")); }
         let mut meta=Vec::with_capacity(n);
-        for _ in 0..n {
-            let data=r.take(32)?;
-            let f=|i|f32::from_le_bytes(data[i..i+4].try_into().unwrap());
-            let m=PolarNodeMeta {radius:f(0),boundary_factor:f(4),depth:f(8),
-                sm_weak:f(12),sm_delta:f(16),sm_sigma:f(20),
-                packed_strong_cone:u32::from_le_bytes(data[24..28].try_into().unwrap()),
-                cone_alpha:f(28)};
-            if [m.radius,m.boundary_factor,m.depth,m.sm_weak,m.sm_delta,m.sm_sigma,m.cone_alpha]
-                .iter().any(|v|!v.is_finite() || *v<0.)
-                || m.depth as f64>config.radius_max || m.sm_sigma<=0.
-                || m.sm().strong_ones>dim as u32 {
-                return Err(invalid("snapshot polar metadata"));
-            }
-            meta.push(m);
-        }
+        for _ in 0..n { meta.push(r.meta(&config,dim)?); }
         let chunks=dim.div_ceil(64);
         if r.count(8)?!=n.checked_mul(chunks*2).ok_or_else(||invalid("snapshot plane overflow"))? {
             return Err(invalid("snapshot plane length"));
         }
         let mut store=Bq2Store::new(dim); store.reserve(n);
-        let mask=if dim%64==0 {u64::MAX} else {(1u64<<(dim%64))-1};
-        for m in &meta {
-            let mut sig=Bq2Signature::empty();
-            for plane in [&mut sig.pos,&mut sig.strong] {
-                for word in &mut plane[..chunks] { *word=r.u64()?; }
-                if plane[chunks-1]&!mask!=0 { return Err(invalid("snapshot nonzero padding bits")); }
-            }
-            let count=sig.strong[..chunks].iter().map(|w|w.count_ones()).sum::<u32>();
-            if count!=m.sm().strong_ones { return Err(invalid("snapshot magnitude count")); }
-            store.push_sig(&sig);
-        }
+        for m in &meta { store.push_sig(&r.planes(dim,m)?); }
         let graph=r.u32s()?; let offsets=r.u32s()?; let entries=r.u32s()?;
         let direction_landmarks=r.u32s()?; let shell_landmarks=r.u32s()?;
         if !r.0.is_empty() || offsets.len()!=n+1 || offsets[0]!=0
@@ -171,9 +180,46 @@ impl WarpedFieldIndex {
             return Err(invalid("snapshot CSR or directory boundary"));
         }
         let index=Self {dim,ids,slots,meta,store,mean_axis,table,graph,offsets,entries,
-            config,direction_landmarks,shell_landmarks};
+            config,direction_landmarks,shell_landmarks,retired:Vec::new()};
         if index.connectivity()!=(n,0) { return Err(invalid("snapshot graph connectivity")); }
         Ok(index)
+    }
+
+    /// The converted tail in conversion order: identity, cold slot and hot code per node.
+    pub fn converted_bytes(&self) -> Vec<u8> {
+        let chunks=self.dim.div_ceil(64);
+        let mut out=Vec::with_capacity(8+(self.ids.len()-self.trained_len())*(48+chunks*16));
+        put(&mut out,(self.ids.len()-self.trained_len()) as u64);
+        for node in self.trained_len()..self.ids.len() {
+            put(&mut out,self.ids[node]);
+            put(&mut out,self.cold_slot(node) as u64);
+            put_meta(&mut out,&self.meta[node]);
+            put_planes(&mut out,&self.store,node,chunks);
+        }
+        out
+    }
+
+    /// Replays a converted tail onto the trained snapshot it was taken from, which also
+    /// reproduces the retired set. A rejected tail leaves the index unchanged.
+    pub fn restore_converted(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let chunks=self.dim.div_ceil(64);
+        let mut r=Reader(bytes);
+        let count=r.count(48+chunks*16)?;
+        if self.ids.len()!=self.trained_len() { return Err(invalid("converted tail is already present")); }
+        let (mut ids,mut slots,mut meta)=(Vec::with_capacity(count),Vec::with_capacity(count),
+            Vec::with_capacity(count));
+        let mut planes=[Vec::with_capacity(count*chunks),Vec::with_capacity(count*chunks)];
+        for _ in 0..count {
+            ids.push(r.u64()?);
+            slots.push(usize::try_from(r.u64()?).map_err(|_|invalid("snapshot slot overflow"))?);
+            let header=r.meta(&self.config,self.dim)?;
+            let signature=r.planes(self.dim,&header)?;
+            planes[0].extend_from_slice(&signature.pos[..chunks]);
+            planes[1].extend_from_slice(&signature.strong[..chunks]);
+            meta.push(header);
+        }
+        if !r.0.is_empty() { return Err(invalid("trailing converted tail bytes")); }
+        self.push_converted(&ids,&slots,&meta,[&planes[0],&planes[1]])
     }
 
     pub fn dimension(&self) -> usize { self.dim }

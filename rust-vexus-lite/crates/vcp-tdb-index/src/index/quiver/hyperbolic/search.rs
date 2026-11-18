@@ -23,6 +23,8 @@ pub struct HyperbolicSearchStats {
     pub radial_rejections: usize,
     pub exact_quad_skips: usize,
     pub exact_distance_evals: usize,
+    /// Converted-tail nodes scored flat by the stage-0.5 proxy, without navigation.
+    pub converted_scored: usize,
     pub seeds: usize,
     pub converged: bool,
 }

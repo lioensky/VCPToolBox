@@ -10,6 +10,9 @@ use crate::index::bq::Bq2Store;
 
 #[path = "warped_snapshot.rs"]
 mod snapshot;
+#[cfg(test)]
+#[path = "warped_convert_tests.rs"]
+mod convert_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WarpedFieldConfig {
@@ -158,6 +161,8 @@ pub struct WarpedFieldIndex {
     config: WarpedFieldConfig,
     direction_landmarks: Vec<u32>,
     shell_landmarks: Vec<u32>,
+    /// Bitmap of superseded nodes. They stay graph bridges and never enter results.
+    retired: Vec<u64>,
 }
 impl WarpedFieldIndex {
     fn transform(raw: &[f32], axis: &[f64], beta: f64) -> io::Result<Vec<f32>> {
@@ -295,8 +300,90 @@ impl WarpedFieldIndex {
             Vec::new()
         } else { slots.to_vec() };
         Ok(Self {dim,ids:ids.to_vec(),slots,meta,store,mean_axis,table,
-            graph,offsets,entries,config,direction_landmarks,shell_landmarks:Vec::new()})
+            graph,offsets,entries,config,direction_landmarks,shell_landmarks:Vec::new(),
+            retired:Vec::new()})
     }
+    /// Converts further originals into this generation's frozen coordinates: the mean-axis
+    /// transform and hot code of build(), with the radius the owner derives from the same
+    /// original. Converted nodes form a flat tail that every search scores with the
+    /// stage-0.5 proxy and reranks exactly inside the usual cold budget. The graph, entries,
+    /// directories and proxy table are untouched, and a live node that carries a converted
+    /// id is retired. All-or-nothing: a failed batch leaves the index unchanged.
+    pub fn convert_batch<F>(&mut self, ids:&[u64], slots:&[usize], mut fill:F) -> io::Result<()>
+    where F:FnMut(usize,&mut Vec<f32>)->Option<f32> {
+        let chunks=self.store.chunks();
+        if ids.len()!=slots.len()
+            || ids.iter().collect::<std::collections::HashSet<_>>().len()!=ids.len() {
+            return Err(invalid("invalid warped conversion contract"));
+        }
+        let mut meta=Vec::with_capacity(ids.len());
+        let mut planes=[Vec::with_capacity(ids.len()*chunks),Vec::with_capacity(ids.len()*chunks)];
+        let mut row=Vec::with_capacity(self.dim);
+        for &slot in slots {
+            row.clear();
+            let Some(radius)=fill(slot,&mut row) else {
+                return Err(invalid("warped conversion cold read failed"));
+            };
+            let unit=Self::transform(&row,&self.mean_axis,self.config.mean_subtract_beta)?;
+            let (mut header,signature)=PolarNodeMeta::encode(&unit)?;
+            header.depth=radius;
+            meta.push(header);
+            planes[0].extend_from_slice(&signature.pos[..chunks]);
+            planes[1].extend_from_slice(&signature.strong[..chunks]);
+        }
+        self.push_converted(ids,slots,&meta,[&planes[0],&planes[1]])
+    }
+    /// Appends encoded nodes, all or nothing. The last node that carries an identity
+    /// represents it and every earlier one retires, so replaying a whole tail gives the
+    /// same retired set as the conversions that produced it.
+    fn push_converted(&mut self, ids:&[u64], slots:&[usize], meta:&[PolarNodeMeta],
+        planes:[&[u64];2]) -> io::Result<()> {
+        let (first,total,chunks)=(self.ids.len(),self.ids.len()+ids.len(),self.store.chunks());
+        // Slots that continue the identity layout need no table and no uniqueness scan.
+        let identity=self.slots.is_empty() && slots.iter().enumerate().all(|(i,&slot)|slot==first+i);
+        let mut all_slots=Vec::new();
+        if !identity {
+            all_slots.reserve_exact(total);
+            if self.slots.is_empty() {all_slots.extend(0..first);} else {all_slots.extend_from_slice(&self.slots);}
+            all_slots.extend_from_slice(slots);
+        }
+        if ids.len()!=slots.len() || ids.len()!=meta.len() || total>u32::MAX as usize
+            || planes.iter().any(|plane|plane.len()!=ids.len()*chunks) || ids.contains(&0)
+            || (!identity && all_slots.iter().collect::<std::collections::HashSet<_>>().len()!=total)
+            || meta.iter().any(|m|!m.depth.is_finite() || m.depth<0.0
+                || m.depth as f64>self.config.radius_max)
+        { return Err(invalid("invalid warped conversion contract")); }
+        let latest:std::collections::HashMap<u64,usize>=
+            ids.iter().enumerate().map(|(i,&id)|(id,first+i)).collect();
+        for node in 0..total {
+            let id=if node<first {self.ids[node]} else {ids[node-first]};
+            if latest.get(&id).is_some_and(|&last|last!=node) && !self.is_retired(node) {
+                if self.retired.len()<total.div_ceil(64) { self.retired.resize(total.div_ceil(64),0); }
+                self.retired[node>>6]|=1<<(node&63);
+            }
+        }
+        // In-place growth at exact capacity: a small batch neither copies the trained
+        // payload into a second buffer nor leaves it with slack.
+        self.store.extend_exact(planes[0],planes[1]);
+        self.meta.reserve_exact(ids.len());
+        self.meta.extend_from_slice(meta);
+        self.ids.reserve_exact(ids.len());
+        self.ids.extend_from_slice(ids);
+        if !identity { self.slots=all_slots; }
+        Ok(())
+    }
+    /// True when every node is cold-read at the slot equal to its node number.
+    pub fn identity_slots(&self) -> bool { self.slots.is_empty() }
+    fn is_retired(&self, node: usize) -> bool {
+        self.retired.get(node>>6).is_some_and(|word|word>>(node&63)&1==1)
+    }
+    pub fn retired_count(&self) -> usize {
+        self.retired.iter().map(|word|word.count_ones() as usize).sum()
+    }
+    /// Nodes `[0, trained_len())` are the trained graph that the CSR offsets describe.
+    /// `ids()[trained_len()..]` is the converted tail: the same frozen coordinates and
+    /// hot codes, scored flat, never linked.
+    pub fn trained_len(&self) -> usize { self.offsets.len()-1 }
     pub fn exact_distance(&self, query: &[f32], radius: f32, row: &[f32], node: usize) -> io::Result<f64> {
         if node >= self.ids.len() || !radius.is_finite() || radius < 0.0 || radius as f64 > self.config.radius_max {
             return Err(invalid("invalid warped exact endpoint"));
@@ -321,7 +408,7 @@ impl WarpedFieldIndex {
     /// Optional experiment directory. Does not rebuild or mutate graph edges.
     /// Eight equal-count radial bands; farthest-direction hot-code selection per band.
     pub fn build_shell_landmarks(&mut self) {
-        let mut order:Vec<u32>=(0..self.ids.len() as u32).collect();
+        let mut order:Vec<u32>=(0..self.trained_len() as u32).collect();
         order.sort_unstable_by(|&a,&b|self.meta[a as usize].depth
             .total_cmp(&self.meta[b as usize].depth).then(a.cmp(&b)));
         let mut landmarks=Vec::new();
@@ -364,9 +451,10 @@ impl WarpedFieldIndex {
             +self.slots.capacity()*std::mem::size_of::<usize>()+self.graph.capacity()*4
             +self.offsets.capacity()*std::mem::size_of::<u32>()+self.entries.capacity()*4
             +self.direction_landmarks.capacity()*4+self.shell_landmarks.capacity()*4
+            +self.retired.capacity()*8
     }
     pub fn connectivity(&self) -> (usize,usize) {
-        let n = self.ids.len();
+        let n = self.trained_len();
         if n == 0 { return (0,0); }
         let mut seen = vec![false;n];
         let mut incoming = vec![0usize;n];
@@ -480,8 +568,8 @@ impl WarpedFieldIndex {
         let mut seeds=self.entries.clone();
         // Bounded deterministic all-shell coverage, scored under the SAME table.
         match seed_mode {
-            WarpedSeedMode::LegacySample => for i in 0..64.min(self.ids.len()) {
-                seeds.push((i*self.ids.len()/64.min(self.ids.len())) as u32);
+            WarpedSeedMode::LegacySample => for i in 0..64.min(self.trained_len()) {
+                seeds.push((i*self.trained_len()/64.min(self.trained_len())) as u32);
             },
             WarpedSeedMode::InnerOnly => {},
             WarpedSeedMode::DirectionLandmarks => seeds.extend_from_slice(
@@ -523,11 +611,11 @@ impl WarpedFieldIndex {
         let budget=BeamBudget {
             width:config.width,max_visits:config.max_visits,max_expansions:config.max_expansions};
         let neighbors=|n:u32| &self.graph[self.offsets[n as usize] as usize..self.offsets[n as usize+1] as usize];
-        let admits=|n:u32|!exclude(self.ids[n as usize]);
+        let admits=|n:u32|!self.is_retired(n as usize) && !exclude(self.ids[n as usize]);
         let beam=if reuse_beam {
-            reusable_beam(self.ids.len(),&seeds,budget,neighbors,evaluate,admits,trace.is_some())
+            reusable_beam(self.trained_len(),&seeds,budget,neighbors,evaluate,admits,trace.is_some())
         } else {
-            bounded_beam(self.ids.len(),&seeds,budget,neighbors,evaluate,admits)
+            bounded_beam(self.trained_len(),&seeds,budget,neighbors,evaluate,admits)
         };
         let beam_ms=beam_started.elapsed().as_secs_f64()*1000.0;
         if let Some(t)=trace.as_deref_mut() {
@@ -552,17 +640,27 @@ impl WarpedFieldIndex {
             };
             (distance,node)
         }).collect();
+        // Converted tail: no navigation, the same proxy and cold budget as graph candidates.
+        let graph_candidates=pool.len();
+        for node in self.trained_len() as u32..self.ids.len() as u32 {
+            if !admits(node) {continue;}
+            let (p,h)=planes(&self.store,node as usize);
+            let c=asym.calibrated_cosine(p,h,self.meta[node as usize].sm(),AsymKernel::Auto);
+            pool.push((slice.eval(self.meta[node as usize].depth,self.config.effective_cosine(c)),node));
+        }
+        let converted_scored=pool.len()-graph_candidates;
         pool.sort_unstable_by(|a,b|a.0.total_cmp(&b.0).then(self.ids[a.1 as usize].cmp(&self.ids[b.1 as usize])));
         if let Some(t)=trace {
             t.stage05_top64=pool.iter().take(config.rerank_limit).map(|p|self.ids[p.1 as usize]).collect();
-            t.stage05_evaluations=if reuse_scores {0} else {pool.len()};
+            t.stage05_evaluations=converted_scored+if reuse_scores {0} else {graph_candidates};
             t.stage05_ms=stage05_started.elapsed().as_secs_f64()*1000.0;
         }
         let mut stats=HyperbolicSearchStats {
             visited:beam.stats.visited,expanded:beam.stats.expanded,excluded_expanded:beam.stats.excluded_expanded,
             visit_limit_reached:beam.stats.visit_limit_reached,expansion_limit_reached:beam.stats.expansion_limit_reached,
             converged:beam.stats.converged,seeds:seeds.len(),valid_candidates:pool.len(),
-            asymmetric_evals:if reuse_scores {0} else {pool.len()},..Default::default()
+            asymmetric_evals:converted_scored+if reuse_scores {0} else {graph_candidates},
+            converted_scored,..Default::default()
         };
         let profile=self.config.geometry_profile()?;
         let query_norm=if rerank.reuse_transform {checked_norm(&unit)?} else {1.0};
