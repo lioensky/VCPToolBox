@@ -505,6 +505,7 @@ impl NativeArtifact {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct QueryCalibration {
+    pub(crate) exact_focus_id: Option<i64>,
     pub(crate) differentia_vector: Vec<f32>,
     pub(crate) superseded_ids: Vec<i64>,
     pub(crate) differentia_confidence: f64,
@@ -1753,8 +1754,77 @@ fn branch_confidence(topology: &TopologyOutput, mode: &str) -> f64 {
         * clamp01(topology.node_alignment_score)).sqrt()
 }
 
-/// Query cosine is the floor; fields only contribute bounded positive surplus.
+#[derive(Clone, Default)]
+struct GenusEvidence {
+    // The weakest parent affinity determines the conjunction.
+    limiting: Option<(i64, f64, Option<(usize, f64)>, f64)>,
+    missing_parent: Option<i64>,
+    exact_focus_target: Option<i64>,
+}
+
+// A single parent keeps this experiment from overriding a multi-parent
+// conjunction. Only observed, active 0 -> 1 ordinary edges are eligible.
+fn exact_focus_targets(input: &NativeInput, active: &HashMap<(i64, i64), f64>) -> HashSet<i64> {
+    let mut targets = HashSet::new();
+    let Some(focus) = input.calibration.exact_focus_id else { return targets };
+    let state = &input.query_state;
+    if input.calibration.superseded_ids.len() != 1 || input.calibration.differentia_confidence <= 0.0
+        || !state.river_nodes.iter().any(|n| n.id == focus && n.hop == 0 && n.energy > 0.0)
+        || !state.field_provenance.iter().any(|p| p.id == focus && p.hop == 0
+            && matches!(p.source_type.as_str(), "lexical_seed" | "core")) {
+        return targets;
+    }
+    let first_hop: HashSet<_> = state.river_nodes.iter().filter(|n| n.hop == 1)
+        .map(|n| n.id).collect();
+    for edge in &state.river_edges {
+        if edge.source_id == focus && !edge.immediate_return && !edge.wormhole && edge.flow > 0.0
+            && first_hop.contains(&edge.target_id) && active.contains_key(&(focus, edge.target_id)) {
+            targets.insert(edge.target_id);
+        }
+    }
+    targets
+}
+
+fn genus_evidence(curve: &Curve, input: &NativeInput, vectors: &TagVectorPool,
+    cosines: &CosineCache) -> GenusEvidence {
+    let mut result = GenusEvidence::default();
+    let calibration = &input.calibration;
+    if calibration.differentia_confidence <= 0.0 || calibration.differentia_vector.is_empty()
+        || calibration.differentia_vector.len() != input.query.vector.len() { return result; }
+    for &id in &calibration.superseded_ids {
+        let Some(parent) = vectors.get(&id) else {
+            // Legacy callers may not carry the pipeline pool. Never fetch for this gate.
+            return GenusEvidence { missing_parent: Some(id), ..Default::default() };
+        };
+        let body = cosine(parent, &curve.chunk_vector);
+        let best = curve.tags.iter().enumerate().map(|(i, tag)| {
+            (i, if tag.id == id { 1.0 } else { cosines.tag_pair(id, parent, tag) })
+        }).max_by(|a,b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+        let affinity = best.map_or(body, |(_, sim)| body.max(sim));
+        if result.limiting.as_ref().is_none_or(|old| affinity < old.3) {
+            result.limiting = Some((id, body, best, affinity));
+        }
+    }
+    result
+}
+
+impl GenusEvidence {
+    fn base_gate(&self) -> f64 {
+        self.limiting.as_ref().map_or(1.0, |p| clamp01((p.3 - 0.50) / 0.22))
+    }
+
+    fn gate(&self) -> f64 {
+        if self.exact_focus_target.is_some() { 1.0 } else { self.base_gate() }
+    }
+}
+
+#[cfg(test)]
 fn field_resonance(curve: &Curve, input: &NativeInput, support: f64) -> (f64, f64, f64) {
+    gated_field_resonance(curve, input, support, &GenusEvidence::default())
+}
+
+fn gated_field_resonance(curve: &Curve, input: &NativeInput, support: f64,
+    genus: &GenusEvidence) -> (f64, f64, f64) {
     let local = if input.local_vector.iter().all(|v| v.is_finite())
         && squared_norm(&input.local_vector) > 1e-12 {
         positive(input.config.pure_local_weight)
@@ -1767,12 +1837,12 @@ fn field_resonance(curve: &Curve, input: &NativeInput, support: f64) -> (f64, f6
     let raw_query = clamp01(curve.query_score);
     let calibration = &input.calibration;
     let mixing = if calibration.differentia_vector.len() == input.query.vector.len()
-        && !calibration.differentia_vector.is_empty() {
+        && !calibration.differentia_vector.is_empty() && genus.missing_parent.is_none() {
         0.5 * clamp01(calibration.differentia_confidence)
     } else { 0.0 };
     let query = if mixing > 0.0 {
         (1.0 - mixing) * raw_query + mixing
-            * clamp01(cosine(&calibration.differentia_vector, &curve.chunk_vector))
+            * (genus.gate() * clamp01(cosine(&calibration.differentia_vector, &curve.chunk_vector)))
     } else { raw_query };
     let field = if total > 1e-12 {
         clamp01((local * clamp01(curve.local_score)
@@ -2018,6 +2088,8 @@ struct ObservableOutput {
     hit_seed_energy: f64,
     total_seed_energy: f64,
     semantic_field_contacts: usize,
+    #[serde(skip)]
+    genus: GenusEvidence,
 }
 
 fn scalar_field_support(coverage: f64, potential: f64) -> f64 {
@@ -2171,6 +2243,7 @@ fn evaluate_observables(
         hit_seed_energy,
         total_seed_energy,
         semantic_field_contacts,
+        genus: genus_evidence(curve, input, vectors, cosines),
     }
 }
 
@@ -2710,22 +2783,11 @@ fn assign_v3_scores(
         item.v2_bonus = clamp01(requested.min(positive(config.topology_bonus_cap)));
     }
 
-    // Absolute activation: unrelated candidates cannot change eligibility.
-    let threshold = clamp01(config.anchor_activation_floor);
     let graph_gate = omega.omega.powf(config.omega_gamma.max(0.0));
 
     for item in work.iter_mut() {
-        let activation = if item.anchor.strength <= threshold {
-            0.0
-        } else if config.anchor_saturation - threshold > 1e-12 {
-            let normalized = clamp01(
-                (item.anchor.strength - threshold) / (config.anchor_saturation - threshold),
-            );
-            normalized * normalized * (3.0 - 2.0 * normalized)
-        } else {
-            1.0
-        };
-        item.anchor_bonus = config.anchor_bonus_cap * activation;
+        // Keep anchor observations for roles and traces, never as a ranking reward.
+        item.anchor_bonus = 0.0;
         if omega.omega < config.struct_role_min_omega
             && item.role == "structural_explanation"
         {
@@ -2734,7 +2796,7 @@ fn assign_v3_scores(
 
         item.gated_bonus = (item.v2_bonus * graph_gate)
             .min(positive(config.topology_bonus_cap - item.path_bonus));
-        item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus + item.anchor_bonus);
+        item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus);
         item.ranking_score = item.final_score;
     }
 }
@@ -3068,7 +3130,8 @@ pub(crate) fn run_native_with_observation(
         &curves,
         &input.query.vector,
         input.query_state.river_nodes.iter().map(|node| node.id)
-            .chain(seeds.iter().map(|seed| seed.0)),
+            .chain(seeds.iter().map(|seed| seed.0))
+            .chain(input.calibration.superseded_ids.iter().copied()),
         &query_and_seed_tag_vectors,
     );
 
@@ -3097,6 +3160,7 @@ pub(crate) fn run_native_with_observation(
         })
         .collect();
 
+    let focus_targets = exact_focus_targets(&input, &workspace.active_edges);
     let omega = compute_omega(&input);
     let path_gate = if omega.omega > 0.0 {
         omega.omega.powf(input.config.omega_gamma.max(0.0))
@@ -3110,11 +3174,15 @@ pub(crate) fn run_native_with_observation(
                 &curve, &input, &artifact, &query_and_seed_tag_vectors, &cosines,
             );
             let visible = true; // 越权候选已在进入候选池前删除。
-            let observables =
+            let mut observables =
                 evaluate_observables(&curve, &geometry, &input, &workspace, visible, &cosines,
                     &query_and_seed_tag_vectors);
+            if observables.genus.limiting.is_some() && !focus_targets.is_empty() {
+                observables.genus.exact_focus_target = curve.tags.iter()
+                    .find(|tag| focus_targets.contains(&tag.id)).map(|tag| tag.id);
+            }
             let (semantic_base, field_score, field_resonance_bonus) =
-                field_resonance(&curve, &input, observables.field_support);
+                gated_field_resonance(&curve, &input, observables.field_support, &observables.genus);
             let topology_raw = clamp01(
                 0.625 * geometry.path_quality
                     + 0.375
@@ -3215,7 +3283,7 @@ pub(crate) fn run_native_with_observation(
                     "strongestNodeMatchQuality": item.topology.strongest_node_match_quality,
                     "precisionGrounding": precision_grounding(&item.topology),
                     "fieldSupport": item.observables.field_support,
-                    "fieldResonanceBeforeSupport": field_resonance(&item.curve, &input, 1.0).2,
+                    "fieldResonanceBeforeSupport": gated_field_resonance(&item.curve, &input, 1.0, &item.observables.genus).2,
                     "queryScore": clamp01(item.curve.query_score),
 
                     "fieldScore": item.field_score,
@@ -3250,6 +3318,17 @@ pub(crate) fn run_native_with_observation(
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
                 })).map(|mut trace| {
+                    let genus = &item.observables.genus;
+                    trace["genusGate"] = serde_json::json!(genus.limiting.map(|_| genus.gate()));
+                    trace["genusGateBeforeFocus"] = serde_json::json!(genus.limiting.map(|_| genus.base_gate()));
+                    trace["genusExactFocusTargetId"] = serde_json::json!(genus.exact_focus_target);
+                    trace["genusMissingParentId"] = serde_json::json!(genus.missing_parent);
+                    trace["genusEvidence"] = serde_json::json!(genus.limiting.map(|(id, body, best, affinity)| {
+                        serde_json::json!({"parentId": id, "bodyCosine": body, "affinity": affinity,
+                            "bestTagId": best.map(|(i,_)| item.curve.tags[i].id),
+                            "bestTagName": best.map(|(i,_)| item.curve.tags[i].name.as_str()),
+                            "bestTagCosine": best.map(|(_,s)| s)})
+                    }));
                     trace["differentiaScore"] = if input.calibration.differentia_vector.is_empty() {
                         Value::Null
                     } else {
@@ -3295,7 +3374,13 @@ pub(crate) fn run_native_with_observation(
         .collect();
     let compute_ms = compute_started.elapsed().as_secs_f64() * 1000.0;
 
-    let output = NativeOutput {
+    let retired_controls = [
+        "conditionalBandwidth", "conditionalClosureBandwidth", "conditionalDirectBandwidth",
+        "minimumPeers", "minimumEffectivePeers", "innovationConfidenceZ", "innovationScale",
+        "anchorActivationZ", "anchorFrontierContrast", "anchorFrontierAbsFloor",
+        "reliabilitySeedSaturation", "anchorBonusCap", "anchorActivationFloor", "anchorSaturation",
+    ];
+    let mut output = NativeOutput {
         schema: RESULT_SCHEMA.to_string(),
         algorithm_version: ALGORITHM_VERSION.to_string(),
         artifact_sig: artifact_sig.to_string(),
@@ -3364,12 +3449,13 @@ pub(crate) fn run_native_with_observation(
             "softMatchDiscount": 0.65,
             "graphConfidence": "sqrt(branchCoverage*meanClosure*nodeAlignmentScore)",
             "graphReward": "candidate-self-no-role-multiplier",
-            "retiredControls": ["conditionalBandwidth", "conditionalClosureBandwidth",
-                "conditionalDirectBandwidth", "minimumPeers", "minimumEffectivePeers",
-                "innovationConfidenceZ", "innovationScale", "anchorActivationZ",
-                "anchorFrontierContrast", "anchorFrontierAbsFloor", "reliabilitySeedSaturation"]
+            "retiredControls": retired_controls
         }),
     };
+    output.parameters["anchorReward"] = Value::from("retired-zero-unified-field");
+    output.parameters["queryCalibration"]["genusGateMode"] =
+        Value::from("min-parent-max-body-tag-ramp-0.50-0.72+single-parent-exact-focus-one-hop");
+    output.parameters["queryCalibration"]["exactFocusId"] = serde_json::json!(input.calibration.exact_focus_id);
     serde_json::to_string(&output)
         .map_err(|error| format!("encode RiverMemo native output failed: {}", error))
 }
@@ -3832,14 +3918,15 @@ mod stoploss_tests {
     }
 
     #[test]
-    fn absolute_activation_preserves_multiple_answers_and_score_accounting() {
+    fn retired_anchor_bonus_is_zero_even_when_config_passes_legacy_cap() {
+        let config: NativeConfig = serde_json::from_str(r#"{"anchorBonusCap":0.1}"#).unwrap();
         let mut candidates = vec![work(1, 0.15), work(1, 0.15), work(0, 0.0)];
-        assign_v3_scores(&mut candidates, "narrative", &omega(), &NativeConfig::default());
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &config);
         for item in &candidates[..2] {
             assert_eq!(item.role, "direct_answer");
-            assert!(item.anchor_bonus > 0.0);
+            assert_eq!(item.anchor_bonus, 0.0);
             assert!((item.final_score - item.pure_score - item.path_bonus
-                - item.gated_bonus - item.anchor_bonus).abs() < 1e-12);
+                - item.gated_bonus).abs() < 1e-12);
         }
         assert_ne!(candidates[2].role, "direct_answer");
         let prior = candidates[0].anchor_bonus;
