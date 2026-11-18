@@ -210,9 +210,19 @@ impl WarpedFieldIndex {
     /// streaming mean pass. Each indexed original is read exactly once here.
     pub fn build<F>(
         dim: usize, ids: &[u64], slots: &[usize], radii: &[f32], mean: &[f64],
-        config: WarpedFieldConfig, mut fill: F,
+        config: WarpedFieldConfig, fill: F,
     ) -> io::Result<Self>
     where F: FnMut(usize, &mut Vec<f32>) -> bool {
+        Self::build_with_table(dim, ids, slots, radii, mean, config, fill,
+            |profile, max_radius| WarpedProxyTable::try_build(profile, max_radius, 64, 65))
+    }
+
+    fn build_with_table<F, T>(
+        dim: usize, ids: &[u64], slots: &[usize], radii: &[f32], mean: &[f64],
+        config: WarpedFieldConfig, mut fill: F, build_table: T,
+    ) -> io::Result<Self>
+    where F: FnMut(usize, &mut Vec<f32>) -> bool,
+          T: FnOnce(WarpedProfile, f64) -> io::Result<WarpedProxyTable> {
         config.validate()?;
         if dim == 0 || dim > crate::index::bq::MAX_BQ_DIM || mean.len() != dim
             || ids.len() != slots.len() || ids.len() != radii.len()
@@ -240,7 +250,7 @@ impl WarpedFieldIndex {
             store.push_sig(&sig);
             meta.push(header);
         }
-        let table = WarpedProxyTable::try_build(config.geometry_profile()?,config.radius_max,64,65)?;
+        let table = build_table(config.geometry_profile()?, config.radius_max)?;
         let mut order: Vec<u32> = (0..ids.len() as u32).collect();
         order.sort_unstable_by(|&a,&b| radii[a as usize].total_cmp(&radii[b as usize]).then(a.cmp(&b)));
         let entries: Vec<u32> = order.iter().take(8).copied().collect();
@@ -706,6 +716,52 @@ mod tests {
     fn row(node:usize,dim:usize)->Vec<f32> {
         (0..dim).map(|j| ((node*71+j*17+1) as f64*0.37).sin() as f32).collect()
     }
+    #[test]
+    fn prepared_table_preserves_complete_trained_index_and_search() {
+        let n = 160;
+        let dim = 768;
+        let ids: Vec<_> = (100..100+n as u64).collect();
+        let slots: Vec<_> = (0..n).collect();
+        let radii: Vec<_> = (0..n).map(|i| 0.35 + 0.29 * (i % 31) as f32 / 30.0).collect();
+        let mean = vec![0.01; dim];
+        let config = WarpedFieldConfig {
+            profile: WarpedProfile::Softening { alpha: 0.15 },
+            radius_max: 0.65,
+            throat_phi0: 1.5,
+            angular_scale_kappa: 2.0,
+            adaptive_compass: true,
+            ..Default::default()
+        };
+        let fill = |s, out: &mut Vec<f32>| { *out = row(s, dim); true };
+        let mut reference = WarpedFieldIndex::build_with_table(
+            dim, &ids, &slots, &radii, &mean, config, fill,
+            |profile, max_radius| Ok(WarpedProxyTable::build_impl(profile, max_radius, 64, 65, false)),
+        ).unwrap();
+        let mut optimized = WarpedFieldIndex::build(dim, &ids, &slots, &radii, &mean, config, fill).unwrap();
+        reference.build_shell_landmarks();
+        optimized.build_shell_landmarks();
+        let bytes = optimized.snapshot_bytes();
+        assert!(reference.snapshot_bytes() == bytes, "trained payload differs");
+        let restored = WarpedFieldIndex::from_snapshot_bytes(&bytes).unwrap();
+        let config = HyperbolicSearchConfig {
+            top_k: 10, width: 128, rerank_limit: 64, max_visits: 1024,
+            max_expansions: 256, radial_bound: true,
+        };
+        for (query_id, radius) in [(3, 0.35), (73, 0.47), (159, 0.64)] {
+            let query = row(query_id, dim);
+            let run = |index: &WarpedFieldIndex| index.search_with_rerank(
+                &query, radius, config, WarpedSeedMode::DirectionLandmarks,
+                WarpedNavigationOptions { asymmetric: true, compact_seeds: true },
+                WarpedRerankOptions { reuse_transform: true, envelope_bound: true },
+                None, |id| id % 7 == 0, fill,
+            ).unwrap().neighbors.into_iter().map(|(id, d)| (id, d.to_bits())).collect::<Vec<_>>();
+            let expected = run(&reference);
+            assert!(!expected.is_empty());
+            assert_eq!(run(&optimized), expected);
+            assert_eq!(run(&restored), expected);
+        }
+    }
+
     #[test]
     fn streamed_field_cold_budget_exclusions_truth_and_connectivity() {
         for dim in [65,384,768,1536,3072] {

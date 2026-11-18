@@ -299,30 +299,59 @@ pub fn clairaut_distance(profile: WarpedProfile, rq: f64, rv: f64, cos_theta: f6
 /// Positive throat: tangent legs may be joined by a nonzero boundary arc.
 /// Zero throat and kappa!=1: a metric cone, NOT a smooth Euclidean origin.
 fn throat_distance(profile: WarpedProfile, rq: f64, rv: f64, cosine: f64) -> f64 {
+    throat_distance_with(profile, rq, rv, cosine, None)
+}
+
+/// Pair invariants for the table builder only. Online scoring computes the
+/// same quantities on demand, including the original endpoint early exits.
+struct ThroatGridPair {
+    critical: f64,
+    maximum: f64,
+    leg_length_sum: f64,
+}
+
+impl ThroatGridPair {
+    /// The table visits only i <= j, using the exact same radii as its distance inputs.
+    fn new(profile: WarpedProfile, lo: f64, hi: f64, a: (f64, f64), b: (f64, f64)) -> Self {
+        Self {
+            critical: clairaut_theta(profile, lo, hi, profile.phi(lo)),
+            maximum: a.0 + b.0,
+            leg_length_sum: a.1 + b.1,
+        }
+    }
+}
+
+fn throat_distance_with(
+    profile: WarpedProfile, rq: f64, rv: f64, cosine: f64, pair: Option<&ThroatGridPair>,
+) -> f64 {
     let theta = cosine.clamp(-1.0, 1.0).acos();
     if theta == 0.0 { return (rq-rv).abs(); }
     let (lo, hi) = (rq.min(rv), rq.max(rv));
     let base = profile.phi(0.0);
     if base == 0.0 && lo == 0.0 { return hi; }
     let lmax = profile.phi(lo);
-    let critical = clairaut_theta(profile, lo, hi, lmax);
+    let critical = pair.map_or_else(|| clairaut_theta(profile, lo, hi, lmax), |p| p.critical);
     if theta <= critical && hi > lo {
         let l = solve_monotone(0.0,lmax,0.0,critical,theta,
             |l|clairaut_theta(profile,lo,hi,l));
         return clairaut_length(profile,lo,hi,l);
     }
-    let maximum = if base > 0.0 {
-        clairaut_theta(profile,0.0,lo,base)+clairaut_theta(profile,0.0,hi,base)
-    } else {
-        match profile {
-            WarpedProfile::ThroatSoftening { kappa, .. } => std::f64::consts::PI/kappa,
-            _ => unreachable!(),
+    let maximum = pair.map_or_else(|| {
+        if base > 0.0 {
+            clairaut_theta(profile,0.0,lo,base)+clairaut_theta(profile,0.0,hi,base)
+        } else {
+            match profile {
+                WarpedProfile::ThroatSoftening { kappa, .. } => std::f64::consts::PI/kappa,
+                _ => unreachable!(),
+            }
         }
-    };
+    }, |p| p.maximum);
     if theta >= maximum {
         if base == 0.0 { return rq+rv; }
-        return clairaut_length(profile,0.0,lo,base)
-            +clairaut_length(profile,0.0,hi,base)+base*(theta-maximum);
+        let leg_length_sum = pair.map_or_else(|| {
+            clairaut_length(profile,0.0,lo,base)+clairaut_length(profile,0.0,hi,base)
+        }, |p| p.leg_length_sum);
+        return leg_length_sum+base*(theta-maximum);
     }
     let turn = solve_monotone(0.0,lo,maximum,critical,theta,|r| {
         if r == 0.0 { return maximum; }
@@ -465,8 +494,26 @@ pub struct QueryWarpedSlice {
     slice: Vec<f32>,
 }
 
+fn prepare_throat_grid_legs(
+    profile: WarpedProfile, step_r: f64, nr: usize,
+) -> Vec<(f64, f64)> {
+    let base = profile.phi(0.0);
+    (0..nr).map(|i| {
+        let r = i as f64 * step_r;
+        (clairaut_theta(profile, 0.0, r, base), clairaut_length(profile, 0.0, r, base))
+    }).collect()
+}
+
 impl WarpedProxyTable {
     pub fn build(profile: WarpedProfile, r_max: f64, nr: usize, ns: usize) -> Self {
+        let reuse_throat_grid = matches!(profile, WarpedProfile::ThroatSoftening {
+            alpha: 0.15, phi0: 1.5, kappa: 2.0
+        }) && r_max == 0.65 && nr == 64 && ns == 65;
+        Self::build_impl(profile, r_max, nr, ns, reuse_throat_grid)
+    }
+
+    pub(super) fn build_impl(profile: WarpedProfile, r_max: f64, nr: usize, ns: usize,
+        reuse_throat_grid: bool) -> Self {
         let r_max = r_max.max(0.1);
         let mut pairs = Vec::with_capacity(nr * (nr + 1) / 2);
         for i in 0..nr {
@@ -476,17 +523,22 @@ impl WarpedProxyTable {
         }
         let step_r = r_max / ((nr - 1) as f64);
         let step_u = 1.0 / ((ns - 1) as f64);
+        let legs = reuse_throat_grid.then(|| prepare_throat_grid_legs(profile, step_r, nr));
         let computed: Vec<(usize, usize, Vec<f32>)> = pairs
             .into_par_iter()
             .map(|(i, j)| {
                 let ri = i as f64 * step_r;
                 let rj = j as f64 * step_r;
                 let radial_sq = (ri - rj) * (ri - rj);
+                let pair = legs.as_ref().map(|legs| ThroatGridPair::new(profile, ri, rj, legs[i], legs[j]));
                 let mut row = Vec::with_capacity(ns);
                 for k in 0..ns {
                     let u = k as f64 * step_u;
                     let cos_t = (1.0 - 2.0 * u).clamp(-1.0, 1.0);
-                    let d = clairaut_distance(profile, ri, rj, cos_t);
+                    let d = match &pair {
+                        Some(pair) => throat_distance_with(profile, ri, rj, cos_t, Some(pair)),
+                        None => clairaut_distance(profile, ri, rj, cos_t),
+                    };
                     row.push((d * d - radial_sq).max(0.0) as f32);
                 }
                 (i, j, row)
@@ -756,5 +808,85 @@ mod throat_metric_tests {
         for (phi0,kappa) in [(-1.0,1.0),(f64::NAN,1.0),(0.8,0.0),(0.8,2.1)] {
             assert!(WarpedProfile::ThroatSoftening {alpha:0.15,phi0,kappa}.validate(1.2).is_err());
         }
+    }
+}
+
+
+#[cfg(test)]
+mod prepared_grid_tests {
+    use super::*;
+
+    const PROFILE: WarpedProfile =
+        WarpedProfile::ThroatSoftening { alpha: 0.15, phi0: 1.5, kappa: 2.0 };
+    const R_MAX: f64 = 0.65;
+    const NR: usize = 64;
+    const NS: usize = 65;
+
+    #[test]
+    fn prepared_throat_grid_matches_reference_bits() {
+        let step_r = R_MAX / (NR - 1) as f64;
+        let step_u = 1.0 / (NS - 1) as f64;
+        let legs = prepare_throat_grid_legs(PROFILE, step_r, NR);
+        let table = WarpedProxyTable::build(PROFILE, R_MAX, NR, NS);
+        for i in 0..NR {
+            let ri = i as f64 * step_r;
+            for j in i..NR {
+                let rj = j as f64 * step_r;
+                let pair = ThroatGridPair::new(PROFILE, ri, rj, legs[i], legs[j]);
+                let compare = |cosine: f64| {
+                    let expected = clairaut_distance(PROFILE, ri, rj, cosine);
+                    let got = throat_distance_with(PROFILE, ri, rj, cosine, Some(&pair));
+                    assert_eq!(got.to_bits(), expected.to_bits(), "i={i} j={j} cos={cosine:.17}");
+                    expected
+                };
+                let radial_sq = (ri - rj) * (ri - rj);
+                for k in 0..NS {
+                    let u = k as f64 * step_u;
+                    let expected = compare((1.0 - 2.0 * u).clamp(-1.0, 1.0));
+                    if k == 0 {
+                        assert_eq!(expected.to_bits(), (ri - rj).abs().to_bits());
+                    }
+                    let bits = ((expected * expected - radial_sq).max(0.0) as f32).to_bits();
+                    assert_eq!(table.data[(i * NR + j) * NS + k].to_bits(), bits);
+                    assert_eq!(table.data[(j * NR + i) * NS + k].to_bits(), bits);
+                }
+                for angle in [pair.critical, pair.maximum] {
+                    let c = angle.cos();
+                    for cosine in [c.next_down(), c, c.next_up()] {
+                        compare(cosine);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "release-mode timing probe; run explicitly"]
+    fn production_throat_grid_build_timing() {
+        use std::{hint::black_box, time::Instant};
+        let measure = |reuse| {
+            let start = Instant::now();
+            let table = black_box(WarpedProxyTable::build_impl(PROFILE, R_MAX, NR, NS, reuse));
+            (table, start.elapsed().as_secs_f64() * 1000.0)
+        };
+        black_box(measure(true));
+        let mut old_times = [0.0; 3];
+        let mut new_times = [0.0; 3];
+        for i in 0..3 {
+            let ((old, old_ms), (new, new_ms)) = if i % 2 == 0 {
+                (measure(false), measure(true))
+            } else {
+                let new = measure(true);
+                (measure(false), new)
+            };
+            assert!(old.data.iter().zip(&new.data).all(|(a, b)| a.to_bits() == b.to_bits()));
+            old_times[i] = old_ms;
+            new_times[i] = new_ms;
+        }
+        eprintln!("table build ms: old={old_times:?} new={new_times:?}");
+        old_times.sort_by(f64::total_cmp);
+        new_times.sort_by(f64::total_cmp);
+        eprintln!("median ms: old={:.3} new={:.3} speedup={:.2}x",
+            old_times[1], new_times[1], old_times[1] / new_times[1]);
     }
 }
