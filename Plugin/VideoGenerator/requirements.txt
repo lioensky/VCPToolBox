@@ -1,4 +1,6 @@
-requests==2.31.0
-python-dotenv==1.0.0
+# 本地部署改用 >=：系统已装更高版本（requests 2.34.2 / python-dotenv 1.2.4 / Pillow 12.2.0），
+# 按部署约定「不降级」，避免 pip install -r 时把宿主依赖回退。
+requests>=2.31.0
+python-dotenv>=1.0.0
 
-Pillow==11.0.0
+Pillow>=11.0.0
