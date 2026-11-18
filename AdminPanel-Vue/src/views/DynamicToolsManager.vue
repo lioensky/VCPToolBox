@@ -11,7 +11,8 @@
           <template #leading><span class="material-symbols-outlined">content_copy</span></template>
           复制占位符
         </UiButton>
-        <UiButton type="button" size="lg" variant="primary" @click="saveDynamicConfig">
+        <UiBadge v-if="editor.dirty" variant="warning">有未保存草稿</UiBadge>
+        <UiButton type="button" size="lg" variant="primary" :disabled="editor.saving || !editor.initialized" @click="saveDynamicConfig">
           <template #leading><span class="material-symbols-outlined">save</span></template>
           保存
         </UiButton>
@@ -50,6 +51,9 @@
       <span>{{ state.lastError }}</span>
     </div>
 
+    <div v-if="draftError && editor.initialized" class="warning-box" role="alert">{{ draftError }}</div>
+
+    <fieldset class="config-editors" :disabled="editor.saving || !editor.initialized">
     <form class="panel-grid" @submit.prevent="saveDynamicConfig">
       <UiSettingsCard class="config-card dynamic-settings-surface" title="注入配置" variant="subtle">
         <UiSettingsForm as="div" :columns="2" gap="sm">
@@ -66,32 +70,45 @@
         </UiSettingsForm>
       </UiSettingsCard>
 
-      <UiSettingsCard class="config-card dynamic-settings-surface" title="小模型分类" variant="subtle">
-        <template #action>
-          <UiButton type="button" variant="outline" size="sm" @click="openPluginConfig">
-            <template #leading><span class="material-symbols-outlined">extension</span></template>
-            私有配置
-          </UiButton>
-        </template>
-
-        <UiSettingsForm as="div" :columns="1" gap="sm">
-          <UiSettingsSwitchRow v-model="config.smallModel.enabled" label="启用小模型增量分类" />
-          <UiSettingsSwitchRow v-model="config.smallModel.useMainConfig" label="复用主 API_URL / API_Key" />
-
-          <UiField label="分类模型名">
-            <UiInput v-model.trim="config.smallModel.model" type="text" placeholder="例如：gpt-4o-mini" />
+      <UiSettingsCard class="config-card dynamic-settings-surface" title="语义摘要与分类模型" variant="subtle">
+        <UiSettingsForm as="div" :columns="2" gap="sm">
+          <UiSettingsSwitchRow v-model="config.smallModel.enabled" label="启用后台语义摘要与增量分类" data-settings-span="full" />
+          <UiField label="主 API（固定共用）" description="共用后端主 API_URL / API_Key；只需填写该主源支持的模型 ID，无需另配地址或密钥。只在后台增量或手动重建时调用。" data-settings-span="full">
+            <UiInput model-value="后端主 API_URL / API_Key" readonly />
           </UiField>
+          <UiField label="主源模型 ID" data-settings-span="full">
+            <UiInput v-model.trim="config.smallModel.model" type="text" maxlength="200" placeholder="填写主 API 源支持的模型 ID" />
+          </UiField>
+          <UiField label="最大重试次数" description="首次请求之外的重试上限；格式修复失败后有界重试。">
+            <UiInput v-model.number="config.smallModel.maxRetries" type="number" min="0" max="5" />
+          </UiField>
+          <UiField label="重试间隔 ms" description="重试等待也受分类总超时限制。">
+            <UiInput v-model.number="config.smallModel.retryDelayMs" type="number" min="0" max="10000" step="50" />
+          </UiField>
+          <UiField label="模型输出 token 上限" description="为摘要和分类 JSON 留出空间，不等于轻量清单摘要目标。">
+            <UiInput v-model.number="config.smallModel.maxTokens" type="number" min="64" max="8192" step="64" />
+          </UiField>
+          <UiField label="生成温度" description="范围 0-2；较低值便于保持分类稳定。">
+            <UiInput v-model.number="config.smallModel.temperature" type="number" min="0" max="2" step="0.1" />
+          </UiField>
+        </UiSettingsForm>
+      </UiSettingsCard>
 
-          <UiField
-            label="独立 OpenAI 兼容端点"
-            description="复用主配置时只填模型名；独立端点的 API Key 在插件中心 DynamicToolBridge 私有配置里填写。"
-          >
-            <UiInput
-              v-model.trim="config.smallModel.endpoint"
-              type="text"
-              :disabled="config.smallModel.useMainConfig"
-              placeholder="https://example.com 或完整 /v1/chat/completions"
-            />
+      <UiSettingsCard class="config-card dynamic-settings-surface" title="语义摘要" variant="subtle">
+        <UiSettingsForm as="div" :columns="1" gap="sm">
+          <p class="muted">以下 token 数为软目标：保留完整词语和能力语义，不逐字硬切。需满足最小简述 ≤ 简述 ≤ 轻量清单。</p>
+          <UiField label="轻量清单摘要目标 token"><UiInput v-model.number="config.summary.lightListTokenBudget" type="number" min="1" max="200" /></UiField>
+          <UiField label="简述目标 token"><UiInput v-model.number="config.summary.briefTokenBudget" type="number" min="1" max="200" /></UiField>
+          <UiField label="最小简述目标 token"><UiInput v-model.number="config.summary.minBriefTokenBudget" type="number" min="1" max="200" /></UiField>
+        </UiSettingsForm>
+      </UiSettingsCard>
+
+      <UiSettingsCard class="config-card dynamic-settings-surface" title="语义分类与类别定义" variant="subtle">
+        <UiSettingsForm as="div" :columns="2" gap="sm">
+          <UiField label="单工具最大分类数"><UiInput v-model.number="config.classification.maxCategories" type="number" min="1" max="20" /></UiField>
+          <UiField label="Embedding 命中阈值" description="0-1；仅用于 embedding 降级路径。"><UiInput v-model.number="config.classification.embeddingThreshold" type="number" min="0" max="1" step="0.01" /></UiField>
+          <UiField label="分类规则 JSON" description="数组，每项包含唯一 category、description、非空 keywords 字符串数组；parent 可选，用于保留大类。保存前会校验结构。" data-settings-span="full">
+            <UiTextarea v-model="categoryRulesText" rows="12" spellcheck="false" />
           </UiField>
         </UiSettingsForm>
       </UiSettingsCard>
@@ -115,7 +132,8 @@
         </div>
       </template>
 
-      <UiField label="分类别名" class="alias-field">
+      <p class="muted">保存只更新配置并热生效，不自动全量重建。修改类别定义、模型或摘要目标后，如需刷新已有分类，请先保存，再按需点击“重建分类”；未保存草稿不会因刷新或轮询丢失。</p>
+      <UiField label="分类别名" class="alias-field" description="每行 别名=分类ID；可保留旧大类别名。此处与其他业务配置一起保存。">
         <UiTextarea
           v-model="aliasText"
           rows="4"
@@ -123,6 +141,22 @@
         />
       </UiField>
     </UiSettingsCard>
+
+    <UiSettingsCard id="dynamic-tool-override-editor" class="dynamic-settings-surface" title="工具人工说明覆盖" variant="subtle">
+      <UiSettingsForm as="div" :columns="2" gap="sm">
+        <UiField label="工具 originKey" description="可在下方工具表点击“编辑说明”，或选择已保存覆盖的工具；离线工具的覆盖也可编辑。" data-settings-span="full">
+          <UiInput v-model.trim="selectedOriginKey" list="dynamic-tool-origin-keys" placeholder="选择或填写工具 originKey" />
+          <datalist id="dynamic-tool-origin-keys"><option v-for="key in overrideOriginKeys" :key="key" :value="key" /></datalist>
+        </UiField>
+        <template v-if="selectedOriginKey">
+          <UiField label="人工简述 brief" description="留空恢复自动简述。" data-settings-span="full"><UiInput v-model="overrideBrief" maxlength="4000" /></UiField>
+          <UiField label="人工完整说明 fullDescription" description="留空恢复原工具说明。" data-settings-span="full"><UiTextarea v-model="overrideFullDescription" rows="5" maxlength="120000" /></UiField>
+          <UiField label="人工分类 categories" description="逗号分隔；留空恢复自动分类。"><UiInput v-model="overrideCategories" /></UiField>
+          <UiField label="人工关键词 keywords" description="逗号分隔；留空恢复自动关键词。"><UiInput v-model="overrideKeywords" /></UiField>
+        </template>
+      </UiSettingsForm>
+    </UiSettingsCard>
+    </fieldset>
 
     <UiSettingsCard class="records-card dynamic-settings-surface" title="工具状态" variant="subtle">
       <template #action>
@@ -135,6 +169,7 @@
         />
       </template>
 
+      <p v-if="editor.dirty" class="muted">请先保存配置草稿，再使用固定或排除操作，避免未保存编辑被覆盖。</p>
       <UiTableFrame class="records-table-frame" density="compact">
         <thead v-once>
           <tr>
@@ -174,12 +209,13 @@
             <td class="brief-cell">{{ record.brief || '-' }}</td>
             <td>
               <div class="row-actions">
-                <UiButton type="button" variant="outline" size="xs" @click="toggleOverride(record, 'pinned')">
+                <UiButton type="button" variant="outline" size="xs" :disabled="editor.saving || editor.dirty || !editor.initialized" @click="toggleOverride(record, 'pinned')">
                   {{ isPinned(record.originKey) ? '取消固定' : '固定' }}
                 </UiButton>
-                <UiButton type="button" variant="outline" size="xs" @click="toggleOverride(record, 'excluded')">
+                <UiButton type="button" variant="outline" size="xs" :disabled="editor.saving || editor.dirty || !editor.initialized" @click="toggleOverride(record, 'excluded')">
                   {{ isExcluded(record.originKey) ? '恢复' : '排除' }}
                 </UiButton>
+                <UiButton type="button" variant="outline" size="xs" :disabled="editor.saving || !editor.initialized" @click="editOverride(record.originKey)">编辑说明</UiButton>
               </div>
             </td>
           </tr>
@@ -192,13 +228,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue";
+import { buildConfigPayload, createConfigEditor } from "@/features/dynamic-tools/config";
 import {
   dynamicToolsApi,
   type DynamicToolRecord,
-  type DynamicToolsConfig,
-  type DynamicToolsManualOverrides,
   type DynamicToolsRebuildMode,
   type DynamicToolsState,
 } from "@/api";
@@ -225,100 +259,62 @@ const SEARCH_DEBOUNCE_MS = 200;
 const POLL_INTERVAL_MS = 2500;
 const MAX_POLL_COUNT = 120;
 
-function createDefaultConfig(): DynamicToolsConfig {
-  return {
-    enabled: true,
-    placeholder: placeholderText,
-    maxBriefListItems: 120,
-    maxExpandedPlugins: 4,
-    maxForcedCategoryPlugins: 12,
-    maxInjectionChars: 16000,
-    classificationDebounceMs: 1000,
-    classifierTimeoutMs: 30000,
-    useRagEmbeddings: true,
-    manualOverrides: {
-      excludedOriginKeys: [],
-      pinnedOriginKeys: [],
-      categoryAliases: {},
-      descriptionOverrides: {},
-    },
-    smallModel: {
-      enabled: false,
-      useMainConfig: true,
-      endpoint: "",
-      model: "",
-    },
-  };
-}
-
-function normalizeConfig(config: DynamicToolsConfig | null | undefined): DynamicToolsConfig {
-  const defaults = createDefaultConfig();
-  return {
-    ...defaults,
-    ...(config || {}),
-    manualOverrides: {
-      ...defaults.manualOverrides,
-      ...(config?.manualOverrides || {}),
-      excludedOriginKeys: Array.isArray(config?.manualOverrides?.excludedOriginKeys)
-        ? config.manualOverrides.excludedOriginKeys
-        : [],
-      pinnedOriginKeys: Array.isArray(config?.manualOverrides?.pinnedOriginKeys)
-        ? config.manualOverrides.pinnedOriginKeys
-        : [],
-      categoryAliases: config?.manualOverrides?.categoryAliases || {},
-      descriptionOverrides: config?.manualOverrides?.descriptionOverrides || {},
-    },
-    smallModel: {
-      ...defaults.smallModel,
-      ...(config?.smallModel || {}),
-      useMainConfig: config?.smallModel?.useMainConfig ?? true,
-    },
-  };
-}
-
-function aliasesToText(aliases: Record<string, string>): string {
-  return Object.entries(aliases)
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n");
-}
-
-function parseAliases(text: string): Record<string, string> {
-  const aliases: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex <= 0) continue;
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const value = trimmed.slice(separatorIndex + 1).trim();
-    if (key && value) aliases[key] = value;
-  }
-  return aliases;
-}
-
-function validateConfig(c: DynamicToolsConfig): string | null {
-  if (c.maxBriefListItems < 1 || c.maxBriefListItems > 500) return "轻量清单数量需在 1-500 之间";
-  if (c.maxExpandedPlugins < 0 || c.maxExpandedPlugins > 50) return "语义命中展开数需在 0-50 之间";
-  if (c.maxForcedCategoryPlugins < 1 || c.maxForcedCategoryPlugins > 100) return "点名分类展开数需在 1-100 之间";
-  if (c.maxInjectionChars < 1000 || c.maxInjectionChars > 120000) return "最大注入字符数需在 1000-120000 之间";
-  if (c.classificationDebounceMs < 0 || c.classificationDebounceMs > 60000) return "分类去抖需在 0-60000 ms 之间";
-  if (c.classifierTimeoutMs < 100 || c.classifierTimeoutMs > 120000) return "分类超时需在 100-120000 ms 之间";
-  if (c.smallModel.enabled) {
-    if (!c.smallModel.model.trim()) return "启用小模型分类时需填写分类模型名";
-    if (!c.smallModel.useMainConfig && !c.smallModel.endpoint.trim()) return "使用独立端点时需填写 OpenAI 兼容端点";
-  }
-  if (!c.smallModel.useMainConfig && c.smallModel.endpoint.trim()) {
-    const endpoint = c.smallModel.endpoint.trim();
-    const isHttpUrl = endpoint.startsWith("http://") || endpoint.startsWith("https://");
-    if (!isHttpUrl) return "独立端点需以 http:// 或 https:// 开头";
-  }
-  return null;
-}
-
-const router = useRouter();
 const state = shallowRef<DynamicToolsState | null>(null);
-const config = ref<DynamicToolsConfig>(createDefaultConfig());
-const aliasText = ref("");
+const editor = reactive(createConfigEditor());
+const config = computed(() => editor.draft.config);
+const aliasText = computed({
+  get: () => editor.draft.aliasText,
+  set: (value: string) => { editor.draft.aliasText = value; },
+});
+const categoryRulesText = computed({
+  get: () => editor.draft.categoryRulesText,
+  set: (value: string) => { editor.draft.categoryRulesText = value; },
+});
+const draftError = computed(() => {
+  try { buildConfigPayload(editor.draft); return ""; }
+  catch (error) { return error instanceof Error ? error.message : String(error); }
+});
+const selectedOriginKey = ref("");
+const overrideArrayText = computed(() => editor.draft.descriptionArrayText);
+function editOverride(originKey: string) {
+  selectedOriginKey.value = originKey;
+  document.getElementById("dynamic-tool-override-editor")?.scrollIntoView({ block: "center" });
+}
+const overrideOriginKeys = computed(() => [...new Set([
+  ...records.value.map(record => record.originKey),
+  ...Object.keys(config.value.manualOverrides.descriptionOverrides),
+])]);
+function overrideText(field: "brief" | "fullDescription" | "categories" | "keywords") {
+  return computed({
+    get: () => {
+      const originKey = selectedOriginKey.value;
+      if (field === "categories" || field === "keywords") {
+        const raw = overrideArrayText.value[originKey]?.[field];
+        if (raw !== undefined) return raw;
+      }
+      const value = config.value.manualOverrides.descriptionOverrides[originKey]?.[field];
+      return Array.isArray(value) ? value.join(", ") : value || "";
+    },
+    set: (value: string) => {
+      const originKey = selectedOriginKey.value.trim();
+      if (!originKey) return;
+      const overrides = config.value.manualOverrides.descriptionOverrides;
+      const entry = { ...overrides[originKey] };
+      if (field === "categories" || field === "keywords") {
+        overrideArrayText.value[originKey] = { ...overrideArrayText.value[originKey], [field]: value };
+        entry[field] = value.split(/[,，\n]/).map(item => item.trim()).filter(Boolean);
+      } else entry[field] = value;
+      config.value.manualOverrides.descriptionOverrides = { ...overrides, [originKey]: entry };
+    },
+  });
+}
+const overrideBrief = overrideText("brief");
+const overrideFullDescription = overrideText("fullDescription");
+const overrideCategories = overrideText("categories");
+const overrideKeywords = overrideText("keywords");
+let stateRequestId = 0;
+let configRevision = 0;
+let disposed = false;
 const filterText = ref("");
 const debouncedFilterText = ref("");
 const statusMessage = ref("");
@@ -363,20 +359,23 @@ const filteredRecords = computed(() => {
   });
 });
 
-function applyState(nextState: DynamicToolsState) {
+function applyState(nextState: DynamicToolsState, refreshConfig = true) {
   state.value = nextState;
-  config.value = normalizeConfig(nextState.config);
-  aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
+  if (refreshConfig) editor.refresh(nextState.config);
 }
 
 async function loadState() {
+  const requestId = ++stateRequestId;
+  const revision = configRevision;
   try {
     const nextState = await dynamicToolsApi.getState({
       showLoader: false,
       loadingKey: "dynamic-tools.state.load",
     });
-    applyState(nextState);
+    if (disposed || requestId !== stateRequestId) return;
+    applyState(nextState, revision === configRevision);
   } catch (error) {
+    if (disposed || requestId !== stateRequestId) return;
     const errorMessage = error instanceof Error ? error.message : String(error);
     showMessage(`加载动态工具清单失败：${errorMessage}`, "error");
   }
@@ -405,6 +404,7 @@ function startRebuildPolling() {
     pollCount++;
     const wasClassifying = isClassifying.value;
     await loadState();
+    if (disposed) return;
 
     if (wasClassifying && !isClassifying.value) {
       stopRebuildPolling();
@@ -421,42 +421,20 @@ function startRebuildPolling() {
 }
 
 async function saveDynamicConfig() {
-  const error = validateConfig(config.value);
-  if (error) {
-    showMessage(error, "error");
-    return;
-  }
-
-  try {
-    const manualOverrides: DynamicToolsManualOverrides = {
-      ...config.value.manualOverrides,
-      categoryAliases: parseAliases(aliasText.value),
-    };
-    const saved = await dynamicToolsApi.saveConfig(
-      { ...config.value, manualOverrides },
-      { loadingKey: "dynamic-tools.config.save" }
-    );
-    config.value = normalizeConfig(saved);
-    aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
-    statusMessage.value = "动态工具配置已保存";
-    statusType.value = "success";
-    showMessage(statusMessage.value, "success");
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    statusMessage.value = `保存失败：${errorMessage}`;
-    statusType.value = "error";
-    showMessage(statusMessage.value, "error");
-    return;
-  }
-
-  try {
-    await loadState();
-  } catch {
-    // config saved successfully, state reload is non-critical
-  }
+  if (!editor.initialized || editor.saving) return;
+  configRevision++;
+  const success = await editor.save(payload => dynamicToolsApi.saveConfig(
+    payload, { loadingKey: "dynamic-tools.config.save", showLoader: false }
+  ));
+  configRevision++;
+  statusMessage.value = success ? "已保存并热生效" : `保存失败：${editor.error}`;
+  statusType.value = success ? "success" : "error";
+  showMessage(statusMessage.value, statusType.value);
+  if (success) void loadState();
 }
 
 async function rebuild(mode: DynamicToolsRebuildMode) {
+  if (editor.saving || isClassifying.value) return;
   if (mode === "all") {
     const confirmed = await askConfirm({
       message:
@@ -475,7 +453,8 @@ async function rebuild(mode: DynamicToolsRebuildMode) {
       },
       { wait: false }
     );
-    applyState(nextState);
+    if (disposed) return;
+    applyState(nextState, false);
 
     if (isClassifying.value) {
       statusMessage.value = "重建任务已开始，正在后台分类";
@@ -505,29 +484,22 @@ function isExcluded(originKey: string): boolean {
 }
 
 async function toggleOverride(record: DynamicToolRecord, field: "pinned" | "excluded") {
-  const arrayKey = field === "pinned" ? "pinnedOriginKeys" : "excludedOriginKeys";
-  const arr = config.value.manualOverrides[arrayKey];
-  const originKey = record.originKey;
-  const had = arr.includes(originKey);
-  const previous = [...arr];
-
-  config.value.manualOverrides[arrayKey] = had
-    ? arr.filter((k) => k !== originKey)
-    : [...arr, originKey];
-
-  try {
-    const saved = await dynamicToolsApi.updateOverride(
-      { originKey, [field]: !had },
-      { loadingKey: `dynamic-tools.override.${field}` }
-    );
-    config.value = normalizeConfig(saved);
-    aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
-    await loadState();
-  } catch (error) {
-    config.value.manualOverrides[arrayKey] = previous;
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    showMessage(`操作失败：${errorMessage}`, "error");
+  if (editor.saving || !editor.initialized) return;
+  if (editor.dirty) {
+    showMessage("请先保存配置草稿，再固定或排除工具", "info");
+    return;
   }
+  const enabled = field === "pinned" ? !isPinned(record.originKey) : !isExcluded(record.originKey);
+  configRevision++;
+  const success = await editor.save(() => dynamicToolsApi.updateOverride(
+    { originKey: record.originKey, [field]: enabled },
+    { loadingKey: `dynamic-tools.override.${field}`, showLoader: false }
+  ));
+  configRevision++;
+  statusMessage.value = success ? "已保存并热生效" : `操作失败：${editor.error}`;
+  statusType.value = success ? "success" : "error";
+  showMessage(statusMessage.value, statusType.value);
+  if (success) void loadState();
 }
 
 async function copyPlaceholder() {
@@ -539,18 +511,13 @@ async function copyPlaceholder() {
   }
 }
 
-function openPluginConfig() {
-  router.push({
-    name: "PluginConfig",
-    params: { pluginName: "DynamicToolBridge" },
-  });
-}
-
 onMounted(() => {
   void loadState();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
+  stateRequestId++;
   stopRebuildPolling();
 });
 </script>
@@ -638,6 +605,16 @@ onBeforeUnmount(() => {
   margin-top: var(--space-1);
   color: var(--secondary-text);
   font-size: var(--font-size-caption);
+}
+
+.config-editors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
 }
 
 .panel-grid {
