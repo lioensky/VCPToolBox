@@ -1,5 +1,7 @@
 'use strict';
 
+const { guardMarkdownDataImagesForUpstream } = require('./markdownDataImageGuard.js');
+
 let lastTimestampMs = 0;
 const START_PREFIX = '<<<[VCP_TOOL_BATCH_START:';
 const END_PREFIX = '<<<[VCP_TOOL_BATCH_END:';
@@ -104,6 +106,10 @@ function projectBatchWrapperText(text, role) {
 /** Request-only copy; media, tool arguments and all other fields remain untouched. */
 function projectToolBatchForUpstream(body) {
     if (!body || !Array.isArray(body.messages)) return body;
+    return guardMarkdownDataImagesForUpstream(projectBatchWrappersForUpstream(body));
+}
+
+function projectBatchWrappersForUpstream(body) {
     return {
         ...body,
         messages: body.messages.map(message => {
