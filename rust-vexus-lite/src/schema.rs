@@ -420,7 +420,17 @@ pub(crate) fn initialize_schema(
     transaction.execute_batch(
         "INSERT OR IGNORE INTO kbm_runtime_meta(key,value) VALUES
          ('derived_geometry','0'),
-         ('memo_tag_facts','0');
+         ('memo_tag_facts','0'),
+         ('memo_file_events','0');
+         CREATE TRIGGER IF NOT EXISTS trg_memo_file_insertion AFTER INSERT ON files BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(value AS INTEGER)+1 WHERE key='memo_file_events';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_file_id AFTER UPDATE OF id ON files WHEN OLD.id IS NOT NEW.id BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(value AS INTEGER)+1 WHERE key='memo_file_events';
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_memo_file_deletion AFTER DELETE ON files BEGIN
+           UPDATE kbm_runtime_meta SET value=CAST(value AS INTEGER)+1 WHERE key='memo_file_events';
+         END;
          CREATE TRIGGER IF NOT EXISTS trg_memo_tags_insert AFTER INSERT ON tags BEGIN
            UPDATE kbm_runtime_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='memo_tag_facts';
          END;

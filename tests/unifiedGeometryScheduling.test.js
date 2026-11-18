@@ -102,7 +102,10 @@ test('health failure prevents downstream artifact construction', async () => {
 test('manual requests reuse queued and running training and expose completion', async () => {
     let release;
     const { engine, calls } = fixture({
-        async computeMemoGeometry() {
+        async computeMemoGeometry(db, model, config) {
+            const geometryConfig = JSON.parse(config);
+            assert.equal(geometryConfig.reuseAppendOnly, undefined);
+            assert.equal(geometryConfig.forceRecompute, undefined);
             calls.push('geometry');
             await new Promise(resolve => { release = resolve; });
             return { success: true, artifactSig: 'geometry' };
@@ -215,7 +218,14 @@ test('missing native warped ABI fails before publishing any new base assets', as
 });
 
 test('1% durable Tag boundary rebuilds both warped fields, below threshold does nothing', async () => {
-    const { engine, calls, owner } = fixture();
+    const { engine, calls, owner } = fixture({
+        async computeMemoGeometry(db, model, config) {
+            assert.equal(JSON.parse(config).reuseAppendOnly, true);
+            assert.equal(JSON.parse(config).forceRecompute, undefined);
+            calls.push('geometry');
+            return { success: true, artifactSig: 'geometry' };
+        }
+    });
     let changed = 999;
     owner._buildNativeMemoEffectiveConfig = () => ({});
     owner._computeNativeMemoConfigHash = () => 'cfg';

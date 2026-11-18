@@ -1745,3 +1745,7 @@ mod workspace_build_tests;
 #[cfg(test)]
 #[path = "warped_lifecycle_tests.rs"]
 mod warped_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "memo_local_reuse_tests.rs"]
+mod local_reuse_tests;
