@@ -3107,8 +3107,7 @@ pub(crate) fn run_native_with_observation(
         .map(|node| node.id)
         .collect();
     requested_tag_ids.extend(seeds.iter().map(|seed| seed.0));
-    requested_tag_ids.extend(input.query_state.river_edges.iter()
-        .filter(|edge| edge.wormhole).map(|edge| edge.target_id));
+    // No endpoint-only vector loads for the retired XW readout.
     let query_stats = ensure_tag_vectors_loaded(
         connection, &mut tag_vectors, &requested_tag_ids, dimension)?;
     if let Some(pool)=readout_vectors.as_mut() {
@@ -3119,9 +3118,7 @@ pub(crate) fn run_native_with_observation(
     drop(readout_vectors);
     let query_tag_sql_batches = query_stats.sql_batches;
     let query_and_seed_tag_vectors = tag_vectors;
-    let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
-    let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
-    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input, &artifact)?;
+    // Sense observations remain intact; readout no longer scans cross-file witnesses.
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -3248,8 +3245,7 @@ pub(crate) fn run_native_with_observation(
             })
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
-    let wormhole_traces = wormhole::apply_unified_bonus(
-        &mut work, &wormhole_model, &input, &omega, &artifact);
+    let wormhole_traces = wormhole::apply_ordinary_proxy(&mut work, &input, &omega, &artifact);
     // Stable sort retains the complete baseline comparator for equal fusion scores.
     work.sort_by(|a, b| b.ranking_score.total_cmp(&a.ranking_score));
     let ranked_count = work.len();
@@ -3410,12 +3406,12 @@ pub(crate) fn run_native_with_observation(
         results,
         parameters: serde_json::json!({
             "parsedConfig": input.config,
-            "wormholeGateMode": "global-two-joint-files-distinct-checksums-third-tag-explicit-focus",
-            "wormholeEvidenceScope": "global-file-tag-graph; independent-of-candidate-and-retrieval-scope",
-            "wormholeGate": wormhole_gate,
-            "wormholeEligibleRoutes": wormhole_model.eligible_routes,
-            "wormholeAcceptedRoutes": wormhole_model.routes.len(),
-            "wormholeScoring": "continuous-shared-topology-budget; rankingScore=finalScore",
+            "wormholeGateMode": "retired-no-witness-sql",
+            "wormholeEvidenceScope": "none; XW readout retired",
+            "wormholeGate": [],
+            "wormholeEligibleRoutes": 0,
+            "wormholeAcceptedRoutes": 0,
+            "wormholeScoring": "ordinary-hop-one-proxy-only; shared-topology-budget",
             "queryCalibration": {
                 "supersededIds": input.calibration.superseded_ids,
                 "differentiaConfidence": input.calibration.differentia_confidence,
@@ -3423,7 +3419,7 @@ pub(crate) fn run_native_with_observation(
                 "differentiaMixingCap": 0.5
             },
             "wormholeStrongFlowRatio": 0.5,
-            "wormholeWeightReference": "maximum observed non-return ordinary edge flow; observation maximum if absent",
+            "wormholeWeightReference": "unused; XW readout retired",
             "baselineAlgorithm": "rivermemo.conservative-topology-v2.2",
             "fieldResonanceCap": 0.03,
             "fieldSupportPotentialSaturation": 0.02,

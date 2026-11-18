@@ -1,7 +1,7 @@
-//! Auxiliary evidence from observed wormholes, never a replacement scorer.
-//! Strict global admission enables a separate correction key; baseline scores stay intact.
+//! Ordinary one-hop proxy readout. Historical XW models and SQL gates are test fixtures only.
 use super::*;
 
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Route {
@@ -13,12 +13,14 @@ pub(super) struct Route {
     vector: Arc<[f32]>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub(super) struct Model {
     pub routes: Vec<Route>,
     pub eligible_routes: usize,
 }
 
+#[cfg(test)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct GateDecision {
@@ -28,8 +30,13 @@ pub(super) struct GateDecision {
     accepted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     refined_evidence: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rejection_reason: Option<&'static str>,
+    #[serde(skip)]
+    route: Option<Route>,
 }
 
+#[cfg(test)]
 pub(super) fn gate(model: &mut Model, connection: &Connection)
     -> std::result::Result<Vec<GateDecision>, String> {
     // Global graph evidence, independent of candidate and retrieval scopes.
@@ -48,6 +55,8 @@ pub(super) fn gate(model: &mut Model, connection: &Connection)
             .map_err(|e| format!("decode wormhole cross gate: {e}"))?;
         decisions.push(GateDecision {
             source_id: route.source_id, target_id: route.target_id,
+            rejection_reason: (files.len() < 2).then_some("fewer-than-two-joint-files"),
+            route: Some(route.clone()),
             accepted: files.len() >= 2, witness_file_ids: files, refined_evidence: None,
         });
     }
@@ -56,6 +65,7 @@ pub(super) fn gate(model: &mut Model, connection: &Connection)
     Ok(decisions)
 }
  
+#[cfg(test)]
 pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
     connection: &Connection, input: &NativeInput, artifact: &NativeArtifact)
     -> std::result::Result<(), String> {
@@ -89,11 +99,14 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
             evidence.push((id, checksum, tags.into_iter().take(TAG_LIMIT).collect::<HashSet<_>>()));
         }
         let mut witness = None;
+        let mut distinct_content_pair = false;
+        let mut focus_qualified_pair = false;
         if !truncated {
             'pairs: for (i, left) in evidence.iter().enumerate() {
                 for right in evidence.iter().skip(i + 1) {
                     let (Some(a), Some(b)) = (&left.1, &right.1) else { continue };
                     if a.is_empty() || b.is_empty() || a == b { continue; }
+                    distinct_content_pair = true;
                     let other_focus = focus.iter().copied().filter(|id|
                         *id != decision.source_id && *id != decision.target_id
                         && (left.2.contains(id) || right.2.contains(id))).min();
@@ -108,6 +121,7 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
                         && focus.contains(&decision.source_id)
                         && (calibrated || specificity.is_some_and(|value| value >= 0.65));
                     if other_focus.is_none() && !single_specific { continue; }
+                    focus_qualified_pair = true;
                     let anchor = other_focus;
                     let bridge = left.2.intersection(&right.2).copied().filter(|id|
                         *id != decision.source_id && *id != decision.target_id
@@ -124,6 +138,12 @@ pub(super) fn refine(model: &mut Model, decisions: &mut [GateDecision],
             }
         }
         decision.accepted = witness.is_some();
+        // First stage for which no surviving file pair exists.
+        decision.rejection_reason = if decision.accepted { None }
+            else if truncated { Some("witness-scan-truncated") }
+            else if !distinct_content_pair { Some("no-distinct-nonempty-checksum-pair") }
+            else if !focus_qualified_pair { Some("no-focus-qualified-content-pair") }
+            else { Some("no-shared-nonfocus-bridge-on-qualified-pair") };
         decision.refined_evidence = Some(serde_json::json!({
             "witness": witness, "truncated": truncated,
             "examinedFiles": evidence.len(), "fileLimit": FILE_LIMIT, "tagLimit": TAG_LIMIT,
@@ -152,6 +172,7 @@ pub(super) struct Readout {
     pub location: String,
 }
 
+#[cfg(test)]
 pub(super) fn build(input: &NativeInput, vectors: &TagVectorPool, artifact: &NativeArtifact) -> Model {
     // Use the same denominator as the observation display: maximum observed
     // positive raw flow, not a candidate-pool statistic or a second saturation.
@@ -223,6 +244,7 @@ pub(super) fn evaluate(model: &Model, curve: &Curve, artifact: &NativeArtifact) 
     output
 }
 
+#[cfg(test)]
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Correction {
@@ -236,14 +258,21 @@ pub(super) struct Correction {
     pub relative_flow: f64,
 }
 
+#[cfg(test)]
 pub(super) fn correction(model: &Model, curve: &Curve, input: &NativeInput,
+    omega: &OmegaOutput) -> Correction {
+    route_correction(&model.routes, curve, input, omega)
+}
+
+#[cfg(test)]
+fn route_correction(routes: &[Route], curve: &Curve, input: &NativeInput,
     omega: &OmegaOutput) -> Correction {
     let mut best = Correction::default();
     if !input.query_state.complete_observation || omega.omega <= 0.0 { return best; }
     let explicit: HashSet<i64> = input.query_state.field_provenance.iter()
         .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
         .map(|p| p.id).collect();
-    for route in &model.routes {
+    for route in routes {
         // Original observation denominator, never renormalized after admission.
         if route.relative_flow < 0.5 || !explicit.contains(&route.source_id) { continue; }
         let body = clamp01(cosine(&route.vector, &curve.chunk_vector));
@@ -490,9 +519,32 @@ mod gate_regressions {
 /// Candidate-self continuous readout. Ordinary one-hop transport and admitted
 /// XW and proxy routes share a maximum envelope; graph evidence joins through
 /// bounded complement composition inside the same topology budget.
+#[cfg(test)]
 pub(super) fn apply_unified_bonus(
     work: &mut [ScoredWork], model: &Model, input: &NativeInput,
     omega: &OmegaOutput, artifact: &NativeArtifact,
+) -> HashMap<i64, Value> {
+    apply_with_witness_trace(work, model, input, omega, artifact, &[])
+}
+
+#[cfg(test)]
+pub(super) fn apply_with_witness_trace(
+    work: &mut [ScoredWork], model: &Model, input: &NativeInput,
+    omega: &OmegaOutput, artifact: &NativeArtifact, decisions: &[GateDecision],
+) -> HashMap<i64, Value> {
+    apply_proxy_impl(work, input, omega, artifact, Some((model, decisions)))
+}
+
+// Production entry: no route model, witness decisions or database connection.
+pub(super) fn apply_ordinary_proxy(
+    work: &mut [ScoredWork], input: &NativeInput, omega: &OmegaOutput, artifact: &NativeArtifact,
+) -> HashMap<i64, Value> {
+    apply_proxy_impl(work, input, omega, artifact, #[cfg(test)] None)
+}
+
+fn apply_proxy_impl(
+    work: &mut [ScoredWork], input: &NativeInput, omega: &OmegaOutput, artifact: &NativeArtifact,
+    #[cfg(test)] historical: Option<(&Model, &[GateDecision])>,
 ) -> HashMap<i64, Value> {
     let explicit: HashSet<i64> = input.query_state.field_provenance.iter()
         .filter(|p| p.hop == 0 && matches!(p.source_type.as_str(), "core" | "lexical_seed"))
@@ -503,7 +555,6 @@ pub(super) fn apply_unified_bonus(
     let cap = positive(input.config.topology_bonus_cap);
     let mut traces = HashMap::new();
     for item in work {
-        let xw = correction(model, &item.curve, input, omega);
         let mut proxy = 0.0_f64;
         let mut proxy_edge = None;
         if input.query_state.complete_observation {
@@ -527,17 +578,20 @@ pub(super) fn apply_unified_bonus(
                 }
             }
         }
-        let transport = cap * proxy.max(xw.evidence);
-        // Rebuild from immutable raw evidence, not the previous merged result.
-        // Noisy-OR is a bounded complement operator, not an independence claim.
-        let previous = (item.v2_bonus * gate).min(positive(cap - item.path_bonus));
-        let merged = if transport <= 0.0 { previous }
-        else if previous <= 0.0 { transport }
-        else if cap > 0.0 {
-            cap * (1.0 - (1.0 - clamp01(previous / cap))
-                * (1.0 - clamp01(transport / cap)))
-        } else { 0.0 };
-        item.gated_bonus = merged.min(positive(cap - item.path_bonus));
+        // Only ordinary one-hop transport participates in this readout.
+        let transport = cap * proxy;
+        let remaining = positive(cap - item.path_bonus);
+        let previous = (item.v2_bonus * gate).min(remaining);
+        let graph_bonus = |request: f64| {
+            let merged = if request <= 0.0 { previous }
+            else if previous <= 0.0 { request }
+            else if cap > 0.0 {
+                cap * (1.0 - (1.0 - clamp01(previous / cap))
+                    * (1.0 - clamp01(request / cap)))
+            } else { 0.0 };
+            merged.min(remaining)
+        };
+        item.gated_bonus = graph_bonus(transport);
         item.final_score = clamp01(item.pure_score + item.path_bonus
             + item.gated_bonus + item.anchor_bonus);
         item.ranking_score = item.final_score;
@@ -545,11 +599,38 @@ pub(super) fn apply_unified_bonus(
         // and ranking use the numeric fields above directly.
         if !input.include_trace { continue; }
         traces.insert(item.curve.id, serde_json::json!({
-            "mode":"continuous-shared-topology-budget", "active": xw.eligible || proxy > 0.0,
+            "mode":"ordinary-hop-one-proxy-only", "active":proxy > 0.0,
+            "proxyEvidence":proxy, "proxyEdge":proxy_edge, "previousGraphBonus":previous,
+            "transportRequested":transport, "appliedGraphBonus":item.gated_bonus,
+            "finalScore":item.final_score
+        }));
+        #[cfg(test)]
+        if let Some((model, decisions)) = historical {
+        let xw = correction(model, &item.curve, input, omega);
+        let with_xw = graph_bonus(cap * proxy.max(xw.evidence));
+        let baseline = clamp01(item.pure_score + item.path_bonus + with_xw + item.anchor_bonus);
+        // One counterfactual per rejected route. Leave other rejected routes
+        // out and keep the existing accepted-route baseline for attribution.
+        let rejected: Vec<_> = decisions.iter().filter(|d| !d.accepted).filter_map(|d| {
+            let route = d.route.as_ref()?;
+            let evidence = route_correction(std::slice::from_ref(route), &item.curve, input, omega);
+            let request = cap * proxy.max(xw.evidence).max(evidence.evidence);
+            let score = clamp01(item.pure_score + item.path_bonus + graph_bonus(request) + item.anchor_bonus);
+            Some(serde_json::json!({
+                "sourceId":route.source_id, "targetId":route.target_id,
+                "rejectionReason":d.rejection_reason, "candidateEvidence":evidence,
+                "finalScoreIfAdmitted":score, "deltaVsWithXw":score - baseline
+            }))
+        }).collect();
+        traces.insert(item.curve.id, serde_json::json!({
+            "rejectedRouteShadows":rejected,
+            "mode":"xw-shadow-proxy-only", "active": proxy > 0.0,
+            "finalScoreWithXw":baseline, "xwFinalScoreDelta":baseline - item.final_score,
             "wormhole":xw, "proxyEvidence":proxy, "proxyEdge":proxy_edge,
             "previousGraphBonus":previous, "transportRequested":transport,
             "appliedGraphBonus":item.gated_bonus, "finalScore":item.final_score
         }));
+        }
     }
     traces
 }
@@ -640,6 +721,45 @@ mod score_contract_fixture_tests {
     }
 
     #[test]
+    fn rejected_route_shadow_matches_single_admission_without_changing_ranking() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE file_tags(file_id INTEGER, tag_id INTEGER);
+            CREATE TABLE files(id INTEGER PRIMARY KEY, checksum TEXT);
+            INSERT INTO files VALUES (10,'same'),(11,'same');
+            INSERT INTO file_tags VALUES (10,1),(10,2),(10,9),(11,1),(11,2),(11,9);").unwrap();
+        let mut input: NativeInput = serde_json::from_value(json!({
+            "includeTrace":true, "query":{"vector":[1,0]}, "queryState":{
+                "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}]
+            }
+        })).unwrap();
+        let omega = compute_omega(&input);
+        let artifact = NativeArtifact::default();
+        let route = Route { source_id:1, target_id:2, flow:1.0, relative_flow:1.0,
+            vector:Arc::from(vec![1.0_f32,0.0]) };
+        let admitted = Model { eligible_routes:1, routes:vec![route.clone()] };
+        let mut model = Model { eligible_routes:1, routes:vec![route] };
+        let mut decisions = gate(&mut model,&db).unwrap();
+        refine(&mut model,&mut decisions,&db,&input,&artifact).unwrap();
+        assert!(model.routes.is_empty());
+        assert_eq!(decisions[0].rejection_reason, Some("no-distinct-nonempty-checksum-pair"));
+        let mut items = vec![candidate(1,0.5,true),candidate(2,0.5,false)];
+        let reference = apply_unified_bonus(&mut items,&admitted,&input,&omega,&artifact);
+        let traces = apply_with_witness_trace(&mut items,&model,&input,&omega,&artifact,&decisions);
+        for item in &items {
+            let trace = &traces[&item.curve.id];
+            let shadow = &trace["rejectedRouteShadows"][0];
+            assert_eq!(shadow["finalScoreIfAdmitted"],reference[&item.curve.id]["finalScoreWithXw"]);
+            assert_eq!(shadow["deltaVsWithXw"].as_f64().unwrap() > 0.0,item.curve.id == 1);
+            assert_eq!(trace["finalScoreWithXw"],0.5);
+            assert_eq!(item.final_score,0.5);
+            assert_eq!(item.ranking_score,0.5);
+        }
+        input.include_trace = false;
+        assert!(apply_with_witness_trace(&mut items,&model,&input,&omega,&artifact,&decisions).is_empty());
+        assert!(items.iter().all(|item| item.ranking_score == 0.5));
+    }
+
+    #[test]
     fn public_dataset_preserves_rrf_order_and_candidate_quality_scores() {
         let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/rrf_score_contract.json")).unwrap();
         let omega_value = fixture["omega"].as_f64().unwrap();
@@ -714,7 +834,7 @@ mod score_contract_fixture_tests {
         let mut work = vec![candidate(1,0.5,true)];
         apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
         let score = work[0].final_score;
-        assert!(score > 0.5);
+        assert_eq!(score, 0.5, "XW alone must not change the ranked score");
         assert_eq!(score.to_bits(),work[0].ranking_score.to_bits());
         assert!(work[0].path_bonus+work[0].gated_bonus <= input.config.topology_bonus_cap);
         work.push(candidate(2,0.9,false));
@@ -768,7 +888,7 @@ mod score_contract_fixture_tests {
     #[test]
     fn complementary_graph_and_transport_are_bounded_and_idempotent() {
         let input: NativeInput = serde_json::from_value(json!({
-            "query":{"vector":[1,0]}, "queryState":{
+            "includeTrace":true, "query":{"vector":[1,0]}, "queryState":{
                 "completeObservation":true,
                 "fieldProvenance":[{"id":1,"hop":0,"sourceType":"core"}]
             }
@@ -784,8 +904,11 @@ mod score_contract_fixture_tests {
         let cap=input.config.topology_bonus_cap;
         work[0].v2_bonus=0.5*cap;
         work[0].gated_bonus=0.5*cap;
-        apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
-        assert!((work[0].gated_bonus-cap*0.8125).abs()<1e-14);
+        let traces = apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
+        assert_eq!(work[0].gated_bonus,cap*0.5);
+        let trace = &traces[&1];
+        assert!((trace["finalScoreWithXw"].as_f64().unwrap()-(0.5+cap*0.8125)).abs()<1e-14);
+        assert!((trace["xwFinalScoreDelta"].as_f64().unwrap()-cap*0.3125).abs()<1e-14);
         let bits=work[0].final_score.to_bits();
         for _ in 0..5 {
             apply_unified_bonus(&mut work,&model,&input,&omega,&NativeArtifact::default());
@@ -821,12 +944,15 @@ mod score_contract_fixture_tests {
         };
         let score = |input: &NativeInput, graph: &NativeArtifact, omega: &OmegaOutput| {
             let mut items = vec![candidate(1,0.5,true)];
-            apply_unified_bonus(&mut items,&Model::default(),input,omega,graph);
+            apply_ordinary_proxy(&mut items,input,omega,graph);
             assert_eq!(items[0].ranking_score,items[0].final_score);
             assert!(items[0].path_bonus+items[0].gated_bonus <= input.config.topology_bonus_cap);
             items[0].final_score
         };
         assert!(score(&input,&graph,&omega)>0.5);
+        input.query_state.river_edges[0].wormhole = true;
+        assert_eq!(score(&input,&graph,&omega),0.5, "Sense wormholes get no proxy reward");
+        input.query_state.river_edges[0].wormhole = false;
         assert_eq!(score(&input,&NativeArtifact::default(),&omega),0.5);
         input.query_state.river_edges[0].immediate_return=true;
         assert_eq!(score(&input,&graph,&omega),0.5);
