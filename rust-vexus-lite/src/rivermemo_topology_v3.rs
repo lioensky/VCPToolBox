@@ -2710,22 +2710,11 @@ fn assign_v3_scores(
         item.v2_bonus = clamp01(requested.min(positive(config.topology_bonus_cap)));
     }
 
-    // Absolute activation: unrelated candidates cannot change eligibility.
-    let threshold = clamp01(config.anchor_activation_floor);
     let graph_gate = omega.omega.powf(config.omega_gamma.max(0.0));
 
     for item in work.iter_mut() {
-        let activation = if item.anchor.strength <= threshold {
-            0.0
-        } else if config.anchor_saturation - threshold > 1e-12 {
-            let normalized = clamp01(
-                (item.anchor.strength - threshold) / (config.anchor_saturation - threshold),
-            );
-            normalized * normalized * (3.0 - 2.0 * normalized)
-        } else {
-            1.0
-        };
-        item.anchor_bonus = config.anchor_bonus_cap * activation;
+        // Keep anchor observations for roles and traces, never as a ranking reward.
+        item.anchor_bonus = 0.0;
         if omega.omega < config.struct_role_min_omega
             && item.role == "structural_explanation"
         {
@@ -2734,7 +2723,7 @@ fn assign_v3_scores(
 
         item.gated_bonus = (item.v2_bonus * graph_gate)
             .min(positive(config.topology_bonus_cap - item.path_bonus));
-        item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus + item.anchor_bonus);
+        item.final_score = clamp01(item.pure_score + item.path_bonus + item.gated_bonus);
         item.ranking_score = item.final_score;
     }
 }
@@ -3295,7 +3284,13 @@ pub(crate) fn run_native_with_observation(
         .collect();
     let compute_ms = compute_started.elapsed().as_secs_f64() * 1000.0;
 
-    let output = NativeOutput {
+    let retired_controls = [
+        "conditionalBandwidth", "conditionalClosureBandwidth", "conditionalDirectBandwidth",
+        "minimumPeers", "minimumEffectivePeers", "innovationConfidenceZ", "innovationScale",
+        "anchorActivationZ", "anchorFrontierContrast", "anchorFrontierAbsFloor",
+        "reliabilitySeedSaturation", "anchorBonusCap", "anchorActivationFloor", "anchorSaturation",
+    ];
+    let mut output = NativeOutput {
         schema: RESULT_SCHEMA.to_string(),
         algorithm_version: ALGORITHM_VERSION.to_string(),
         artifact_sig: artifact_sig.to_string(),
@@ -3364,12 +3359,10 @@ pub(crate) fn run_native_with_observation(
             "softMatchDiscount": 0.65,
             "graphConfidence": "sqrt(branchCoverage*meanClosure*nodeAlignmentScore)",
             "graphReward": "candidate-self-no-role-multiplier",
-            "retiredControls": ["conditionalBandwidth", "conditionalClosureBandwidth",
-                "conditionalDirectBandwidth", "minimumPeers", "minimumEffectivePeers",
-                "innovationConfidenceZ", "innovationScale", "anchorActivationZ",
-                "anchorFrontierContrast", "anchorFrontierAbsFloor", "reliabilitySeedSaturation"]
+            "retiredControls": retired_controls
         }),
     };
+    output.parameters["anchorReward"] = Value::from("retired-zero-unified-field");
     serde_json::to_string(&output)
         .map_err(|error| format!("encode RiverMemo native output failed: {}", error))
 }
@@ -3832,14 +3825,15 @@ mod stoploss_tests {
     }
 
     #[test]
-    fn absolute_activation_preserves_multiple_answers_and_score_accounting() {
+    fn retired_anchor_bonus_is_zero_even_when_config_passes_legacy_cap() {
+        let config: NativeConfig = serde_json::from_str(r#"{"anchorBonusCap":0.1}"#).unwrap();
         let mut candidates = vec![work(1, 0.15), work(1, 0.15), work(0, 0.0)];
-        assign_v3_scores(&mut candidates, "narrative", &omega(), &NativeConfig::default());
+        assign_v3_scores(&mut candidates, "narrative", &omega(), &config);
         for item in &candidates[..2] {
             assert_eq!(item.role, "direct_answer");
-            assert!(item.anchor_bonus > 0.0);
+            assert_eq!(item.anchor_bonus, 0.0);
             assert!((item.final_score - item.pure_score - item.path_bonus
-                - item.gated_bonus - item.anchor_bonus).abs() < 1e-12);
+                - item.gated_bonus).abs() < 1e-12);
         }
         assert_ne!(candidates[2].role, "direct_answer");
         let prior = candidates[0].anchor_bonus;
