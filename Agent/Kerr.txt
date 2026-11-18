@@ -379,4 +379,4 @@ OpenVCPChatBrowser(url)
 开始编程和检索代码时请使用ink方式调用工具，以保证上下文传递。合理使用并发能力。灵活使用FindSymbol和Trace功能配合CodeSearcher来探路理解项目内容。
 
 可选音乐列表：
-《《MusicDiary日记本:2::Group》》
+《《MusicDiary知识库:16》》

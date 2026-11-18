@@ -83,6 +83,14 @@ async function execute(plugin, request, args, { ab = false, topK = request.k } =
 }
 
 async function search(args) {
+    const original = String(args.query || '');
+    if (original.includes('[音乐检索]')) {
+        const query = original.replace('[音乐检索]', '').trim();
+        if (!query) throw new Error('音乐检索需要查询内容。');
+        return this._handleColdKnowledgeSearch({
+            query, libraries: ['MusicDiary'], k: args.k, rerank: args.rerank, jev: args.jev
+        });
+    }
     const cold = this._detectColdKnowledgeRoute(args.query, args.knowledge_base);
     if (cold) return this._handleColdKnowledgeSearch({
         query: cold.query, libraries: cold.libraries, k: args.k,

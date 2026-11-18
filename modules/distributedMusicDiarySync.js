@@ -1,7 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 
-const MUSIC_DIARY_DIR = path.join(__dirname, '..', 'dailynote', 'MusicDiary');
+const MUSIC_DIARY_DIR = path.resolve(process.env.TDB_KNOWLEDGE_ROOT_PATH || path.join(__dirname, '..', 'knowledge'), 'MusicDiary');
 const GARBLED_CHARS = new Set(['乧', '偄', '傛', '偹', '偠', '傞', '怣', '｢', 'ﾊ', 'ｿ', 'ﾈ']);
 
 function sanitizeFilename(name) {
