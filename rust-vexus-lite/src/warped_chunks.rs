@@ -12,6 +12,14 @@ const RULE: &str = "chunk-axis-alignment-quantiles-v2";
 const MAGIC: &[u8; 8] = b"VCPWC001";
 const MAX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
+const CONVERTED_MAGIC: &[u8; 8] = b"VCPWI001";
+/// In-scope deltas beyond this count are converted into the frozen coordinates of the
+/// trained generation instead of being read and scored exactly on every query.
+const CONVERT_ABOVE: usize = 32;
+/// Conversions performed by one query; the remainder keeps exact delta scoring.
+const CONVERT_BATCH: usize = 1024;
+/// Size limit of the converted sidecar. Deltas that no longer fit keep exact scoring.
+const CONVERTED_MAX_BYTES: usize = if cfg!(test) { 256 * 1024 } else { MAX_BYTES };
 static SNAPSHOT_IO: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -35,12 +43,24 @@ struct Header {
     versions: std::collections::BTreeMap<i64, (i64, i64)>,
 }
 
+/// Sidecar of one trained snapshot: the converted tail of its index plus the version
+/// of the tail node that represents each converted Chunk.
+#[derive(Serialize, Deserialize)]
+struct ConvertedHeader {
+    base: String,
+    versions: std::collections::BTreeMap<i64, (i64, i64)>,
+}
+
 pub(super) struct WarpedChunks {
     identity: Identity,
     mean: Vec<f64>,
     versions: std::collections::BTreeMap<i64, (i64, i64)>,
     alignment_quantiles: Vec<f64>,
     index: WarpedFieldIndex,
+    // Converted since training. The trained fields above never change within a generation.
+    converted: std::collections::BTreeMap<i64, (i64, i64)>,
+    // Digest of the trained snapshot file, which binds the converted sidecar to it.
+    base: String,
 }
 
 fn configuration() -> WarpedFieldConfig {
@@ -122,16 +142,137 @@ fn read_vector(connection: &Connection, id: u64, dimension: usize) -> Result<Vec
     Ok(vector)
 }
 
+fn rule_radius(rule: &str, mean: &[f64], quantiles: &[f64], row: &[f32]) -> Result<f32, String> {
+    if rule == LEGACY_RULE { return radius(row, mean); }
+    Ok(quantile_radius(alignment(row, mean)?, quantiles))
+}
+
+fn read_limited(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            if file.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES as u64 {
+                return Err("warped Chunk snapshot exceeds size limit".into());
+            }
+            let mut bytes = Vec::new();
+            file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            Ok(Some(bytes))
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn publish(path: &Path, bytes: Vec<u8>) -> Result<(), String> {
+    let staging = crate::CheckpointStaging::new(path).map_err(|e| e.to_string())?;
+    std::fs::write(staging.path(), bytes).map_err(|e| e.to_string())?;
+    crate::sync_index_file(staging.path()).map_err(|e| e.to_string())?;
+    crate::publish_index_file(staging.path(), path).map_err(|e| e.to_string())
+}
+
+/// A trained snapshot ends with the SHA-256 of its content; that digest names it.
+fn snapshot_digest(bytes: &[u8]) -> String {
+    bytes[bytes.len().saturating_sub(32)..].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 impl WarpedChunks {
     fn radius(&self, row: &[f32]) -> Result<f32, String> {
-        if self.identity.rule == LEGACY_RULE { return radius(row, &self.mean); }
-        Ok(quantile_radius(alignment(row, &self.mean)?, &self.alignment_quantiles))
+        rule_radius(&self.identity.rule, &self.mean, &self.alignment_quantiles, row)
+    }
+
+    /// Version of the node that represents a Chunk: its converted tail node if any,
+    /// otherwise the trained baseline.
+    fn version(&self, id: i64) -> Option<&(i64, i64)> {
+        self.converted.get(&id).or_else(|| self.versions.get(&id))
+    }
+
+    fn converted_path(identity: &Identity) -> Option<PathBuf> {
+        Self::path(identity).map(|path| path.with_extension("vcpwi"))
+    }
+
+    /// Tail nodes the sidecar can still take: payload per node plus a bound for its
+    /// version entry. Checked before converting, so a full sidecar never fails a query.
+    fn conversion_room(&self) -> usize {
+        let node = 48 + 16 * self.identity.dimension.div_ceil(64) + 72;
+        ((CONVERTED_MAX_BYTES - 4096) / node)
+            .saturating_sub(self.index.ids().len() - self.index.trained_len())
+    }
+
+    /// Converts live deltas into the frozen coordinates of this trained generation:
+    /// same mean axis, radius rule and hot code as the trained nodes. Each original is
+    /// read once. An invalid original fails the query exactly as exact delta scoring
+    /// does, and a failed batch leaves the field unchanged.
+    fn convert(&mut self, connection: &Connection, rows: &HashMap<i64, ChunkHeader>, ids: &[u64])
+        -> Result<(), String> {
+        let Self { identity, mean, alignment_quantiles, index, converted, .. } = self;
+        let first = index.ids().len();
+        let slots: Vec<_> = (first..first + ids.len()).collect();
+        let mut failure = None;
+        index.convert_batch(ids, &slots, |slot, output| {
+            let loaded = read_vector(connection, ids[slot - first], identity.dimension)
+                .and_then(|row| Ok((rule_radius(&identity.rule, mean, alignment_quantiles, &row)?, row)));
+            match loaded {
+                Ok((radius, row)) => { output.extend(row); Some(radius) },
+                Err(error) => { failure = Some(error); None },
+            }
+        }).map_err(|e| failure.unwrap_or_else(|| e.to_string()))?;
+        for &id in ids {
+            let row = &rows[&(id as i64)];
+            converted.insert(row.id, (row.vector_version, row.file_id));
+        }
+        Ok(())
+    }
+
+    /// The tail goes to its own file; the trained snapshot is never rewritten.
+    fn publish_converted(&self) -> Result<(), String> {
+        let Some(path) = Self::converted_path(&self.identity) else { return Ok(()); };
+        let header = serde_json::to_vec(&ConvertedHeader {
+            base: self.base.clone(), versions: self.converted.clone(),
+        }).map_err(|e| e.to_string())?;
+        let mut bytes = CONVERTED_MAGIC.to_vec();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&self.index.converted_bytes());
+        let digest = Sha256::digest(&bytes);
+        bytes.extend_from_slice(&digest);
+        if header.len() > MAX_HEADER_BYTES || bytes.len() > CONVERTED_MAX_BYTES {
+            return Err("warped Chunk converted tail exceeds size limit".into());
+        }
+        let _io = SNAPSHOT_IO.lock().map_err(|e| e.to_string())?;
+        publish(&path, bytes)
+    }
+
+    /// Replays the tail published for exactly this trained snapshot. A sidecar of another
+    /// generation is stale and ignored; damage to a matching one is explicit.
+    fn restore_converted(&mut self) -> Result<(), String> {
+        let Some(bytes) = Self::converted_path(&self.identity)
+            .map(|path| read_limited(&path)).transpose()?.flatten() else { return Ok(()); };
+        if bytes.len() < 48 || &bytes[..8] != CONVERTED_MAGIC {
+            return Err("warped Chunk converted tail magic/length".into());
+        }
+        let end = bytes.len() - 32;
+        if Sha256::digest(&bytes[..end])[..] != bytes[end..] {
+            return Err("warped Chunk converted tail digest mismatch".into());
+        }
+        let h = usize::try_from(u64::from_le_bytes(bytes[8..16].try_into().unwrap()))
+            .ok().filter(|&h| h <= end - 16 && h <= MAX_HEADER_BYTES)
+            .ok_or("warped Chunk converted tail header length")?;
+        let header: ConvertedHeader = serde_json::from_slice(&bytes[16..16+h]).map_err(|e| e.to_string())?;
+        if header.base != self.base { return Ok(()); }
+        self.index.restore_converted(&bytes[16+h..end]).map_err(|e| e.to_string())?;
+        let tail: HashSet<_> = self.index.ids()[self.index.trained_len()..].iter().copied().collect();
+        // Originals are read at ids()[slot], so every cold slot must be its node number.
+        if self.versions.is_empty() || !self.index.identity_slots() || tail.len() != header.versions.len()
+            || tail.iter().any(|&id| id > i64::MAX as u64 || !header.versions.contains_key(&(id as i64))) {
+            return Err("warped Chunk converted tail identity mismatch".into());
+        }
+        self.converted = header.versions;
+        Ok(())
     }
 
     // Managed payload only; excludes BTree allocator/node bookkeeping and RSS.
     fn hot_bytes(&self) -> usize {
         self.index.hot_bytes() + self.mean.capacity() * std::mem::size_of::<f64>()
-            + self.versions.len() * std::mem::size_of::<(i64, (i64, i64))>()
+            + (self.versions.len() + self.converted.len()) * std::mem::size_of::<(i64, (i64, i64))>()
             + self.alignment_quantiles.capacity() * std::mem::size_of::<f64>()
     }
 
@@ -208,7 +349,8 @@ impl WarpedChunks {
             return Err("warped Chunk snapshot identity/configuration mismatch".into());
         }
         Ok(Some(Self { identity: header.identity, mean: header.mean, versions: header.versions,
-            alignment_quantiles: header.alignment_quantiles, index }))
+            alignment_quantiles: header.alignment_quantiles, index,
+            converted: Default::default(), base: String::new() }))
     }
 
     fn load_or_build(connection: &Connection, identity: Identity, ids: &[u64], force: bool)
@@ -217,20 +359,12 @@ impl WarpedChunks {
         // across independent runtime instances in this process (not across processes).
         let _io = SNAPSHOT_IO.lock().map_err(|e| e.to_string())?;
         let path = Self::path(&identity);
-        if let Some(path) = path.as_ref().filter(|_| !force) {
-            match std::fs::File::open(path) {
-                Ok(file) => {
-                    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES as u64 {
-                        return Err("warped Chunk snapshot exceeds size limit".into());
-                    }
-                    let mut bytes = Vec::new();
-                    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-                    if let Some(field) = Self::decode(&bytes, &identity)? {
-                        return Ok((field, "snapshot"));
-                    }
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
-                Err(e) => return Err(e.to_string()),
+        if let Some(bytes) = path.as_ref().filter(|_| !force)
+            .map(|path| read_limited(path)).transpose()?.flatten() {
+            if let Some(mut field) = Self::decode(&bytes, &identity)? {
+                field.base = snapshot_digest(&bytes);
+                field.restore_converted()?;
+                return Ok((field, "snapshot"));
             }
         }
         let mut mean = vec![0.0; identity.dimension];
@@ -264,13 +398,16 @@ impl WarpedChunks {
                 .map_err(|e|e.to_string())?;
             versions.insert(id as i64, version);
         }
-        let field = Self { identity, mean, versions, alignment_quantiles, index };
+        let mut field = Self { identity, mean, versions, alignment_quantiles, index,
+            converted: Default::default(), base: String::new() };
         if let Some(path) = path {
             let bytes = field.encode()?;
-            let staging = crate::CheckpointStaging::new(&path).map_err(|e| e.to_string())?;
-            std::fs::write(staging.path(), bytes).map_err(|e| e.to_string())?;
-            crate::sync_index_file(staging.path()).map_err(|e| e.to_string())?;
-            crate::publish_index_file(staging.path(), &path).map_err(|e| e.to_string())?;
+            field.base = snapshot_digest(&bytes);
+            publish(&path, bytes)?;
+            // A new trained generation supersedes the tail converted for the previous one.
+            // Its digest already makes a leftover sidecar stale, so removal is best effort
+            // and cannot turn a published training into a failure.
+            let _ = std::fs::remove_file(path.with_extension("vcpwi"));
         }
         Ok((field, "built"))
     }
@@ -298,16 +435,40 @@ impl GlobalChunks {
         }
         let prepared = self.prepare_warped(connection, false)?;
         let source = prepared["source"].as_str().unwrap_or("memory");
-        let field = self.warped.as_ref().unwrap();
         let load_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let qr = field.radius(query)?;
-        let delta: HashSet<_> = allowed.iter().copied().filter(|&id| {
+        let field = self.warped.as_mut().unwrap();
+        let mut delta: HashSet<_> = allowed.iter().copied().filter(|&id| {
             let row = &self.rows[&(id as i64)];
-            field.versions.get(&row.id) != Some(&(row.vector_version, row.file_id))
+            field.version(row.id) != Some(&(row.vector_version, row.file_id))
         }).collect();
-        let (max_visits, max_expansions) = warped_size_budget(field.index.ids().len());
+        // Bound the exact delta work of a query: beyond the buffer, the oldest in-scope
+        // deltas are converted once and from then on scored from their hot codes. A
+        // legacy snapshot has no version baseline and keeps conservative exact scoring.
+        let converting = Instant::now();
+        let mut converted_now = 0;
+        if allowed.len() > 128 && delta.len() > CONVERT_ABOVE && !field.versions.is_empty() {
+            let mut batch: Vec<_> = delta.iter().copied().collect();
+            batch.sort_unstable();
+            batch.truncate(CONVERT_BATCH.min(field.conversion_room()));
+            if !batch.is_empty() {
+                field.convert(connection, &self.rows, &batch)?;
+                if let Err(error) = field.publish_converted() {
+                    // Memory must not run ahead of the published tail: reload on the next query.
+                    self.warped = None;
+                    return Err(error);
+                }
+                for id in &batch { delta.remove(id); }
+                converted_now = batch.len();
+            }
+        }
+        let convert_ms = converting.elapsed().as_secs_f64() * 1000.0;
+        let field = self.warped.as_ref().unwrap();
+        let qr = field.radius(query)?;
+        let (max_visits, max_expansions) = warped_size_budget(field.index.trained_len());
         let mut diagnostics = serde_json::json!({
-            "used":"warped_chunks","source":source,"rule":field.identity.rule,"nodes":field.index.ids().len(),
+            "used":"warped_chunks","source":source,"rule":field.identity.rule,"nodes":field.index.trained_len(),
+            "convertedNodes":field.index.ids().len() - field.index.trained_len(),
+            "retiredNodes":field.index.retired_count(),"convertedNow":converted_now,"convertMs":convert_ms,
             "rerankBudget":rerank_budget(limit),
             "liveNodes":ids.len(),"deltaChunks":delta.len(),"geometryFacts":field.identity.facts,
             "scopeChunks":allowed.len(),"queryRadius":qr,"geometryCheckMs":load_ms,
@@ -344,7 +505,8 @@ impl GlobalChunks {
             diagnostics["path"] = serde_json::json!("global-warped-ann");
             diagnostics["visited"] = serde_json::json!(output.stats.visited);
             diagnostics["expanded"] = serde_json::json!(output.stats.expanded);
-            diagnostics["coldReads"] = serde_json::json!(output.stats.cold_reads + delta.len());
+            diagnostics["convertedScored"] = serde_json::json!(output.stats.converted_scored);
+            diagnostics["coldReads"] = serde_json::json!(output.stats.cold_reads + delta.len() + converted_now);
             // Only live vector deltas read originals here. Memory stays bounded
             // by the candidate budget; no FP32 corpus and no per-write graph build.
             let mut hits = output.neighbors;
@@ -672,6 +834,250 @@ mod tests {
         drop(first);drop(second);drop(db);drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    fn add(db: &Connection, ids: std::ops::RangeInclusive<usize>, facts: &str) {
+        for id in ids {
+            let bytes: Vec<_> = vector(id).iter().flat_map(|v|v.to_le_bytes()).collect();
+            db.execute("INSERT INTO chunks VALUES(?1,?2,'[2026-11-17] new',?3,1,1)",
+                rusqlite::params![id as i64, if id % 2 == 0 {1} else {2}, bytes]).unwrap();
+        }
+        db.execute("UPDATE kbm_runtime_meta SET value=?1 WHERE key='global_chunk_facts'", [facts]).unwrap();
+    }
+
+    /// Independent truth: every live original scored exactly in the frozen coordinates.
+    fn exact(table: &GlobalChunks, db: &Connection, query: &[f32]) -> Vec<(i64, f64)> {
+        let field = table.warped.as_ref().unwrap();
+        let qr = field.radius(query).unwrap();
+        let mut all: Vec<_> = table.rows.keys().map(|&id| {
+            let row = read_vector(db, id as u64, 8).unwrap();
+            (id, field.index.exact_distance_at_radius(query, qr, &row, field.radius(&row).unwrap()).unwrap())
+        }).collect();
+        all.sort_by(|a,b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        all
+    }
+
+    fn numbers(stats: &serde_json::Value, keys: &[&str]) -> Vec<u64> {
+        keys.iter().map(|key| stats[key].as_u64().unwrap()).collect()
+    }
+
+    /// Every hit carries the exact score of its current original, in ascending order.
+    fn assert_exact(table: &GlobalChunks, db: &Connection, query: &[f32], hits: &[(i64, f64)], live: usize) {
+        let truth = exact(table, db, query);
+        assert_eq!(truth.len(), live);
+        for hit in hits {
+            let expected = truth.iter().find(|row| row.0 == hit.0).unwrap();
+            assert_eq!(hit.1.to_bits(), expected.1.to_bits());
+        }
+        assert!(hits.windows(2).all(|w| w[0].1 <= w[1].1));
+    }
+
+    #[test]
+    fn deltas_beyond_the_buffer_are_converted_once_and_keep_their_exact_scores() {
+        let db = fixture(200);
+        let mut table = GlobalChunks::empty(8, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        table.prepare_warped(&db, false).unwrap();
+        let frozen = table.warped.as_ref().unwrap().encode().unwrap();
+        let query = vector(997);
+        let bytes: Vec<_> = query.iter().flat_map(|v|v.to_le_bytes()).collect();
+        add(&db, 201..=1300, "2");
+        db.execute("UPDATE chunks SET vector=?1,vector_version=2 WHERE id=3", [&bytes]).unwrap();
+        db.execute_batch("DELETE FROM chunks WHERE id=2").unwrap();
+        table.synchronize(&db).unwrap();
+        let keys = ["deltaChunks", "convertedNow", "convertedNodes", "retiredNodes", "nodes"];
+        // A tiny scope, and a scope whose deltas fit the buffer, keep exact delta scoring.
+        let (_, stats) = table.search_warped(&db, &query, 10,
+            |r| r.id <= 60 || (201..=260).contains(&r.id)).unwrap();
+        assert_eq!(stats["path"], "scope-exact-warped");
+        assert_eq!(numbers(&stats, &keys), [61, 0, 0, 0, 200]);
+        let (_, stats) = table.search_warped(&db, &query, 10,
+            |r| r.id <= 180 || (201..=231).contains(&r.id)).unwrap();
+        assert_eq!(stats["path"], "global-warped-ann");
+        assert_eq!(numbers(&stats, &keys), [CONVERT_ABOVE as u64, 0, 0, 0, 200]);
+        // 1101 global deltas: one query converts the oldest CONVERT_BATCH, the next the rest.
+        let (_, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [77, CONVERT_BATCH as u64, CONVERT_BATCH as u64, 1, 200]);
+        let (hits, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [0, 77, 1101, 1, 200]);
+        let (again, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [0, 0, 1101, 1, 200]);
+        assert_eq!(stats["source"], "memory");
+        // No per-query delta reads remain: originals are touched only inside the rerank
+        // budget, while every converted node is still scored from its hot code.
+        assert!(stats["coldReads"].as_u64().unwrap() <= rerank_budget(100) as u64);
+        assert_eq!(stats["convertedScored"], 1101);
+        assert_eq!(hits, again);
+        // Converted nodes return exactly the score that exact delta scoring gave them.
+        assert_exact(&table, &db, &query, &hits, 1299);
+        assert_eq!((hits[0].0, hits.iter().filter(|hit| hit.0 == 3).count()), (3, 1));
+        assert!(!hits.iter().any(|hit| hit.0 == 2));
+        assert!(hits.iter().any(|hit| hit.0 > 200));
+        // A converted Chunk that changes again is a delta once more: its tail node stops
+        // answering and the new original is scored exactly. A deleted one disappears.
+        db.execute("UPDATE chunks SET vector=?1,vector_version=2 WHERE id=250", [&bytes]).unwrap();
+        db.execute_batch(
+            "DELETE FROM chunks WHERE id=251;
+             UPDATE kbm_runtime_meta SET value='3' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        table.synchronize(&db).unwrap();
+        let (hits, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [1, 0, 1101, 1, 200]);
+        assert_exact(&table, &db, &query, &hits, 1298);
+        assert_eq!((hits[0].0, hits[1].0, hits.iter().filter(|hit| hit.0 == 250).count()), (3, 250, 1));
+        assert!(!hits.iter().any(|hit| hit.0 == 251));
+        // Beyond the buffer the changed Chunks are converted again and their older tail
+        // nodes retire, so each identity is still answered by exactly one node.
+        db.execute_batch(
+            "UPDATE chunks SET vector_version=vector_version+1 WHERE id BETWEEN 300 AND 339;
+             UPDATE kbm_runtime_meta SET value='4' WHERE key='global_chunk_facts';"
+        ).unwrap();
+        table.synchronize(&db).unwrap();
+        let (hits, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [0, 41, 1142, 42, 200]);
+        assert_exact(&table, &db, &query, &hits, 1298);
+        assert_eq!((hits[0].0, hits[1].0), (3, 250));
+        let mut returned: Vec<_> = hits.iter().map(|hit| hit.0).collect();
+        returned.sort_unstable();
+        returned.dedup();
+        assert_eq!(returned.len(), hits.len());
+        // The trained generation, and therefore its snapshot, is still byte-identical.
+        assert_eq!(table.warped.as_ref().unwrap().encode().unwrap(), frozen);
+        // Explicit training folds every converted node into a fresh generation.
+        assert_eq!(table.prepare_warped(&db, true).unwrap()["nodes"], 1298);
+        let (_, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &keys), [0, 0, 0, 0, 1298]);
+    }
+
+    #[test]
+    fn a_full_sidecar_stops_conversion_and_exact_scoring_takes_over() {
+        let root = std::env::temp_dir().join(format!("warped-converted-full-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = fixture(200);
+        source.execute_batch("COMMIT").unwrap();
+        let path = root.join("test.sqlite");
+        source.execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let mut table = GlobalChunks::empty(8, "test").unwrap();
+        table.synchronize(&db).unwrap();
+        table.prepare_warped(&db, false).unwrap();
+        let room = table.warped.as_ref().unwrap().conversion_room();
+        assert!(room > CONVERT_BATCH && room < 2 * CONVERT_BATCH);
+        add(&db, 201..=2400, "2");
+        table.synchronize(&db).unwrap();
+        let query = vector(997);
+        let keys = ["deltaChunks", "convertedNow", "convertedNodes"];
+        let mut last = Vec::new();
+        // Two queries fill the sidecar; later ones convert nothing, still succeed and
+        // still score the 2200 - room deltas that did not fit exactly.
+        for (round, expected) in [[2200 - CONVERT_BATCH, CONVERT_BATCH, CONVERT_BATCH],
+            [2200 - room, room - CONVERT_BATCH, room], [2200 - room, 0, room], [2200 - room, 0, room]]
+            .into_iter().enumerate() {
+            let (hits, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+            assert_eq!(numbers(&stats, &keys), expected.map(|v| v as u64), "round {round}");
+            assert_exact(&table, &db, &query, &hits, 2400);
+            if round == 3 { assert_eq!(hits, last); }
+            last = hits;
+        }
+        let identity = &table.warped.as_ref().unwrap().identity;
+        let sidecar = WarpedChunks::converted_path(identity).unwrap();
+        assert!(std::fs::metadata(&sidecar).unwrap().len() as usize <= CONVERTED_MAX_BYTES);
+        db.execute_batch("COMMIT").unwrap();
+        drop(table);
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let mut restored = GlobalChunks::empty(8, "test").unwrap();
+        restored.synchronize(&db).unwrap();
+        let (hits, stats) = restored.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "snapshot");
+        assert_eq!(numbers(&stats, &keys), [2200 - room, 0, room].map(|v| v as u64));
+        assert_eq!(hits, last);
+        drop(restored);drop(db);drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn converted_tail_survives_restart_and_never_rewrites_the_trained_snapshot() {
+        let root = std::env::temp_dir().join(format!("warped-converted-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = fixture(200);
+        source.execute_batch("COMMIT").unwrap();
+        let path = root.join("test.sqlite");
+        source.execute("VACUUM INTO ?1", [path.to_str().unwrap()]).unwrap();
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let open = |db: &Connection| {
+            let mut table = GlobalChunks::empty(8, "test").unwrap();
+            table.synchronize(db).unwrap();
+            table
+        };
+        let mut table = open(&db);
+        table.prepare_warped(&db, false).unwrap();
+        let identity = &table.warped.as_ref().unwrap().identity;
+        let (trained_path, converted_path) =
+            (WarpedChunks::path(identity).unwrap(), WarpedChunks::converted_path(identity).unwrap());
+        let identity = Identity { database: identity.database.clone(), model: "test".into(),
+            facts: "2".into(), dimension: 8, rule: RULE.into() };
+        let trained = std::fs::read(&trained_path).unwrap();
+        let modified = std::fs::metadata(&trained_path).unwrap().modified().unwrap();
+        assert!(!converted_path.exists());
+        let query = vector(997);
+        let bytes: Vec<_> = query.iter().flat_map(|v|v.to_le_bytes()).collect();
+        add(&db, 201..=240, "2");
+        db.execute("UPDATE chunks SET vector=?1,vector_version=2 WHERE id=3", [&bytes]).unwrap();
+        table.synchronize(&db).unwrap();
+        let (expected, stats) = table.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(numbers(&stats, &["convertedNow", "retiredNodes", "deltaChunks"]), [41, 1, 0]);
+        assert_eq!(stats["geometryFacts"], "1");
+        assert!(converted_path.exists());
+        assert_eq!(std::fs::read(&trained_path).unwrap(), trained);
+        assert_eq!(std::fs::metadata(&trained_path).unwrap().modified().unwrap(), modified);
+        // A release that only knows the trained snapshot still loads the same generation.
+        assert_eq!(WarpedChunks::decode(&trained, &identity).unwrap().unwrap().index.ids().len(), 200);
+        db.execute_batch("COMMIT").unwrap();
+        drop(table);
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("BEGIN").unwrap();
+        let mut restored = open(&db);
+        let (actual, stats) = restored.search_warped(&db, &query, 100, |_|true).unwrap();
+        assert_eq!(stats["source"], "snapshot");
+        assert_eq!(numbers(&stats, &["deltaChunks", "convertedNow", "convertedNodes", "retiredNodes"]), [0, 0, 41, 1]);
+        assert_eq!(expected, actual);
+        let sidecar = std::fs::read(&converted_path).unwrap();
+        // Originals are read at ids()[slot]: a sidecar whose cold slots are not the node
+        // numbers is rejected even though its digest is valid.
+        let header = u64::from_le_bytes(sidecar[8..16].try_into().unwrap()) as usize;
+        let mut remapped = sidecar[..sidecar.len() - 32].to_vec();
+        remapped[16 + header + 16..16 + header + 24].copy_from_slice(&9999u64.to_le_bytes());
+        let digest = Sha256::digest(&remapped);
+        remapped.extend_from_slice(&digest);
+        std::fs::write(&converted_path, remapped).unwrap();
+        assert!(open(&db).prepare_warped(&db, false).is_err());
+        // Damage to the sidecar of the current generation is explicit; training repairs it.
+        let mut damaged = sidecar.clone();
+        damaged[40] ^= 1;
+        std::fs::write(&converted_path, damaged).unwrap();
+        let mut broken = open(&db);
+        assert!(broken.prepare_warped(&db, false).is_err());
+        assert_eq!(broken.prepare_warped(&db, true).unwrap()["source"], "built");
+        assert!(!converted_path.exists());
+        assert_ne!(std::fs::read(&trained_path).unwrap(), trained);
+        // A sidecar left by an earlier generation is stale: ignored, never an error.
+        std::fs::write(&converted_path, sidecar).unwrap();
+        let mut stale = open(&db);
+        let prepared = stale.prepare_warped(&db, false).unwrap();
+        assert_eq!((&prepared["source"], &prepared["nodes"]),
+            (&serde_json::json!("snapshot"), &serde_json::json!(240)));
+        assert_eq!(stale.warped_stats()["convertedNodes"], 0);
+        drop(stale);drop(broken);drop(restored);drop(db);drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 impl GlobalChunks {
@@ -697,7 +1103,7 @@ impl GlobalChunks {
             source
         };
         Ok(serde_json::json!({
-            "ready":true,"source":source,"nodes":self.warped.as_ref().unwrap().index.ids().len(),
+            "ready":true,"source":source,"nodes":self.warped.as_ref().unwrap().index.trained_len(),
             "liveNodes":ids.len(),"rule":self.warped.as_ref().unwrap().identity.rule,"forced":force,
             "facts":self.facts,"geometryFacts":self.warped.as_ref().unwrap().identity.facts,
             "elapsedMs":started.elapsed().as_secs_f64()*1000.,
@@ -708,7 +1114,9 @@ impl GlobalChunks {
     pub(crate) fn warped_stats(&self) -> serde_json::Value {
         match self.warped.as_ref() {
             Some(field) => serde_json::json!({
-                "resident":true,"nodes":field.index.ids().len(),"rule":field.identity.rule,
+                "resident":true,"nodes":field.index.trained_len(),"rule":field.identity.rule,
+                "convertedNodes":field.index.ids().len() - field.index.trained_len(),
+                "retiredNodes":field.index.retired_count(),
                 "hotBytes":field.hot_bytes(),
                 "facts":field.identity.facts
             }),
