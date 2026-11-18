@@ -1,11 +1,11 @@
 ---
-title: RiverMemo V5 · 双曲检索、Topology V3 与 Ω 统一泛函
-summary: RiverMemo V5 当前生产实现，涵盖双曲 Chunk 候选、双曲 Tag 路由、Cone-AGS／Span、原 Tag NNLS、双场与意图覆盖、一对一拓扑、全局见证和连续 Ω 评分。
-updatedAt: 2026-11-17
+title: RiverMemo V5.2 · 双曲检索、Topology V3 与 Ω 统一泛函
+summary: 双曲候选与查询观测、属概念门控的种差校准、双场共振，以及路径、图与传输证据的共享预算评分。
+updatedAt: 2026-11-18
 category: guide
 ---
 
-# RiverMemo V5：双曲检索与统一拓扑读出
+# RiverMemo V5.2：双曲检索与统一拓扑读出
 
 > 生产检索链路：**RiverMemo V5**
 >
@@ -21,7 +21,7 @@ category: guide
 >
 > JavaScript 公共结果协议：rivermemo-topology-v3-result-v1
 >
-> 文档更新时间：2026-11-17
+> 文档更新时间：2026-11-18
 
 **V5 是“双曲 Chunk 候选 + 双曲 Tag 观测 + 原生 RiverMemo 读出”的生产链路；Topology V3 是读出器的评分架构。** 背景几何、查询观测管线、读出算法和结果协议各自保留独立身份。
 
@@ -31,23 +31,21 @@ RAGDiary 被动检索和 LightMemo 普通检索默认运行 V5。观测初始化
 
 ## 1. 总体结构与最终方程
 
-RiverMemo V5 在全局 Chunk 双曲几何上召回正文候选，在双曲 Tag 场上为残差金字塔选取标签。局部 Cone-AGS 与全局 Span 提供长期背景，原 Tag NNLS 和有界 Sense 生成请求河网。读出器组合查询种差方向、双场响应、意图覆盖和候选有序标签曲线；路径、候选图及传输证据共享拓扑预算，直接锚独立记账。
+RiverMemo 在全局 Chunk 双曲几何上召回正文候选，在双曲 Tag 场上为残差金字塔选取标签。局部 Cone-AGS 与全局 Span 提供长期背景，原 Tag NNLS 和有界 Sense 生成请求河网。读出器先按候选对父概念的归属程度校准种差分，再结合双场共振与拓扑证据排序。直接锚保留接触观测，不产生独立奖励。
 
 ### 1.1 连续最终分
 
 \[
-\boxed{S(c)=\operatorname{clip}_{[0,1]}[B(c)+P(c)+G(c)+A(c)]}
+\boxed{S(c)=\operatorname{clip}_{[0,1]}[B(c)+P(c)+G(c)]}
 \]
 
 - \(B\)：原查询／种差混合分与有界非负场共振。
 - \(P\)：路径质量和标量场支持奖励，乘 \(\Omega^\gamma\)。
 - \(G\)：候选图证据与 Hop-1／跨文件虫洞传输证据的有界互补。
-- \(A\)：直接锚绝对激活奖励，不乘 Ω。
-
-默认拓扑预算 \(C_T=0.08\)，路径优先占用，满足 \(P+G\le C_T\)；直接锚默认独立上限 \(C_A=0.10\)。场共振包含在 \(B\) 内，拓扑奖励为 \(P+G\)，不得重复相加。
+默认拓扑预算 \(C_T=0.08\)，路径优先占用，满足 \(P+G\le C_T\)。场共振包含在 \(B\) 内，拓扑奖励为 \(P+G\)，不得重复相加。
 
 \[
-S=B+P+G+A-\Delta_{\mathrm{clip}}.
+S=B+P+G-\Delta_{\mathrm{clip}}.
 \]
 
 排序分与输出最终分相同：`ranking_score == final_score`。图奖励按候选自身证据计算，角色仅解释证据；查询观测、候选身份和配置固定时，加入无关候选不改变既有候选的自身奖励。候选池截断和名次不受该不变性保证。
@@ -382,12 +380,26 @@ C_N,&\text{原子主导模式}\\
 
 原始查询余弦裁剪值为 \(q_c\)。查询种差方向来自已接受层内满足低贡献真子集遮蔽条件、非显式核心且与查询余弦至少 0.65 的父方向。按 Tag ID 去重，FP64 两遍正交化；相对方向范数不大于 \(10^{-5}\) 则不入基。从单位查询剥离这些基方向，剩余范数小于 \(10^{-4}\) 时不启用；否则单位化得到 \(q_\perp\)，置信度 \(d=\operatorname{clip}_{[0,1]}(\|\tilde q_\perp\|/0.1)\)。
 
+**属门：先判断候选是否仍在被剥离的父概念范围内。** 对每个已剥离父标签 \(p\)，取它与当前 Chunk 正文的余弦，以及它与候选文件各标签的余弦，两者取最大值 \(a_p\)。精确命中父标签 ID 时按 1 计；没有标签时只看正文。多个父概念必须同时成立，基础门值取最弱父轴：
+
 \[
-m=0.5d,\qquad
-\hat q_c=(1-m)q_c+m\,\operatorname{clip}_{[0,1]}\cos(q_\perp,v_c).
+g_0(c)=\min_p \operatorname{clip}_{[0,1]}\!\left(\frac{a_p(c)-0.50}{0.22}\right).
 \]
 
-无有效种差向量时 \(m=0\)。该校准只改变候选基础分，不对局部／迁移场做额外父方向剥离。
+**单父轴的整句焦点一跳。** 默认 \(g=g_0\)。只有一个父轴且种差置信度为正时，还可用本次传播的精确目标作为归属证据：
+
+1. L0 标签名与非空查询整句去首尾空白、转小写后相等，相似度和原始 NNLS 贡献均为正。多项符合时取贡献最高者，同分取较小 ID。别名赞助或字面权重保底不能代替原始贡献。
+2. 该焦点须实际作为零跳核心或字面种子获得正能量。目标须出现在第一跳，焦点到目标是本次观测到的普通正流边，非虫洞、非即时回流，通过活跃流量门槛且在 CSR 中有正向正权边。
+3. 若候选文件的标签精确包含该目标 ID，取 \(g=1\)。例如“华为汽车”激活“尊界V800”时，具体车型标签可以证明归属，不要求重复标注“华为”。这是文件级证据，不是本体从属断言；同一文件的各 Chunk 仍分别计算正文种差分。
+
+校准查询分为：
+
+\[
+m=0.5d,\qquad
+\hat q_c=(1-m)q_c+m\,g(c)\,\operatorname{clip}_{[0,1]}\!\bigl(\cos(q_\perp,v_c)\bigr).
+\]
+
+门值只乘种差项，不改变混合系数：证据齐全但门值为零时，查询分为 \((1-m)q_c\)，并非完整原分。无有效种差或请求向量池缺少任一必要父向量时则令 \(m=0\)，保留原查询分。属门复用请求向量池、余弦缓存和已观测边，不新增 SQL，不改双场、候选池或拓扑奖励预算。该一跳规则与第 12.3 节的传输奖励分别计算。见[焦点选择](../rust-vexus-lite/src/memo_pipeline.rs:2447)、[一跳目标与父轴证据](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1767)和[种差混合](../rust-vexus-lite/src/rivermemo_topology_v3.rs:1837)。
 
 仅有限且非零的场投影向量参与场余弦混合，缺失场不占分母。默认查询／局部／迁移权重 0.7／0.2／0.1；有效场权重占比为 \(\lambda\)，双场加权余弦为 \(F_c\)。
 
@@ -437,7 +449,7 @@ R_c=\min\left(\min(0.03,\lambda[F_c-\hat q_c]_+)\,s_c,\ 1-\hat q_c\right),
 
 ## 10. Ω 与拓扑共享预算
 
-Ω 只读取查询河网，不读取候选。设零跳种子数为 \(N_s\)、实际边数为 \(M\)、到达节点数为 \(N_r\)、涌现数为 \(N_e=\max(0,N_r-N_s)\)：
+Ω 读取查询河网与金字塔已解释能量比例，不读取候选。令 \(e_Q\) 为裁剪到 [0, 1] 的已解释比例，未提供时取 1。设零跳种子数为 \(N_s\)、实际边数为 \(M\)、到达节点数为 \(N_r\)、涌现数为 \(N_e=\max(0,N_r-N_s)\)：
 
 \[
 \Omega_E=\operatorname{clip}_{[0,1]}\frac{M}{\kappa_E\max(1,N_s)},\qquad
@@ -448,7 +460,7 @@ R_c=\min\left(\min(0.03,\lambda[F_c-\hat q_c]_+)\,s_c,\ 1-\hat q_c\right),
 
 \[
 \Omega=\operatorname{clip}_{[0,1]}
-\left[\sqrt[3]{\max(\Omega_E,\varepsilon)\max(\Omega_N,\varepsilon)\max(\Omega_F,\varepsilon)}\,\chi_{\mathrm{obs}}\right]
+\left[\sqrt[3]{\max(\Omega_E,\varepsilon)\max(\Omega_N,\varepsilon)\max(\Omega_F,\varepsilon)}\,\chi_{\mathrm{obs}}\,e_Q\right]
 \]
 
 默认 \(\kappa_E=0.5,\kappa_N=0.3,\varepsilon=0.02\)；完整／不完整观测因子分别为 1／0.5。几何平均有 epsilon 底值，空图不应被描述为 Ω 必然严格等于零；没有候选结构证据时图奖励仍为零。工况边界为 0.12、0.45，分别解释为坍缩、稀疏、稠密，不代表主题正确率。实现见 [`compute_omega()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2483)。
@@ -485,20 +497,13 @@ G_{\mathrm{self}}=\min(C_T,C_Tg_c\chi_b\delta_c\pi_c),
 
 全局入度特异性和稀有度代理不使用候选池频率。接触通过 noisy-OR 聚合 \(a_c=1-\prod_s(1-a_{sc})\)。可靠性为平均闭合平方根，有精确接触时不按种子数量打折，纯语义接触另乘语义折扣。
 
-回退锚可靠性默认不超过 0.5。纯隐式候选可靠性不超过 0.35，最终锚强度不超过 0.035。没有显式焦点也不能靠隐式精确碰撞解除限奖。实现见 [`anchor_contacts()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2068) 与 [`compute_anchors()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2105)。
+回退锚可靠性默认不超过 0.5。纯隐式候选可靠性不超过 0.35，锚强度不超过 0.035。这些是观测值，不是奖励。实现见 [`anchor_contacts()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2265) 与 [`compute_anchors()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2302)。
 
-### 11.2 绝对激活与角色
+### 11.2 锚观测与排序的边界
 
-锚强度 \(H_c=a_cR_c^A\) 采用绝对阈值平滑激活：
+锚接触可解释角色；锚来源仍可参与第 7.1 节的候选选择。精排不将锚强度换算成分数：即使调用方显式传入非零上限，结果中的 `anchorBonus` 也恒为 0。参数 `anchorReward` 返回 `retired-zero-unified-field`；`anchorBonusCap`、`anchorActivationFloor`、`anchorSaturation` 可解析以保持兼容，均列入 `retiredControls`。
 
-\[
-A(c)=C_A\,\operatorname{smoothstep}
-\left(\operatorname{clip}_{[0,1]}\frac{H_c-\tau_A}{s_A-\tau_A}\right)
-\]
-
-默认 \(\tau_A=0.05,s_A=0.20,C_A=0.10\)。强度不超过阈值时奖励为零；饱和区间退化时按实现采用阈值以上直接激活。纯隐式强度上限低于默认阈值，因此默认无锚奖励；自定义更低阈值可能产生有限奖励。
-
-原子主导模式解释为原子概念。非原子候选成为直接答案，必须同时满足真实显式精确接触和观测正文闭合至少 0.55；隐式精确接触加显式语义接触不等价于显式精确身份。结构角色受原始覆盖可靠性与 Ω 解释门槛约束，但角色不改变奖励公式。实现见 [`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2549)。
+原子主导模式解释为原子概念。非原子候选标为 `direct_answer`，必须同时满足显式精确接触和观测正文闭合至少 0.55；隐式精确接触加显式语义接触不等价于显式精确身份。结构角色受原始覆盖可靠性与 Ω 解释门槛约束，但角色不改变奖励公式。实现见 [`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs:2748)。
 
 ## 12. 全局见证与连续传输读出
 
@@ -551,7 +556,7 @@ e_{\mathrm{Hop1}}(c)=\max_{\text{合格边 }i\to j}
 3. 有界真实边 Sense → 请求河网 → 增强查询、标量双场及共享预算投影 → 保存同代双曲观测。
 4. 按权限与候选计划同步实时 Chunk，执行全局双曲 ANN、合并、展开、去重和候选收缩。
 5. 准备全局见证；批量加载候选曲线、补读向量差集，并行计算路径、拓扑、强语义场继承、意图覆盖及锚接触。
-6. 计算查询形态与 Ω，计算路径、图和直接锚奖励。
+6. 按属门混合查询与种差正文分，计入有界场共振；按查询形态与 Ω 计算路径和图奖励，标注解释角色。
 7. 将普通 Hop-1 与合格虫洞证据并入共享预算；按连续最终分稳定排序并截取 Top-K。
 8. 返回结果，全部消费者完成后释放观测句柄。
 
@@ -570,8 +575,8 @@ e_{\mathrm{Hop1}}(c)=\max_{\text{合格边 }i\to j}
 | `pathBonus` | Ω 门控后的路径奖励 |
 | `graphBonus` | 图／传输互补并受剩余预算限制后的奖励 |
 | `topologyBonus` | `pathBonus + graphBonus` |
-| `anchorBonus` | 独立直接锚奖励 |
-| `scoreClipping` | 四项合计减最终分 |
+| `anchorBonus` | 兼容字段，恒为 0 |
+| `scoreClipping` | 基础分、路径奖励和图奖励之和减最终分 |
 | `queryMorphology` | 查询河网形态、置信度与特征 |
 | `parameters` | 实际配置、查询校准、见证门控与实现常量 |
 
@@ -584,7 +589,8 @@ e_{\mathrm{Hop1}}(c)=\max_{\text{合格边 }i\to j}
 - 双曲 Chunk：[场诊断](../rust-vexus-lite/src/warped_chunks.rs)记录径向规则、训练事实、实时成员、向量增量、范围规模、图导航／精确扫描、预算和耗时。
 - 旧轨驻留：[全局索引统计](../rust-vexus-lite/src/knowledge_runtime.rs)及 [LightMemo 诊断](../rust-vexus-lite/src/light_memo.rs)记录旧 TDB 候选载荷是否驻留、实际检索链路及降级状态。
 - 几何 `memo_local_cone_diagnostics`：资产签名、候选数、选中列 ID、迭代数、活跃系数数、残差能量比、KKT 及能量闭合误差。
-- 查询校准：`supersededIds`、`differentiaConfidence`、`explainedRatio` 与混合上限 0.5。
+- 查询级 `parameters.queryCalibration`：`supersededIds` 为已剥离父轴，`differentiaConfidence` 决定混合系数（上限 0.5），`explainedRatio` 校准 Ω。`exactFocusId` 标识整句焦点（未识别时为空），`genusGateMode` 标识实际属门规则。
+- 候选级 `topologyV3`：对比 `genusGateBeforeFocus` 与 `genusGate` 可看出一跳证据是否改变门值；`genusExactFocusTargetId` 给出命中的目标。`genusEvidence` 记录限制门值的父轴、正文余弦、最佳标签及其余弦和最终亲和度。父向量缺失时看 `genusMissingParentId`；此时门值为空，不是零。
 - 金字塔／传播：已接受层、路由残差数量及尾残差追加、种子缺失／无效／去重、动态候选／入选／实际注入及预算。
 - 双场：标量收敛、有效域、支持集、向量读取、质量覆盖、预算与工作截断。
 - 全局见证：门控前／后路线、见证文件、第三标签、单焦点准入、特异性与超限状态。
@@ -602,17 +608,17 @@ e_{\mathrm{Hop1}}(c)=\max_{\text{合格边 }i\to j}
 | 旧轨加载 | LightMemo AB 按需启用 TDB 候选载荷及旧余弦观测，普通查询释放旧候选载荷 |
 | 双场投影 | 去重并集默认 256 个节点，包含河网骨架 |
 | 拓扑奖励 | 路径优先，路径与图／传输共享 0.08 上限 |
-| 直接锚 | 独立上限 0.10 |
+| 直接锚 | 保留接触与角色解释；独立奖励恒为 0 |
 | 场共振 | 上限 0.03，乘软场支持与 Hop-0 意图覆盖 |
 | 事实与观测 | SQL 权威原件、原生资产签名、运行时及数据库代际校验 |
 | 几何换代 | 手动全训或既有 1% Tag 阈值，Tag 和 Chunk 双曲阶段均纳入训练任务 |
 
 后端、插件和目标平台原生模块配套部署，重启后加载；启动阶段检查生产双曲能力。双曲场恢复已保存的规则与训练基线，换代训练发布新几何。
 
-当前工程验证结果：原生 Release 全量回归 254 项通过、0 项忽略；索引内核 124 项通过、3 项基准／诊断忽略；相关 JS 回归 87 项通过；真实 N-API 合成集成通过。覆盖双曲 Tag／Chunk、V5 读出、双曲 ANN 降级、AB 载荷切换、范围过滤、增量、重启和显式训练。
+**检索质量实测**：服务器 150 轮随机检索测试通过。以 main 分支为基线，黄金区评分相对提升 13%，边缘区评分相对提升 34%。这两个数是本次抽测的分区评分变化，不是绝对准确率。边缘区仍有错排：错误的文件标签或活跃共现边也可能被读作归属证据。
 
 ## 15. 总结
 
-**全局 Chunk 双曲候选 + EPA／残差能量驱动的双曲 Tag 池 → 原 Tag NNLS、核心与贡献门控、种差校准 → 有界真实边传播 → 请求河网与共享预算双场 → 强语义场继承、Hop-0 意图覆盖、有序路径与一对一拓扑 → Ω 门控的路径、图及传输互补 → 独立直接锚 → 连续最终分。**
+**全局 Chunk 双曲候选 + 双曲 Tag 池 → 原 Tag NNLS、种子与种差方向 → 有界传播与双场 → 按候选归属校准种差分、计入场共振 → 加上共享预算内的路径、图与传输奖励 → 按连续最终分排序。** 锚接触用于解释结果，不另加分。
 
 这条 V5 生产链在原生侧完成候选、观测和读出：SQL 同步实时事实，双曲场复用训练几何，查询复用向量池，结果保留实际链路与分数账目。
