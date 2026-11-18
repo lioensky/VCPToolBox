@@ -5,6 +5,9 @@ use rayon::prelude::*;
 #[path = "memo_workspace.rs"]
 pub(crate) mod workspace;
 
+#[path = "memo_local_reuse.rs"]
+mod local_reuse;
+
 pub(crate) enum AgsTarget<'a> {
     Explain(&'a [f64]),
     Span,
@@ -690,7 +693,7 @@ impl GeometryTask {
         let mut graph_generation = String::new();
         let mut cached: Option<Value> = None;
         let force = config.get("forceRecompute").and_then(Value::as_bool).unwrap_or(false);
-        let (generation, dependencies, vectors, fallback, workspace_key) =
+        let (generation, dependencies, vectors, fallback, workspace_key, file_ids, file_events) =
             with_registered_read_transaction(&self.db_path, |conn| {
                 let generation = storage::read_generation(conn)?;
                 let dependencies = storage::DerivedDependencies::capture(conn, &["memo_tag_facts"])?;
@@ -751,7 +754,9 @@ impl GeometryTask {
                     else { UnitVectorWorkspace::build(conn, &ids, self.dimensions)? };
                 let fallback = vectors.len();
                 let workspace_key = workspace::SnapshotKey::capture(conn, &self.db_path, &self.model_sig, self.dimensions)?;
-                Ok((generation,dependencies,vectors,fallback,workspace_key))
+                let file_ids = local_reuse::files(conn).map_err(|e| e.to_string())?;
+                let file_events = local_reuse::file_events(conn);
+                Ok((generation,dependencies,vectors,fallback,workspace_key,file_ids,file_events))
             })?;
         drop(snapshot_gate);
         let load_ms = started.elapsed().as_secs_f64()*1000.0;
@@ -955,6 +960,7 @@ impl GeometryTask {
                 "selectedTagIds":r.selected_ids,"nnls":r.diagnostics,
             })).collect::<Vec<_>>(),
         }).to_string();
+        let diagnostics_hash = hash(cone_diagnostics.as_bytes());
         before_publish();
         let publication_started=Instant::now();
         let _gate=crate::publication_gate::acquire(&self.db_path,&["*".into()])?;
@@ -1001,7 +1007,9 @@ impl GeometryTask {
                 (artifact_sig,asset_type,model_sig,graph_generation,algorithm_version,config_hash,effective_config,status,created_at,updated_at)
                 VALUES (?1,'unified_geometry',?2,?7,?3,?4,?5,'ready',?6,?6)",
                 params![sig,model,ALGORITHM,cfg_hash,cfg,now,graph_generation]).map_err(|e|e.to_string())?;
-            tx.execute("DELETE FROM tagmemo_artifacts WHERE asset_type='unified_geometry' AND artifact_sig!=?1",[sig]).map_err(|e|e.to_string())?;
+            tx.execute("DELETE FROM tagmemo_artifacts WHERE asset_type='unified_geometry' AND artifact_sig!=?1",[&sig]).map_err(|e|e.to_string())?;
+            local_reuse::publish(tx, &sig, file_ids, file_events, diagnostics_hash)
+                .map_err(|e| e.to_string())?;
             *write_timings.lock().map_err(|e|e.to_string())?=[
                 delete_ms,insert_ms,metadata_started.elapsed().as_secs_f64()*1000.0];
             Ok(storage::WriteReceipt { operation:"publish_memo_geometry".into(),database_generation:0,facts_changed:false })
