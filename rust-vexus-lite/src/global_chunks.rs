@@ -341,71 +341,92 @@ impl GlobalChunks {
         }
     }
 
-    /// Caller holds the Runtime table mutex and shared facts gate. Publication
-    /// is separate from queries; SQL member versions survive eviction/restart.
-    pub fn checkpoint(&mut self, db_path: &str, directory: &Path, database_generation: u64,
-        threshold: f64, allow_initial: bool) -> Result<bool, String> {
-        if !self.legacy_enabled { return Ok(false); }
+    pub(crate) fn prepare_checkpoint_in_tx(
+        &self,
+        connection: &Connection,
+        directory: &Path,
+        threshold: f64,
+        allow_initial: bool,
+    ) -> Result<Option<(i64, &'static str, Vec<u8>, String, Vec<ChunkHeader>)>, String> {
+        if !self.legacy_enabled { return Ok(None); }
         if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
             return Err("Invalid global Chunk checkpoint threshold".into());
         }
-        let (generation, active, allowed) =
-            crate::storage::with_registered_read_transaction(db_path, |connection| {
-                if facts(connection)? != self.facts {
-                    return Err("LIGHTMEMO_CHECKPOINT_GENERATION_CONFLICT".into());
-                }
-                let manifest: Option<(i64, String, i64, String, i64)> = connection.query_row(
-                    "SELECT generation,slot,dimension,model_sig,member_versions
-                     FROM global_chunk_index_baselines ORDER BY generation DESC LIMIT 1", [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-                ).optional().map_err(|e| e.to_string())?;
-                let Some((generation, slot, dimension, model, versions)) = manifest else {
-                    let mut has_file = false;
-                    for slot in ["a", "b"] {
-                        match std::fs::metadata(slot_path(directory, slot)) {
-                            Ok(_) => has_file = true,
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error.to_string()),
-                        }
+        let (generation, active, allowed) = (|| -> Result<(i64, String, bool), String> {
+            if facts(connection)? != self.facts {
+                return Err("LIGHTMEMO_CHECKPOINT_GENERATION_CONFLICT".into());
+            }
+            let manifest: Option<(i64, String, i64, String, i64)> = connection.query_row(
+                "SELECT generation,slot,dimension,model_sig,member_versions
+                 FROM global_chunk_index_baselines ORDER BY generation DESC LIMIT 1", [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            ).optional().map_err(|e| e.to_string())?;
+            let Some((generation, slot, dimension, model, versions)) = manifest else {
+                let mut has_file = false;
+                for slot in ["a", "b"] {
+                    match std::fs::metadata(slot_path(directory, slot)) {
+                        Ok(_) => has_file = true,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.to_string()),
                     }
-                    return Ok((0, String::new(), allow_initial && !has_file));
-                };
-                if dimension != self.dimension as i64 || model != self.model {
-                    return Err("Global Chunk baseline model/dimension mismatch".into());
                 }
-                if !matches!(slot.as_str(), "a" | "b") {
-                    return Err("Invalid global Chunk baseline slot".into());
-                }
-                if versions != 1 {
-                    eprintln!("[LightMemo] Legacy Chunk baseline has no member versions; publication skipped");
-                    return Ok((generation, slot, false));
-                }
-                let mut statement = connection.prepare(
-                    "SELECT chunk_id,vector_version,metadata_version,file_version
-                     FROM global_chunk_index_baseline_entries WHERE generation=?1"
-                ).map_err(|e| e.to_string())?;
-                let baseline = statement.query_map([generation], |row| Ok((
-                    row.get::<_, i64>(0)?,
-                    (row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,row.get::<_, i64>(3)?),
-                ))).map_err(|e| e.to_string())?
-                    .collect::<rusqlite::Result<HashMap<_,_>>>().map_err(|e| e.to_string())?;
-                let removed = baseline.keys().filter(|id| !self.rows.contains_key(id)).count();
-                let upserts = self.rows.values().filter(|row|
-                    baseline.get(&row.id) != Some(&(
-                        row.vector_version, row.metadata_version, row.file_version
-                    ))
-                ).count();
-                let delta = removed + upserts;
-                let ratio = delta as f64 / baseline.len().max(self.rows.len()).max(1) as f64;
-                Ok((generation, slot, delta > 0 && ratio >= threshold))
-            })?;
-        if !allowed { return Ok(false); }
+                return Ok((0, String::new(), allow_initial && !has_file));
+            };
+            if dimension != self.dimension as i64 || model != self.model {
+                return Err("Global Chunk baseline model/dimension mismatch".into());
+            }
+            if !matches!(slot.as_str(), "a" | "b") {
+                return Err("Invalid global Chunk baseline slot".into());
+            }
+            if versions != 1 {
+                eprintln!("[LightMemo] Legacy Chunk baseline has no member versions; publication skipped");
+                return Ok((generation, slot, false));
+            }
+            let mut statement = connection.prepare(
+                "SELECT chunk_id,vector_version,metadata_version,file_version
+                 FROM global_chunk_index_baseline_entries WHERE generation=?1"
+            ).map_err(|e| e.to_string())?;
+            let baseline = statement.query_map([generation], |row| Ok((
+                row.get::<_, i64>(0)?,
+                (row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,row.get::<_, i64>(3)?),
+            ))).map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<HashMap<_,_>>>().map_err(|e| e.to_string())?;
+            let removed = baseline.keys().filter(|id| !self.rows.contains_key(id)).count();
+            let upserts = self.rows.values().filter(|row|
+                baseline.get(&row.id) != Some(&(
+                    row.vector_version, row.metadata_version, row.file_version
+                ))
+            ).count();
+            let delta = removed + upserts;
+            let ratio = delta as f64 / baseline.len().max(self.rows.len()).max(1) as f64;
+            Ok((generation, slot, delta > 0 && ratio >= threshold))
+        })()?;
+        if !allowed { return Ok(None); }
         let slot = if active == "a" { "b" } else { "a" };
         let mut rows = self.rows.values().cloned().collect::<Vec<_>>();
         rows.sort_by_key(|row| row.id);
+        let routing_bytes = self.routing.routing_snapshot_bytes().map_err(|e| e.to_string())?;
+        Ok(Some((generation, slot, routing_bytes, self.facts.clone(), rows)))
+    }
+
+    pub(crate) fn publish_prepared_checkpoint(
+        db_path: &str,
+        directory: &Path,
+        database_generation: u64,
+        dimension: usize,
+        model: String,
+        generation: i64,
+        slot: &'static str,
+        routing: Vec<u8>,
+        captured_facts: String,
+        rows: Vec<ChunkHeader>,
+    ) -> Result<bool, String> {
         let snapshot = Snapshot {
-            dimension: self.dimension, model: self.model.clone(), facts: self.facts.clone(),
-            rows, routing: self.routing.routing_snapshot_bytes().map_err(|e| e.to_string())?,
+            dimension,
+            model: model.clone(),
+            facts: captured_facts.clone(),
+            rows,
+            routing,
         };
         let mut bytes = MAGIC.to_vec();
         bytes.extend(bincode::serialize(&snapshot).map_err(|e| e.to_string())?);
@@ -418,9 +439,7 @@ impl GlobalChunks {
         std::fs::write(staging.path(), bytes).map_err(|e| e.to_string())?;
         crate::sync_index_file(staging.path()).map_err(|e| e.to_string())?;
         crate::publish_index_file(staging.path(), &target).map_err(|e| e.to_string())?;
-        let dimension = self.dimension as i64;
-        let model = self.model.clone();
-        let captured_facts = self.facts.clone();
+        let dimension = dimension as i64;
         let members = snapshot.rows;
         crate::storage::with_registered_write(db_path, move |tx| {
             let current: i64 = tx.query_row(
@@ -458,6 +477,31 @@ impl GlobalChunks {
             })
         })?;
         Ok(true)
+    }
+
+    /// Caller holds the Runtime table mutex and shared facts gate. Publication
+    /// is separate from queries; SQL member versions survive eviction/restart.
+    #[cfg(test)]
+    pub fn checkpoint(&mut self, db_path: &str, directory: &Path, database_generation: u64,
+        threshold: f64, allow_initial: bool) -> Result<bool, String> {
+        let prepared = crate::storage::with_registered_read_transaction(db_path, |connection| {
+            self.prepare_checkpoint_in_tx(connection, directory, threshold, allow_initial)
+        })?;
+        let Some((generation, slot, routing, captured_facts, rows)) = prepared else {
+            return Ok(false);
+        };
+        Self::publish_prepared_checkpoint(
+            db_path,
+            directory,
+            database_generation,
+            self.dimension,
+            self.model.clone(),
+            generation,
+            slot,
+            routing,
+            captured_facts,
+            rows,
+        )
     }
 }
 
