@@ -207,12 +207,14 @@ impl Task for LightMemoTask {
         }
         let _gate = crate::publication_gate::acquire_read(&self.db_path, &["*".into()])
             .map_err(Error::from_reason)?;
-        let mut resident = self.table.lock()
-            .map_err(|_| Error::from_reason("Global Chunk table lock poisoned"))?;
         let directory = std::path::Path::new(&self.db_path).parent().unwrap();
+        // Strictly enforce L1 (PublicationGate) -> L2 (ReadPoolConn) -> L3 (GlobalChunksLock)
+        // so LightMemo and RiverMemo V5 never invert lock acquisition order.
         let mut output = crate::storage::with_registered_read_transaction(
             &self.db_path, |connection| {
                 let generation = crate::storage::read_generation(connection)?;
+                let mut resident = self.table.lock()
+                    .map_err(|_| "Global Chunk table lock poisoned".to_string())?;
                 if resident.as_ref().is_some_and(|table|
                     !table.matches_model(self.dimension, &plan.model_sig)) {
                     *resident = None;
@@ -427,7 +429,7 @@ impl Task for LightMemoTask {
                 let results = if plan.engine_mode == "rivermemo" && !degraded {
                     river["results"].as_array().cloned().unwrap_or_default()
                 } else if plan.ab_mode { tdb.clone() } else { warped_top_k.clone() };
-                Ok(json!({
+                let out = json!({
                     "schema":"vcp-lightmemo-result-v1","results":results,
                     "tdbTopK":tdb,"river":river,
                     "warpedTopK":warped_top_k,"warpedRiver":warped_river,
@@ -454,12 +456,13 @@ impl Task for LightMemoTask {
                             "sketchRejected":routing_stats.sketch_rejected,
                             "peakPool":routing_stats.peak_pool,
                             "statisticalSketchFilter":plan.pelorus_sketch_margin.is_some()}}
-                }))
+                });
+                // TDB snapshot publication remains independently scheduled and policy-gated.
+                // Explicit warped AB may publish its separate rebuildable derived sidecar.
+                table.last_used = std::time::Instant::now();
+                Ok(out)
             },
         ).map_err(Error::from_reason)?;
-        // TDB snapshot publication remains independently scheduled and policy-gated.
-        // Explicit warped AB may publish its separate rebuildable derived sidecar.
-        resident.as_mut().unwrap().last_used = std::time::Instant::now();
         output["diagnostics"]["totalMs"] = json!(started.elapsed().as_secs_f64()*1000.);
         Ok(output.to_string())
     }
@@ -483,30 +486,61 @@ impl Task for GlobalChunkCheckpointTask {
     fn compute(&mut self) -> Result<String> {
         let _gate = crate::publication_gate::acquire_read(&self.db_path, &["*".into()])
             .map_err(Error::from_reason)?;
-        let mut resident = self.table.lock()
-            .map_err(|_| Error::from_reason("Global Chunk table lock poisoned"))?;
-        // Do not rebuild an evicted table just to persist it.
-        let Some(table) = resident.as_mut() else {
-            return Ok(json!({"published":false,"factsCommitted":false}).to_string());
-        };
-        if !table.matches_model(self.dimension, &self.model) {
-            return Err(Error::from_reason("Global Chunk checkpoint model mismatch"));
-        }
-        let last_used = table.last_used;
-        let synchronized = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
-            let generation = crate::storage::read_generation(connection)?;
-            table.synchronize(connection)?;
-            table.compact_if_needed(connection)?;
-            Ok(generation)
-        });
-        // Background checkpoint work is not retrieval activity, including
-        // failed synchronization and memory compaction.
-        table.last_used = last_used;
-        let generation = synchronized.map_err(Error::from_reason)?;
         let directory = std::path::Path::new(&self.db_path).parent()
             .ok_or_else(|| Error::from_reason("Invalid global Chunk database directory"))?;
-        let published = table.checkpoint(&self.db_path, directory, generation,
-            self.threshold, self.allow_initial).map_err(Error::from_reason)?;
+        // Acquire L2 (ReadPoolConn) before L3 (GlobalChunksLock), and complete
+        // baseline delta inspection on the same connection without re-entering read_pool.
+        let prepared = crate::storage::with_registered_read_transaction(&self.db_path, |connection| {
+            let mut resident = self.table.lock()
+                .map_err(|_| "Global Chunk table lock poisoned".to_string())?;
+            // Do not rebuild an evicted table just to persist it.
+            let Some(table) = resident.as_mut() else {
+                return Ok(None);
+            };
+            if !table.matches_model(self.dimension, &self.model) {
+                return Err("Global Chunk checkpoint model mismatch".to_string());
+            }
+            let last_used = table.last_used;
+            let step = (|| -> std::result::Result<(u64, Option<(i64, &'static str, Vec<u8>, String, Vec<crate::global_chunks::ChunkHeader>)>), String> {
+                let generation = crate::storage::read_generation(connection)?;
+                table.synchronize(connection)?;
+                table.compact_if_needed(connection)?;
+                let prep = table.prepare_checkpoint_in_tx(
+                    connection,
+                    directory,
+                    self.threshold,
+                    self.allow_initial,
+                )?;
+                Ok((generation, prep))
+            })();
+            // Background checkpoint work is not retrieval activity, including
+            // failed synchronization and memory compaction.
+            table.last_used = last_used;
+            let (generation, prep) = step?;
+            Ok(prep.map(|(baseline_gen, slot, routing, facts, rows)| (
+                generation,
+                baseline_gen,
+                slot,
+                routing,
+                facts,
+                rows,
+            )))
+        }).map_err(Error::from_reason)?;
+        let Some((database_generation, generation, slot, routing, captured_facts, rows)) = prepared else {
+            return Ok(json!({"published":false,"factsCommitted":false}).to_string());
+        };
+        let published = GlobalChunks::publish_prepared_checkpoint(
+            &self.db_path,
+            directory,
+            database_generation,
+            self.dimension,
+            self.model.clone(),
+            generation,
+            slot,
+            routing,
+            captured_facts,
+            rows,
+        ).map_err(Error::from_reason)?;
         Ok(json!({"published":published,"factsCommitted":false}).to_string())
     }
 
@@ -730,6 +764,99 @@ mod tests {
         storage.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn concurrent_lightmemo_and_river_lock_order_never_deadlocks_under_min_read_pool() {
+        let root = std::env::temp_dir().join(format!(
+            "lightmemo-river-dag-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("test.sqlite").to_string_lossy().into_owned();
+        let mut opts = crate::storage::StorageOptions::default();
+        opts.read_pool_size = 2;
+        let (storage, _) = crate::storage::SqliteStorageEngine::open_and_init(&db, opts).unwrap();
+        storage.submit_write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO files(id,path,diary_name,checksum,mtime,size) VALUES (1,'a.txt','AliceDiary','a',0,0);"
+            ).map_err(|e| e.to_string())?;
+            let bytes = [1_f32, 0.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+            tx.execute(
+                "INSERT INTO chunks(id,file_id,chunk_index,content,vector) VALUES (1,1,0,'[2026-10-19] Alice',?1)",
+                [bytes],
+            ).map_err(|e| e.to_string())?;
+            Ok(crate::storage::WriteReceipt {
+                operation: "fixture".into(),
+                database_generation: 0,
+                facts_changed: true,
+            })
+        }).unwrap();
+
+        let shared_table: Arc<Mutex<Option<GlobalChunks>>> = Arc::new(Mutex::new(None));
+        let runtime = Arc::new(MemoRuntime::new());
+        let barrier = Arc::new(std::sync::Barrier::new(6));
+        let mut handles = Vec::new();
+
+        for worker_idx in 0..6 {
+            let db_clone = db.clone();
+            let table_clone = shared_table.clone();
+            let runtime_clone = runtime.clone();
+            let barrier_clone = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier_clone.wait();
+                for _ in 0..15 {
+                    if worker_idx % 2 == 0 {
+                        let mut lm_task = LightMemoTask {
+                            db_path: db_clone.clone(),
+                            dimension: 2,
+                            query: vec![1., 0.],
+                            plan_json: json!({
+                                "scope": {"searchAll": true},
+                                "modelSig": "test",
+                                "engineMode": "knn",
+                                "k": 5,
+                                "candidateK": 10
+                            }).to_string(),
+                            table: table_clone.clone(),
+                            runtime: runtime_clone.clone(),
+                            observation: None,
+                            warped_observation: None,
+                        };
+                        let out: Value = serde_json::from_str(&lm_task.compute().unwrap()).unwrap();
+                        assert_eq!(out["results"].as_array().unwrap().len(), 1);
+                    } else {
+                        // Simulate NativeRiverQueryTask path: L1(Gate) -> L2(ReadTx) -> L3(TableLock)
+                        let _gate = crate::publication_gate::acquire_read(&db_clone, &["*".into()]).unwrap();
+                        crate::storage::with_registered_read_transaction(&db_clone, |conn| {
+                            let _ = crate::storage::read_generation(conn)?;
+                            let mut guard = table_clone.lock().map_err(|_| "poisoned".to_string())?;
+                            if guard.is_none() {
+                                *guard = Some(GlobalChunks::production(2, "test")?);
+                            }
+                            let table = guard.as_mut().unwrap();
+                            table.disable_legacy()?;
+                            table.synchronize(conn)?;
+                            let diaries = HashSet::from(["AliceDiary".to_string()]);
+                            table.activate_partitions(conn, &diaries)?;
+                            let (hits, _) = table.search_warped(conn, &[1., 0.], 5, |r| r.diary == "AliceDiary")?;
+                            assert_eq!(hits.len(), 1);
+                            Ok(())
+                        }).unwrap();
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        storage.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// Explicit maintenance only; no query embedding or scope is involved.
@@ -747,9 +874,9 @@ impl Task for WarpedChunkPreparationTask {
     fn compute(&mut self) -> Result<String> {
         let _gate = crate::publication_gate::acquire_read(&self.db_path,&["*".into()])
             .map_err(Error::from_reason)?;
-        let mut resident = self.table.lock()
-            .map_err(|_|Error::from_reason("Global Chunk table lock poisoned"))?;
         let result = crate::storage::with_registered_read_transaction(&self.db_path,|connection| {
+            let mut resident = self.table.lock()
+                .map_err(|_| "Global Chunk table lock poisoned".to_string())?;
             // Forced maintenance re-reads SQL instead of trusting a cached TDB snapshot.
             // Publish the replacement in memory only after successful field preparation.
             let mut replacement = if self.force {

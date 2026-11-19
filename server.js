@@ -249,7 +249,7 @@ function destroyIdleSockets() {
     console.log(`[Server] Destroyed ${destroyedCount} idle socket(s).`);
 }
 
-async function closeHttpServerGracefully() {
+async function closeHttpServerGracefully(maxWaitMs = 5000) {
     if (!server || typeof server.close !== 'function') {
         return;
     }
@@ -259,6 +259,19 @@ async function closeHttpServerGracefully() {
     destroyIdleSockets();
 
     await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(() => {
+            console.warn(`[Server] server.close() still waiting on ${activeHttpRequests.size} active HTTP socket(s) after ${maxWaitMs}ms; proceeding to request drain/abort phase.`);
+            finish();
+        }, maxWaitMs);
+        if (typeof timer.unref === 'function') timer.unref();
+
         try {
             server.close((error) => {
                 if (error) {
@@ -266,11 +279,11 @@ async function closeHttpServerGracefully() {
                 } else {
                     console.log('[Server] HTTP server stopped accepting new connections.');
                 }
-                resolve();
+                finish();
             });
         } catch (error) {
             console.error('[Server] Failed to invoke server.close():', error);
-            resolve();
+            finish();
         }
     });
 }
@@ -1645,6 +1658,19 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
                 console.log(`[Server][ShutdownTrace] Phase 4/10 - abort skipped, no remaining active requests`);
             }
 
+            if (activeHttpRequests.size > 0) {
+                console.warn(`[Server] Destroying ${activeHttpRequests.size} remaining active HTTP socket(s) after drain phase.`);
+                for (const socket of activeHttpRequests) {
+                    try {
+                        if (!socket.destroyed) socket.destroy();
+                    } catch (err) {
+                        console.error('[Server] Failed to destroy remaining socket:', err.message);
+                    }
+                }
+                activeHttpRequests.clear();
+            }
+            destroyIdleSockets();
+
             serverLifecycleState = SERVER_LIFECYCLE.SHUTTING_DOWN;
             console.log(`[Server][ShutdownTrace] Phase 5/10 - lifecycle switched to SHUTTING_DOWN`);
 
@@ -1667,7 +1693,19 @@ async function gracefulShutdown(exitCode = 0, reason = 'signal') {
 
             if (pluginManager) {
                 console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins start`);
-                await pluginManager.shutdownAllPlugins();
+                let pluginShutdownTimer = null;
+                await Promise.race([
+                    pluginManager.shutdownAllPlugins(),
+                    new Promise((resolve) => {
+                        pluginShutdownTimer = setTimeout(() => {
+                            console.warn('[Server] pluginManager.shutdownAllPlugins timed out after 10000ms; continuing to Phase 9.');
+                            resolve();
+                        }, 10000);
+                        if (typeof pluginShutdownTimer.unref === 'function') pluginShutdownTimer.unref();
+                    })
+                ]).finally(() => {
+                    if (pluginShutdownTimer) clearTimeout(pluginShutdownTimer);
+                });
                 console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins done`);
             } else {
                 console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager shutdown skipped`);
