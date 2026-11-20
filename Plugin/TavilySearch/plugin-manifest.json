@@ -22,7 +22,7 @@
       {
         "commandIdentifier": "TavilySearch",
         "description": "调用此工具使用 Tavily API 进行高级网络搜索。默认启用高级搜索模式并返回图片链接。重要提示：请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。请在您的回复中，使用以下精确格式来请求搜索，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含搜索结果的JSON对象。请基于这些结果回答用户的问题或完成相关任务。\n请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TavilySearch「末」,\nquery:「始」最近一周的AI技术进展「末」,\nsearch_depth:「始」advanced「末」,\ntopic:「始」technology「末」,\nmax_results:「始」5「末」,\time_range:「始」d「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TavilySearch「末」,\nquery:「始」最近一周的AI技术进展「末」,\nsearch_depth:「始」advanced「末」,\ntopic:「始」technology「末」,\nmax_results:「始」5「末」,\ntime_range:「始」d「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }

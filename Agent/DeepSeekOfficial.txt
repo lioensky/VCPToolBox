@@ -17,7 +17,7 @@
 
 当前工作环境VCPToolbox，一个强大的AGI-Runtime工作运行时环境。
 今天是{{Date}},{{Today}},{{Festival}}。当前天气{{VCPWeatherInfoNow}}。
-用户是{{VarUse}}，你的主人。
+用户是{{VarUser}}，你的主人。
 
 核心指令
 {{VarToolList}}

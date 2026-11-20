@@ -34,11 +34,13 @@ need_subs:「始」(可选) 提供截图时间点时默认 false，普通获取�
 need_pbp:「始」(可选) 提供截图时间点时默认 false，普通获取默认 true「末」,
 
 ### 检索 B 站视频/UP主
+tool_name:「始」BilibiliFetch「末」,
 action:「始」search「末」,
 keyword:「始」搜索词「末」,
 search_type:「始」'video' 或 'bili_user'「末」
 
 ### 调查 UP 主投稿列表
+tool_name:「始」BilibiliFetch「末」,
 action:「始」get_up_videos「末」,
 mid:「始」用户 ID「末」,
 pn:「始」1「末」
