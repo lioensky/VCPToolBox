@@ -41,8 +41,8 @@ class TimelinePlaceholderProcessor {
         const lastAi = messages.findLast(message => message?.role === 'assistant');
         const aiText = host.sanitizeForEmbedding(host._extractTextFromContent(lastAi?.content), 'assistant') || '';
         const [userVector, aiVector] = await Promise.all([
-            userText ? host.getSingleEmbeddingCached(userText) : null,
-            aiText ? host.getSingleEmbeddingCached(aiText) : null
+            userText ? host.getSingleEmbeddingCached(userText, { contextRole: 'user' }) : null,
+            aiText ? host.getSingleEmbeddingCached(aiText, { contextRole: 'assistant' }) : null
         ]);
         return {
             userText, aiText,

@@ -8,6 +8,8 @@
  */
 
 const crypto = require('crypto');
+const { extractTextFromContent } = require('./MessageContentUtils');
+const { projectContextEmbeddingInput } = require('../../modules/contextEmbeddingInput');
 
 class ContextVectorManager {
     constructor(plugin, maxVectorMapSize = 1000) {
@@ -35,12 +37,7 @@ class ContextVectorManager {
      * 提取消息文本内容（兼容 string 与多模态文本块数组）
      */
     _extractContent(msg) {
-        if (!msg) return '';
-        if (typeof msg.content === 'string') return msg.content;
-        if (Array.isArray(msg.content)) {
-            return msg.content.find(p => p && p.type === 'text')?.text || '';
-        }
-        return '';
+        return extractTextFromContent(msg?.content);
     }
 
     /**
@@ -70,11 +67,11 @@ class ContextVectorManager {
     }
 
     /** 复用历史消息归一化结果与哈希（>64KB 自动切换为定长 SHA-256 缓存键，支持任意长度历史消息跨轮 O(1) 命中）。 */
-    _getNormalizedAndHash(content) {
-        if (!content) return { normalized: '', hash: this._generateHash('') };
-        const cacheKey = content.length <= 65536
+    _getNormalizedAndHash(content, role) {
+        if (!content) return { input: '', normalized: '', hash: this._generateHash('') };
+        const cacheKey = `${role ?? ''}:${content.length <= 65536
             ? content
-            : `__raw_sha256:${content.length}:${this._generateHash(content)}`;
+            : `__raw_sha256:${content.length}:${this._generateHash(content)}`}`;
         const cached = this.normalizationCache.get(cacheKey);
         if (cached !== undefined) {
             this.normalizationCache.delete(cacheKey);
@@ -82,9 +79,12 @@ class ContextVectorManager {
             return cached;
         }
 
-        const normalized = this._normalize(content);
-        const hash = this._generateHash(normalized);
-        const record = { normalized, hash };
+        const input = typeof this.plugin.sanitizeForEmbedding === 'function'
+            ? projectContextEmbeddingInput(this.plugin.sanitizeForEmbedding(content, role), role)
+            : content;
+        const normalized = this._normalize(input);
+        const hash = this._generateHash(typeof this.plugin.sanitizeForEmbedding === 'function' ? input : normalized);
+        const record = { input, normalized, hash };
         if (normalized.length <= 5000000) {
             if (this.normalizationCache.size >= this.maxNormalizationCacheSize) {
                 const oldestKey = this.normalizationCache.keys().next().value;
@@ -213,7 +213,8 @@ class ContextVectorManager {
                 stats.totalHistoricalUserMessages++;
             }
 
-            const { normalized, hash } = this._getNormalizedAndHash(content);
+            const { input, normalized, hash } = this._getNormalizedAndHash(content, msg.role);
+            if (!input) return;
 
             let vector = null;
             let vectorSource = 'none';
@@ -230,12 +231,11 @@ class ContextVectorManager {
                     vectorSource = 'fuzzy';
                 }
 
-                // 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
-                if (!vector) {
-                    vector = this.plugin._getEmbeddingFromCacheOnly(content);
-                    if (vector) {
-                        vectorSource = 'embeddingCache';
-                    }
+                // 统一缓存的精确投影优先于历史局部近似。
+                const cached = this.plugin._getEmbeddingFromCacheOnly(input);
+                if (cached) {
+                    vector = cached;
+                    vectorSource = 'embeddingCache';
                 }
 
                 // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
@@ -245,7 +245,7 @@ class ContextVectorManager {
                         abortErr.name = 'AbortError';
                         throw abortErr;
                     }
-                    vector = await this.plugin.getSingleEmbeddingCached(content, { signal });
+                    vector = await this.plugin.getSingleEmbeddingCached(input, { signal });
                     if (vector) {
                         vectorSource = 'api';
                     }
@@ -484,7 +484,7 @@ class ContextVectorManager {
             if (!content || content.length < 2) return;
             if (this._isVirtualSystemUser(msg)) return;
 
-            const { hash } = this._getNormalizedAndHash(content);
+            const { hash } = this._getNormalizedAndHash(content, msg.role);
 
             // 尝试精确匹配
             const entry = this.vectorMap.get(hash);

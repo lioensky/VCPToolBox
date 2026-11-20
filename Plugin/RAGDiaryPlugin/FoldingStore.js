@@ -52,6 +52,12 @@ class FoldingStore {
                 console.error(`[FoldingStore] 数据库初始化失败堆栈:\n${e.stack}`);
             }
 
+            // A failed additive migration does not establish database corruption.
+            if (e.code === 'FOLDING_VECTOR_INPUT_MIGRATION') {
+                this.shutdown();
+                return;
+            }
+
             // 尝试删除损坏的数据库并重建
             try {
                 if (fs.existsSync(dbPath)) {
@@ -93,6 +99,18 @@ class FoldingStore {
             );
             CREATE INDEX IF NOT EXISTS idx_folding_updated ON folding_entries(updated_at);
         `);
+        try {
+            this.db.transaction(() => {
+                const columns = this.db.prepare('PRAGMA table_info(folding_entries)').all();
+                if (!columns.some(column => column.name === 'vector_input_hash')) {
+                    this.db.exec('ALTER TABLE folding_entries ADD COLUMN vector_input_hash TEXT');
+                }
+            }).immediate();
+        } catch (cause) {
+            const error = new Error(`FoldingStore vector fingerprint migration failed: ${cause.message}`, { cause });
+            error.code = 'FOLDING_VECTOR_INPUT_MIGRATION';
+            throw error;
+        }
     }
 
     _prepareStatements() {
@@ -103,10 +121,11 @@ class FoldingStore {
         );
 
         this._stmts.upsertVector = this.db.prepare(`
-            INSERT INTO folding_entries (content_hash, text_preview, vector, summary_status, created_at, updated_at)
-            VALUES (@hash, @preview, @vector, 'none', @now, @now)
+            INSERT INTO folding_entries (content_hash, text_preview, vector, vector_input_hash, summary_status, created_at, updated_at)
+            VALUES (@hash, @preview, @vector, @vectorInputHash, 'none', @now, @now)
             ON CONFLICT(content_hash) DO UPDATE SET
-                vector = COALESCE(@vector, vector),
+                vector = @vector,
+                vector_input_hash = @vectorInputHash,
                 updated_at = @now
         `);
 
@@ -125,6 +144,7 @@ class FoldingStore {
             WHERE content_hash = @hash
         `);
 
+        this._stmts.exists = this.db.prepare('SELECT 1 FROM folding_entries WHERE content_hash = ?');
         this._stmts.count = this.db.prepare(
             'SELECT COUNT(*) as cnt FROM folding_entries'
         );
@@ -214,11 +234,12 @@ class FoldingStore {
         if (!this.db) return;
         if (!data || !data.vector) return;
         try {
-            this._evictIfNeeded();
+            this._evictIfNeeded(contentHash);
             this._stmts.upsertVector.run({
                 hash: contentHash,
                 preview: (data.textPreview || '').substring(0, 80),
                 vector: FoldingStore.vectorToBuffer(data.vector),
+                vectorInputHash: data.vectorInputHash ?? null,
                 now: Date.now()
             });
         } catch (e) {
@@ -282,10 +303,10 @@ class FoldingStore {
     /**
      * LRU 淘汰：超过 maxEntries 时删除最旧的 evictCount 条
      */
-    _evictIfNeeded() {
+    _evictIfNeeded(contentHash) {
         try {
             const cnt = this._stmts.count.get().cnt;
-            if (cnt >= this.maxEntries) {
+            if (cnt >= this.maxEntries && !this._stmts.exists.get(contentHash)) {
                 const result = this._stmts.evict.run(this.evictCount);
                 console.log(`[FoldingStore] LRU 淘汰: 删除了 ${result.changes} 条最旧记录`);
             }

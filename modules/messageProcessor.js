@@ -1,3 +1,4 @@
+const { projectContextEmbeddingInput } = require('./contextEmbeddingInput');
 // modules/messageProcessor.js
 const fsSync = require('fs');
 const fs = fsSync.promises;
@@ -499,8 +500,9 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         // DynamicFold 专用向量获取：精确缓存 → 高阈值 fuzzy 缓存 → Embedding API。
         // 这里常在 RAGDiaryPlugin 主链路之后运行，AI 文本可能只有极小差异；
         // 先 fuzzy 复用可避免动态折叠再次向量化同一段 AI 输出。
-        const getDynamicFoldEmbedding = async (text, label = 'unknown') => {
-            if (!text || typeof text !== 'string' || !text.trim()) return null;
+        const getDynamicFoldEmbedding = async (sanitized, contextRole) => {
+            const text = projectContextEmbeddingInput(sanitized, contextRole);
+            if (!text) return null;
 
             if (typeof ragPlugin._getEmbeddingFromCacheOnly === 'function') {
                 const exact = ragPlugin._getEmbeddingFromCacheOnly(text);
@@ -513,7 +515,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                 if (fuzzy && fuzzy.vector) {
                     if (context.DEBUG_MODE) {
                         console.log(
-                            `[DynamicFold] Fuzzy embedding cache hit (${label}): ` +
+                            `[DynamicFold] Fuzzy embedding cache hit (${contextRole}): ` +
                             `sim=${fuzzy.similarity.toFixed(4)}, len=${text.length}/${fuzzy.length}`
                         );
                     }
@@ -526,8 +528,8 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         };
 
         const [uVec, aVec] = await Promise.all([
-            userContent ? getDynamicFoldEmbedding(userContent, 'user_context') : Promise.resolve(null),
-            aiContent ? getDynamicFoldEmbedding(aiContent, 'assistant_context') : Promise.resolve(null)
+            getDynamicFoldEmbedding(userContent, 'user'),
+            getDynamicFoldEmbedding(aiContent, 'assistant')
         ]);
 
         const userVector = ragPlugin._getWeightedAverageVector([uVec, aVec], mainWeights);

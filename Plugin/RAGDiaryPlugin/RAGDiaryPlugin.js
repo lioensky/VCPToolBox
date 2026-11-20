@@ -23,6 +23,7 @@ const AttachmentMemoUtils = require('./AttachmentMemoUtils.js');
 const RAGResultFormatter = require('./RAGResultFormatter.js');
 const BM25QueryOptimizer = require('./BM25QueryOptimizer.js');
 const { chunkText, getTokenCount } = require('../../TextChunker.js');
+const { projectContextEmbeddingInput } = require('../../modules/contextEmbeddingInput');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const {
     findLastRealUserMessage,
@@ -1601,8 +1602,8 @@ class RAGDiaryPlugin {
 
             throwIfRagAborted();
             const [userVector, aiVector] = await Promise.all([
-                userContent ? this.getSingleEmbeddingCached(userContent, { signal }) : Promise.resolve(null),
-                aiContent ? this.getSingleEmbeddingCached(aiContent, { signal }) : Promise.resolve(null)
+                userContent ? this.getSingleEmbeddingCached(userContent, { signal, contextRole: 'user' }) : Promise.resolve(null),
+                aiContent ? this.getSingleEmbeddingCached(aiContent, { signal, contextRole: 'assistant' }) : Promise.resolve(null)
             ]);
             throwIfRagAborted();
 
@@ -2923,9 +2924,9 @@ class RAGDiaryPlugin {
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([
-            sanitizedUserContent ? this.getSingleEmbeddingCached(sanitizedUserContent) : null,
-            sanitizedAiContent ? this.getSingleEmbeddingCached(sanitizedAiContent) : null,
-            sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent) : null
+            sanitizedUserContent ? this.getSingleEmbeddingCached(sanitizedUserContent, { contextRole: 'user' }) : null,
+            sanitizedAiContent ? this.getSingleEmbeddingCached(sanitizedAiContent, { contextRole: 'assistant' }) : null,
+            sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent, { contextRole: 'tool' }) : null
         ]);
 
         // 3. 按动态权重合并向量
@@ -5553,7 +5554,8 @@ class RAGDiaryPlugin {
             });
         };
 
-        const normalizedText = text.trim();
+        const normalizedText = projectContextEmbeddingInput(text, options?.contextRole);
+        if (!normalizedText) return null;
         const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
         const cached = this.cacheManager.get('embedding', cacheKey);
         if (cached) {
@@ -5691,9 +5693,9 @@ class RAGDiaryPlugin {
      * ✅ 仅从缓存获取向量（不触发 API）
      * 恢复此方法以保持与 ContextVectorManager 等模块的兼容性
      */
-    _getEmbeddingFromCacheOnly(text) {
-        if (!text) return null;
-        const normalizedText = text.trim();
+    _getEmbeddingFromCacheOnly(text, contextRole) {
+        const normalizedText = projectContextEmbeddingInput(text, contextRole);
+        if (!normalizedText) return null;
         const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
         const vector = this.cacheManager.get('embedding', cacheKey);
         if (vector) {
@@ -5747,13 +5749,14 @@ class RAGDiaryPlugin {
             if (!sanitized) continue;
 
             const hash = FoldingStore.hashContent(sanitized);
+            const embeddingInput = projectContextEmbeddingInput(sanitized, 'assistant');
+            const vectorInputHash = FoldingStore.hashContent(embeddingInput);
 
-            // 查 store 是否已有此条目（含持久化向量）
             const existing = this.foldingStore.getEntry(hash);
-            if (existing && existing.vector) continue; // 已有完整条目，跳过
+            if (existing?.vector && (existing.vector_input_hash ?? hash) === vectorInputHash) continue;
 
-            // 尝试从内存缓存获取向量（不触发 API）
-            const vector = this._getEmbeddingFromCacheOnly(sanitized);
+            // 同步只消费已经存在的标准向量，不能因入库而额外调用 API。
+            const vector = this._getEmbeddingFromCacheOnly(embeddingInput);
 
             // 关键修复：未被向量化的 assistant 块不写入 FoldingStore。
             // 空向量条目既无法参与相似度判断，也无法安全触发摘要状态机，应等待 ContextFoldingV2
@@ -5762,7 +5765,8 @@ class RAGDiaryPlugin {
 
             this.foldingStore.upsertVector(hash, {
                 textPreview: sanitized.substring(0, 80),
-                vector
+                vector,
+                vectorInputHash
             });
             syncCount++;
         }
@@ -5994,9 +5998,8 @@ class RAGDiaryPlugin {
              * @param {string} text - 要向量化的文本
              * @returns {Promise<Array<number>|null>} 向量数组或 null
              */
-            async embedText(text) {
-                if (!text || typeof text !== 'string' || !text.trim()) return null;
-                return self.getSingleEmbeddingCached(text);
+            async embedText(text, options) {
+                return self.getSingleEmbeddingCached(text, options);
             },
 
             /**
@@ -6014,9 +6017,8 @@ class RAGDiaryPlugin {
              * @param {string} text - 要查询的文本
              * @returns {Array<number>|null} 缓存中的向量或 null
              */
-            getEmbeddingFromCache(text) {
-                if (!text || typeof text !== 'string') return null;
-                return self._getEmbeddingFromCacheOnly(text);
+            getEmbeddingFromCache(text, contextRole) {
+                return self._getEmbeddingFromCacheOnly(text, contextRole);
             },
 
             /**
@@ -6028,7 +6030,7 @@ class RAGDiaryPlugin {
              */
             getFuzzyEmbeddingFromCache(text, options = {}) {
                 if (!text || typeof text !== 'string') return null;
-                return self._findFuzzyEmbeddingFromCache(text, options);
+                return self._findFuzzyEmbeddingFromCache(projectContextEmbeddingInput(text, options?.contextRole), options);
             },
 
             /**

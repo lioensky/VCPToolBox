@@ -245,8 +245,8 @@ class VCPTimeLine {
         const userText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'user'), 'user');
         const aiText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'assistant'), 'assistant');
         const [userVector, aiVector] = await Promise.all([
-            userText ? this.contextBridge.embedText(userText) : null,
-            aiText ? this.contextBridge.embedText(aiText) : null
+            userText ? this.contextBridge.embedText(userText, { contextRole: 'user' }) : null,
+            aiText ? this.contextBridge.embedText(aiText, { contextRole: 'assistant' }) : null
         ]);
         return {
             queryVector: this.contextBridge.weightedAverage([userVector, aiVector], [0.7, 0.3]),

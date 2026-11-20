@@ -7,6 +7,7 @@ const path = require('path');
 const dotenv = require('dotenv');
 const chokidar = require('chokidar');
 const { findLastRealUserMessage } = require('../../modules/messageProcessor.js');
+const { projectContextEmbeddingInput } = require('../../modules/contextEmbeddingInput');
 
 const FOLDING_PREFIX = '[VCP上下文语义折叠-本层摘要:';
 // 使用 [\s\S]+? 而非 .+? 以兼容模型输出多行摘要的情况
@@ -243,20 +244,23 @@ class ContextFoldingV2 {
                 if (!sanitized || sanitized.length < 10) continue;
 
                 const hash = store.hashContent(sanitized);
+                const embeddingInput = projectContextEmbeddingInput(sanitized, 'assistant');
+                const vectorInputHash = store.hashContent(embeddingInput);
 
                 // 获取块向量（store → 精确缓存 → fuzzy缓存 → embedding API）
                 // 与上下文参考向量使用同一条折叠专用向量化路径，避免候选 assistant 块因微小文本差异重复向量化。
                 let blockVector = null;
                 const entry = store.getEntry(hash);
 
-                if (entry && entry.vector) {
+                if (entry?.vector && (entry.vector_input_hash ?? hash) === vectorInputHash) {
                     blockVector = entry.vector;
                 } else {
-                    blockVector = await this._embedTextForFolding(sanitized, bridge, 'assistant_candidate');
+                    blockVector = await this._embedTextForFolding(embeddingInput, bridge, 'assistant_candidate');
                     if (blockVector) {
                         store.upsertVector(hash, {
                             textPreview: sanitized.substring(0, 80),
-                            vector: blockVector
+                            vector: blockVector,
+                            vectorInputHash
                         });
                     }
                 }
@@ -353,8 +357,8 @@ class ContextFoldingV2 {
         // ContextFoldingV2 在 RAGDiaryPlugin 之后执行：先尝试精确缓存，再尝试高阈值 fuzzy 复用 RAG 刚生成的近似向量，
         // 最后才触发 Embedding API，避免“最新 AI 发言仅有微小文本差异却重复向量化”。
         const [userVec, aiVec] = await Promise.all([
-            sanitizedUser ? this._embedTextForFolding(sanitizedUser, bridge, 'user_context') : null,
-            sanitizedAi ? this._embedTextForFolding(sanitizedAi, bridge, 'assistant_context') : null
+            this._embedTextForFolding(projectContextEmbeddingInput(sanitizedUser, 'user'), bridge, 'user_context'),
+            this._embedTextForFolding(projectContextEmbeddingInput(sanitizedAi, 'assistant'), bridge, 'assistant_context')
         ]);
 
         // 加权平均（默认 user 0.7, AI 0.3，可通过 rag_params.json 的 ContextFoldingV2.contextWeights 调整）

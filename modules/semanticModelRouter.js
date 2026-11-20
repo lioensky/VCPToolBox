@@ -352,8 +352,8 @@ class SemanticModelRouter {
     }
 
     const [userVector, aiVector] = await Promise.all([
-      userContent ? ragPlugin.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
-      aiContent ? ragPlugin.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+      userContent ? ragPlugin.getSingleEmbeddingCached(userContent, { contextRole: 'user' }) : Promise.resolve(null),
+      aiContent ? ragPlugin.getSingleEmbeddingCached(aiContent, { contextRole: 'assistant' }) : Promise.resolve(null)
     ]);
 
     const weights = Array.isArray(preset.contextWeights) && preset.contextWeights.length > 0

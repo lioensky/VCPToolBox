@@ -15,6 +15,8 @@ const {
   isSystemNotificationText,
 } = require("../../modules/messageProcessor.js");
 const { getEmbeddingsBatch, cosineSimilarity } = require("../../EmbeddingUtils.js");
+const { projectContextEmbeddingInput } = require("../../modules/contextEmbeddingInput");
+const { extractTextFromContent } = require("../RAGDiaryPlugin/MessageContentUtils");
 const { evaluateMoodStateMachine } = require("./OpenHerMoodStateMachine.js");
 
 const {
@@ -508,11 +510,11 @@ const pendingEmbeddingRequests = new Set();
 
 // A timed-out observer does not imply the underlying shared request was cancelled.
 // Keep its slot occupied until settlement; refuse new calls rather than accumulate.
-async function requestEmbeddings(texts, timeoutMs) {
+async function requestEmbeddings(texts, timeoutMs, provider = embeddingProvider) {
   if (stopped || pendingEmbeddingRequests.size >= activeConfig.OpenHerPersonaGlobalConcurrency) return null;
   const token = {};
   pendingEmbeddingRequests.add(token);
-  const request = Promise.resolve().then(() => embeddingProvider(texts));
+  const request = Promise.resolve().then(() => provider(texts));
   request.then(
     () => pendingEmbeddingRequests.delete(token),
     () => pendingEmbeddingRequests.delete(token)
@@ -1219,8 +1221,7 @@ function rememberMessageVector(key, vector) {
   pruneMessageCache();
 }
 
-async function embedText(text, role = "user") {
-  const normalized = sanitizeForEmbedding(text, role).slice(0, 4000);
+async function embedObservationInput(normalized, role) {
   if (!normalized) return null;
   const key = hashText(`${role}:${normalized}`);
   pruneMessageCache();
@@ -1243,7 +1244,10 @@ async function embedText(text, role = "user") {
   }
 
   const embedded = await requestEmbeddings(
-    [normalized], activeConfig.OpenHerPersonaEmbeddingTimeoutMs
+    [normalized], activeConfig.OpenHerPersonaEmbeddingTimeoutMs,
+    embeddingProviderTag === 'contextBridge' && typeof contextBridge?.embedText === 'function'
+      ? async ([input]) => [await contextBridge.embedText(input)]
+      : undefined
   );
   const vector = Array.isArray(embedded) && isVector(embedded[0]) ? embedded[0] : null;
   if (epoch !== lifecycle || stopped) return null;
@@ -2119,7 +2123,7 @@ function findLatestRealMessage(messages, targetRole = null) {
     const message = messages[index];
     if (!message || !["user", "assistant"].includes(message.role)) continue;
     if (targetRole && message.role !== targetRole) continue;
-    const text = messageContentToText(message.content);
+    const text = extractTextFromContent(message.content);
     if (!text.trim()) continue;
     if (message.role === "user" && isVcpVirtualUserText(text)) continue;
     return { index, role: message.role, text };
@@ -2256,7 +2260,7 @@ async function observeJob(job) {
   // RAGDiaryPlugin keeps the original message in the downstream chain while
   // caching the sanitized text. Always reuse that same sanitizer before cache
   // lookup; querying with the raw assistant text would miss an existing vector.
-  const messageVector = await embedText(job.normalizedText || job.text, job.role);
+  const messageVector = await embedObservationInput(job.normalizedText, job.role);
   if (!isObservationJobCurrent(job)) return;
   if (!messageVector) {
     saveAudit(state.agentKey, "observe_skipped", { reason: "message_vector_unavailable", job: summarizeJob(job) });
@@ -2335,10 +2339,11 @@ async function processMessages(messages, requestConfig = {}) {
   // RAGDiaryPlugin sanitizes for embedding but deliberately passes the original
   // message downstream. Reapply the shared ContextBridge sanitizer so exact
   // cache lookup uses the same key as the upstream RAG embedding pipeline.
-  const normalizedText = sanitizeForEmbedding(latestMessage.text, latestMessage.role).slice(0, 4000);
+  const sanitizedText = sanitizeForEmbedding(latestMessage.text, latestMessage.role);
+  const normalizedText = projectContextEmbeddingInput(sanitizedText, latestMessage.role);
   if (!normalizedText) return messages;
 
-  const inputHash = buildObservationFingerprint(identity.agentKey, latestMessage, normalizedText);
+  const inputHash = buildObservationFingerprint(identity.agentKey, latestMessage, sanitizedText);
   const job = {
     agentKey: identity.agentKey,
     agentLabel: identity.agentLabel,

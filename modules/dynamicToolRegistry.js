@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
 const { buildDynamicFoldObject, hasFoldMarkers } = require('./foldProtocol');
+const { extractTextFromContent } = require('../Plugin/RAGDiaryPlugin/MessageContentUtils');
 
 const PRIVATE_CONFIG_RELATIVE_PATH = path.join('Plugin', 'DynamicToolBridge', 'config.env');
 const {
@@ -871,15 +872,36 @@ class DynamicToolRegistry {
             return fallbackBlock.content;
         }
 
-        const queryText = extractMessageText(options.messages || []);
-        if (!queryText.trim()) return fallbackBlock.content;
+        const conversation = asArray(options.messages).slice(-12).flatMap((message, index) => {
+            const role = message?.role;
+            if (role !== 'user' && role !== 'assistant') return [];
+            const text = extractTextFromContent(message.content);
+            if (role === 'user' && /^\s*(?:\[系统(?!通知)[^\]]*\]|<!-- VCP_TOOL_PAYLOAD -->)/.test(text)) return [];
+            const clean = typeof ragPlugin.sanitizeForEmbedding === 'function'
+                ? ragPlugin.sanitizeForEmbedding(text, role) : text.trim();
+            return clean ? [{ role, clean, index }] : [];
+        });
+        if (!conversation.length) return fallbackBlock.content;
 
         try {
-            const userVector = await withTimeout(
-                Promise.resolve(ragPlugin.getSingleEmbeddingCached(queryText)),
+            const lastUser = conversation.findLastIndex(item => item.role === 'user');
+            const lastAssistant = conversation.findLastIndex(item => item.role === 'assistant');
+            const vectors = await withTimeout(
+                Promise.all(conversation.map(({ role, clean }, index) =>
+                    index === lastUser || index === lastAssistant
+                        ? ragPlugin.getSingleEmbeddingCached(clean, { contextRole: role })
+                        : ragPlugin._getEmbeddingFromCacheOnly?.(clean, role) ?? null)),
                 this.config.classifierTimeoutMs,
                 'dynamic tool fold query embedding'
             );
+            const weighted = vectors.flatMap((vector, index) => vector?.length
+                ? [{ vector, weight: Math.pow(0.75, 11 - conversation[index].index) }]
+                : []);
+            if (!weighted.length) return fallbackBlock.content;
+            const userVector = typeof ragPlugin._getWeightedAverageVector === 'function'
+                ? ragPlugin._getWeightedAverageVector(weighted.map(item => item.vector), weighted.map(item => item.weight))
+                : weighted.at(-1).vector;
+            if (!userVector) return fallbackBlock.content;
             const vectorDBManager = options.pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
             const getBlockVector = async (text) => {
                 if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {

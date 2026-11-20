@@ -3,7 +3,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
-const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
+const { cosineSimilarity } = require('../../EmbeddingUtils');
+const { findLastRealUserMessage } = require('../messageProcessor');
 const toolCallRecordStore = require('../toolCallRecordStore');
 const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
 const jevToolCallExp = require('../jevToolCallExp');
@@ -72,21 +73,10 @@ class ToolExecutor {
       return null;
     }
 
-    // 定位最后一条"真实"用户消息（排除工具回包和系统注入）
-    const lastUserIndex = contextMessages.findLastIndex(msg => {
-      if (msg.role !== 'user') return false;
-      const content = getMessageTextContent(msg);
-      return !content.startsWith('<!-- VCP_TOOL_PAYLOAD -->') &&
-        !content.startsWith('[系统提示:]') &&
-        !content.startsWith('[系统邀请指令:]');
+    const { index: lastUserIndex, sanitizedContent: userContent } = findLastRealUserMessage(contextMessages, {
+      sanitize: ragPlugin.sanitizeForEmbedding.bind(ragPlugin)
     });
-
-    if (lastUserIndex === -1) {
-      console.warn('[VRef] 未找到可用的 user 消息，跳过 vref。');
-      return null;
-    }
-
-    const rawUserContent = getMessageTextContent(contextMessages[lastUserIndex]);
+    if (lastUserIndex === -1) return null;
 
     // 向前搜索最近一条 AI 回复，作为上下文的另一半
     let rawAiContent = '';
@@ -98,17 +88,17 @@ class ToolExecutor {
     }
 
     // 清洗文本（去除 RAG 块、系统标记等噪声）
-    const userContent = ragPlugin.sanitizeForEmbedding(rawUserContent, 'user');
+
     const aiContent = rawAiContent
       ? ragPlugin.sanitizeForEmbedding(rawAiContent, 'assistant')
       : '';
 
     // 仅从缓存获取向量 — 如果本轮 RAG 已执行过，这些向量必然已在缓存中
     const userVector = userContent
-      ? ragPlugin._getEmbeddingFromCacheOnly(userContent)
+      ? ragPlugin._getEmbeddingFromCacheOnly(userContent, 'user')
       : null;
     const aiVector = aiContent
-      ? ragPlugin._getEmbeddingFromCacheOnly(aiContent)
+      ? ragPlugin._getEmbeddingFromCacheOnly(aiContent, 'assistant')
       : null;
 
     if (!userVector && !aiVector) {
@@ -274,41 +264,28 @@ class ToolExecutor {
       
       // 3. 尝试语义检索，失败则优雅回退到 last:N（保证工具调用不会因向量化失败而中断）
       try {
-        // 优先走 RAGDiaryPlugin 缓存通道：本轮对话的消息向量大概率已被 RAG 流程缓存，
-        // 复用缓存可避免重复 API 调用。仅当 ragPlugin 不可用时回退到 EmbeddingUtils 独立通道。
         const ragPlugin = this.pluginManager?.messagePreprocessors?.get('RAGDiaryPlugin');
-        
-        let queryVec = null;
-        let messageVectors = [];
-        
-        if (ragPlugin && typeof ragPlugin.getBatchEmbeddingsCached === 'function') {
-          // 走 RAGDiaryPlugin 缓存通道：逐条查缓存，未命中的批量发 API
-          const allTexts = [
-            queryText.slice(0, 1000),
-            ...textMessages.map(m => m.text.slice(0, 1000))
-          ];
-          const allVectors = await ragPlugin.getBatchEmbeddingsCached(allTexts);
-          queryVec = allVectors[0];
-          messageVectors = allVectors.slice(1);
-        } else {
-          // 回退：ragPlugin 不可用时，走 EmbeddingUtils 独立通道
-          const embeddingConfig = {
-            apiKey: process.env.API_KEY,
-            apiUrl: process.env.API_URL,
-            model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001'
-          };
-          const allTexts = [
-            queryText.slice(0, 1000),
-            ...textMessages.map(m => m.text.slice(0, 1000))
-          ];
-          const allVectors = await getEmbeddingsBatch(allTexts, embeddingConfig);
-          queryVec = allVectors[0];
-          messageVectors = allVectors.slice(1);
+        if (typeof ragPlugin?.getSingleEmbeddingCached !== 'function' ||
+            typeof ragPlugin?.sanitizeForEmbedding !== 'function') {
+          throw new Error('Shared context embedding service unavailable');
         }
-        
-        if (!queryVec) {
-          throw new Error('Query embedding returned null');
-        }
+
+        const queryVec = await ragPlugin.getSingleEmbeddingCached(queryText.slice(0, 1000));
+        if (!queryVec) throw new Error('Query embedding returned null');
+
+        // Bound concurrent cache misses for long histories; each block still shares RAG single-flight.
+        const messageVectors = new Array(textMessages.length);
+        let cursor = 0;
+        await Promise.all(Array.from({ length: Math.min(8, textMessages.length) }, async () => {
+          while (cursor < textMessages.length) {
+            const i = cursor++;
+            const { text, role } = textMessages[i];
+            const contextRole = role === 'user' || role === 'assistant' ? role : 'tool';
+            messageVectors[i] = await ragPlugin.getSingleEmbeddingCached(
+              ragPlugin.sanitizeForEmbedding(text, role), { contextRole }
+            );
+          }
+        }));
         
         // 4. 计算余弦相似度并排序
         const scored = textMessages.map((m, i) => ({
