@@ -21,17 +21,17 @@
       {
         "commandIdentifier": "DoubaoGenerateImage",
         "description": "【文生图】调用此工具通过 DMXAPI (使用 doubao-seedream-4-0-250828 模型) 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoGenerateImage「末」,\nprompt:「始」科技感的店铺门口，店铺名称是DMXAPI「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DMXDoubaoGen「末」,\ncommand:「始」DoubaoGenerateImage「末」,\nprompt:「始」科技感的店铺门口，店铺名称是DMXAPI「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       },
       {
         "commandIdentifier": "DoubaoEditImage",
         "description": "【图生图/修图】调用此工具通过 DMXAPI (使用 doubao-seedream-4-0-250828 模型) 修改现有图片。请在您的回复中，使用以下精确格式来请求图片修改，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoEditImage「末」,\nprompt:「始」给这个女孩戴上墨镜「末」,\nimage:「始」https://www.dmxapi.cn/images/i2i_demo.png「末」,\nresolution:「始」adaptive「末」,\nguidance_scale:「始」5.5「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DMXDoubaoGen「末」,\ncommand:「始」DoubaoEditImage「末」,\nprompt:「始」给这个女孩戴上墨镜「末」,\nimage:「始」https://www.dmxapi.cn/images/i2i_demo.png「末」,\nresolution:「始」adaptive「末」,\nguidance_scale:「始」5.5「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       },
       {
         "commandIdentifier": "DoubaoComposeImage",
         "description": "【多图融合/对话】调用此工具通过 DMXAPI (使用 doubao-seedream-4-0-250828 模型) 融合多张图片或基于多张图片进行对话。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoComposeImage「末」,\nprompt:「始」把第一张图的女孩和第二张图的猫融合在一起「末」,\nimage_1:「始」https://example.com/girl.png「末」,\nimage_2:「始」file:///path/to/cat.jpg「末」,\nresolution:「始」adaptive「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DMXDoubaoGen「末」,\ncommand:「始」DoubaoComposeImage「末」,\nprompt:「始」把第一张图的女孩和第二张图的猫融合在一起「末」,\nimage_1:「始」https://example.com/girl.png「末」,\nimage_2:「始」file:///path/to/cat.jpg「末」,\nresolution:「始」adaptive「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   },

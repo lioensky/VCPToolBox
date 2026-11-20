@@ -20,7 +20,7 @@ async function main() {
 
             const params = JSON.parse(inputData);
 
-            const maidName = params.Maid;
+            const maidName = params.maid || params.Maid || params.valet;
             const message = params.message;
 
             if (!message) {
