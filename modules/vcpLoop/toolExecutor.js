@@ -229,7 +229,20 @@ class ToolExecutor {
     //   last:N   — 仅取最后 N 条消息（纯文本）
     //   semantic:N — 语义折叠，用工具参数作为 query 检索最相关的 N 条消息
     if (this.debugMode) console.log(`[ToolExecutor] Processing tool: ${name}, river mode: ${river}`);
-    if (river === 'full') {
+    if (name === 'TopicSponsor') {
+      // river_context is injected by the executor, not supplied by the caller.
+      delete args.river_context;
+      if (args.command === 'ReplyToTopic' && river != null) {
+        const count = /^last:([1-9]\d*)$/.exec(river)?.[1];
+        const n = Number.isSafeInteger(Number(count)) ? Number(count) : 5;
+        args.river_context = contextMessages.slice(-n).flatMap(message => {
+          if (message?.role !== 'user' && message?.role !== 'assistant') return [];
+          const content = getMessageTextContent(message)
+            .replace(/data:[^,\s"'<>]*;base64,[A-Za-z0-9+/_=-]*/gi, '');
+          return [{ role: message.role, content }];
+        });
+      }
+    } else if (river === 'full') {
       args.river_context = JSON.parse(JSON.stringify(contextMessages));
     } else if (river === 'text') {
       args.river_context = contextMessages.map(msg => extractTextFromMessage(msg));
