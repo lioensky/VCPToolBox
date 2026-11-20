@@ -567,25 +567,18 @@ function registerRoutes(app, pluginConfig, projectBasePath) {
     console.log(`  - 允许的文件格式: ${SECURITY_CONFIG.ALLOWED_FILE_EXTENSIONS.join(', ')}`);
 }
 
-// 优雅关闭处理
-process.on('SIGINT', () => {
-    console.log('[ImageServerPlugin] 正在关闭安全管理器...');
+// 进程信号由宿主处理；插件只释放自身资源。
+function shutdown() {
     securityManager.stopCleanupTimer();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('[ImageServerPlugin] 正在关闭安全管理器...');
-    securityManager.stopCleanupTimer();
-    process.exit(0);
-});
+}
 
 module.exports = {
     registerRoutes,
     // 导出纯路径判定函数，供安全回归测试复用
     containsParentDirectorySegment,
-    // 供测试或宿主优雅卸载时停止定时器，避免模块句柄阻止进程退出
-    stopSecurityManager: () => securityManager.stopCleanupTimer(),
+    shutdown,
+    // 保留既有清理入口，供调用方和测试使用。
+    stopSecurityManager: shutdown,
     // 导出安全管理器供外部查询（可选）
     getSecurityStats: () => securityManager.getAccessStats(),
     // 手动触发锁定（紧急情况下使用）
