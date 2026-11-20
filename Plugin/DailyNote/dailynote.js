@@ -631,7 +631,7 @@ async function handleCreateCommand(args) {
     // 额外兼容 fold，降低模型误拼写导致目录未生效的概率。
     const maid = args.maid || args.maidName || args.Maid || args.MAID;
     const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
-    let dateString = args.dateString || args.Date;
+    let dateString = args.dateString || args.Date || args.date;
     const contentText = args.contentText || args.Content || args.content;
     // 如果没有传入 Date，则使用系统当前日期
     if (!dateString) {
