@@ -103,10 +103,23 @@ function projectBatchWrapperText(text, role) {
     return text;
 }
 
-/** Request-only copy; media, tool arguments and all other fields remain untouched. */
+const DISPLAY_NAME_ROLES = new Set(['system', 'developer', 'user', 'assistant']);
+
+/** Request-only projection. Preserve native tool/function names and internal history. */
 function projectToolBatchForUpstream(body) {
     if (!body || !Array.isArray(body.messages)) return body;
-    return guardMarkdownDataImagesForUpstream(projectBatchWrappersForUpstream(body));
+    const projected = guardMarkdownDataImagesForUpstream(projectBatchWrappersForUpstream(body));
+    let changed = false;
+    const messages = projected.messages.map(message => {
+        if (!message || !DISPLAY_NAME_ROLES.has(message.role) || !Object.hasOwn(message, 'name')) {
+            return message;
+        }
+        const outboundMessage = { ...message };
+        delete outboundMessage.name;
+        changed = true;
+        return outboundMessage;
+    });
+    return changed ? { ...projected, messages } : projected;
 }
 
 function projectBatchWrappersForUpstream(body) {

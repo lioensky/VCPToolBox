@@ -38,6 +38,10 @@ function extractTextFromMessage(msg) {
   return msg;
 }
 
+function projectRiverSpeaker(message) {
+  const name = typeof message?.name === 'string' ? message.name.trim() : '';
+  return name ? { name } : {};
+}
 class ToolExecutor {
   constructor(options) {
     this.pluginManager = options.pluginManager;
@@ -239,7 +243,7 @@ class ToolExecutor {
           if (message?.role !== 'user' && message?.role !== 'assistant') return [];
           const content = getMessageTextContent(message)
             .replace(/data:[^,\s"'<>]*;base64,[A-Za-z0-9+/_=-]*/gi, '');
-          return [{ role: message.role, content }];
+          return [{ role: message.role, content, ...projectRiverSpeaker(message) }];
         });
       }
     } else if (river === 'full') {
@@ -335,6 +339,7 @@ class ToolExecutor {
         args.river_context = topN.map(m => ({
           role: m.role,
           content: m.text,
+          ...projectRiverSpeaker(m.original),
           _river_score: m.score,
           _river_index: m.index
         }));

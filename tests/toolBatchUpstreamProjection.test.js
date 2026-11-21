@@ -55,6 +55,19 @@ test('single text multimodal wrapper projects without touching media or attribut
     assert.equal(project(fragments), fragments, 'ambiguous fragments are untouched');
 });
 
+test('upstream projection strips display names only and never mutates history', () => {
+    const roles = ['system', 'developer', 'user', 'assistant', 'function', 'tool'];
+    const messages = roles.map(role => Object.freeze({ role, name: `名称-${role}`, content: 'text' }));
+    const body = Object.freeze({ messages: Object.freeze(messages) });
+    const projected = projectToolBatchForUpstream(body);
+    assert.deepEqual(projected.messages.map(message => message.name),
+        [undefined, undefined, undefined, undefined, '名称-function', '名称-tool']);
+    assert.deepEqual(body.messages.map(message => message.name), roles.map(role => `名称-${role}`));
+    assert.equal(projected.messages[4], messages[4]);
+    assert.equal(projected.messages[5], messages[5]);
+    assert.deepEqual(projectToolBatchForUpstream(projected), projected);
+});
+
 function response(stream, text) {
     const choices = [{ [stream ? 'delta' : 'message']: { content: text }, finish_reason: 'stop' }];
     return stream
@@ -66,6 +79,7 @@ for (const stream of [false, true]) {
     for (const archery of [false, true]) {
         test(`actual upstream request stream=${stream} archery=${archery}`, async () => {
             const history = roleDivider.process([{ role: 'assistant', content: wrapper }]);
+            history[0].name = 'Nova';
             let upstream;
             let executorHistory;
             const result = { success: !archery, raw: payload, content: [{ type: 'text', text: payload }] };
@@ -97,7 +111,10 @@ for (const stream of [false, true]) {
             assert.ok(upstream.messages[0].content.includes('【工具返回批次开始｜时间：'));
             assert.ok(upstream.messages[0].content.includes(payload));
             assert.ok(executorHistory[0].content.includes('<<<[VCP_TOOL_BATCH_START:'));
+            assert.equal(executorHistory[0].name, 'Nova');
+            assert.equal(Object.hasOwn(upstream.messages[0], 'name'), false);
             assert.equal(ctx.originalBody.messages, history);
+            assert.equal(history[0].name, 'Nova');
             const toolPayload = upstream.messages.at(-1).content;
             assert.ok(toolPayload.startsWith('<!-- VCP_TOOL_PAYLOAD -->'));
             assert.ok(toolPayload.includes('<<<[VCP_TOOL_BATCH_START:'));
