@@ -16,6 +16,8 @@ async function loadConfiguration() {
         COMFYUI_BASE_URL: 'http://localhost:8188',
         COMFYUI_API_KEY: '',
         DEBUG_MODE: false,
+        COMFYUI_MAX_WAIT_MINUTES: 30,
+        COMFYUI_MISSING_QUEUE_TOLERANCE: 5,
         workflow: 'text2img_basic'
     };
     
@@ -29,6 +31,9 @@ async function loadConfiguration() {
             if (userSettings.serverUrl) config.COMFYUI_BASE_URL = userSettings.serverUrl;
             if (userSettings.apiKey) config.COMFYUI_API_KEY = userSettings.apiKey;
             if (userSettings.workflow) config.workflow = userSettings.workflow;
+            if (userSettings.maxWaitMinutes !== undefined) {
+                config.COMFYUI_MAX_WAIT_MINUTES = resolveNumericArg(userSettings.maxWaitMinutes, config.COMFYUI_MAX_WAIT_MINUTES);
+            }
             
             // Store all user settings for parameter processing
             config.userSettings = userSettings;
@@ -43,6 +48,12 @@ async function loadConfiguration() {
     config.COMFYUI_BASE_URL = process.env.COMFYUI_BASE_URL || config.COMFYUI_BASE_URL;
     config.COMFYUI_API_KEY = process.env.COMFYUI_API_KEY || config.COMFYUI_API_KEY;
     config.DEBUG_MODE = (process.env.DEBUG_MODE || config.DEBUG_MODE || 'false').toLowerCase() === 'true';
+    if (process.env.COMFYUI_MAX_WAIT_MINUTES !== undefined && process.env.COMFYUI_MAX_WAIT_MINUTES !== '') {
+        config.COMFYUI_MAX_WAIT_MINUTES = resolveNumericArg(process.env.COMFYUI_MAX_WAIT_MINUTES, config.COMFYUI_MAX_WAIT_MINUTES);
+    }
+    if (process.env.COMFYUI_MISSING_QUEUE_TOLERANCE !== undefined && process.env.COMFYUI_MISSING_QUEUE_TOLERANCE !== '') {
+        config.COMFYUI_MISSING_QUEUE_TOLERANCE = Math.max(1, Math.floor(resolveNumericArg(process.env.COMFYUI_MISSING_QUEUE_TOLERANCE, 5)));
+    }
     
     // Required system environment variables
     config.PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
@@ -128,7 +139,7 @@ function fillWorkflowParameters(workflow, args, config) {
     if (JSON.stringify(workflow).includes('{{FACE_PROMPT}}') && typeof facePrompt !== 'string') {
         throw new Error('face_prompt must be a string.');
     }
-
+    
     // 构建LoRA字符串
     const lorasString = buildLoRAsString(settings.loras || []);
     
@@ -387,32 +398,161 @@ async function queuePrompt(workflow, config) {
     };
 }
 
-// 检查队列状态
+// 检查历史完成状态
 async function checkQueueStatus(promptId, config) {
     const comfyuiAxios = axios.create({
         baseURL: config.COMFYUI_BASE_URL,
+        headers: config.COMFYUI_API_KEY ? { 'Authorization': `Bearer ${config.COMFYUI_API_KEY}` } : {},
         timeout: 10000
     });
     
     const response = await comfyuiAxios.get(`/history/${promptId}`);
-    return response.data[promptId] || null;
+    return (response.data && response.data[promptId]) ? response.data[promptId] : null;
 }
 
-// 等待生成完成
-async function waitForCompletion(promptId, config, maxAttempts = 60, interval = 3000) {
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        debugLog(`Checking queue status, attempt ${attempt + 1}/${maxAttempts}`);
-        
-        const history = await checkQueueStatus(promptId, config);
-        if (history && history.status && history.status.completed) {
-            debugLog('Generation completed!');
-            return history;
+// 检查 ComfyUI 实时运行队列 (/queue)，判断 promptId 是否仍在 running 或 pending 中推进
+async function checkActiveQueue(promptId, config) {
+    const comfyuiAxios = axios.create({
+        baseURL: config.COMFYUI_BASE_URL,
+        headers: config.COMFYUI_API_KEY ? { 'Authorization': `Bearer ${config.COMFYUI_API_KEY}` } : {},
+        timeout: 10000
+    });
+
+    const response = await comfyuiAxios.get('/queue');
+    const data = response.data || {};
+    const runningList = Array.isArray(data.queue_running) ? data.queue_running : [];
+    const pendingList = Array.isArray(data.queue_pending) ? data.queue_pending : [];
+
+    const matchesPromptId = (item) => {
+        if (!item) return false;
+        if (Array.isArray(item)) return item[1] === promptId || item.includes(promptId);
+        if (typeof item === 'object') return item.prompt_id === promptId || item.id === promptId;
+        return item === promptId;
+    };
+
+    const inRunning = runningList.some(matchesPromptId);
+    const inPending = pendingList.some(matchesPromptId);
+
+    return {
+        inRunning,
+        inPending,
+        isActive: inRunning || inPending,
+        runningCount: runningList.length,
+        pendingCount: pendingList.length
+    };
+}
+
+// 从 ComfyUI history.status 中提取节点执行错误详情
+function extractHistoryError(history) {
+    if (!history || !history.status) return null;
+    const status = history.status;
+    const isError = status.status_str === 'error' ||
+        (Array.isArray(status.messages) && status.messages.some(m => Array.isArray(m) && (m[0] === 'execution_error' || m[0] === 'execution_interrupted')));
+    if (!isError) return null;
+
+    if (Array.isArray(status.messages)) {
+        for (const msg of status.messages) {
+            if (!Array.isArray(msg)) continue;
+            const [eventType, payload] = msg;
+            if (eventType === 'execution_error' && payload && typeof payload === 'object') {
+                const nodeInfo = payload.node_type ? `${payload.node_type} (node ${payload.node_id ?? '?'})` : `node ${payload.node_id ?? '?'}`;
+                const errMsg = payload.exception_message || payload.message || 'Unknown execution error';
+                return `ComfyUI execution error in ${nodeInfo}: ${String(errMsg).trim()}`;
+            }
+            if (eventType === 'execution_interrupted') {
+                return 'ComfyUI execution was interrupted or cancelled.';
+            }
         }
-        
+    }
+    return `ComfyUI execution failed with status '${status.status_str || 'error'}'`;
+}
+
+// 等待生成完成：跟随 ComfyUI 绘图进程 (/queue running/pending) 活性判断，支持可配兜底上限（默认 30 分钟，<=0 表示只要进程活跃便无限等待）
+async function waitForCompletion(promptId, config = {}, options = {}) {
+    const interval = Math.max(50, resolveNumericArg(options.interval, 3000));
+    const maxWaitMinutes = resolveNumericArg(
+        options.maxWaitMinutes ?? config.COMFYUI_MAX_WAIT_MINUTES,
+        30
+    );
+    const maxWaitMs = maxWaitMinutes > 0
+        ? maxWaitMinutes * 60 * 1000
+        : (typeof options.maxAttempts === 'number' && options.maxAttempts > 0 ? options.maxAttempts * interval : Infinity);
+    const missingQueueTolerance = Math.max(
+        1,
+        Math.floor(resolveNumericArg(options.missingQueueTolerance ?? config.COMFYUI_MISSING_QUEUE_TOLERANCE, 5))
+    );
+
+    const checkHistoryFn = options.checkHistoryFn || checkQueueStatus;
+    const checkActiveQueueFn = options.checkActiveQueueFn || checkActiveQueue;
+
+    const startTime = Date.now();
+    let attempt = 0;
+    let consecutiveMissingCount = 0;
+
+    while (true) {
+        attempt++;
+        const elapsedMs = Date.now() - startTime;
+        debugLog(`Checking ComfyUI status, attempt ${attempt} (elapsed ${(elapsedMs / 1000).toFixed(1)}s)`);
+
+        let history = null;
+        try {
+            history = await checkHistoryFn(promptId, config);
+        } catch (err) {
+            debugLog(`Warning: checkHistoryFn transient error on attempt ${attempt}:`, err.message);
+        }
+
+        if (history) {
+            const historyError = extractHistoryError(history);
+            if (historyError) {
+                throw new Error(historyError);
+            }
+            if (history.status && history.status.completed) {
+                debugLog('Generation completed!');
+                return history;
+            }
+            if (history.outputs && Object.keys(history.outputs).length > 0 && (!history.status || history.status.completed !== false)) {
+                debugLog('Generation outputs ready!');
+                return history;
+            }
+        }
+
+        // 查询 ComfyUI /queue 进程活性
+        let queueState = null;
+        try {
+            queueState = await checkActiveQueueFn(promptId, config);
+        } catch (err) {
+            debugLog(`Warning: checkActiveQueueFn transient error on attempt ${attempt}:`, err.message);
+        }
+
+        if (queueState) {
+            if (queueState.isActive) {
+                consecutiveMissingCount = 0;
+                debugLog(`Prompt ${promptId} is actively ${queueState.inRunning ? 'RUNNING' : 'PENDING'} in ComfyUI queue.`);
+            } else {
+                // 再次复核一次 history，防止刚完成从 queue 移除的竞态窗口
+                const raceHistory = await checkHistoryFn(promptId, config).catch(() => null);
+                if (raceHistory) {
+                    const raceError = extractHistoryError(raceHistory);
+                    if (raceError) throw new Error(raceError);
+                    if ((raceHistory.status && raceHistory.status.completed) || (raceHistory.outputs && Object.keys(raceHistory.outputs).length > 0)) {
+                        return raceHistory;
+                    }
+                }
+                consecutiveMissingCount++;
+                debugLog(`Prompt ${promptId} not found in /queue or /history (${consecutiveMissingCount}/${missingQueueTolerance}).`);
+                if (consecutiveMissingCount >= missingQueueTolerance) {
+                    throw new Error(`ComfyUI task ${promptId} disappeared from both queue and history (possibly cancelled or server restarted).`);
+                }
+            }
+        }
+
+        if (Date.now() - startTime >= maxWaitMs) {
+            const limitDesc = Number.isFinite(maxWaitMs) ? `${(maxWaitMs / 60000).toFixed(1)} minutes` : `${attempt} attempts`;
+            throw new Error(`Generation timeout after ${limitDesc} - please check ComfyUI status or increase COMFYUI_MAX_WAIT_MINUTES`);
+        }
+
         await new Promise(resolve => setTimeout(resolve, interval));
     }
-    
-    throw new Error('Generation timeout - please check ComfyUI status');
 }
 
 // 下载生成的图片
@@ -560,7 +700,11 @@ async function generateImageAndSave(args) {
             const queueResult = await queuePrompt(updated, config);
             debugLog('Queued with prompt_id:', queueResult.prompt_id);
 
-            const history = await waitForCompletion(queueResult.prompt_id, config);
+            const waitOptions = {};
+            if (args.timeout_minutes !== undefined) {
+                waitOptions.maxWaitMinutes = resolveNumericArg(args.timeout_minutes, config.COMFYUI_MAX_WAIT_MINUTES);
+            }
+            const history = await waitForCompletion(queueResult.prompt_id, config, waitOptions);
             const images = await downloadGeneratedImages(history, config);
             if (images.length === 0) {
                 throw new Error('No images were generated');
@@ -697,5 +841,9 @@ module.exports = {
     configureWorkflowLora,
     resolveSeed,
     resolveNumericArg,
-    prepareWorkflowImages
+    prepareWorkflowImages,
+    checkQueueStatus,
+    checkActiveQueue,
+    extractHistoryError,
+    waitForCompletion
 };

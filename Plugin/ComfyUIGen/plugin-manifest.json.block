@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 300000
+    "timeout": 7200000
   },
   "configSchema": {
     "COMFYUI_BASE_URL": {
@@ -29,13 +29,18 @@
       "type": "boolean",
       "description": "是否启用调试模式，显示详细执行日志",
       "default": false
+    },
+    "COMFYUI_MAX_WAIT_MINUTES": {
+      "type": "number",
+      "description": "ComfyUI 处于活跃排队或生图推进时的最大兜底等待分钟数（默认30分钟，长视频工作流可调至60-120，设为0则只要进程活跃永不超时）",
+      "default": 30
     }
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "ComfyUIGenerateImage",
-        "description": "调用此工具通过 ComfyUI 生成图像，支持配置默认值及单次调用参数覆盖。\n\n📋 **调用格式**:\n\n\n⚠️ **覆盖规则**:\n- 单次调用参数优先于 comfyui-settings.json 默认值。\n- `lora_name` 不传：保留工作流内置的 LoraLoader 设置。\n- `lora_name` 传实际文件名：替换节点式 LoRA，并可用权重参数控制。\n- `lora_name` 显式传空字符串：自动绕过并移除工作流中的 LoraLoader。\n- 用户配置中的 loras 数组仍会作为提示词 token 拼接；它与节点式 LoraLoader 是两套机制。",
+        "description": "调用此工具通过 ComfyUI 生成或超分图像，支持配置默认值及单次调用参数覆盖。\n\n📋 **调用格式与覆盖规则**:\n- 单次调用参数优先于 comfyui-settings.json 默认值。\n- `workflow`: 支持 `AnimaEZGen`(极速直出)、`AnimaEnhanced`(4x超分+FaceDetailer面修)、`AnimeSharp`(免prompt纯图片超分，需传 `image` 与可选 `resize_scale`)、`qwen21gen`、`qwen21edit` 等。\n- `resize_scale`: 缩放倍率（AnimaEnhanced 默认 1，AnimeSharp 默认 2，可传 1.5、2、4 等正数）。\n- `face_prompt`: AnimaEnhanced 专用独立面部重绘提示词（默认 detailed glassy eyes, smooth porcelain skin）。\n- `lora_name`: 不传保留内置设置；传文件名替换 LoRA；显式传空字符串 \"\" 自动绕过并移除 LoraLoader。",
         "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」CreativeAssistant「末」,\ntool_name:「始」ComfyUIGen「末」,\nworkflow:「始」AnimaEZGen「末」,\nprompt:「始」1girl, silver hair, blue eyes, cinematic anime illustration「末」,\nnegative_prompt:「始」bad hands, blurry「末」,\nwidth:「始」1024「末」,\nheight:「始」1024「末」,\nsteps:「始」24「末」,\ncfg:「始」4「末」,\nsampler:「始」euler_ancestral「末」,\nscheduler:「始」simple「末」,\nseed:「始」-1「末」,\nlora_name:「始」anima_rendering_detailer_base10.safetensors「末」,\nlora_strength:「始」0.4「末」,\nlora_clip_strength:「始」1.0「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
