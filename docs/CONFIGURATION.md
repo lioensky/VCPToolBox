@@ -36,7 +36,7 @@
 
 | 文件名 | 位置 | 用途 |
 |--------|------|------|
-| `tag-processor-config.env` | 根目录 | Tag 批量处理工具配置 |
+| `config.env`（Tag 批量处理工具） | 仓库根目录；独立部署时为脚本同目录 | `tag-processor-config.env.example` 是模板，不是运行时读取的文件名 |
 | `Plugin/*/config.env` | 插件目录 | 各插件专属配置 |
 | `docker-compose.yml` | 根目录 | Docker Compose 部署配置 |
 | `Dockerfile` | 根目录 | Docker 镜像构建配置 |

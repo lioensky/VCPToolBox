@@ -108,7 +108,7 @@ npm install
 
 #### 步骤4：配置
 
-创建 `config.env`（参考 [`tag-processor-config.env.example`](tag-processor-config.env.example:1)）：
+在脚本同目录创建 `config.env`（参考 [`tag-processor-config.env.example`](../tag-processor-config.env.example)）：
 
 ```env
 API_Key=your_api_key_here
@@ -132,14 +132,14 @@ node diary-tag-batch-processor.js /path/to/your/diaries
 
 ### 配置文件
 
-需要在VCP根目录的 `config.env` 中配置API：
+在 VCP 仓库中运行时，脚本读取仓库根目录的 `config.env`，不读取 `scripts/config.env`。独立部署时读取脚本同目录的 `config.env`。已设置的进程环境变量优先于文件中的值。
 
 ```env
 # API配置（必需）
 API_Key=your_api_key_here
 API_URL=http://127.0.0.1:3000
 
-# 可选：在 Plugin/DailyNoteWrite/config.env 中配置Tag模型
+# 可选：在同一份 config.env 中配置 Tag 模型
 TagModel=gemini-2.5-flash-preview-09-2025-thinking
 TagModelMaxTokens=40000
 TagModelPrompt=TagMaster.txt
@@ -422,7 +422,7 @@ DebugMode=true
 
 本工具可以通过独立的配置文件在其他项目中使用。以下提供完整的配置模板，可直接复制使用。
 
-### 配置文件：`tag-processor-config.env`
+### 配置文件模板：保存为 `config.env`
 
 ```env
 # ============================================================
@@ -430,10 +430,8 @@ DebugMode=true
 # ============================================================
 #
 # 用途：为日记批量打Tag工具提供配置
-# 位置：可放在任意目录，通过 --config 参数指定
-#
-# 使用示例：
-#   node diary-tag-batch-processor.js --config ./tag-processor-config.env ./my-diaries
+# 位置：仓库根目录，或独立部署时的脚本同目录
+# 文件名：config.env
 #
 # ============================================================
 
@@ -522,23 +520,7 @@ DAILY_NOTE_EXTENSION=txt
 
 ### 如何使用独立配置
 
-#### 方法1：替换主配置（简单）
-
-将上述配置内容保存为 `config.env`，放在VCP根目录：
-
-```bash
-# 配置会自动加载
-node diary-tag-batch-processor.js ./my-diaries
-```
-
-#### 方法2：使用自定义路径（高级）
-
-如果需要在其他项目中使用，可以修改工具代码加载配置路径：
-
-```javascript
-// 在 diary-tag-batch-processor.js 开头修改
-require('dotenv').config({ path: '/path/to/your/tag-processor-config.env' });
-```
+在仓库中运行时，请将所需配置项加入现有根目录 `config.env`，不要用模板覆盖服务器配置。独立部署时，将模板复制为脚本同目录的 `config.env`。脚本不提供 `--config` 参数。
 
 ### 最小配置示例
 

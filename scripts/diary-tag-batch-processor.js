@@ -13,15 +13,19 @@
  *   node diary-tag-batch-processor.js [目标文件夹路径]
  * 
  * 配置：
- *   通过根目录的 config.env 文件配置API密钥和模型参数
+ *   在 VCP 仓库中读取根目录的 config.env；独立部署时读取脚本同目录的 config.env。
  */
 
 const fs = require('fs').promises;
 const path = require('path');
 const { existsSync } = require('fs');
 
-// 加载环境变量（独立应用配置）
-require('dotenv').config({ path: path.join(__dirname, 'config.env') });
+// 用仓库里的工具包模板识别源码布局，不根据配置文件是否存在切换来源。
+const vcpRoot = path.resolve(__dirname, '..');
+const inVcpRepo = path.basename(__dirname) === 'scripts'
+    && existsSync(path.join(vcpRoot, 'diary-tag-processor-package.json'));
+const configPath = path.join(inVcpRepo ? vcpRoot : __dirname, 'config.env');
+require('dotenv').config({ path: configPath });
 
 // --- 配置 ---
 const TAG_MODEL = process.env.TagModel || 'gemini-2.5-flash-preview-09-2025-thinking';
@@ -400,8 +404,7 @@ async function main() {
     
     // 检查API配置
     if (!API_KEY || !API_URL) {
-        error('API configuration missing in config.env!');
-        error('请在根目录的 config.env 中配置 API_Key 和 API_URL');
+        error(`缺少 API 配置：请在 ${configPath} 中配置 API_Key 和 API_URL，或通过环境变量提供。`);
         process.exit(1);
     }
     

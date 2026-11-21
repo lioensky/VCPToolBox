@@ -420,7 +420,7 @@ test('流式/非流式模型请求：多模态回执不损坏，免回执仅传�
                 if (name.includes('roleDivider')) return { process: messages => messages };
                 return require(name.startsWith('../') ? path.join(__dirname, '..', 'modules', name.slice(3)) : name);
             },
-            console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval
+            console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval, process: { env: {} }
         });
         const Handler = moduleStub.exports;
         for (const scenario of ['normal', 'archery', 'silent']) {

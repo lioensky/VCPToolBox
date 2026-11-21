@@ -78,38 +78,58 @@ pub fn generate_config_env(
     Ok(())
 }
 
+// Both backend launchers resolve Node after entering VCPToolBox.
+const BACKEND_NODE_SETUP: &str = "REM Resolve the service interpreter in this launcher, not in the PM2 daemon.\r\n\
+if not defined VCP_NODE_INTERPRETER if exist \"..\\runtimes\\node\\node.exe\" set \"VCP_NODE_INTERPRETER=..\\runtimes\\node\\node.exe\"\r\n\
+if not defined VCP_NODE_INTERPRETER for %%I in (node.exe) do set \"VCP_NODE_INTERPRETER=%%~$PATH:I\"\r\n\
+if defined VCP_NODE_INTERPRETER for %%I in (\"%VCP_NODE_INTERPRETER%\") do set \"VCP_NODE_INTERPRETER=%%~fI\"\r\n\
+if not exist \"%VCP_NODE_INTERPRETER%\" (\r\n\
+    echo [ERROR] Node interpreter not found: \"%VCP_NODE_INTERPRETER%\". Set VCP_NODE_INTERPRETER to node.exe.\r\n\
+    pause\r\n\
+    exit /b 1\r\n\
+)\r\n\
+\"%VCP_NODE_INTERPRETER%\" --version >nul 2>&1\r\n\
+if errorlevel 1 (\r\n\
+    echo [ERROR] Cannot run Node interpreter: \"%VCP_NODE_INTERPRETER%\".\r\n\
+    pause\r\n\
+    exit /b 1\r\n\
+)\r\n\
+echo [Runtime] Node interpreter: \"%VCP_NODE_INTERPRETER%\"\r\n\
+\r\n";
+
 /// 生成 start-backend.bat（安装根目录版本，PM2 双进程）
 pub fn generate_start_backend_bat(
     install_dir: &Path,
 ) -> Result<()> {
     // bat不能包含中文（Rust写UTF-8，cmd用GBK读取会乱码）
     // pm2必须加CALL（bat调.cmd不加CALL控制流一去不返）
-    let content = "@echo off\r\n\
-setlocal\r\n\
+    let content = format!("@echo off\r\n\
+setlocal DisableDelayedExpansion\r\n\
 chcp 65001 >nul\r\n\
 echo ==========================================\r\n\
 echo   VCP Backend Launcher (PM2)\r\n\
 echo ==========================================\r\n\
 echo.\r\n\
 set \"PATH=%~dp0runtimes\\node;%~dp0runtimes\\git\\cmd;%~dp0runtimes\\python;%~dp0runtimes\\python\\Scripts;%PATH%\"\r\n\
-cd /d \"%~dp0VCPToolBox\"\r\n\
+cd /d \"%~dp0VCPToolBox\" || exit /b 1\r\n\
 if not exist \"server.js\" (\r\n\
     echo [VCP] server.js not found. Please check VCPToolBox installation.\r\n\
     pause\r\n\
     exit /b 1\r\n\
 )\r\n\
+{BACKEND_NODE_SETUP}\
 echo [VCP] Cleaning old processes...\r\n\
 CALL pm2 delete vcp-main 2>nul\r\n\
 CALL pm2 delete vcp-admin 2>nul\r\n\
 CALL pm2 delete server 2>nul\r\n\
 echo.\r\n\
 echo [VCP] Starting main service (vcp-main)...\r\n\
-CALL pm2 start server.js --name \"vcp-main\" --no-autorestart --max-memory-restart 1500M --kill-timeout 15000\r\n\
+CALL pm2 start server.js --name \"vcp-main\" --no-autorestart --max-memory-restart 1500M --kill-timeout 15000 --interpreter \"%%VCP_NODE_INTERPRETER%%\"\r\n\
 echo [VCP] Waiting for initialization (8s)...\r\n\
 ping -n 9 127.0.0.1 >nul\r\n\
 echo.\r\n\
 echo [VCP] Starting admin panel (vcp-admin)...\r\n\
-CALL pm2 start adminServer.js --name \"vcp-admin\" --no-autorestart --max-memory-restart 512M --kill-timeout 5000\r\n\
+CALL pm2 start adminServer.js --name \"vcp-admin\" --no-autorestart --max-memory-restart 512M --kill-timeout 5000 --interpreter \"%%VCP_NODE_INTERPRETER%%\"\r\n\
 echo.\r\n\
 echo ==========================================\r\n\
 echo   VCP Backend Started\r\n\
@@ -123,7 +143,7 @@ echo   pm2 logs              View realtime logs\r\n\
 echo   pm2 restart vcp-main  Restart main service\r\n\
 echo   pm2 stop all          Stop all services\r\n\
 echo.\r\n\
-pause\r\n";
+pause\r\n");
 
     let script_path = install_dir.join("start-backend.bat");
     fs::write(&script_path, content)
@@ -170,32 +190,33 @@ pub fn generate_inner_start_bat(
     let chat_dir = install_dir.join("VCPChat");
 
     // start_server.bat — VCPToolBox内部，PM2双进程 + 向上一级找runtimes
-    let content = "@echo off\r\n\
-setlocal\r\n\
+    let content = format!("@echo off\r\n\
+setlocal DisableDelayedExpansion\r\n\
 chcp 65001 >nul\r\n\
 echo ==========================================\r\n\
 echo   VCP Backend Launcher (PM2)\r\n\
 echo ==========================================\r\n\
 echo.\r\n\
 set \"PATH=%~dp0..\\runtimes\\node;%~dp0..\\runtimes\\git\\cmd;%~dp0..\\runtimes\\python;%~dp0..\\runtimes\\python\\Scripts;%PATH%\"\r\n\
-cd /d \"%~dp0\"\r\n\
+cd /d \"%~dp0\" || exit /b 1\r\n\
 if not exist \"server.js\" (\r\n\
     echo [VCP] server.js not found. Please check VCPToolBox installation.\r\n\
     pause\r\n\
     exit /b 1\r\n\
 )\r\n\
+{BACKEND_NODE_SETUP}\
 echo [VCP] Cleaning old processes...\r\n\
 CALL pm2 delete vcp-main 2>nul\r\n\
 CALL pm2 delete vcp-admin 2>nul\r\n\
 CALL pm2 delete server 2>nul\r\n\
 echo.\r\n\
 echo [VCP] Starting main service (vcp-main)...\r\n\
-CALL pm2 start server.js --name \"vcp-main\" --no-autorestart --max-memory-restart 1500M --kill-timeout 15000\r\n\
+CALL pm2 start server.js --name \"vcp-main\" --no-autorestart --max-memory-restart 1500M --kill-timeout 15000 --interpreter \"%%VCP_NODE_INTERPRETER%%\"\r\n\
 echo [VCP] Waiting for initialization (8s)...\r\n\
 ping -n 9 127.0.0.1 >nul\r\n\
 echo.\r\n\
 echo [VCP] Starting admin panel (vcp-admin)...\r\n\
-CALL pm2 start adminServer.js --name \"vcp-admin\" --no-autorestart --max-memory-restart 512M --kill-timeout 5000\r\n\
+CALL pm2 start adminServer.js --name \"vcp-admin\" --no-autorestart --max-memory-restart 512M --kill-timeout 5000 --interpreter \"%%VCP_NODE_INTERPRETER%%\"\r\n\
 echo.\r\n\
 echo ==========================================\r\n\
 echo   VCP Backend Started\r\n\
@@ -209,7 +230,7 @@ echo   pm2 logs              View realtime logs\r\n\
 echo   pm2 restart vcp-main  Restart main service\r\n\
 echo   pm2 stop all          Stop all services\r\n\
 echo.\r\n\
-pause\r\n";
+pause\r\n");
 
     if toolbox_dir.exists() {
         let script_path = toolbox_dir.join("start_server.bat");

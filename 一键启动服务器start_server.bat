@@ -1,6 +1,23 @@
 @echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
+setlocal DisableDelayedExpansion
+cd /d "%~dp0" || exit /b 1
+
+REM Resolve the service interpreter in this launcher, not in the PM2 daemon.
+if not defined VCP_NODE_INTERPRETER if exist "..\runtimes\node\node.exe" set "VCP_NODE_INTERPRETER=..\runtimes\node\node.exe"
+if not defined VCP_NODE_INTERPRETER for %%I in (node.exe) do set "VCP_NODE_INTERPRETER=%%~$PATH:I"
+if defined VCP_NODE_INTERPRETER for %%I in ("%VCP_NODE_INTERPRETER%") do set "VCP_NODE_INTERPRETER=%%~fI"
+if not exist "%VCP_NODE_INTERPRETER%" (
+    echo [ERROR] Node interpreter not found: "%VCP_NODE_INTERPRETER%". Set VCP_NODE_INTERPRETER to node.exe.
+    pause
+    exit /b 1
+)
+"%VCP_NODE_INTERPRETER%" --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Cannot run Node interpreter: "%VCP_NODE_INTERPRETER%".
+    pause
+    exit /b 1
+)
+echo [Runtime] Node interpreter: "%VCP_NODE_INTERPRETER%"
 
 echo ============================================
 echo   VCPToolBox - Starting Services via PM2
@@ -41,7 +58,7 @@ REM Do NOT set --max-memory-restart here. Global Tag index staging, Pairwise ass
 REM EPA/IR and TagMemo rebuilds have legitimate temporary memory peaks above 1500 MB.
 REM A low PM2 RSS limit can restart the main process in the middle of a maintenance
 REM transaction and overlap two cold-start index recoveries against the same SQLite.
-call pm2 start server.js --name "vcp-main" --kill-timeout 15000
+call pm2 start server.js --name "vcp-main" --kill-timeout 15000 --interpreter "%%VCP_NODE_INTERPRETER%%"
 
 echo.
 echo Waiting 8 seconds for main service to initialize...
@@ -51,7 +68,7 @@ REM 3. Start Admin Panel
 echo [2/2] Starting Admin Panel (vcp-admin)...
 REM Keep PM2 memory restart limits disabled for both processes while diagnosing
 REM legitimate maintenance/build memory peaks and unexpected overlapping restarts.
-call pm2 start adminServer.js --name "vcp-admin" --kill-timeout 5000
+call pm2 start adminServer.js --name "vcp-admin" --kill-timeout 5000 --interpreter "%%VCP_NODE_INTERPRETER%%"
 
 echo.
 echo ============================================
