@@ -645,6 +645,7 @@ class RAGDiaryPlugin {
         this.cacheManager.startCleanup('embedding');
         this.cacheManager.startCleanup('aimemo');
 
+        this.semanticGroups.resumeStatsFlush();
         console.log('[RAGDiaryPlugin] 插件初始化完成，统一缓存系统已启动');
     }
 
@@ -6277,7 +6278,7 @@ class RAGDiaryPlugin {
         });
     }
 
-    shutdown() {
+    async shutdown() {
         if (this.ragParamsReloadTimer) {
             clearTimeout(this.ragParamsReloadTimer);
             this.ragParamsReloadTimer = null;
@@ -6302,6 +6303,7 @@ class RAGDiaryPlugin {
             this.foldingStore = null;
         }
 
+        await this.semanticGroups.shutdown();
         console.log(`[RAGDiaryPlugin] 插件已关闭`);
     }
 }

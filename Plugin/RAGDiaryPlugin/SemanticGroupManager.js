@@ -4,17 +4,23 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 
+const STATS_FLUSH_INTERVAL_MS = 60_000;
+
 class SemanticGroupManager {
     constructor(ragPlugin) {
         this.ragPlugin = ragPlugin; // 引用 RAGDiaryPlugin 实例
         this.groups = {};
         this.config = {};
         this.groupVectorCache = new Map(); // 使用 Map 存储向量缓存
-        this.saveLock = false; // 添加保存锁以防止并发写入
+        this._saveTail = Promise.resolve();
+        this._statsRevision = 0;
+        this._savedStatsRevision = 0;
+        this._statsFlushTimer = null;
+        this._stopping = false;
         this.groupsFilePath = path.join(__dirname, 'semantic_groups.json');
         this.vectorsDirPath = path.join(__dirname, 'semantic_vectors');
         this.editFilePath = path.join(__dirname, 'semantic_groups.edit.json');
-        this.initialize();
+        this._ready = this.initialize();
     }
 
     async initialize() {
@@ -193,13 +199,15 @@ class SemanticGroupManager {
         }
     }
 
-    async saveGroups() {
-        if (this.saveLock) {
-            const busyError = new Error('A save operation is already in progress. Please wait a moment and try again.');
-            console.warn(`[SemanticGroup] ${busyError.message}`);
-            throw busyError;
-        }
-        this.saveLock = true;
+    saveGroups() {
+        const save = this._saveTail.then(() => this._writeGroups());
+        // 当前调用者仍收到原始失败；失败的写入不能阻塞后续保存。
+        this._saveTail = save.catch(() => {});
+        return save;
+    }
+
+    async _writeGroups() {
+        const statsRevision = this._statsRevision;
 
         const tempFilePath = this.groupsFilePath + `.${crypto.randomUUID()}.tmp`;
         try {
@@ -219,6 +227,7 @@ class SemanticGroupManager {
 
             // 2. 成功后，重命名临时文件以原子方式替换原文件
             await fs.rename(tempFilePath, this.groupsFilePath);
+            this._savedStatsRevision = statsRevision;
 
             console.log('[SemanticGroup] 语义组配置已通过原子写入操作更新并保存。');
         } catch (error) {
@@ -232,8 +241,6 @@ class SemanticGroupManager {
                 }
             }
             throw error; // 将原始错误重新抛出，以便API路由可以捕获它
-        } finally {
-            this.saveLock = false;
         }
     }
 
@@ -306,9 +313,47 @@ class SemanticGroupManager {
         if (this.groups[groupName]) {
             this.groups[groupName].last_activated = new Date().toISOString();
             this.groups[groupName].activation_count = (this.groups[groupName].activation_count || 0) + 1;
+            this._statsRevision++;
+            this._scheduleStatsFlush();
         }
     }
 
+    _scheduleStatsFlush() {
+        if (this._stopping || this._statsFlushTimer || this._statsRevision === this._savedStatsRevision) return;
+
+        this._statsFlushTimer = setTimeout(async () => {
+            this._statsFlushTimer = null;
+            try {
+                await this._ready;
+                if (!this._stopping && this._statsRevision !== this._savedStatsRevision) {
+                    await this.saveGroups();
+                }
+            } catch (error) {
+                console.warn('[SemanticGroup] 激活统计刷盘失败，将在下个周期重试:', error.message);
+            } finally {
+                this._scheduleStatsFlush();
+            }
+        }, STATS_FLUSH_INTERVAL_MS);
+        this._statsFlushTimer.unref();
+    }
+
+    resumeStatsFlush() {
+        this._stopping = false;
+        this._scheduleStatsFlush();
+    }
+
+    async shutdown() {
+        this._stopping = true;
+        clearTimeout(this._statsFlushTimer);
+        this._statsFlushTimer = null;
+        await this._saveTail;
+        if (this._statsRevision === this._savedStatsRevision) return;
+
+        await this._ready;
+        while (this._statsRevision !== this._savedStatsRevision) {
+            await this.saveGroups();
+        }
+    }
     // ============ 预计算组向量 ============
     _getWordsHash(words) {
         if (!words || words.length === 0) {
