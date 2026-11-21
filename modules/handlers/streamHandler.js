@@ -206,6 +206,9 @@ class StreamHandler {
         let hasPayloadError = false;
         let upstreamEnded = false;
         let sawNativeToolCall = false;
+        let echoBoundary = null;
+        let deferredLines = [];
+        let deferredChars = 0;
         const shouldStripNativeTools = (payloadModel) =>
           matchesNativeToolIsolation(payloadModel || originalBody?.model);
         const result = () => {
@@ -363,16 +366,16 @@ class StreamHandler {
           };
           res.write(`data: ${JSON.stringify(closePayload)}\n\n`);
         };
-        const canTakeToolTail = () =>
+        const canTakeToolTail = (content, discardBuffered = false) =>
           !streamSettled && !streamAborted && !hasPayloadError && aiResponse.ok &&
           !vcpToolUseForbidden && !abortController?.signal.aborted &&
           !res.writableEnded && !res.destroyed &&
           (!finishReason || ['stop', 'tool_calls', 'function_call'].includes(finishReason) || malformedFunctionCall) &&
-          !sseLineBuffer.trim() &&
-          ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn) === true;
+          (discardBuffered || !sseLineBuffer.trim()) &&
+          ToolCallParser.endsWithCompleteToolRequest?.(content) === true;
 
-        const takeToolTail = (reason) => {
-          if (!canTakeToolTail()) return false;
+        const takeToolTail = (reason, discardBuffered = false) => {
+          if (!canTakeToolTail(collectedContentThisTurn, discardBuffered)) return false;
           streamSettled = true;
           if (toolTailTimer) clearTimeout(toolTailTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
@@ -394,6 +397,121 @@ class StreamHandler {
           }
         };
 
+        const echoPrefixes = ['\n<!-- VCP_TOOL_PAYLOAD -->', '\nuser\n<!-- VCP_TOOL_PAYLOAD -->'];
+        const echoPrefixState = (offset) => {
+          // The marker must be the first thing after the request (optionally after a user line).
+          // Ordinary prose and Markdown fence openers immediately leave this narrow check.
+          const tail = collectedContentThisTurn.slice(offset, offset + 128)
+            .replace(/\r\n/g, '\n').replace(/\n+/g, '\n');
+          if (echoPrefixes.some(prefix => tail.startsWith(prefix))) return 'match';
+          const partial = tail.endsWith('\r') ? tail.slice(0, -1) : tail;
+          return echoPrefixes.some(prefix => prefix.startsWith(partial)) ? 'pending' : 'none';
+        };
+
+        const forwardLine = (line, parsedData, isDoneLine) => {
+          if (malformedFunctionCall || res.writableEnded || res.destroyed) return;
+          try {
+            if (isDoneLine) writeClientReasoningCloseChunk();
+            else if (parsedData) res.write(`data: ${JSON.stringify(transformParsedDataForClient(parsedData))}\n`);
+            else res.write(line + '\n');
+          } catch (e) {
+            streamAborted = true;
+          }
+        };
+
+        const flushDeferredLines = () => {
+          const lines = deferredLines;
+          deferredLines = [];
+          deferredChars = 0;
+          for (const args of lines) forwardLine(...args);
+        };
+
+        const handleSseLine = (line) => {
+          const trimmedLine = line.trim();
+          const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
+          if (isDoneLine) sawDone = true;
+          let parsedData = null;
+          const before = collectedContentThisTurn.length;
+
+          if (trimmedLine.startsWith('data:')) {
+            const jsonData = trimmedLine.substring(5).trim();
+            if (jsonData && jsonData !== '[DONE]') {
+              try {
+                parsedData = JSON.parse(jsonData);
+                observePayload(parsedData);
+                appendDelta(parsedData.choices?.[0]?.delta);
+              } catch (e) {
+                invalidPayload = true;
+                hasPayloadError = true;
+              }
+            }
+          }
+
+          const choice = parsedData?.choices?.[0];
+          const hasNewText = collectedContentThisTurn.length > before;
+          const eligible = !vcpToolUseForbidden && !hasPayloadError && !malformedFunctionCall && !sawNativeToolCall;
+          if (echoBoundary !== null && echoPrefixState(echoBoundary) === 'none') {
+            echoBoundary = null;
+            flushDeferredLines();
+          }
+          if (eligible && hasNewText && echoBoundary === null) {
+            // Include enough of the previous delta to recognize a split request terminator.
+            const start = Math.max(0, before - 24);
+            const recent = collectedContentThisTurn.slice(start);
+            for (const marker of recent.matchAll(/<<<\[END_TOOL[-_]REQUEST\]>>>/g)) {
+              const end = start + marker.index + marker[0].length;
+              if (end > before && echoPrefixState(end) !== 'none' &&
+                  ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn.slice(0, end))) {
+                echoBoundary = end;
+                break;
+              }
+            }
+          }
+
+          if (eligible && echoBoundary !== null) {
+            const state = echoPrefixState(echoBoundary);
+            if (state === 'match') {
+              const kept = collectedContentThisTurn.slice(0, echoBoundary);
+              if (canTakeToolTail(kept, true)) {
+                // Keep the completed request if its final characters arrived in this frame.
+                if (echoBoundary > before) {
+                  choice.delta.content = kept.slice(before);
+                  choice.finish_reason = null;
+                  forwardLine(line, parsedData, false);
+                  if (!streamAborted) forwardLine('', null, false);
+                }
+                collectedContentThisTurn = kept;
+                message.content = kept;
+                deferredLines = [];
+                deferredChars = 0;
+                return takeToolTail('tool_result_echo', true);
+              }
+            } else if (state === 'pending' && !isDoneLine && !choice?.finish_reason &&
+                echoBoundary < collectedContentThisTurn.length &&
+                collectedContentThisTurn.length - echoBoundary < 128 &&
+                deferredLines.length < 64 && deferredChars + line.length < 16384) {
+              // Do not leak a split marker (or its user line) before the next delta disambiguates it.
+              if (echoBoundary > before) {
+                const prefix = { ...choice, delta: { ...choice.delta, content: collectedContentThisTurn.slice(before, echoBoundary) } };
+                forwardLine(line, { ...parsedData, choices: [prefix, ...parsedData.choices.slice(1)] }, false);
+                forwardLine('', null, false);
+                choice.delta = { content: collectedContentThisTurn.slice(echoBoundary) };
+              }
+              deferredLines.push([line, parsedData, isDoneLine]);
+              deferredChars += line.length;
+              return false;
+            }
+          }
+
+          if (!eligible || isDoneLine || choice?.finish_reason ||
+              (echoBoundary !== null && collectedContentThisTurn.length > echoBoundary)) {
+            echoBoundary = null;
+          }
+          flushDeferredLines();
+          forwardLine(line, parsedData, isDoneLine);
+          return false;
+        };
+
         // 🌟 核心修复：注入 SSE 幽灵心跳保活，防止上游卡顿时浏览器假死
         keepAliveTimer = setInterval(() => {
           if (!res.writableEnded && !res.destroyed) {
@@ -412,6 +530,7 @@ class StreamHandler {
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
           chunkIdleTimer = setTimeout(() => {
             if (streamSettled || streamAborted) return;
+            flushDeferredLines();
             if (takeToolTail('upstream_idle')) return;
             console.warn(`[Stream IdleTimeout] No upstream chunk received for ${CHUNK_IDLE_TIMEOUT / 1000}s. Assuming stream stalled. Forcing end.`);
             streamAborted = true;
@@ -457,6 +576,7 @@ class StreamHandler {
 
         aiResponse.body.on('close', () => {
           if (streamSettled || upstreamEnded) return;
+          flushDeferredLines();
           if (takeToolTail('upstream_close')) return;
           streamAborted = true;
           if (keepAliveTimer) clearInterval(keepAliveTimer);
@@ -478,41 +598,7 @@ class StreamHandler {
           sseLineBuffer = lines.pop(); // 最后一项可能是截断的，留到下一轮
 
           for (const line of lines) {
-            const trimmedLine = line.trim();
-            const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
-            if (isDoneLine) sawDone = true;
-            let parsedData = null;
-
-            if (trimmedLine.startsWith('data:')) {
-              const jsonData = trimmedLine.substring(5).trim();
-              if (jsonData && jsonData !== '[DONE]') {
-                try {
-                  parsedData = JSON.parse(jsonData);
-                  observePayload(parsedData);
-                  // 后台始终收集未经展示转换的原始 delta。
-                  appendDelta(parsedData.choices?.[0]?.delta);
-                } catch (e) { invalidPayload = true; hasPayloadError = true; }
-              }
-            }
-
-            // Failed terminal payloads must not end the frontend listener before recovery.
-            if (malformedFunctionCall) continue;
-            // 转发时才将 reasoning 字段改写成标签化正文；内部处理仍使用原始 parsedData。
-            if (!res.writableEnded && !res.destroyed) {
-              try {
-                if (isDoneLine) {
-                  writeClientReasoningCloseChunk();
-                } else if (parsedData) {
-                  const transformedData = transformParsedDataForClient(parsedData);
-                  res.write(`data: ${JSON.stringify(transformedData)}\n`);
-                } else {
-                  // 保留空行，因为 SSE 依靠空行分隔消息块。
-                  res.write(line + '\n');
-                }
-              } catch (writeError) {
-                streamAborted = true;
-              }
-            }
+            if (handleSseLine(line) || streamSettled) return;
           }
         });
 
@@ -526,36 +612,8 @@ class StreamHandler {
             sseLineBuffer += remainingString;
           }
 
-          // 处理最后剩余的 buffer并转发
-          if (sseLineBuffer.length > 0) {
-            const trimmedLine = sseLineBuffer.trim();
-            const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
-            if (isDoneLine) sawDone = true;
-            let parsedData = null;
-
-            if (trimmedLine.startsWith('data:')) {
-              const jsonData = trimmedLine.substring(5).trim();
-              if (jsonData && jsonData !== '[DONE]') {
-                try {
-                  parsedData = JSON.parse(jsonData);
-                  observePayload(parsedData);
-                  appendDelta(parsedData.choices?.[0]?.delta);
-                } catch (e) { invalidPayload = true; hasPayloadError = true; }
-              }
-            }
-
-            if (!res.writableEnded && !res.destroyed) {
-              try {
-                if (isDoneLine) {
-                  writeClientReasoningCloseChunk();
-                } else if (parsedData && !malformedFunctionCall) {
-                  res.write(`data: ${JSON.stringify(transformParsedDataForClient(parsedData))}\n`);
-                } else {
-                  if (!malformedFunctionCall) res.write(sseLineBuffer + '\n');
-                }
-              } catch (e) { }
-            }
-          }
+          if (sseLineBuffer.length > 0 && handleSseLine(sseLineBuffer)) return;
+          flushDeferredLines();
 
           sseLineBuffer = '';
           if (!finishReason && !sawDone && takeToolTail('upstream_end_without_terminal')) return;
@@ -566,6 +624,7 @@ class StreamHandler {
 
         aiResponse.body.on('error', streamError => {
           if (streamSettled) return;
+          if (!streamAborted && streamError.name !== 'AbortError' && streamError.type !== 'aborted') flushDeferredLines();
           if (takeToolTail('upstream_error')) return;
           if (toolTailTimer) clearTimeout(toolTailTimer);
           if (keepAliveTimer) clearInterval(keepAliveTimer);

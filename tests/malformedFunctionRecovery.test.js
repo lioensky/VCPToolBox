@@ -304,3 +304,85 @@ test('explicit user abort after complete tool tail never executes tools', async 
   assert.equal(s.stats.fetched, 0);
   assert.equal(result.completed, false);
 });
+const echoedResultHeader = '<!-- ' + 'VCP_TOOL_PAYLOAD -->';
+const echoedResultText = 'synthetic assistant echo';
+
+function streamedText(output) {
+  return output.split('\n').filter(line => line.startsWith('data: {')).map(line =>
+    JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? ''
+  ).join('');
+}
+function assertAssistantText(text, firstTurn) {
+  assert.ok(text.startsWith(`${firstTurn}\n`), JSON.stringify(text));
+  assert.ok(text.endsWith('\ndone'), JSON.stringify(text));
+}
+
+for (const [label, input] of [
+  ['same frame as the complete call', frame({ content: `${bodyTool}\n${echoedResultHeader}\n${echoedResultText}` })],
+  ['split across frames after the call', [
+    bodyTool, '\nu', 'ser\n<!', '-- VCP_', 'TOOL_PAYLOAD -->\n', echoedResultText
+  ].map(content => frame({ content })).join('')],
+  ['last SSE line without a newline', frame({ content: bodyTool }) +
+    frame({ content: `\n${echoedResultHeader}\n${echoedResultText}` }).trimEnd()]
+]) {
+  test(`tool result echo is cut before forwarding: ${label}`, async () => {
+    const s = toolSetup([]);
+    let messages;
+    s.context.fetchWithRetry = async (_url, opts) => {
+      s.stats.fetched++;
+      messages = JSON.parse(opts.body).messages;
+      return response(success('done'));
+    };
+    const result = await s.handler.handle({}, s.res, response(input));
+    assert.doesNotMatch(streamedText(s.res.output), /synthetic assistant echo/);
+    assert.doesNotMatch(result.aiText, /synthetic assistant echo/);
+    assert.doesNotMatch(streamedText(s.res.output), /VCP_TOOL_PAYLOAD|(?:^|\n)user\n/);
+    assertAssistantText(streamedText(s.res.output), bodyTool);
+    assertAssistantText(result.aiText, bodyTool);
+    assert.equal(s.stats.executed, 1);
+    assert.equal(s.stats.fetched, 1);
+    assert.equal(result.completed, true);
+    assert.ok(messages.some(message => message.role === 'assistant' && message.content === bodyTool));
+    assert.ok(messages.some(message => message.role === 'user' && message.content.includes('"text":"result"')));
+    assert.equal((s.res.output.match(/data: \[DONE\]/g) || []).length, 1);
+  });
+}
+
+for (const [label, chunks, sharesFrame] of [
+  ['ordinary continuation', ['\nu', 'ser guide follows.']],
+  ['ordinary continuation sharing the call frame', ['\nu', 'ser guide follows.'], true],
+  ['fenced protocol example', ['\n```html\n', echoedResultHeader, '\n```']],
+  ['partial marker at normal EOF', ['\n<!-- VCP_']]
+]) {
+  test(`tool result echo guard preserves ${label}`, async () => {
+    const s = toolSetup([success('done')]);
+    const frames = sharesFrame ? [bodyTool + chunks[0], ...chunks.slice(1)] : [bodyTool, ...chunks];
+    const result = await s.handler.handle({}, s.res, response(
+      frames.map(content => frame({ content })).join('') + frame({}, 'stop') + 'data: [DONE]\n\n'));
+    assertAssistantText(streamedText(s.res.output), bodyTool + chunks.join(''));
+    assertAssistantText(result.aiText, bodyTool + chunks.join(''));
+    assert.equal(s.stats.executed, 1);
+    assert.equal(result.completed, true);
+  });
+}
+
+test('tool result echo takes over while upstream is still open', { timeout: 3000 }, async () => {
+  const s = toolSetup([success('done')]);
+  const upstream = new PassThrough();
+  const pending = s.handler.handle({}, s.res, { ok: true, status: 200, body: upstream });
+  try {
+    upstream.write(frame({ content: bodyTool }));
+    upstream.write(frame({ content: '\r\nuser\r\n\r\n<' }));
+    assert.equal(streamedText(s.res.output), bodyTool);
+    upstream.write(frame({ content: echoedResultHeader.slice(1) + '\n' + echoedResultText }));
+    assert.equal(upstream.destroyed, true);
+    const result = await pending;
+    assert.equal(result.completed, true);
+    assert.equal(s.stats.executed, 1);
+    assert.equal(s.controller.signal.aborted, false);
+    assert.doesNotMatch(streamedText(s.res.output), /VCP_TOOL_PAYLOAD|synthetic assistant echo/);
+  } finally {
+    upstream.destroy();
+    await pending;
+  }
+});
