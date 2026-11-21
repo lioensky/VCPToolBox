@@ -1748,23 +1748,40 @@ class RAGDiaryPlugin {
                 }
             }
 
-            // 🌟 V7: 处理收集到的多模态附件
+            // 🌟 V7: 处理收集到的多模态附件（支持超栈路径溯源、20MB硬上限与4MB自适应压缩紧邻注入）
             if (collectedAttachments.length > 0) {
                 // 限制数量，优先最近的（collectedAttachments 是按召回顺序添加的，通常 RAG 结果已经按相关性/时间排序）
                 const limit = parseInt(process.env.BASE64_MEMO_LIMIT) || this.ragParams?.RAGDiaryPlugin?.base64MemoLimit || 5;
-                const uniqueAttachments = [...new Set(collectedAttachments)].slice(0, limit);
-                const base64DataArray = [];
+                const uniqueAttachmentMap = new Map();
+                for (const item of collectedAttachments) {
+                    const entryObj = typeof item === 'string'
+                        ? { url: item, sourcePath: '', diaryName: '' }
+                        : (item && typeof item.url === 'string' ? item : null);
+                    if (!entryObj || !entryObj.url) continue;
+                    if (!uniqueAttachmentMap.has(entryObj.url)) {
+                        uniqueAttachmentMap.set(entryObj.url, entryObj);
+                    } else {
+                        const existing = uniqueAttachmentMap.get(entryObj.url);
+                        if (!existing.sourcePath && entryObj.sourcePath) existing.sourcePath = entryObj.sourcePath;
+                        if (!existing.diaryName && entryObj.diaryName) existing.diaryName = entryObj.diaryName;
+                    }
+                }
+                const uniqueAttachments = Array.from(uniqueAttachmentMap.values()).slice(0, limit);
+                const resolvedAttachments = [];
 
                 console.log(`[RAGDiaryPlugin] 🌟 V7: 开始处理 ${uniqueAttachments.length} 个多模态附件 (限制: ${limit})`);
 
-                for (const url of uniqueAttachments) {
-                    const b64 = await this._fetchAsBase64(url);
-                    if (b64) {
-                        base64DataArray.push(b64);
+                for (const item of uniqueAttachments) {
+                    const fetched = await this._fetchAttachmentWithMeta(item.url);
+                    if (fetched && fetched.dataUri) {
+                        resolvedAttachments.push({
+                            ...item,
+                            ...fetched
+                        });
                     }
                 }
 
-                if (base64DataArray.length > 0) {
+                if (resolvedAttachments.length > 0) {
                     // 找到第一个用户消息（楼层最上面那个）。若它此前未因占位符
                     // 处理而克隆，此处按需克隆，保持输入 messages 完全不可变。
                     const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
@@ -1775,28 +1792,43 @@ class RAGDiaryPlugin {
                             };
                         }
                         const firstUserMsg = newMessages[firstUserIndex];
-                        const note = `[召回${base64DataArray.length}个日记多模态数据]`;
 
                         if (typeof firstUserMsg.content === 'string') {
-                            const originalText = firstUserMsg.content;
                             firstUserMsg.content = [
-                                { type: 'text', text: originalText + ' ' + note }
+                                { type: 'text', text: firstUserMsg.content }
                             ];
                         } else if (Array.isArray(firstUserMsg.content)) {
-                            firstUserMsg.content = this._replaceTextInContent(firstUserMsg.content, (text) => {
-                                const trimmed = (text || '').trim();
-                                return trimmed ? `${trimmed} ${note}` : note;
-                            });
+                            firstUserMsg.content = firstUserMsg.content.slice();
+                        } else if (firstUserMsg.content && typeof firstUserMsg.content === 'object' && typeof firstUserMsg.content.text === 'string') {
+                            firstUserMsg.content = [
+                                { ...firstUserMsg.content, type: 'text' }
+                            ];
+                        } else {
+                            firstUserMsg.content = [];
                         }
 
-                        // 添加 base64 数据到 content 数组
-                        for (const b64 of base64DataArray) {
+                        // 紧邻注入：每张召回附件前紧跟一条标明日记 file:/// 超栈来源路径与半句压缩情形的文本说明
+                        const totalCount = resolvedAttachments.length;
+                        resolvedAttachments.forEach((att, idx) => {
+                            const sourceNote = AttachmentMemoUtils.formatAttachmentSourceNote({
+                                sourcePath: att.sourcePath,
+                                diaryName: att.diaryName,
+                                compressed: att.compressed,
+                                originalBytes: att.originalBytes,
+                                finalBytes: att.finalBytes,
+                                index: idx + 1,
+                                total: totalCount
+                            });
+                            firstUserMsg.content.push({
+                                type: 'text',
+                                text: sourceNote
+                            });
                             firstUserMsg.content.push({
                                 type: 'image_url',
-                                image_url: { url: b64 }
+                                image_url: { url: att.dataUri }
                             });
-                        }
-                        console.log(`[RAGDiaryPlugin] 🌟 V7: 已向首条用户消息注入 ${base64DataArray.length} 个多模态附件`);
+                        });
+                        console.log(`[RAGDiaryPlugin] 🌟 V7: 已向首条用户消息紧邻注入 ${resolvedAttachments.length} 个带日记溯源的多模态附件`);
                     }
                 }
             }
@@ -3823,12 +3855,16 @@ class RAGDiaryPlugin {
             return finalResultsForBroadcast || [];
         }
 
-        // 🌟 V7: Base64Memo 附件提取逻辑
-        if (modifiers.includes('::Base64Memo') && retrievedContent) {
-            const attachments = this._extractAttachments(retrievedContent);
-            if (attachments.length > 0) {
-                collectedAttachments.push(...attachments);
-                console.log(`[RAGDiaryPlugin] 🌟 V7: 从召回内容中提取了 ${attachments.length} 个附件链接`);
+        // 🌟 V7: Base64Memo 附件提取逻辑（保留单篇日记 file:/// 超栈追踪路径与日记本名）
+        if (modifiers.includes('::Base64Memo') && (retrievedContent || (finalResultsForBroadcast && finalResultsForBroadcast.length > 0))) {
+            const attachmentItems = AttachmentMemoUtils.extractAttachmentsFromResults(
+                finalResultsForBroadcast,
+                retrievedContent,
+                dbScopeKey
+            );
+            if (attachmentItems.length > 0) {
+                collectedAttachments.push(...attachmentItems);
+                console.log(`[RAGDiaryPlugin] 🌟 V7: 从召回内容中提取了 ${attachmentItems.length} 个带路径溯源的附件链接`);
             }
         }
 
@@ -5717,7 +5753,19 @@ class RAGDiaryPlugin {
     }
 
     /**
-     * 🌟 V7 新增：获取链接内容的 Base64
+     * 🌟 V7 新增：获取链接内容的 Base64 及体积/压缩元数据
+     */
+    async _fetchAttachmentWithMeta(url) {
+        const pluginCfg = this.ragParams?.RAGDiaryPlugin || {};
+        return AttachmentMemoUtils.fetchAttachmentWithMeta(url, {
+            logger: console,
+            maxSizeMB: pluginCfg.base64MemoMaxSizeMB,
+            compressThresholdMB: pluginCfg.base64MemoCompressThresholdMB
+        });
+    }
+
+    /**
+     * 🌟 V7 新增：获取链接内容的 Base64（向后兼容包装）
      */
     async _fetchAsBase64(url) {
         return AttachmentMemoUtils.fetchAsBase64(url, { logger: console });
