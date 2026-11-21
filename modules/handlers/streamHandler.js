@@ -461,7 +461,7 @@ class StreamHandler {
             for (const marker of recent.matchAll(/<<<\[END_TOOL[-_]REQUEST\]>>>/g)) {
               const end = start + marker.index + marker[0].length;
               if (end > before && echoPrefixState(end) !== 'none' &&
-                  ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn.slice(0, end))) {
+                  ToolCallParser.endsWithExecutableEchoBoundary?.(collectedContentThisTurn.slice(0, end))) {
                 echoBoundary = end;
                 break;
               }

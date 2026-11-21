@@ -424,6 +424,14 @@ class ToolCallParser {
     return chunks.join('');
   }
 
+  static endsWithExecutableEchoBoundary(content) {
+    if (!this.endsWithCompleteToolRequest(content)) return false;
+    const lastChar = content.trimEnd().length - 1;
+    return !this._collectReasoningLiteralRanges(content).some(
+      range => range.start <= lastChar && lastChar < range.end
+    );
+  }
+
   static endsWithCompleteToolRequest(content) {
     if (typeof content !== 'string') return false;
     const raw = content.trimEnd();

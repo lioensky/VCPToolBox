@@ -386,3 +386,13 @@ test('tool result echo takes over while upstream is still open', { timeout: 3000
     await pending;
   }
 });
+
+for (const fence of ['```', '~~~']) {
+  test(`tool result echo guard preserves a complete example inside ${fence}`, async () => {
+    const example = [fence, bodyTool, echoedResultHeader, 'example only', fence, 'Explanation continues.'].join('\n');
+    const s = toolSetup([success('done')]);
+    const result = await s.handler.handle({}, s.res, response(success(example)));
+    assert.ok(streamedText(s.res.output).includes(example));
+    assert.ok(result.aiText.includes(example));
+  });
+}
