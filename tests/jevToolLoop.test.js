@@ -12,7 +12,9 @@ const roleDivider = require('../modules/roleDivider');
 
 const expression = '请使用 {联网搜索} 中的 `VSearch` 与 `UrlFetch`，检索【Lean Mathlib community Levent Alpöge Riemann Hypothesis verification con-leche con-ron 2026】，并读取[https://math.mit.edu/~drew/grh/]确认是否存在官方验证通稿与细节。';
 const request = fields => `<<<[TOOL_REQUEST]>>>\n${fields}\n<<<[END_TOOL_REQUEST]>>>`;
-const direct = ['VSearch', 'UrlFetch'].map(name => request(`tool_name:「始」${name}「末」`)).join('\n');
+const direct = (ink = '') => ['VSearch', 'UrlFetch']
+    .map(name => request(`tool_name:「始」${name}「末」${ink}`)).join('\n');
+const jev = (ink = '') => request(`JEV:「始」${expression}「末」${ink}`);
 
 function response(stream, text) {
     const choices = [{ [stream ? 'delta' : 'message']: { content: text }, finish_reason: 'stop' }];
@@ -85,8 +87,8 @@ for (const stream of [false, true]) {
             return { receipt, persisted, calls, records: records.map(record => ({ ...record })) };
         }
 
-        const directResult = await run(direct);
-        const jevResult = await run(request(`JEV:「始」${expression}「末」`));
+        const directResult = await run(direct());
+        const jevResult = await run(jev());
         assert.deepEqual(jevResult, directResult);
         assert.deepEqual(jevResult.calls, ['VSearch', 'UrlFetch']);
         assert.deepEqual(jevResult.records, [
@@ -100,6 +102,15 @@ for (const stream of [false, true]) {
         assert.equal(persisted.split('[[VCP调用结果信息汇总:').length - 1, 2);
         assert.match(persisted, /工具名称: VSearch[\s\S]*工具名称: UrlFetch/);
         assert.match(persisted, /VSearch 调用成功 \(记录ID: record-VSearch\)；UrlFetch 调用失败 \(记录ID: record-UrlFetch\)/);
+
+        const ink = '\nink:「始」mark_history「末」';
+        const marked = await run(jev(ink), true);
+        assert.deepEqual(marked, await run(direct(ink), true));
+        assert.deepEqual(marked, jevResult, 'ink 保留两项详情，即使全局详情关闭');
+        const unmarked = await run(jev(), true);
+        assert.deepEqual(unmarked, await run(direct(), true));
+        assert.doesNotMatch(unmarked.persisted[0], /VCP调用结果信息汇总/);
+        assert.match(unmarked.persisted[0], /VSearch 调用成功[\s\S]*UrlFetch 调用失败/);
 
         const invalid = await run(request('JEV:「始」无效表达式「末」'));
         assert.deepEqual(invalid.calls, []);
