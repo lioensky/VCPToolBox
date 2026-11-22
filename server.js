@@ -868,6 +868,13 @@ app.use('/AdminPanel', (req, res) => {
 // Image server logic is now handled by the ImageServer plugin.
 
 
+// The scoped read credential terminates at this route; leave the global API guard unchanged.
+require('./routes/memorySearch').mountMemorySearch(app, {
+    grants: process.env.MEMORY_READ_GRANTS,
+    serverKey,
+    getBridge: () => pluginManager.messagePreprocessors.get('RAGDiaryPlugin')?.getContextBridge()
+});
+
 // General API authentication (Bearer token) - This was the original one, now adminAuth handles its paths
 app.use((req, res, next) => {
     // Skip bearer token check for admin panel API and static files, as they use basic auth or no auth
