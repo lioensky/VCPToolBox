@@ -324,8 +324,10 @@ class NonStreamHandler {
       const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(currentAIContentForLoop);
 
       if (toolCalls.length > 0) {
+        const expandedCalls = await (toolExecutor.expandCalls?.(toolCalls) ?? toolCalls);
+        if (abortController?.signal.aborted || res.destroyed || res.writableEnded) break;
         anyToolProcessedInCurrentIteration = true;
-        const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
+        const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(expandedCalls);
         const archeryReceiptGroups = [];
         const archeryStatusSummaryItems = [];
         const visibleToolResults = [];

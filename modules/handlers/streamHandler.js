@@ -770,7 +770,9 @@ class StreamHandler {
         break;
       }
 
-      const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
+      const expandedCalls = await (toolExecutor.expandCalls?.(toolCalls) ?? toolCalls);
+      if (abortController?.signal.aborted || res.destroyed || res.writableEnded) break;
+      const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(expandedCalls);
       const archeryReceiptGroups = [];
       const archeryStatusSummaryItems = [];
       const visibleToolResults = [];

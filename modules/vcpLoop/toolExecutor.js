@@ -10,6 +10,7 @@ const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的
 const jevToolCallExp = require('../jevToolCallExp');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
+const JEV_PLANNING_ERROR = Symbol('jevPlanningError');
 
 /**
  * 提取消息的纯文本字符串
@@ -185,49 +186,36 @@ class ToolExecutor {
       });
   }
 
+  // Expand before the loop splits normal/archery calls, so each real call
+  // reaches the same executor and receipt pipeline as a direct VCP request.
+  async expandCalls(toolCalls) {
+    if (!toolCalls.some(call => jevToolCallExp.isVirtualToolName(call.name))) return toolCalls;
+
+    const groups = await Promise.all(toolCalls.map(async call => {
+      if (!jevToolCallExp.isVirtualToolName(call.name)) return [call];
+      try {
+        const planned = await jevToolCallExp.plan(call.args?.expression, call);
+        return planned.length > 0 ? planned : [
+          { ...call, [JEV_PLANNING_ERROR]: 'JEV 没有生成可执行的真实工具调用。' }
+        ];
+      } catch (error) {
+        return [{ ...call, [JEV_PLANNING_ERROR]: `JEV 规划错误: ${error.message}` }];
+      }
+    }));
+    return groups.flat();
+  }
+
   /**
    * 执行单个工具调用
    * @returns {Promise<{success: boolean, content: Array, contentForAI?: Array, error?: string, raw?: any}>}
    */
   async execute(toolCall, clientIp, contextMessages = []) {
     const { name, args, river, vref, archeryNoReply } = toolCall;
-
-    // === JEV 实验性虚拟工具展开 ===
-    // JEV 本身不是插件。规划器仅生成白名单真实工具调用，随后递归进入
-    // 本执行链，使验证码、人工审核、工具记录、隐私过滤与分布式桥保持生效。
+    if (toolCall[JEV_PLANNING_ERROR]) {
+      return this._createErrorResult(name, toolCall[JEV_PLANNING_ERROR]);
+    }
     if (jevToolCallExp.isVirtualToolName(name)) {
-      try {
-        // 传入完整虚拟调用，使规划器在展开后保留通用调用协议：
-        // timely_contact/tool_password 参数及 archery/ink/river/vref 元数据。
-        const expandedCalls = await jevToolCallExp.plan(args?.expression, toolCall);
-        if (expandedCalls.length === 0) {
-          return this._createErrorResult(name, 'JEV 没有生成可执行的真实工具调用。');
-        }
-
-        const expandedResults = await this.executeAll(expandedCalls, clientIp, contextMessages);
-        if (expandedResults.length === 1) return expandedResults[0];
-
-        const successful = expandedResults.filter(result => result?.success);
-        const contentForAI = expandedResults.some(result => result?.contentForAI)
-          ? expandedResults.flatMap(result => result?.contentForAI ?? result?.content ?? [])
-          : undefined;
-        return {
-          success: successful.length === expandedResults.length,
-          content: expandedResults.flatMap(result => Array.isArray(result?.content) ? result.content : []),
-          ...(contentForAI ? { contentForAI } : {}),
-          raw: {
-            status: successful.length === expandedResults.length ? 'success' : 'partial',
-            virtualTool: 'JEV',
-            expandedTools: expandedCalls.map(call => call.name),
-            results: expandedResults.map(result => result?.raw ?? {
-              success: result?.success,
-              error: result?.error
-            })
-          }
-        };
-      } catch (error) {
-        return this._createErrorResult(name, `JEV 规划错误: ${error.message}`);
-      }
+      return this._createErrorResult(name, 'JEV 虚拟调用必须先由工具循环展开。');
     }
 
     // === river 上下文注入 ===
