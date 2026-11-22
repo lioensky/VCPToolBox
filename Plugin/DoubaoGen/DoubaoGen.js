@@ -801,8 +801,7 @@ async function handleCompose(args) {
         size: resolution,
         watermark: args.watermark,
         output_format: args.output_format,
-        response_format: DEFAULT_RESPONSE_FORMAT,
-        sequential_image_generation: 'disabled'
+        response_format: DEFAULT_RESPONSE_FORMAT
     };
 
     if (args.seed !== undefined && args.seed !== -1 && args.seed !== null) {
