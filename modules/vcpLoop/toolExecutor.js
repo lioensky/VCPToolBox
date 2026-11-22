@@ -187,7 +187,7 @@ class ToolExecutor {
 
   /**
    * 执行单个工具调用
-   * @returns {Promise<{success: boolean, content: Array, error?: string, raw?: any}>}
+   * @returns {Promise<{success: boolean, content: Array, contentForAI?: Array, error?: string, raw?: any}>}
    */
   async execute(toolCall, clientIp, contextMessages = []) {
     const { name, args, river, vref, archeryNoReply } = toolCall;
@@ -208,9 +208,13 @@ class ToolExecutor {
         if (expandedResults.length === 1) return expandedResults[0];
 
         const successful = expandedResults.filter(result => result?.success);
+        const contentForAI = expandedResults.some(result => result?.contentForAI)
+          ? expandedResults.flatMap(result => result?.contentForAI ?? result?.content ?? [])
+          : undefined;
         return {
           success: successful.length === expandedResults.length,
           content: expandedResults.flatMap(result => Array.isArray(result?.content) ? result.content : []),
+          ...(contentForAI ? { contentForAI } : {}),
           raw: {
             status: successful.length === expandedResults.length ? 'success' : 'partial',
             virtualTool: 'JEV',
@@ -504,6 +508,7 @@ class ToolExecutor {
       success: !innerFailed,
       error: innerFailed ? (result.error || formatted.text) : undefined,
       content: formatted.content,
+      ...(formatted.contentForAI ? { contentForAI: formatted.contentForAI } : {}),
       approvalFeedbackContent: result?.__vcpApprovalFeedback
         ? [{ type: 'text', text: `【用户审核留言：已允许工具 "${toolName}" 调用】\n${result.__vcpApprovalFeedback}` }]
         : [],
@@ -552,10 +557,20 @@ class ToolExecutor {
     const text = (typeof displayResult === 'object'
       ? JSON.stringify(displayResult, null, 2)
       : String(displayResult)) + suffix;
-    
+    // The plugin bridge wraps a scalar result with these metadata fields. For the model
+    // only, expose its body directly. Do not parse JSON embedded in existing text parts
+    // or strip fields from a business object that merely happens to use the same key.
+    const scalarOutput = typeof displayResult === 'object' &&
+      Object.hasOwn(displayResult, 'original_plugin_output') &&
+      typeof displayResult.original_plugin_output === 'string' &&
+      Object.keys(displayResult).every(key =>
+        ['original_plugin_output', 'MaidName', 'timestamp', 'tool_call_record_id'].includes(key));
     return {
       text,
-      content: [{ type: 'text', text }]
+      content: [{ type: 'text', text }],
+      ...(scalarOutput ? {
+        contentForAI: [{ type: 'text', text: displayResult.original_plugin_output + suffix }]
+      } : {})
     };
   }
 

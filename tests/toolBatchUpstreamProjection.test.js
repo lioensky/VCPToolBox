@@ -76,16 +76,46 @@ function response(stream, text) {
 }
 
 for (const stream of [false, true]) {
-    for (const archery of [false, true]) {
-        test(`actual upstream request stream=${stream} archery=${archery}`, async () => {
+    for (const scenario of ['text', 'json-file', 'scalar', 'multimodal', 'translated', 'audio-only', 'archery']) {
+        test(`actual upstream request stream=${stream} receipt=${scenario}`, async () => {
+            const archery = scenario === 'archery';
             const history = roleDivider.process([{ role: 'assistant', content: wrapper }]);
             history[0].name = 'Nova';
             let upstream;
             let executorHistory;
-            const result = { success: !archery, raw: payload, content: [{ type: 'text', text: payload }] };
+            let translatedInput;
+            let ragText;
+            const header = { type: 'text', text: '<!-- VCP_TOOL_PAYLOAD -->\nResults:' };
+            const first = { type: 'text', text: payload };
+            const last = { type: 'text', text: '# 读取内容\n第一行\n第二行' };
+            const jsonFile = { type: 'text', text: '{\n  "enabled": true,\n  "value": "原文"\n}\n' };
+            const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA', detail: 'low' } };
+            const audio = { type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } };
+            const description = { type: 'text', text: '图片转写' };
+            const scalar = { type: 'text', text: '###计算结果：0.3333333333###，请将结果转告用户' };
+            const legacy = { type: 'text', text: JSON.stringify({ original_plugin_output: scalar.text, timestamp: 'test-time' }) };
+            const content = {
+                text: [first, last], 'json-file': [first, jsonFile], scalar: [legacy], multimodal: [first, image, audio, last],
+                translated: [first, image, audio, last], 'audio-only': [audio], archery: [first]
+            }[scenario];
+            const before = JSON.stringify(content);
+            const result = { success: !archery, raw: payload, content };
+            if (scenario === 'scalar') result.contentForAI = [scalar];
             const ctx = {
                 originalBody: { model: 'test', messages: history },
-                pluginManager: { messagePreprocessors: new Map() },
+                shouldProcessMedia: scenario === 'translated',
+                pluginManager: {
+                    messagePreprocessors: new Map([['MultiModalProcessor', {}]]),
+                    executeMessagePreprocessor: async (_name, messages) => {
+                        translatedInput = messages[0];
+                        return [{ ...translatedInput, content: [header, first, description, audio, last] }];
+                    }
+                },
+                RAGMemoRefresh: true,
+                _refreshRagBlocksIfNeeded: async (messages, data) => {
+                    ragText = data.toolResultsText;
+                    return messages;
+                },
                 abortController: new AbortController(), apiRetries: 1,
                 ToolCallParser: {
                     parse: text => text === 'CALL' ? [{ name: 'Demo' }] : [],
@@ -115,10 +145,25 @@ for (const stream of [false, true]) {
             assert.equal(Object.hasOwn(upstream.messages[0], 'name'), false);
             assert.equal(ctx.originalBody.messages, history);
             assert.equal(history[0].name, 'Nova');
-            const toolPayload = upstream.messages.at(-1).content;
-            assert.ok(toolPayload.startsWith('<!-- VCP_TOOL_PAYLOAD -->'));
-            assert.ok(toolPayload.includes('<<<[VCP_TOOL_BATCH_START:'));
-            assert.equal(toolPayload.includes('【工具返回批次开始｜时间：'), false);
+            const expected = {
+                text: [first, last], 'json-file': [first, jsonFile], scalar: [scalar], multimodal: [first, image, audio, last],
+                translated: [first, description, audio, last], 'audio-only': [audio],
+                archery: [{ type: 'text', text: `[异步工具 "Demo" 返回了错误，请注意]:\n${payload}` }]
+            }[scenario];
+            const expectedContent = ['multimodal', 'translated', 'audio-only'].includes(scenario)
+                ? [header, ...expected]
+                : `${header.text} ${expected.map(part => part.text).join('\n\n')}`;
+            assert.deepEqual(upstream.messages.at(-1), { role: 'user', content: expectedContent });
+            assert.equal(JSON.stringify(content), before, 'does not mutate original tool result');
+            if (scenario === 'translated') {
+                assert.deepEqual(translatedInput, { role: 'user', content: [header, ...content] });
+            } else {
+                assert.equal(translatedInput, undefined);
+            }
+            if (!archery) {
+                assert.deepEqual(JSON.parse(ragText), content.map(part =>
+                    part === image ? { ...part, image_url: { ...part.image_url, url: '[Omitted]' } } : part));
+            }
         });
     }
 }

@@ -317,6 +317,38 @@ test('允许留言：纯图片回执在末尾增加文本块，无留言原样�
     assert.equal(executor._formatResult(content).content, content, '兼容裸标准数组');
 });
 
+test('模型正文只解开旧标量包装，原始结果、日志和原生内容块仍保留', () => {
+    const executor = makeExecutorStub();
+    const plain = '计算结果：0.3333333333\n请转告用户';
+    const wrapped = {
+        original_plugin_output: plain,
+        MaidName: 'Nova',
+        timestamp: '2026-11-22T14:09:47.804+08:00',
+        __vcpApprovalFeedback: '请保留精度'
+    };
+    const result = executor._processResult('DemoTool', wrapped);
+    assert.equal(result.raw, wrapped);
+    assert.equal(result.contentForAI.length, 1);
+    assert.equal(result.contentForAI[0].type, 'text');
+    assert.ok(result.contentForAI[0].text.startsWith(plain + '\n\n'));
+    assert.ok(result.contentForAI[0].text.endsWith('请保留精度'));
+    assert.doesNotMatch(result.contentForAI[0].text, /original_plugin_output|MaidName|timestamp/);
+    assert.match(result.content[0].text, /original_plugin_output/);
+
+    const structured = { original_plugin_output: plain, business_code: 'KEEP' };
+    const business = executor._processResult('DemoTool', structured);
+    assert.equal(business.contentForAI, undefined);
+    assert.deepEqual(JSON.parse(business.content[0].text), structured);
+
+    const originalParts = [
+        { type: 'text', text: JSON.stringify({ original_plugin_output: plain }) },
+        { type: 'image_url', image_url: { url: 'https://example.com/image.png' } }
+    ];
+    const rich = executor._processResult('DemoTool', { content: originalParts });
+    assert.equal(rich.contentForAI, undefined);
+    assert.equal(rich.content, originalParts);
+});
+
 test('允许留言：免回执提供独立反馈内容，不泄漏成功业务输出且保持成功', () => {
     const executor = makeExecutorStub();
     const result = executor._processResult('DemoTool', {
@@ -494,8 +526,7 @@ test('流式/非流式模型请求：多模态回执不损坏，免回执仅传�
                 assert.equal(payload.content[1].text.endsWith('请汇总'), true);
                 assert.deepEqual(payload.content[2], image);
             } else {
-                assert.match(payload.content, /请汇总/);
-                assert.doesNotMatch(payload.content, /BUSINESS_OUTPUT|image_url/);
+                assert.equal(payload.content, '<!-- VCP_TOOL_PAYLOAD -->\nResults: 用户允许留言：请汇总');
             }
         }
     }
