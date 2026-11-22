@@ -525,8 +525,9 @@ test('流式/非流式模型请求：多模态回执不损坏，免回执仅传�
                 assert.ok(Array.isArray(payload.content));
                 assert.equal(payload.content[1].text.endsWith('请汇总'), true);
                 assert.deepEqual(payload.content[2], image);
+                assert.deepEqual(payload.content.at(-1), { type: 'text', text: '<!-- VCP_TOOL_PAYLOAD_END -->' });
             } else {
-                assert.equal(payload.content, '<!-- VCP_TOOL_PAYLOAD -->\nResults: 用户允许留言：请汇总');
+                assert.equal(payload.content, '<!-- VCP_TOOL_PAYLOAD -->\nResults: 用户允许留言：请汇总\n<!-- VCP_TOOL_PAYLOAD_END -->');
             }
         }
     }

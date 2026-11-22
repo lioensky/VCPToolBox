@@ -147,15 +147,25 @@ function projectBatchWrappersForUpstream(body) {
     };
 }
 
-function buildToolPayloadMessage(parts) {
+async function buildToolPayloadMessage(groups, translateMedia) {
     const header = '<!-- VCP_TOOL_PAYLOAD -->\nResults:';
-    // Preserve file text verbatim, including actual JSON documents. Only the
-    // transport envelope changes; multimodal receipts keep their original parts.
-    if (parts.every(part => part?.type === 'text' && typeof part.text === 'string')) {
-        const text = parts.map(part => part.text).join('\n\n');
-        return { role: 'user', content: text ? `${header} ${text}` : header };
+    const footer = '<!-- VCP_TOOL_PAYLOAD_END -->';
+    const label = (group, index) => `[${index + 1}] ${String(group.name || '工具').replace(/[\r\n]+/g, ' ')}`;
+    const plainText = groups.every(group =>
+        group.parts.every(part => part?.type === 'text' && typeof part.text === 'string'));
+    if (plainText) {
+        const sections = groups.map((group, index) => {
+            const text = group.parts.map(part => part.text).join('\n\n');
+            return groups.length > 1 ? `${label(group, index)}\n${text}` : text;
+        });
+        const text = sections.join('\n\n');
+        const separator = groups.length > 1 ? '\n' : ' ';
+        return { role: 'user', content: `${header}${text ? separator + text : ''}\n${footer}` };
     }
-    return { role: 'user', content: [{ type: 'text', text: header }, ...parts] };
+    const parts = [{ type: 'text', text: header }, ...groups.flatMap((group, index) =>
+        groups.length > 1 ? [{ type: 'text', text: label(group, index) }, ...group.parts] : group.parts)];
+    const translated = translateMedia ? await translateMedia(parts) : parts;
+    return { role: 'user', content: [...translated, { type: 'text', text: footer }] };
 }
 
 module.exports = {

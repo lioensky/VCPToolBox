@@ -771,7 +771,7 @@ class StreamHandler {
       }
 
       const { normal: normalCalls, archery: archeryCalls } = ToolCallParser.separate(toolCalls);
-      const archeryErrorContents = [];
+      const archeryReceiptGroups = [];
       const archeryStatusSummaryItems = [];
       const visibleToolResults = [];
       const emitToolBatch = () => {
@@ -788,20 +788,20 @@ class StreamHandler {
       };
 
       // 执行 Archery 调用
-      const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
+      const archeryLogs = await Promise.all(archeryCalls.map(async (toolCall, index) => {
         try {
           const result = await toolExecutor.execute(toolCall, clientIp, currentMessagesForLoop);
           const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
           if (isError) {
             archeryStatusSummaryItems.push(`${toolCall.name} 调用失败${result.recordId ? ` (记录ID: ${result.recordId})` : ''}`);
-            archeryErrorContents.push({
+            archeryReceiptGroups[index] = { name: toolCall.name, parts: [{
               type: 'text',
               text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
-            });
+            }] };
           } else if (result.approvalFeedbackContent?.length) {
             // 用户明确输入的审核留言优先于 archery 静默；只回灌留言，不回灌成功业务输出。
-            archeryErrorContents.push(...result.approvalFeedbackContent);
+            archeryReceiptGroups[index] = { name: toolCall.name, parts: result.approvalFeedbackContent };
           }
 
           const forceThisOne = !shouldShowVCP && toolCall.markHistory;
@@ -815,10 +815,12 @@ class StreamHandler {
           return { tool: toolCall, result: [{ type: 'text', text: String(e.message) }] };
         }
       }));
+      const archeryGroups = archeryReceiptGroups.filter(Boolean);
+      const archeryErrorContents = archeryGroups.flatMap(group => group.parts);
 
       // 处理纯 Archery 的错误或用户审核留言；成功留言不改变工具成功状态。
       if (normalCalls.length === 0 && archeryErrorContents.length > 0) {
-        currentMessagesForLoop.push(buildToolPayloadMessage(archeryErrorContents));
+        currentMessagesForLoop.push(await buildToolPayloadMessage(archeryGroups));
 
         if (!res.writableEnded && !res.destroyed) {
           try {
@@ -974,11 +976,13 @@ class StreamHandler {
         }, pluginManager, DEBUG_MODE);
       }
 
-      const toolPayload = buildToolPayloadMessage([
-        ...toolResults.flatMap(result => result.contentForAI ?? result.content), ...archeryErrorContents
-      ]);
-      const content = await maybeTranslateToolPayloadMedia(toolPayload.content);
-      currentMessagesForLoop.push({ ...toolPayload, content });
+      currentMessagesForLoop.push(await buildToolPayloadMessage([
+        ...toolResults.map((result, index) => ({
+          name: normalCalls[index]?.name,
+          parts: result.contentForAI ?? result.content
+        })),
+        ...archeryGroups
+      ], maybeTranslateToolPayloadMedia));
 
       if (!res.writableEnded && !res.destroyed) {
         try {
