@@ -3,7 +3,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
-const { createHash } = require('crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
 const DAY_MS = 86400000;
 const DEFAULT_AUTO_SYNC = Object.freeze({
@@ -28,6 +28,7 @@ const DEFAULT_CONFIG = Object.freeze({
     defaultExpandK: 3,
     defaultThreshold: 0.5,
     model: '',
+    modelTimeoutMs: 120000,
     maxContextTokens: 60000,
     maxOutputTokens: 4000,
     maxConcurrentTasks: 3,
@@ -84,6 +85,7 @@ class VCPTimeLine {
             defaultExpandK: this.normalizePositiveInteger(raw.defaultExpandK, DEFAULT_CONFIG.defaultExpandK, 1, 100),
             defaultThreshold: this.normalizeThreshold(raw.defaultThreshold, DEFAULT_CONFIG.defaultThreshold),
             model: String(raw.model || '').trim(),
+            modelTimeoutMs: this.normalizePositiveInteger(raw.modelTimeoutMs ?? DEFAULT_CONFIG.modelTimeoutMs, DEFAULT_CONFIG.modelTimeoutMs, 100, 600000),
             maxContextTokens: this.normalizePositiveInteger(raw.maxContextTokens, DEFAULT_CONFIG.maxContextTokens, 1024),
             maxOutputTokens: this.normalizePositiveInteger(raw.maxOutputTokens, DEFAULT_CONFIG.maxOutputTokens, 128),
             maxConcurrentTasks: this.normalizePositiveInteger(raw.maxConcurrentTasks, DEFAULT_CONFIG.maxConcurrentTasks, 1, 20),
@@ -311,7 +313,11 @@ class VCPTimeLine {
 
     async saveConfig(raw) {
         // Older admin clients send only the fields displayed in their form.
-        const config = this.normalizeConfig({ autoSync: this.config.autoSync, ...raw });
+        const config = this.normalizeConfig({
+            autoSync: this.config.autoSync,
+            modelTimeoutMs: this.config.modelTimeoutMs,
+            ...raw
+        });
         await this.writeJsonAtomic(this.getConfigPath(), config);
         this.config = config;
         return config;
@@ -691,25 +697,42 @@ class VCPTimeLine {
         if (!key) throw new Error('服务器 Key 未配置');
         if (!this.config.model) throw new Error('VCPTimeLine 模型未配置');
         const { default: fetch } = await import('node-fetch');
-        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-            body: JSON.stringify({
-                model: this.config.model,
-                stream: false,
-                max_tokens: maxTokens,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ]
-            })
-        });
-        const text = await response.text();
-        if (!response.ok) throw new Error(`模型返回 ${response.status}: ${text.slice(0, 500)}`);
-        const payload = JSON.parse(text);
-        const output = payload?.choices?.[0]?.message?.content;
-        if (typeof output !== 'string' || !output.trim()) throw new Error('模型未返回有效内容');
-        return output.trim();
+        const traceId = randomUUID();
+        const timeoutMs = this.config.modelTimeoutMs;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let stage = 'response_headers';
+        try {
+            const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}`, 'X-VCP-Timeline-Trace': traceId },
+                body: JSON.stringify({
+                    model: this.config.model,
+                    stream: false,
+                    max_tokens: maxTokens,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ]
+                })
+            });
+            stage = 'response_body';
+            const text = await response.text();
+            if (!response.ok) throw new Error(`模型返回 ${response.status}: ${text.slice(0, 500)}`);
+            const payload = JSON.parse(text);
+            const output = payload?.choices?.[0]?.message?.content;
+            if (typeof output !== 'string' || !output.trim()) throw new Error('模型未返回有效内容');
+            return output.trim();
+        } catch (error) {
+            if (!controller.signal.aborted) throw error;
+            const waitingFor = stage === 'response_headers' ? '等待 ToolBox 响应头' : '读取 ToolBox 响应正文';
+            throw Object.assign(new Error(`VCPTimeLine 模型请求超时（${timeoutMs} ms，${waitingFor}；诊断 ID：${traceId}）`, { cause: error }), {
+                code: 'TIMELINE_MODEL_TIMEOUT'
+            });
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     async summarizeMonth(agentName, month, memories) {

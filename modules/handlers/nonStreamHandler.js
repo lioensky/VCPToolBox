@@ -89,7 +89,8 @@ async function readNonStreamResponseWithSemanticRetry({
   retries = 3,
   delay = 1000,
   debugMode = false,
-  label = 'non_stream'
+  label = 'non_stream',
+  timelineTrace
 }) {
   const maxAttempts = Math.max(Number.isFinite(Number(retries)) && Number(retries) > 0 ? Math.floor(Number(retries)) : 1, 1);
   let response = initialResponse;
@@ -101,7 +102,18 @@ async function readNonStreamResponseWithSemanticRetry({
       response = await fetchResponse(attempt);
     }
 
-    const arrayBuffer = await response.arrayBuffer();
+    const upstreamAttempt = timelineTrace?.responses.get(response);
+    timelineTrace?.emit('upstream_body_read_started', { attempt: upstreamAttempt });
+    let arrayBuffer;
+    try {
+      arrayBuffer = await response.arrayBuffer();
+      timelineTrace?.emit('upstream_body_read_finished', { attempt: upstreamAttempt });
+    } catch (error) {
+      const code = error?.code;
+      const errorCode = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : undefined;
+      timelineTrace?.emit('upstream_body_read_failed', { attempt: upstreamAttempt, errorCode });
+      throw error;
+    }
     responseText = Buffer.from(arrayBuffer).toString('utf-8');
 
     if (!response.ok || !isReasoningOnlyNonStreamResponse(responseText)) {
@@ -174,6 +186,7 @@ class NonStreamHandler {
       clientIp,
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
+      timelineTrace,
       vcpToolUseForbidden,
       apiConnectionTimeoutMs,
       semanticModelFallbackCandidates,
@@ -253,7 +266,7 @@ class NonStreamHandler {
         body: JSON.stringify(projectToolBatchForUpstream(body)),
         signal: abortController.signal,
       },
-      { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
+      { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates, timelineTrace }
     );
 
     const firstReadResult = await readNonStreamResponseWithSemanticRetry({
@@ -262,7 +275,8 @@ class NonStreamHandler {
       retries: apiRetries,
       delay: apiRetryDelay,
       debugMode: DEBUG_MODE,
-      label: 'initial'
+      label: 'initial',
+      timelineTrace
     });
     firstAiAPIResponse = firstReadResult.response;
     const aiResponseText = firstReadResult.text;
@@ -389,7 +403,8 @@ class NonStreamHandler {
             retries: apiRetries,
             delay: apiRetryDelay,
             debugMode: DEBUG_MODE,
-            label: `archery_error_depth_${recursionDepth}`
+            label: `archery_error_depth_${recursionDepth}`,
+            timelineTrace
           });
           const recursionAiResponse = recursionReadResult.response;
 
@@ -513,7 +528,8 @@ class NonStreamHandler {
           retries: apiRetries,
           delay: apiRetryDelay,
           debugMode: DEBUG_MODE,
-          label: `tool_loop_depth_${recursionDepth}`
+          label: `tool_loop_depth_${recursionDepth}`,
+          timelineTrace
         });
         const recursionAiResponse = recursionReadResult.response;
 
