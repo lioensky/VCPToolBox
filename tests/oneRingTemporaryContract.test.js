@@ -29,6 +29,7 @@ function loadRing() {
                 return { getClientTimestampBindingsFromConfig: () => ({ bindings: [], rawCount: 0 }) };
             }
             if (name.startsWith('./') || name === 'chokidar') return {};
+            if (name.startsWith('.')) return require(path.resolve(path.dirname(filename), name));
             return require(name);
         }
     };

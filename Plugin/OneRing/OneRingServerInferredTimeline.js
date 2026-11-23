@@ -5,8 +5,10 @@
 const fuzzy = require('./OneRingFuzzy.js');
 const {
     rawSha256,
-    findClientRawHashMatchVariant
+    findClientRawHashMatchVariant,
+    isInjectedMetaThinkingV3Message
 } = require('./OneRingTimelineCommon.js');
+const { isMetaThinkingV3Message: defaultIsMetaThinkingV3Message } = require('../../modules/messageProcessor.js');
 
 class ServerInferredTimelineStrategy {
     constructor(options = {}) {
@@ -14,6 +16,12 @@ class ServerInferredTimelineStrategy {
         this.debug = !!options.debug;
         this.discardPatterns = Array.isArray(options.discardPatterns) ? options.discardPatterns : [];
         this.sanitizeUserContentAtPipelineEntry = options.sanitizeUserContentAtPipelineEntry;
+        this.sanitizeUserTextAtPipelineEntry = typeof options.sanitizeUserTextAtPipelineEntry === 'function'
+            ? options.sanitizeUserTextAtPipelineEntry
+            : (text => String(text || ''));
+        this.isMetaThinkingV3Message = typeof options.isMetaThinkingV3Message === 'function'
+            ? options.isMetaThinkingV3Message
+            : defaultIsMetaThinkingV3Message;
         this.hasUserTextContent = options.hasUserTextContent;
         this.markOneRingOriginalIndex = options.markOneRingOriginalIndex;
         this.getOneRingOriginalIndex = options.getOneRingOriginalIndex;
@@ -33,6 +41,15 @@ class ServerInferredTimelineStrategy {
 
     get hasClientTimestampTruth() {
         return false;
+    }
+
+    _isInjectedV3At(messages, index) {
+        return isInjectedMetaThinkingV3Message(messages, index, {
+            isMetaThinkingV3Message: this.isMetaThinkingV3Message,
+            extractText: fuzzy.extractText,
+            sanitizeUserText: this.sanitizeUserTextAtPipelineEntry,
+            discardPatterns: this.discardPatterns
+        });
     }
 
     // 注意：本策略没有 scheduleTimestampCorrections()。
@@ -75,7 +92,8 @@ class ServerInferredTimelineStrategy {
             const originalText = fuzzy.extractText(message.content);
             const sanitizedContent = this.sanitizeUserContentAtPipelineEntry(message.content);
             const sanitizedText = fuzzy.extractText(sanitizedContent);
-            const shouldDropSystemPromptUser = this.discardPatterns.some(pattern => pattern.test(sanitizedText));
+            const shouldDropSystemPromptUser = this._isInjectedV3At(messages, originalIndex)
+                || this.discardPatterns.some(pattern => pattern.test(sanitizedText));
 
             if (shouldDropSystemPromptUser) {
                 removedSystemUser++;
@@ -188,10 +206,14 @@ class ServerInferredTimelineStrategy {
 
         const flushPendingBefore = (originalIndex) => {
             if (pendingInjected.length === 0 || !Number.isInteger(originalIndex)) return;
-            if (!injectedBeforeOriginalIndex.has(originalIndex)) {
-                injectedBeforeOriginalIndex.set(originalIndex, []);
+            let targetIdx = originalIndex;
+            while (targetIdx > 0 && this._isInjectedV3At(originalMessages, targetIdx - 1)) {
+                targetIdx--;
             }
-            injectedBeforeOriginalIndex.get(originalIndex).push(...pendingInjected);
+            if (!injectedBeforeOriginalIndex.has(targetIdx)) {
+                injectedBeforeOriginalIndex.set(targetIdx, []);
+            }
+            injectedBeforeOriginalIndex.get(targetIdx).push(...pendingInjected);
             pendingInjected = [];
         };
 

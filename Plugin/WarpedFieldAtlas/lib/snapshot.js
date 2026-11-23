@@ -163,8 +163,34 @@ function parseChunkField(buffer) {
         rule: header.identity.rule, model: header.identity.model, facts: header.identity.facts,
         mean: Float64Array.from(header.mean || []),
         alignmentQuantiles: Float64Array.from(header.alignment_quantiles || []),
+        versions: header.versions && typeof header.versions === 'object' ? header.versions : null,
         checksum: digest.subarray(0, 4).toString('hex'),
+        fullDigest: Buffer.from(buffer.subarray(end)).toString('hex'),
     };
 }
 
-module.exports = { parseTagField, parseChunkField, SnapshotError, SUPPORTED_VERSION };
+/** Chunk 转换侧车：VCPWI001 | 头长 | 头 JSON(base, versions) | 尾编码 | SHA-256。 */
+function parseConvertedTail(buffer, expectedBase = null) {
+    if (buffer.length < 48 || buffer.subarray(0, 8).toString('latin1') !== 'VCPWI001') {
+        throw new SnapshotError('MAGIC', '不是双曲 Chunk 转换侧车。');
+    }
+    const end = buffer.length - 32;
+    const digest = crypto.createHash('sha256').update(buffer.subarray(0, end)).digest();
+    if (!digest.equals(buffer.subarray(end))) throw new SnapshotError('CHECKSUM', '侧车校验和不对，文件可能损坏。');
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const headerLength = Number(view.getBigUint64(8, true));
+    const header = readHeader(buffer, 16, headerLength, 64 * 1024 * 1024);
+    if (expectedBase && header.base !== expectedBase) {
+        return null;
+    }
+    const versions = header.versions && typeof header.versions === 'object' ? header.versions : {};
+    const chunkIds = Object.keys(versions).map(Number).filter(id => Number.isSafeInteger(id) && id > 0);
+    return {
+        kind: 'chunk-converted-tail',
+        base: header.base,
+        chunkIds,
+        versions,
+    };
+}
+
+module.exports = { parseTagField, parseChunkField, parseConvertedTail, SnapshotError, SUPPORTED_VERSION };

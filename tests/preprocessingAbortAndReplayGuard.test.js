@@ -341,9 +341,10 @@ test('RAGDiaryPlugin.getSingleEmbeddingCached isolates concurrent callers on abo
     const fnEnd = ragSource.indexOf('\n    _rememberEmbeddingText(', fnStart);
     assert.ok(fnStart >= 0 && fnEnd > fnStart, 'getSingleEmbeddingCached slice boundary not found');
 
+    const { projectContextEmbeddingInput } = require('../modules/contextEmbeddingInput');
     const methodHolder = vm.runInNewContext(
         `({ ${ragSource.slice(fnStart, fnEnd)} })`,
-        { console: { log() {} }, Error }
+        { console: { log() {} }, Error, projectContextEmbeddingInput }
     );
 
     const store = new Map();

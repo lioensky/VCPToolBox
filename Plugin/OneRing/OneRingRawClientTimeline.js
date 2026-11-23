@@ -7,8 +7,10 @@ const fuzzy = require('./OneRingFuzzy.js');
 const snapshot = require('./OneRingSnapshot.js');
 const {
     rawSha256,
-    findClientRawHashMatchVariant
+    findClientRawHashMatchVariant,
+    isInjectedMetaThinkingV3Message
 } = require('./OneRingTimelineCommon.js');
+const { isMetaThinkingV3Message: defaultIsMetaThinkingV3Message } = require('../../modules/messageProcessor.js');
 
 function probeRawClientTimestampBindings(messages, bindingInfo, agentName, frontendSource, stage = 'raw-entry') {
     const clientBindings = Array.isArray(bindingInfo?.bindings) ? bindingInfo.bindings : [];
@@ -92,6 +94,12 @@ class RawClientTimelineStrategy {
         this.classifyUserContent = options.classifyUserContent;
         this.classifyAssistantContent = options.classifyAssistantContent;
         this.discardPatterns = Array.isArray(options.discardPatterns) ? options.discardPatterns : [];
+        this.sanitizeUserTextAtPipelineEntry = typeof options.sanitizeUserTextAtPipelineEntry === 'function'
+            ? options.sanitizeUserTextAtPipelineEntry
+            : (text => String(text || ''));
+        this.isMetaThinkingV3Message = typeof options.isMetaThinkingV3Message === 'function'
+            ? options.isMetaThinkingV3Message
+            : defaultIsMetaThinkingV3Message;
     }
 
     get kind() {
@@ -164,7 +172,14 @@ class RawClientTimelineStrategy {
             const strippedNoticeText = stripLeadingSystemNoticeText(rawText);
             const hasNoticePrefix = strippedNoticeText !== rawText.trim();
             const hashText = hasNoticePrefix ? strippedNoticeText : rawText;
-            const shouldDropSystemUser = this.discardPatterns.some(pattern => pattern.test(strippedNoticeText || rawText));
+            const isInjectedV3Formula = isInjectedMetaThinkingV3Message(messages, rawIndex, {
+                isMetaThinkingV3Message: this.isMetaThinkingV3Message,
+                extractText: fuzzy.extractText,
+                sanitizeUserText: this.sanitizeUserTextAtPipelineEntry,
+                discardPatterns: this.discardPatterns
+            });
+            const shouldDropSystemUser = isInjectedV3Formula
+                || this.discardPatterns.some(pattern => pattern.test(strippedNoticeText || rawText));
 
             if (!strippedNoticeText.trim()) {
                 baseRecord.kind = 'side-vcp-notice-user';

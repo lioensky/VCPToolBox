@@ -111,10 +111,44 @@ function mergeTimestampBindings(...bindingMaps) {
     }), {});
 }
 
+function isInjectedMetaThinkingV3Message(messages, index, options = {}) {
+    if (!Array.isArray(messages) || index < 0 || index >= messages.length) return false;
+    const message = messages[index];
+    if (!message || message.role !== 'user') return false;
+    if (message.__vcpMetaThinkingV3__) return true;
+
+    const isV3Fn = typeof options.isMetaThinkingV3Message === 'function'
+        ? options.isMetaThinkingV3Message
+        : null;
+    if (!isV3Fn || !isV3Fn(message)) return false;
+
+    const extractText = typeof options.extractText === 'function'
+        ? options.extractText
+        : (content => (typeof content === 'string' ? content : ''));
+    const sanitizeUserText = typeof options.sanitizeUserText === 'function'
+        ? options.sanitizeUserText
+        : (text => String(text || ''));
+    const discardPatterns = Array.isArray(options.discardPatterns) ? options.discardPatterns : [];
+
+    for (let j = index + 1; j < messages.length; j++) {
+        const next = messages[j];
+        if (!next || next.role === 'assistant') break;
+        if (next.role !== 'user') continue;
+        if (next.__vcpMetaThinkingV3__ || isV3Fn(next)) continue;
+        const nextText = extractText(next.content);
+        if (!sanitizeUserText(nextText).trim() || discardPatterns.some(pattern => pattern.test(nextText))) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 module.exports = {
     rawSha256,
     normalizeClientSentHash,
     findClientRawHashMatchVariant,
     getClientTimestampBindingsFromConfig,
-    mergeTimestampBindings
+    mergeTimestampBindings,
+    isInjectedMetaThinkingV3Message
 };

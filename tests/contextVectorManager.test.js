@@ -150,3 +150,33 @@ test("R5 excludes virtual system user messages ([系统...]) from updateContext 
     assert.equal(trailingSegments.length, 1);
     assert.equal(trailingSegments[0].text, "real question");
 });
+
+test("R6 updateContext checks exact embeddingCache before fuzzy scan and snapshotVectorByHash isolates segmentContext from vectorMap eviction", async t => {
+    const vecExact = new Float32Array([1, 0, 0]);
+    const vecOther = new Float32Array([0, 1, 0]);
+    const embeddings = new Map([
+        ["apple alpha", vecExact],
+        ["other beta", vecOther],
+        ["evictor gamma", new Float32Array([0, 0, 1])]
+    ]);
+    const manager = new ContextVectorManager(createPlugin(embeddings), 1);
+    const fuzzySpy = t.mock.method(manager, "_findFuzzyMatch");
+
+    // 1) Seed one entry in vectorMap so fuzzy scan would have work if called first, then query exact cache hit -> fuzzy must NOT run
+    await manager.updateContext([message("user", "other beta"), ...lastTurn()]);
+    fuzzySpy.mock.resetCalls();
+    const snapA = await manager.updateContext([message("user", "apple alpha"), ...lastTurn()]);
+    assert.equal(fuzzySpy.mock.callCount(), 0, "exact _getEmbeddingFromCacheOnly hit must skip O(N) _findFuzzyMatch");
+
+    // 2) Concurrent/subsequent update evicts "apple alpha" from shared vectorMap (limit=1),
+    //    but snapA.snapshotVectorByHash still retains it cleanly for segmentContext!
+    await manager.updateContext([message("user", "evictor gamma"), ...lastTurn()]);
+    assert.equal(manager.vectorMap.has(key(manager, "apple alpha")), false, "shared vectorMap must have evicted apple alpha");
+    const segsFromSnapshot = manager.segmentContext(
+        [message("user", "apple alpha"), ...lastTurn()],
+        0.70,
+        snapA.snapshotVectorByHash
+    );
+    assert.equal(segsFromSnapshot.length, 1);
+    assert.equal(segsFromSnapshot[0].text, "apple alpha");
+});

@@ -190,6 +190,23 @@ function stripSystemNotificationBlocks(text) {
     return text.replace(/\[系统通知[:：]?\][\s\S]*?\[系统通知结束\]/g, '').trim();
 }
 
+const VCP_META_THINKING_V3_LINE_REGEX = /^\$\$(?:势陷\[∂[^\r\n]+ (?:∧|⋈|⊗_H) ∇[^\r\n]+\]_φ(?:\s*(?:↦|⊢|⇝)\s*思奇\s*σ_∞\([^\r\n]+ ⊖ φ(?:\s*\|\s*ℳ)?\))?|思奇\s*σ_∞\([^\r\n]+ ⊖ φ(?:\s*\|\s*ℳ)?\))(?:\s*∥\s*⊘\((?:r_⊥(?:\s*≫\s*0)?(?:\s*⊕\s*∂_2)?|∂_2)\))?\s*→_\{(?:τ,x|τ↺|τ↗|τ⇄)\}\s*\?(?:\^\{-1\})?\$\$$/;
+
+/**
+ * 识别元思考 V3 独立裸奔注入消息：
+ * 1) 优先检查非枚举标记 __vcpMetaThinkingV3__；
+ * 2) 兜底按纯公式形态匹配，避免中间预处理器浅拷贝/JSON深拷贝导致标记丢失。
+ */
+function isMetaThinkingV3Message(message) {
+    if (!message) return false;
+    if (message.__vcpMetaThinkingV3__) return true;
+    if (message.role !== 'user') return false;
+    const raw = extractTextFromMessageContent(message.content);
+    if (!raw || !raw.includes('$$')) return false;
+    const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    return lines.length > 0 && lines.every(line => VCP_META_THINKING_V3_LINE_REGEX.test(line));
+}
+
 function findLastRealUserMessage(messages, options = {}) {
     if (!Array.isArray(messages)) {
         return { index: -1, rawContent: '', sanitizedContent: '' };
@@ -201,9 +218,15 @@ function findLastRealUserMessage(messages, options = {}) {
     const skipSystemInvitation = options.skipSystemInvitation !== false;
     const skipToolPayload = options.skipToolPayload !== false;
 
+    let fallbackFormulaCandidate = null;
+
     for (let index = messages.length - 1; index >= 0; index--) {
         const message = messages[index];
-        if (!message || message.role !== 'user') continue;
+        // 若已在最新轮捕获到无标记纯公式用户发言，遇 assistant 即达轮次边界，不得越轮回退到旧轮用户发言
+        if (fallbackFormulaCandidate && message && message.role === 'assistant') {
+            return fallbackFormulaCandidate;
+        }
+        if (!message || message.role !== 'user' || message.__vcpMetaThinkingV3__) continue;
 
         const rawContent = extractTextFromMessageContent(message.content);
         if (!rawContent || !rawContent.trim()) continue;
@@ -232,15 +255,27 @@ function findLastRealUserMessage(messages, options = {}) {
             continue;
         }
 
-        return {
+        const candidate = {
             index,
             message,
             rawContent,
             sanitizedContent: sanitizedContent.trim()
         };
+
+        // 无显式 __vcpMetaThinkingV3__ 标记但匹配纯公式形态：
+        // 若前方存在其它真实 user 消息，则视为经浅/深拷贝丢失标记的 V3 注入块而跳过；
+        // 若全会话仅此一条 user 消息（用户自己直接复制发送纯公式），则回退保留为用户真实发言。
+        if (isMetaThinkingV3Message(message)) {
+            if (!fallbackFormulaCandidate) {
+                fallbackFormulaCandidate = candidate;
+            }
+            continue;
+        }
+
+        return candidate;
     }
 
-    return { index: -1, rawContent: '', sanitizedContent: '' };
+    return fallbackFormulaCandidate || { index: -1, rawContent: '', sanitizedContent: '' };
 }
 
 function throwIfContextAborted(context) {
@@ -780,6 +815,13 @@ function applyDetectorsToMessages(messages, context = {}) {
 
     return messages.map((message) => {
         const newMessage = JSON.parse(JSON.stringify(message));
+        if (message && message.__vcpMetaThinkingV3__) {
+            Object.defineProperty(newMessage, '__vcpMetaThinkingV3__', {
+                value: true,
+                enumerable: false,
+                configurable: true
+            });
+        }
 
         if (typeof newMessage.content === 'string') {
             newMessage.content = applyDetectorRules(newMessage.content, newMessage.role, context);
@@ -1229,6 +1271,7 @@ module.exports = {
     extractTextFromMessageContent,
     isSystemNotificationText,
     isBetaSystemUserText,
+    isMetaThinkingV3Message,
     stripSystemNotificationBlocks,
     findLastRealUserMessage
 };

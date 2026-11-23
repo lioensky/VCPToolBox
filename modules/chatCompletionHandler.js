@@ -671,7 +671,8 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
               if (prevMsg.role === 'user' && typeof prevMsg.content === 'string' &&
                 !prevMsg.content.startsWith('<!-- VCP_TOOL_PAYLOAD -->') &&
                 !prevMsg.content.startsWith('[系统提示:]') &&
-                !prevMsg.content.startsWith('[系统邀请指令:]')
+                !prevMsg.content.startsWith('[系统邀请指令:]') &&
+                !messageProcessor.isMetaThinkingV3Message(prevMsg)
               ) {
                 originalUserQuery = prevMsg.content;
                 if (debugMode) console.log(`[VCP Refresh] Found original user query for refresh at index ${j}.`);
