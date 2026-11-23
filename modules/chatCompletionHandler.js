@@ -415,12 +415,32 @@ function applyModelFallbackForAttempt(options, candidates, attemptIndex, debugMo
   }
 }
 
+// Timeline diagnostics are local-only and independent of request replay/interrupt IDs.
+function createTimelineTrace(req, res) {
+  const id = req.headers['x-vcp-timeline-trace'];
+  const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress);
+  if (!loopback || req.body?.stream !== false || typeof id !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return null;
+
+  const started = performance.now();
+  const emit = (stage, fields) => console.info('[VCPTimeLineTrace]', JSON.stringify({
+    id, stage, elapsedMs: Math.round(performance.now() - started), ...fields
+  }));
+  let sequence = 0;
+  res.once('finish', () => emit('toolbox_response_finished', { status: res.statusCode }));
+  res.once('close', () => {
+    if (!res.writableFinished) emit('toolbox_response_closed_early');
+  });
+  emit('toolbox_handler_entered');
+  return { emit, nextAttempt: () => ++sequence, responses: new WeakMap() };
+}
+
 // A helper function to handle fetch with retries for specific status codes
 // connectionTimeout: 连接超时安全网，防止上游 API 静默挂起导致永久等待（仅覆盖到收到响应头为止）
 async function fetchWithRetry(
   url,
   options,
-  { retries = 3, delay = 1000, debugMode = false, onRetry = null, connectionTimeout = 900000, modelFallbackCandidates = null } = {},
+  { retries = 3, delay = 1000, debugMode = false, onRetry = null, connectionTimeout = 900000, modelFallbackCandidates = null, timelineTrace } = {},
 ) {
   const { default: fetch } = await import('node-fetch');
   const maxAttempts = Math.max(
@@ -431,6 +451,7 @@ async function fetchWithRetry(
     // 为每次尝试创建独立的中止控制器，用于超时保护
     const attemptController = new AbortController();
     let didTimeout = false;
+    let attempt;
     const externalSignal = options.signal;
 
     // 将外部中止信号转发给本次尝试的控制器
@@ -458,12 +479,18 @@ async function fetchWithRetry(
       const attemptOptions = isolateNativeToolRequestOptions(
         applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode)
       );
+      attempt = timelineTrace?.nextAttempt();
+      timelineTrace?.emit('upstream_fetch_started', { attempt });
       const response = await fetch(url, {
         ...attemptOptions,
         agent: getFetchAgent, // 注入防御性长连接池
         signal: attemptController.signal,
       });
       cleanup();
+      if (timelineTrace) {
+        timelineTrace.responses.set(response, attempt);
+        timelineTrace.emit('upstream_headers_received', { attempt, status: response.status });
+      }
 
       let shouldRetryStatus = response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504 || response.status === 429;
       let retryMessage = response.statusText;
@@ -473,12 +500,15 @@ async function fetchWithRetry(
       // 这类并非 VCP 本地 Key 配置错误，而是上游瞬时 token 异常，可安全纳入重试。
       if (response.status === 401) {
         try {
+          timelineTrace?.emit('upstream_retry_body_read_started', { attempt });
           const responseBodyText = await response.clone().text();
+          timelineTrace?.emit('upstream_retry_body_read_finished', { attempt });
           if (responseBodyText.toLowerCase().includes('token')) {
             shouldRetryStatus = true;
             retryMessage = responseBodyText || response.statusText;
           }
         } catch (bodyReadError) {
+          timelineTrace?.emit('upstream_retry_body_read_failed', { attempt });
           if (debugMode) {
             console.warn(`[Fetch Retry] Failed to inspect 401 response body: ${bodyReadError.message}`);
           }
@@ -507,6 +537,12 @@ async function fetchWithRetry(
       return response;
     } catch (error) {
       cleanup();
+      if (attempt !== undefined) {
+        const code = error?.code;
+        const errorCode = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : undefined;
+        timelineTrace.emit(didTimeout ? 'upstream_headers_wait_timeout'
+          : externalSignal?.aborted ? 'upstream_fetch_cancelled' : 'upstream_fetch_failed', { attempt, errorCode });
+      }
 
       // 区分超时中止和外部中止
       if (error.name === 'AbortError') {
@@ -691,6 +727,7 @@ class ChatCompletionHandler {
   }
 
   async handle(req, res, forceShowVCP = false) {
+    const timelineTrace = createTimelineTrace(req, res);
     const {
       apiUrl,
       apiKey,
@@ -1285,6 +1322,7 @@ class ChatCompletionHandler {
           debugMode: DEBUG_MODE,
           connectionTimeout: apiConnectionTimeoutMs,
           modelFallbackCandidates: semanticModelFallbackCandidates,
+          timelineTrace,
           onRetry: async (attempt, errorInfo) => {
             if (!res.headersSent && isOriginalRequestStreaming) {
               if (DEBUG_MODE)
@@ -1397,6 +1435,7 @@ class ChatCompletionHandler {
         forceShowVCP,
         _refreshRagBlocksIfNeeded,
         fetchWithRetry,
+        timelineTrace,
         isToolResultError,
         formatToolResult,
         vcpToolUseForbidden,
