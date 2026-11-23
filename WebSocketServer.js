@@ -333,6 +333,11 @@ function initialize(httpServer, config) {
     httpServer.on('upgrade', upgradeHandler);
 
     wssInstance.on('connection', (ws, request) => {
+        ws.isAlive = true;
+        ws.on('pong', () => {
+            ws.isAlive = true;
+        });
+
         if (serverConfig.debugMode) {
             console.log(`[WebSocketServer] Client ${ws.clientId} connected.`);
         }
@@ -356,6 +361,7 @@ function initialize(httpServer, config) {
         // 可以根据 ws.clientType 或其他标识符发送不同的欢迎消息
 
         ws.on('message', (message) => {
+            ws.isAlive = true;
             const messageString = message.toString();
             
             try {
@@ -502,8 +508,10 @@ function initialize(httpServer, config) {
 
         ws.on('close', () => {
             if (ws.clientType === 'DistributedServer') {
-                if (pluginManager) {
-                    pluginManager.unregisterAllDistributedTools(ws.serverId);
+                try {
+                    pluginManager?.unregisterAllDistributedTools(ws.serverId);
+                } catch (error) {
+                    console.error(`[WebSocketServer] Failed to unregister distributed tools for ${ws.serverId}:`, error);
                 }
                 rejectPendingToolRequestsForServer(ws.serverId);
                 distributedServers.delete(ws.serverId);
@@ -547,28 +555,49 @@ function initialize(httpServer, config) {
     });
 
     if (serverConfig.heartbeatEnabled) {
+        const { heartbeatIntervalMs } = config ?? {};
+        const intervalMs = typeof heartbeatIntervalMs === 'string' ? Number(heartbeatIntervalMs) : heartbeatIntervalMs;
+        // Node uses a 1 ms delay for values outside the timer's supported range.
+        const effectiveHeartbeatIntervalMs = Number.isInteger(intervalMs) && intervalMs >= 1 && intervalMs <= 2_147_483_647
+            ? intervalMs
+            : WEBSOCKET_HEARTBEAT_INTERVAL_MS;
+
         heartbeatInterval = setInterval(() => {
             if (!wssInstance || isDraining) return;
 
             let pingedClientCount = 0;
+            let terminatedClientCount = 0;
             wssInstance.clients.forEach(client => {
                 if (client.readyState !== WebSocket.OPEN) return;
 
+                if (client.isAlive !== false) {
+                    client.isAlive = false;
+                    try {
+                        client.ping();
+                        pingedClientCount++;
+                        return;
+                    } catch (error) {
+                        console.warn(`[WebSocketServer] Heartbeat ping failed for client ${client.clientId || 'unknown'}: ${error.message}`);
+                    }
+                } else {
+                    writeLog(`Client ${client.clientId || 'unknown'} (${client.clientType || 'unknown'}) missed heartbeat response; terminating stale connection.`);
+                }
+
                 try {
-                    client.ping();
-                    pingedClientCount++;
+                    client.terminate();
+                    terminatedClientCount++;
                 } catch (error) {
-                    console.warn(`[WebSocketServer] Heartbeat ping failed for client ${client.clientId || 'unknown'}: ${error.message}`);
+                    console.warn(`[WebSocketServer] Failed to terminate stale client ${client.clientId || 'unknown'}: ${error.message}`);
                 }
             });
 
-            if (serverConfig.debugMode && pingedClientCount > 0) {
-                console.log(`[WebSocketServer] Sent heartbeat ping to ${pingedClientCount} connected client(s).`);
+            if (serverConfig.debugMode && (pingedClientCount > 0 || terminatedClientCount > 0)) {
+                console.log(`[WebSocketServer] Heartbeat sweep: pinged=${pingedClientCount}, terminated=${terminatedClientCount}.`);
             }
-        }, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
+        }, effectiveHeartbeatIntervalMs);
         heartbeatInterval.unref();
 
-        console.log(`[WebSocketServer] Protocol heartbeat enabled (interval: ${WEBSOCKET_HEARTBEAT_INTERVAL_MS / 1000}s).`);
+        console.log(`[WebSocketServer] Protocol heartbeat enabled (interval: ${effectiveHeartbeatIntervalMs / 1000}s).`);
     }
 
     if (serverConfig.debugMode) {

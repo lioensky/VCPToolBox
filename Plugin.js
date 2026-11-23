@@ -2078,20 +2078,28 @@ class PluginManager extends EventEmitter {
                 if (this.debugMode) console.warn(`[PluginManager] Invalid manifest from ${serverId} for tool '${toolManifest.name}'. Skipping.`);
                 continue;
             }
-            if (this.plugins.has(toolManifest.name)) {
-                if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing tool. Skipping.`);
+            const existing = this.plugins.get(toolManifest.name);
+            if (existing && existing.isDistributed !== true) {
+                if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing local tool. Skipping.`);
                 continue;
             }
+            if (existing && existing.serverId !== serverId) {
+                console.log(`[PluginManager] Reassigning distributed tool '${toolManifest.name}' from ${existing.serverId} to ${serverId}.`);
+            }
 
-            // 标记为分布式插件并存储其来源服务器ID
-            toolManifest.isDistributed = true;
-            toolManifest.serverId = serverId;
+            // 标记为分布式插件并存储其来源服务器ID（浅拷贝避免污染原对象）
+            const normalizedManifest = { ...toolManifest };
+            normalizedManifest.isDistributed = true;
+            normalizedManifest.serverId = serverId;
 
-            // 在显示名称前加上[云端]前缀
-            toolManifest.displayName = `[云端] ${toolManifest.displayName || toolManifest.name}`;
+            // 在显示名称前加上[云端]前缀（避免重连或重复注册时叠加前缀）
+            const rawDisplayName = String(normalizedManifest.displayName || normalizedManifest.name);
+            normalizedManifest.displayName = rawDisplayName.startsWith('[云端] ')
+                ? rawDisplayName
+                : `[云端] ${rawDisplayName}`;
 
-            this.plugins.set(toolManifest.name, toolManifest);
-            console.log(`[PluginManager] Registered distributed tool: ${toolManifest.displayName} (${toolManifest.name}) from ${serverId}`);
+            this.plugins.set(normalizedManifest.name, normalizedManifest);
+            console.log(`[PluginManager] Registered distributed tool: ${normalizedManifest.displayName} (${normalizedManifest.name}) from ${serverId}`);
         }
         // 注册后重建描述，以包含新插件
         this.buildVCPDescription();

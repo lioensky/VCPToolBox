@@ -61,6 +61,21 @@
           <UiTextarea v-model="config.summaryPrompt" rows="3" />
         </UiField>
       </div>
+      <div v-if="config.autoSync" class="config-grid">
+        <h4 class="wide">自动巡检</h4>
+        <label class="toggle-row">
+          <AppCheckbox v-model="config.autoSync.enabled" />
+          <span><strong>启用自动巡检</strong><small>仅处理当月和上月。</small></span>
+        </label>
+        <UiField label="巡检 Agent 名单（逗号分隔）">
+          <UiInput v-model="autoSyncAgents" placeholder="填写 Agent 名称" />
+        </UiField>
+        <small class="wide">
+          {{ config.autoSync.maxConcurrentAgents > 0
+            ? `已保存名单最多同时巡检 ${config.autoSync.maxConcurrentAgents} 个 Agent`
+            : '已保存名单为空，不执行巡检' }}。上限随名单自动调整，最多 3 个，不影响手动生成。保存后需重启 vcp-main 才能完整应用巡检设置。
+        </small>
+      </div>
       <div class="syntax-help">
         <span>月度总览（放系统提示词稳定区）：</span>
         <code>[[VCPTimeLineSummary::小克]]</code>
@@ -273,6 +288,7 @@ const defaults: VcpTimelineConfig = {
 const config = ref<VcpTimelineConfig>(structuredClone(defaults))
 const publicPrefixes = ref('公共')
 const ignoreFolders = ref('node_modules,.git')
+const autoSyncAgents = ref('')
 const agents = ref<string[]>([])
 const selectedAgent = ref('')
 const newAgentName = ref('')
@@ -381,6 +397,12 @@ function normalizedConfig(): VcpTimelineConfig {
     summaryPrompt: String(config.value.summaryPrompt || '').trim(),
     aliases: aliasesMap,
     agentFolders: agentFoldersMap,
+    ...(config.value.autoSync ? {
+      autoSync: {
+        ...config.value.autoSync,
+        agents: [...new Set(commaList(autoSyncAgents.value))],
+      },
+    } : {}),
   }
 }
 
@@ -455,6 +477,7 @@ async function loadAll() {
       vcpTimelineApi.listAgents(),
     ])
     config.value = structuredClone(configResponse.config)
+    autoSyncAgents.value = config.value.autoSync?.agents.join(', ') ?? ''
     publicPrefixes.value = config.value.publicFolderPrefixes.join(',')
     ignoreFolders.value = config.value.ignoreFolders.join(',')
     agents.value = agentResponse.agents || []
@@ -472,6 +495,7 @@ async function saveConfig() {
   try {
     const response = await vcpTimelineApi.saveConfig(normalizedConfig())
     config.value = structuredClone(response.config)
+    autoSyncAgents.value = config.value.autoSync?.agents.join(', ') ?? ''
       if (selectedAgent.value) {
         currentAliases.value = [...(config.value.aliases?.[selectedAgent.value] || [])]
         foldersCustomized.value = Array.isArray(config.value.agentFolders?.[selectedAgent.value]) && config.value.agentFolders[selectedAgent.value].length > 0
