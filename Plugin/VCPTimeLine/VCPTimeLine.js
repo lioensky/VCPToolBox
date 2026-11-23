@@ -3,6 +3,20 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { createHash } = require('crypto');
+
+const DAY_MS = 86400000;
+const DEFAULT_AUTO_SYNC = Object.freeze({
+    enabled: false,
+    agents: Object.freeze([]),
+    cron: '30 0 * * *',
+    currentMonthMinIntervalDays: 7,
+    runOnStartupDelayMs: 120000
+});
+
+function hash(value) {
+    return createHash('sha256').update(value).digest('hex');
+}
 
 const TimelinePlaceholderProcessor = require('../RAGDiaryPlugin/TimelinePlaceholderProcessor');
 const PLACEHOLDER_REGEX = /\[\[VCPTimeLine(Summary|Recall)?::([^:\]\r\n]+?)(?::([^:\]\r\n]+?))?(?::([^:\]\r\n]+?))?\]\]/g;
@@ -33,6 +47,10 @@ class VCPTimeLine {
         this.config = { ...DEFAULT_CONFIG };
         this.generationLocks = new Map();
         this.generationStatuses = new Map();
+        this.summaryWrites = Promise.resolve();
+        this.autoSyncTask = null;
+        this.autoSyncJob = null;
+        this.autoSyncTimer = null;
     }
 
     async initialize(config = {}, dependencies = {}) {
@@ -42,6 +60,7 @@ class VCPTimeLine {
         this.contextBridge = dependencies.contextBridge || null;
         this.isTimelineManagedByRag = dependencies.isTimelineManagedByRag || (() => false);
         this.config = await this.readConfig();
+        this.startAutoSync();
         console.log(`[VCPTimeLine] Initialized. root=${this.dailyNoteRoot}, contextBridge=${!!this.contextBridge}`);
     }
 
@@ -76,8 +95,151 @@ class VCPTimeLine {
                 : [...DEFAULT_CONFIG.ignoreFolders],
             summaryPrompt: String(raw.summaryPrompt || '').trim(),
             aliases: this._normalizeStringArrayMap(raw.aliases),
-            agentFolders: this._normalizeStringArrayMap(raw.agentFolders)
+            agentFolders: this._normalizeStringArrayMap(raw.agentFolders),
+            autoSync: this.normalizeAutoSync(raw.autoSync)
         };
+    }
+
+    normalizeAutoSync(raw = {}) {
+        raw = raw || {};
+        const agents = new Set();
+        for (const name of Array.isArray(raw.agents) ? raw.agents : []) {
+            try {
+                agents.add(this.safeAgentName(name));
+            } catch {
+                console.warn('[VCPTimeLine] Ignoring invalid autoSync agent name');
+            }
+        }
+        return {
+            enabled: raw.enabled === true,
+            agents: [...agents],
+            cron: String(raw.cron || '').trim() || DEFAULT_AUTO_SYNC.cron,
+            maxConcurrentAgents: Math.min(agents.size, 3),
+            currentMonthMinIntervalDays: this.normalizePositiveInteger(
+                raw.currentMonthMinIntervalDays, DEFAULT_AUTO_SYNC.currentMonthMinIntervalDays, 1, 366
+            ),
+            runOnStartupDelayMs: this.normalizePositiveInteger(
+                raw.runOnStartupDelayMs, DEFAULT_AUTO_SYNC.runOnStartupDelayMs, 0, 2147483647
+            )
+        };
+    }
+
+    startAutoSync() {
+        if (this.autoSyncJob || !this.config.enabled || !this.config.autoSync?.enabled || !this.config.autoSync.agents.length) return;
+        const { cron, runOnStartupDelayMs } = this.config.autoSync;
+        const tz = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+        const run = () => {
+            if (this.autoSyncJob) {
+                void this.runAutoSync(new Date(), tz)
+                    .catch(error => console.warn('[VCPTimeLine] Auto sync failed:', error.message));
+            }
+        };
+        try {
+            new Intl.DateTimeFormat('en', { timeZone: tz });
+            this.autoSyncJob = require('node-schedule').scheduleJob({ rule: cron, tz }, run);
+            if (!this.autoSyncJob) throw new Error('无效的巡检 Cron');
+            this.autoSyncTimer = setTimeout(run, runOnStartupDelayMs);
+        } catch (error) {
+            console.warn('[VCPTimeLine] Auto sync not scheduled:', error.message);
+        }
+    }
+
+    async shutdown() {
+        clearTimeout(this.autoSyncTimer);
+        this.autoSyncTimer = null;
+        this.autoSyncJob?.cancel();
+        this.autoSyncJob = null;
+        await this.autoSyncTask?.catch(() => {});
+        await this.summaryWrites;
+    }
+
+    getAutoSyncStatePath() {
+        return path.join(__dirname, 'auto_sync_state.json');
+    }
+
+    async runAutoSync(now = new Date(), tz = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai') {
+        const config = this.config.autoSync;
+        if (this.autoSyncTask || !this.config.enabled || !config?.enabled) return;
+        const task = this.syncRecentMonths(now, tz, config);
+        this.autoSyncTask = task;
+        try {
+            await task;
+        } finally {
+            this.autoSyncTask = null;
+        }
+    }
+
+    async syncRecentMonths(now, tz, config) {
+        const parts = new Intl.DateTimeFormat('en', { timeZone: tz, year: 'numeric', month: '2-digit' }).formatToParts(now);
+        const year = Number(parts.find(part => part.type === 'year').value);
+        const month = Number(parts.find(part => part.type === 'month').value);
+        const current = `${year}-${String(month).padStart(2, '0')}`;
+        const previous = new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
+        const statePath = this.getAutoSyncStatePath();
+        let state = {};
+        try {
+            state = JSON.parse(await fsp.readFile(statePath, 'utf8'));
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+
+        let stateWrites = Promise.resolve();
+        const saveProgress = (agent, month, patch) => {
+            const write = stateWrites.then(async () => {
+                const months = Object.hasOwn(state, agent) ? state[agent] : {};
+                const next = {
+                    ...state,
+                    [agent]: { ...months, [month]: { ...months[month], ...patch } }
+                };
+                await this.writeJsonAtomic(statePath, next);
+                state = next;
+            });
+            stateWrites = write.catch(() => {});
+            return write;
+        };
+        const getProgress = (agent, month) => Object.hasOwn(state, agent) ? state[agent][month] : undefined;
+        const agents = config.agents.values();
+        const worker = async () => {
+            for (const agent of agents) {
+                try {
+                    await this.syncAgentMonths(agent, previous, current, now, config, getProgress, saveProgress);
+                } catch (error) {
+                    console.warn(`[VCPTimeLine] Auto sync failed for ${agent}:`, error.message);
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(config.maxConcurrentAgents, config.agents.length) }, worker));
+    }
+
+    async syncAgentMonths(agent, previous, current, now, config, getProgress, saveProgress) {
+        const memories = await this.discoverMemories(agent, previous, current);
+        for (const key of [previous, current]) {
+            const notes = memories.get(key);
+            if (!notes?.length) continue; // Preserve existing artifacts when the month is empty.
+            const status = getProgress(agent, key) ?? {};
+            const inputDigest = hash(JSON.stringify([...notes].sort()));
+            try {
+                let [file] = await this.listTimelineFiles(agent, [key]);
+                const lastGenerated = status.generatedAt ?? (file ? (await fsp.stat(file.fullPath)).mtimeMs : 0);
+                const due = key === previous || now.getTime() - lastGenerated >= config.currentMonthMinIntervalDays * DAY_MS;
+                if (!file || (status.inputDigest !== inputDigest && due)) {
+                    await this.generateTimelines(agent, { overwrite: true }, new Map([[key, notes]]));
+                    await saveProgress(agent, key, { inputDigest, generatedAt: now.getTime() });
+                    [file] = await this.listTimelineFiles(agent, [key]);
+                }
+                if (!file) continue;
+                const store = await this.readSummaryStore();
+                if (!store[agent]?.[key] || status.summarySourceHash !== hash(file.content)) {
+                    await this.generateSummaries(agent, { months: [key], overwrite: true }, source =>
+                        saveProgress(agent, key, { summarySourceHash: hash(source.content) })
+                    );
+                }
+            } catch (error) {
+                if (error.code !== 'TIMELINE_GENERATION_IN_PROGRESS') {
+                    console.warn(`[VCPTimeLine] Auto sync failed for ${agent}/${key}:`, error.message);
+                }
+            }
+        }
     }
 
     _normalizeStringArrayMap(raw) {
@@ -148,7 +310,8 @@ class VCPTimeLine {
     }
 
     async saveConfig(raw) {
-        const config = this.normalizeConfig(raw);
+        // Older admin clients send only the fields displayed in their form.
+        const config = this.normalizeConfig({ autoSync: this.config.autoSync, ...raw });
         await this.writeJsonAtomic(this.getConfigPath(), config);
         this.config = config;
         return config;
@@ -255,12 +418,13 @@ class VCPTimeLine {
         };
     }
 
-    async listTimelineFiles(agentName) {
+    async listTimelineFiles(agentName, months) {
         const dir = this.getTimelineDir(agentName, false);
         try {
             const names = await fsp.readdir(dir);
             const files = [];
             for (const name of names.filter(item => MONTH_FILE_REGEX.test(item)).sort()) {
+                if (Array.isArray(months) && !months.includes(name.slice(0, -3))) continue;
                 const fullPath = path.join(dir, name);
                 const content = await fsp.readFile(fullPath, 'utf8');
                 files.push({ month: name.slice(0, -3), name, fullPath, content });
@@ -643,14 +807,14 @@ class VCPTimeLine {
         };
     }
 
-    async generateTimelines(agentName, options = {}) {
+    async generateTimelines(agentName, options = {}, scannedMemories) {
         agentName = this.safeAgentName(agentName);
         if (this.generationLocks.has(agentName)) throw Object.assign(new Error('该 Agent 已有生成任务运行中'), { code: 'TIMELINE_GENERATION_IN_PROGRESS' });
         const status = this.createStatus(agentName, 'timeline');
         this.generationStatuses.set(agentName, status);
 
         const task = (async () => {
-            const memories = await this.discoverMemories(agentName, options.startMonth, options.endMonth);
+            const memories = scannedMemories ?? await this.discoverMemories(agentName, options.startMonth, options.endMonth);
             const months = [...memories.keys()].sort();
             this.updateStatus(agentName, { phase: 'generating', phaseLabel: '生成月度时间线', total: months.length });
             const dir = this.getTimelineDir(agentName, true);
@@ -685,21 +849,21 @@ class VCPTimeLine {
         return task;
     }
 
-    async generateSummaries(agentName, options = {}) {
+    async generateSummaries(agentName, options = {}, onSaved) {
         agentName = this.safeAgentName(agentName);
         if (this.generationLocks.has(agentName)) throw Object.assign(new Error('该 Agent 已有生成任务运行中'), { code: 'TIMELINE_GENERATION_IN_PROGRESS' });
         this.generationStatuses.set(agentName, this.createStatus(agentName, 'summary'));
 
         const task = (async () => {
-            const files = await this.listTimelineFiles(agentName);
-            const store = await this.readSummaryStore();
-            store[agentName] = store[agentName] || {};
+            const files = await this.listTimelineFiles(agentName, options.months);
+            let summaries = (await this.readSummaryStore())[agentName] || {};
             this.updateStatus(agentName, { phase: 'summarizing', phaseLabel: '生成月度一句话摘要', total: files.length });
             for (let index = 0; index < files.length; index++) {
                 const file = files[index];
-                if (options.overwrite || !store[agentName][file.month]) {
-                    store[agentName][file.month] = await this.generateOneLineSummary(agentName, file.month, file.content);
-                    await this.writeJsonAtomic(this.getSummaryPath(), store);
+                if (options.overwrite || !summaries[file.month]) {
+                    const summary = await this.generateOneLineSummary(agentName, file.month, file.content);
+                    summaries = await this.storeSummary(agentName, file.month, summary, options.overwrite);
+                    if (onSaved) await onSaved(file);
                 }
                 this.updateStatus(agentName, { completed: index + 1, phaseLabel: `已处理 ${file.month}` });
             }
@@ -707,7 +871,7 @@ class VCPTimeLine {
                 running: false, phase: 'completed', phaseLabel: '一句话摘要生成完成',
                 finishedAt: new Date().toISOString()
             });
-            return store[agentName];
+            return summaries;
         })().catch(error => {
             this.updateStatus(agentName, {
                 running: false, phase: 'failed', phaseLabel: '摘要生成失败',
@@ -769,11 +933,20 @@ class VCPTimeLine {
     async saveSummary(agentName, month, summary) {
         agentName = this.safeAgentName(agentName);
         if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('月份必须为 YYYY-MM');
-        const store = await this.readSummaryStore();
-        store[agentName] = store[agentName] || {};
-        store[agentName][month] = String(summary || '').trim();
-        await this.writeJsonAtomic(this.getSummaryPath(), store);
-        return store[agentName];
+        return this.storeSummary(agentName, month, String(summary || '').trim(), true);
+    }
+
+    async storeSummary(agentName, month, summary, overwrite) {
+        const write = this.summaryWrites.then(async () => {
+            const store = await this.readSummaryStore();
+            const existing = Object.hasOwn(store, agentName) ? store[agentName] : {};
+            if (!overwrite && existing[month]) return existing;
+            const summaries = { ...existing, [month]: summary };
+            await this.writeJsonAtomic(this.getSummaryPath(), { ...store, [agentName]: summaries });
+            return summaries;
+        });
+        this.summaryWrites = write.catch(() => {});
+        return write;
     }
 
     registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath) {
