@@ -129,6 +129,7 @@ class StreamHandler {
     let oneRingAssistantTurnParts = [];
     let validUpstreamTurns = true;
     let completed = false;
+    let upstreamIdleTimedOut = false;
 
     const containsImageUrlPart = (content) => Array.isArray(content) &&
       content.some(part => part?.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string');
@@ -414,27 +415,15 @@ class StreamHandler {
             if (streamSettled || streamAborted) return;
             if (takeToolTail('upstream_idle')) return;
             console.warn(`[Stream IdleTimeout] No upstream chunk received for ${CHUNK_IDLE_TIMEOUT / 1000}s. Assuming stream stalled. Forcing end.`);
+            upstreamIdleTimedOut = true;
             streamAborted = true;
-            // 通知前端这次流异常结束
-            if (!res.writableEnded && !res.destroyed) {
-              try {
-                const stallPayload = {
-                  id: `chatcmpl-VCP-stall-${Date.now()}`,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: originalBody.model || 'unknown',
-                  choices: [{ index: 0, delta: { content: '\n[上游响应超时，流已中断]' }, finish_reason: 'stop' }],
-                };
-                res.write(`data: ${JSON.stringify(stallPayload)}\n\n`);
-                res.write('data: [DONE]\n\n');
-              } catch (e) { /* ignore */ }
-            }
+            const outcome = result();
+            if (keepAliveTimer) clearInterval(keepAliveTimer);
+            abortController?.signal.removeEventListener('abort', abortHandler);
             if (aiResponse.body && !aiResponse.body.destroyed) {
               aiResponse.body.destroy();
             }
-            if (keepAliveTimer) clearInterval(keepAliveTimer);
-            if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
-            resolve(result());
+            resolve(outcome);
           }, CHUNK_IDLE_TIMEOUT);
         };
         resetChunkIdleTimer(); // 启动首次空闲计时
@@ -695,7 +684,7 @@ class StreamHandler {
     }
 
     // --- VCP 循环 ---
-    while (recursionDepth < maxRecursion) {
+    while (!upstreamIdleTimedOut && recursionDepth < maxRecursion) {
       // 检查中止信号
       if (abortController && abortController.signal.aborted) {
         if (DEBUG_MODE) console.log('[VCP Stream Loop] Abort detected, exiting loop.');
@@ -1047,7 +1036,29 @@ class StreamHandler {
     if (writeChatLog) writeChatLog(originalBody, chatLogs);
     // OneRing 由主流程在整轮完成且响应发送完成后提交。
 
-    if (recursionDepth >= maxRecursion && !res.writableEnded && !res.destroyed) {
+    if (upstreamIdleTimedOut) {
+      // 空闲超时与普通 stop / 轮数上限互斥；这里只写一次下游终态。
+      if (!res.writableEnded && !res.destroyed) {
+        try {
+          const stallPayload = {
+            id: `chatcmpl-VCP-stall-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: originalBody.model || 'unknown',
+            vcp_incomplete: true,
+            choices: [{ index: 0, delta: { content: '\n[上游响应超时，流已中断]' }, finish_reason: 'stop' }],
+          };
+          res.write(`data: ${JSON.stringify(stallPayload)}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        } catch (writeError) {
+          console.error('[Stream IdleTimeout] Failed to write final chunk:', writeError.message);
+          if (!res.writableEnded && !res.destroyed) {
+            try { res.end(); } catch { /* The failed response may no longer be writable. */ }
+          }
+        }
+      }
+    } else if (recursionDepth >= maxRecursion && !res.writableEnded && !res.destroyed) {
       try {
         res.write(`data: ${JSON.stringify({
           id: `chatcmpl-VCP-final-length-${Date.now()}`,

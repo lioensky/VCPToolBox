@@ -77,6 +77,59 @@ for (const [name, content, reason, done, expected, suffix] of [
   });
 }
 
+test('流式：空闲超时保留原提示，标记中断并只发送一次 DONE', async t => {
+  const key = 'STREAM_CHUNK_IDLE_TIMEOUT_MS';
+  const previous = process.env[key];
+  process.env[key] = '30';
+  t.after(() => {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  });
+
+  const body = new PassThrough();
+  const res = response();
+  const chunks = [];
+  const write = res.write;
+  res.write = (chunk, callback) => {
+    chunks.push(chunk);
+    return write(chunk, callback);
+  };
+
+  const pending = new StreamHandler(context()).handle({}, res, { ok: true, body });
+  body.write('data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n');
+  assert.equal((await pending).completed, false);
+  assert.equal(res.writableEnded, true);
+  const frames = chunks.join('').split('\n').filter(line => line.startsWith('data: ')).map(line => line.slice(6));
+  assert.equal(frames.at(-1), '[DONE]');
+  assert.equal(frames.filter(frame => frame === '[DONE]').length, 1);
+  const payloads = frames.slice(0, -1).map(frame => JSON.parse(frame));
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads[0].choices[0].delta.content, 'partial');
+  assert.equal(payloads[0].vcp_incomplete, undefined);
+  assert.equal(payloads[1].vcp_incomplete, true);
+  assert.deepEqual(payloads[1].choices, [{
+    index: 0,
+    delta: { content: '\n[上游响应超时，流已中断]' },
+    finish_reason: 'stop'
+  }]);
+});
+
+test('流式：正常完成不带中断标记且只发送一次 DONE', async () => {
+  const res = response();
+  const chunks = [];
+  const write = res.write;
+  res.write = (chunk, callback) => {
+    chunks.push(chunk);
+    return write(chunk, callback);
+  };
+  const result = await new StreamHandler(context()).handle({}, res, streamResponse('hello'));
+  assert.equal(result.completed, true);
+  assert.equal(res.writableEnded, true);
+  const output = chunks.join('');
+  assert.doesNotMatch(output, /vcp_incomplete/);
+  assert.equal(output.split('\n').filter(line => line === 'data: [DONE]').length, 1);
+});
+
 test('流式：提前 close 和中止不提交', async () => {
   for (const abort of [false, true]) {
     const ctx = context();
