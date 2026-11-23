@@ -13,6 +13,14 @@ export interface VcpTimelineConfig {
   summaryPrompt: string
   aliases: Record<string, string[]>
   agentFolders: Record<string, string[]>
+  autoSync?: {
+    enabled: boolean
+    agents: string[]
+    maxConcurrentAgents: number
+    cron: string
+    currentMonthMinIntervalDays: number
+    runOnStartupDelayMs: number
+  }
 }
 
 export interface VcpTimelineStatus {
