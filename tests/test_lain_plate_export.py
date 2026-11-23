@@ -36,7 +36,10 @@ def field():
         words(n), meta, words(plane_words), bytes(plane_words * 8),
         list32(1, 2, 0), list32(0, 1, 2, 3), list32(0), list32(1), list32(2),
     ])
-    header = b'{"identity":{"model":"fixture","rule":"unit","facts":"fixture-only"}}'
+    header = json.dumps({
+        "identity": {"model": "fixture", "rule": "unit", "facts": "fixture-only"},
+        "versions": {str(i): [1, 42] for i in IDS},
+    }).encode()
     body = b"VCPWC001" + words(len(header)) + header + index
     return body + hashlib.sha256(body).digest()
 
@@ -49,10 +52,10 @@ class PlateExportTest(unittest.TestCase):
             snapshot.write_bytes(field())
             db = root / "knowledge_base.sqlite"
             with closing(sqlite3.connect(db)) as conn:
-                conn.execute("CREATE TABLE chunks(id INTEGER PRIMARY KEY, vector BLOB)")
+                conn.execute("CREATE TABLE chunks(id INTEGER PRIMARY KEY, vector BLOB, vector_version INTEGER DEFAULT 1, file_id INTEGER DEFAULT 42)")
                 for ident in sorted(IDS):
                     blob = struct.pack("<f", ident + 0.125) + bytes((D - 1) * 4)
-                    conn.execute("INSERT INTO chunks VALUES (?,?)", (ident, blob))
+                    conn.execute("INSERT INTO chunks(id,vector) VALUES (?,?)", (ident, blob))
                 conn.commit()
             kb = root / "backup"
             backup(db, kb)
@@ -80,6 +83,21 @@ class PlateExportTest(unittest.TestCase):
                 for i, ident in enumerate(IDS):
                     self.assertEqual(struct.unpack_from("<f", data, i * D * 4)[0], ident + .125)
             self.assertEqual(*manifests)
+            self.assertEqual(m["trainingRowCheck"]["matched"], len(IDS))
+
+            for column, original in (("vector_version", 1), ("file_id", 42)):
+                with closing(sqlite3.connect(db)) as conn:
+                    conn.execute(f"UPDATE chunks SET {column}=99 WHERE id=52")
+                    conn.commit()
+                changed = root / column
+                backup(db, changed)
+                result = invoke(root / "stale", changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("chunks.id=52", result.stderr)
+                self.assertFalse((root / "stale").exists())
+                with closing(sqlite3.connect(db)) as conn:
+                    conn.execute(f"UPDATE chunks SET {column}=? WHERE id=52", (original,))
+                    conn.commit()
 
             with closing(sqlite3.connect(db)) as conn:
                 conn.execute("DELETE FROM chunks WHERE id=7")

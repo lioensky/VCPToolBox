@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { readPlate, rawRows, DIM } = require('./freeze-core.cjs');
-const { openLibrary } = require('../../Plugin/WarpedFieldAtlas/lib/library.js');
+const { openLibrary, openReadOnly } = require('../../Plugin/WarpedFieldAtlas/lib/library.js');
 const { LAYOUT_VERSION } = require('../../Plugin/WarpedFieldAtlas/lib/layout.js');
 
 async function fileHash(file) {
@@ -59,6 +59,19 @@ async function freezePlate(snapshot, backupDirectory, output) {
     await checkBackup();
     const plate = readPlate(fs.readFileSync(snapshot));
     const n = plate.ids.length;
+    const meta = openReadOnly(db);
+    try {
+        const query = meta.prepare('SELECT vector_version, file_id FROM chunks WHERE id=?');
+        for (const id of plate.ids) {
+            const row = query.get(id);
+            const [version, file] = plate.versions[id];
+            if (!row || row.vector_version !== version || row.file_id !== file) {
+                throw new Error(`training baseline mismatch: chunks.id=${id} (vector_version,file_id)`);
+            }
+        }
+    } finally {
+        meta.close();
+    }
     const out = newPrivateDirectory(output);
     try {
         const arrays = {};
@@ -81,7 +94,8 @@ async function freezePlate(snapshot, backupDirectory, output) {
         }
         await checkBackup();
         const manifest = {
-            format: 'lain-plate-v1', layoutVersion: LAYOUT_VERSION, rows: n, dimensions: DIM,
+            format: 'lain-plate-v2', layoutVersion: LAYOUT_VERSION, rows: n, dimensions: DIM,
+            trainingRowCheck: { keys: ['chunks.id', 'vector_version', 'file_id'], matched: n },
             snapshotSha256: plate.snapshotSha256, databaseSha256: receipt.sha256,
             snapshotIdentity: { model: plate.model, rule: plate.rule, facts: plate.facts },
             rowOrder: 'snapshot slot -> ids[slot] -> chunks.id', arrays,

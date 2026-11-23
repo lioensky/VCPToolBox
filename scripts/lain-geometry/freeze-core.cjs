@@ -45,11 +45,21 @@ function readPlate(bytes) {
     const { index, model, facts, rule } = parseChunkField(bytes);
     validateIndex(index);
     const { ids, radius, offsets, graph, entries, directionLandmarks, shellLandmarks } = index;
+    // parseChunkField already bounded this header and verified the payload digest.
+    const end = 16 + Number(bytes.readBigUInt64LE(8));
+    const { versions } = JSON.parse(bytes.toString('utf8', 16, end));
+    if (!versions || Array.isArray(versions) || typeof versions !== 'object' ||
+        Object.keys(versions).length !== ids.length) throw new Error('missing or incomplete training version baseline');
+    for (const id of ids) {
+        const pair = versions[id];
+        if (!Object.hasOwn(versions, id) || !Array.isArray(pair) || pair.length !== 2 ||
+            !pair.every(Number.isSafeInteger)) throw new Error(`invalid training version for chunks.id=${id}`);
+    }
     const { angle } = computeLayout(ids.length, offsets, graph);
     requireFiniteF32(angle, ids.length, 'angle');
     return {
         snapshotSha256: createHash('sha256').update(bytes).digest('hex'),
-        model, facts, rule, ids, radius, angle, offsets, graph, entries, directionLandmarks, shellLandmarks,
+        model, facts, rule, versions, ids, radius, angle, offsets, graph, entries, directionLandmarks, shellLandmarks,
     };
 }
 
