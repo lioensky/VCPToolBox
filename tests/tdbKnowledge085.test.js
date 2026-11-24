@@ -99,29 +99,50 @@ async function runTests() {
         db.flush();
         console.log('[Test] ✅ 10. flush() 磁盘同步成功');
 
-        // 验证主 .tdb 文件已生成并存在（0.9.0 TVDB v10 74字节头 + VTYP）
+        // 验证主 .tdb 文件与统一索引容器 .idx 已生成并存在（0.9.3 TVDB v15 110字节头 + VTYP + TDBINDEX）
         assert(fs.existsSync(dbPath), '.tdb 数据库主文件应在 flush 后立即落盘');
+        assert(fs.existsSync(`${dbPath}.idx`), '.tdb.idx 统一索引容器应在 flush 后立即落盘');
         const stats = fs.statSync(dbPath);
-        assert(stats.size >= 74, '.tdb v10 数据库文件大小应至少为 74 字节');
-        const header = fs.readFileSync(dbPath).subarray(0, 74);
+        assert(stats.size >= 110, '.tdb v15 数据库文件大小应至少为 110 字节');
+        const header = fs.readFileSync(dbPath).subarray(0, 110);
         assert.strictEqual(header.subarray(0, 4).toString('ascii'), 'TVDB', '文件魔数应为 TVDB');
-        assert.strictEqual(header.readUInt16LE(4), 10, '0.9.0 主文件版本应为 v10');
-        assert.strictEqual(header.subarray(58, 62).toString('ascii'), 'VTYP', 'v10 头部应包含 VTYP 类型标识');
-        console.log(`[Test] ✅ 11. 磁盘验证通过: ${dbPath} 大小为 ${stats.size} 字节 (TVDB v10)`);
+        assert.strictEqual(header.readUInt16LE(4), 15, '0.9.3 主文件版本应为 v15');
+        assert.strictEqual(header.subarray(58, 62).toString('ascii'), 'VTYP', 'v15 头部应包含 VTYP 类型标识');
+        const idxHeader = fs.readFileSync(`${dbPath}.idx`).subarray(0, 8);
+        assert.strictEqual(idxHeader.toString('ascii'), 'TDBINDEX', '.idx 容器魔数应为 TDBINDEX');
+        console.log(`[Test] ✅ 11. 磁盘验证通过: ${dbPath} 大小为 ${stats.size} 字节 (TVDB v15 + .idx)`);
 
-        // 9. 验证 0.9.0 原生诊断接口 (instanceStats / storageInfo / estimatedMemory)
+        // 9. 验证 0.9.3 Pelorus 原生双曲索引构建与 Poincaré 测地距离检索 (c * ||x||^2 < 1)
+        if (typeof db.pelorusRequest === 'function') {
+            const buildRes = JSON.parse(db.pelorusRequest(JSON.stringify({
+                operation: 'build',
+                config: { curvature: 0.25, navigation: 'geometry_bq2' }
+            })));
+            assert.deepStrictEqual(buildRes, {}, 'Pelorus build 应返回空对象回执');
+            const searchRes = JSON.parse(db.pelorusRequest(JSON.stringify({
+                operation: 'search',
+                vector: v1,
+                options: { top_k: 2, exact: true }
+            })));
+            assert(Array.isArray(searchRes.hits) && searchRes.hits.length === 2, 'Pelorus search 应返回 Top-2 双曲命中');
+            assert.strictEqual(Number(searchRes.hits[0].id), ids[0], 'Pelorus 最近邻应命中自身节点');
+            assert(searchRes.hits[0].distance < 1e-6, '自身双曲测地距离应接近 0');
+            console.log('[Test] ✅ 12. Pelorus 原生双曲索引构建与测地距离检索验证通过');
+        }
+
+        // 10. 验证 0.9.3 原生诊断接口 (instanceStats / storageInfo / estimatedMemory)
         const instStats = db.instanceStats();
         const storeInfo = db.storageInfo();
         const memBytes = db.estimatedMemory();
-        assert.strictEqual(storeInfo.database_format_current, 10, 'storageInfo 应报告当前格式为 10');
+        assert.strictEqual(storeInfo.database_format_current, 15, 'storageInfo 应报告当前格式为 15');
         assert.strictEqual(storeInfo.node_count, 3, 'storageInfo.node_count 应为 3');
         assert(instStats && instStats.shutdown?.phase === 'open', 'instanceStats 应报告 open 状态');
         assert(Number.isFinite(memBytes) && memBytes > 0, '非空库 estimatedMemory() 应大于 0');
 
         db.close();
-        console.log('[Test] ✅ 12. close() 资源释放与 0.9.0 原生诊断校验成功');
+        console.log('[Test] ✅ 13. close() 资源释放与 0.9.3 原生诊断校验成功');
 
-        console.log('\n🎉 所有 TriviumDB 0.8.5 / 0.9.0 功能与加固测试全部通过！');
+        console.log('\n🎉 所有 TriviumDB 0.8.5 / 0.9.3 功能、Pelorus 双曲索引与加固测试全部通过！');
     } finally {
         // 清理测试临时文件
         try {
