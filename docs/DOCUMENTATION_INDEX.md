@@ -38,6 +38,7 @@
 | [VCP记忆管理系统.md](./VCP记忆管理系统.md) | 记忆系统上手、日记本管理、记忆注入与操作指南 | ⭐⭐⭐ |
 | [TagMemo_Wave_Algorithm_Deep_Dive.md](./TagMemo_Wave_Algorithm_Deep_Dive.md) | TagMemo V9 全上下文降噪、传播底座与浪潮算法数学原理 | ⭐⭐⭐ |
 | [RIVERMEMO_TOPOLOGY_V3.md](./RIVERMEMO_TOPOLOGY_V3.md) | RiverMemo 拓扑 V3、双尺度场、相对拓扑与 Ω 统一泛函 | ⭐⭐⭐ |
+| [META_THINKING_V3.md](./META_THINKING_V3.md) | MetaThinking V3 纯张量三体动态思考引擎、动态符号契约与星池簇向量结构指南 | ⭐⭐⭐ |
 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) | 上下文向量引力场公开接口、插件间向量共享机制 | ⭐⭐⭐ |
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
