@@ -1582,6 +1582,214 @@ class MetaThinkingManager {
     }
 
     /**
+     * 预建星池 z 空间 3-bit（8 分位）自信息量曝光索引：
+     * - cuts: Float32Array(7 * D)，每维 8 分位切点 p = j/8 (j=1..7)
+     * - tau: Float32Array(D)，无参分位色窗半宽 τ_d = (Q_75,d - Q_25,d) / 8 = (cuts[5,d] - cuts[1,d]) / 8
+     * - binMass: Float32Array(8 * D)，每维各 8 桶内样本占比
+     * - codes: Uint8Array(N * D)，每颗星在每维的 3-bit 桶号 0..7
+     */
+    _v3BuildExposureIndex3(zMatrix, nStars, dim) {
+        if (!zMatrix || !Number.isInteger(nStars) || nStars < 16 || !Number.isInteger(dim) || dim <= 0) {
+            return null;
+        }
+        if (zMatrix.length < nStars * dim) return null;
+
+        const cuts = new Float32Array(7 * dim);
+        const mins = new Float32Array(dim);
+        const maxs = new Float32Array(dim);
+        const tau = new Float32Array(dim);
+        const binMass = new Float32Array(8 * dim);
+        const codes = new Uint8Array(nStars * dim);
+        const col = new Float32Array(nStars);
+        const binCounts = new Int32Array(8);
+        const invN = 1 / nStars;
+
+        for (let d = 0; d < dim; d++) {
+            for (let i = 0; i < nStars; i++) {
+                const v = zMatrix[i * dim + d];
+                col[i] = Number.isFinite(v) ? v : 0;
+            }
+            col.sort();
+            mins[d] = col[0];
+            maxs[d] = col[nStars - 1];
+
+            for (let j = 1; j <= 7; j++) {
+                const pos = (j / 8) * (nStars - 1);
+                const lo = Math.floor(pos);
+                const hi = Math.ceil(pos);
+                const frac = pos - lo;
+                cuts[(j - 1) * dim + d] = lo === hi ? col[lo] : (col[lo] * (1 - frac) + col[hi] * frac);
+            }
+            const c0 = cuts[d];
+            const c1 = cuts[dim + d];
+            const c2 = cuts[2 * dim + d];
+            const c3 = cuts[3 * dim + d];
+            const c4 = cuts[4 * dim + d];
+            const c5 = cuts[5 * dim + d];
+            const c6 = cuts[6 * dim + d];
+            tau[d] = Math.max(0, (c5 - c1) / 8);
+
+            binCounts.fill(0);
+            for (let i = 0; i < nStars; i++) {
+                const rawV = zMatrix[i * dim + d];
+                const v = Number.isFinite(rawV) ? rawV : 0;
+                let b;
+                if (v <= c3) {
+                    if (v <= c1) {
+                        b = v <= c0 ? 0 : 1;
+                    } else {
+                        b = v <= c2 ? 2 : 3;
+                    }
+                } else {
+                    if (v <= c5) {
+                        b = v <= c4 ? 4 : 5;
+                    } else {
+                        b = v <= c6 ? 6 : 7;
+                    }
+                }
+                codes[i * dim + d] = b;
+                binCounts[b]++;
+            }
+            for (let b = 0; b < 8; b++) {
+                binMass[b * dim + d] = binCounts[b] * invN;
+            }
+        }
+
+        return { nStars, dim, cuts, mins, maxs, tau, binMass, codes };
+    }
+
+    /**
+     * 基于 3-bit 分位索引计算给定查询向量 zExpQuery 下，候选星相对于 (s1, s2) 的自信息量净新增曝光 U_new(i | s1, s2)。
+     * 严格只在 (s1, s2) 未被查询色窗照亮的盲区维度列表 blindDims 上累加 I_d * overlapProb(b, d)。
+     */
+    _v3ComputeUniqueExposureScores(exposureIndex3, zExpQuery, s1Idx, s2Idx, candidateIndices = null) {
+        if (!exposureIndex3 || !zExpQuery) return null;
+        const { nStars, dim, cuts, mins, maxs, tau, binMass, codes } = exposureIndex3;
+        if (!cuts || !mins || !maxs || !tau || !binMass || !codes || nStars < 16 || dim <= 0) {
+            return null;
+        }
+        if (zExpQuery.length !== dim) return null;
+        if (!Number.isInteger(s1Idx) || s1Idx < 0 || s1Idx >= nStars) return null;
+        if (!Number.isInteger(s2Idx) || s2Idx < 0 || s2Idx >= nStars) return null;
+
+        const invN = 1 / nStars;
+        const lut = new Float32Array(8 * dim);
+        const blindDims = new Int32Array(dim);
+        let blindCount = 0;
+        const ov = new Float64Array(8);
+        const s1Base = s1Idx * dim;
+        const s2Base = s2Idx * dim;
+
+        for (let d = 0; d < dim; d++) {
+            const qd = zExpQuery[d];
+            const td = tau[d];
+            if (!Number.isFinite(qd) || !Number.isFinite(td) || td < 0) continue;
+            const wLo = qd - td;
+            const wHi = qd + td;
+            const minD = mins[d];
+            const maxD = maxs[d];
+            if (wHi < minD || wLo > maxD) continue;
+
+            const c0 = cuts[d];
+            const c1 = cuts[dim + d];
+            const c2 = cuts[2 * dim + d];
+            const c3 = cuts[3 * dim + d];
+            const c4 = cuts[4 * dim + d];
+            const c5 = cuts[5 * dim + d];
+            const c6 = cuts[6 * dim + d];
+
+            let pd = 0;
+            for (let b = 0; b < 8; b++) {
+                const mass = binMass[b * dim + d];
+                if (mass <= 0) {
+                    ov[b] = 0;
+                    continue;
+                }
+                let lo;
+                let hi;
+                switch (b) {
+                    case 0: lo = minD; hi = c0; break;
+                    case 1: lo = c0; hi = c1; break;
+                    case 2: lo = c1; hi = c2; break;
+                    case 3: lo = c2; hi = c3; break;
+                    case 4: lo = c3; hi = c4; break;
+                    case 5: lo = c4; hi = c5; break;
+                    case 6: lo = c5; hi = c6; break;
+                    default: lo = c6; hi = maxD; break;
+                }
+                const width = hi - lo;
+                let ovVal = 0;
+                if (width <= 1e-12) {
+                    ovVal = (wLo <= lo && lo <= wHi) ? 1 : 0;
+                } else {
+                    const oLo = wLo > lo ? wLo : lo;
+                    const oHi = wHi < hi ? wHi : hi;
+                    if (oHi > oLo) {
+                        ovVal = (oHi - oLo) / width;
+                    }
+                }
+                ov[b] = ovVal;
+                pd += mass * ovVal;
+            }
+
+            const pClamped = Math.min(1, Math.max(invN, pd));
+            const infoD = Math.max(0, -Math.log(pClamped));
+            if (infoD <= 0) continue;
+
+            let anyLutPos = false;
+            for (let b = 0; b < 8; b++) {
+                const v = infoD * ov[b];
+                lut[b * dim + d] = v;
+                if (v > 0) anyLutPos = true;
+            }
+            if (!anyLutPos) continue;
+
+            const lutS1 = lut[codes[s1Base + d] * dim + d];
+            const lutS2 = lut[codes[s2Base + d] * dim + d];
+            if (lutS1 <= 0 && lutS2 <= 0) {
+                blindDims[blindCount++] = d;
+            }
+        }
+
+        const outLen = candidateIndices ? candidateIndices.length : nStars;
+        const scores = new Float64Array(outLen);
+        if (blindCount === 0) {
+            if (candidateIndices) {
+                for (let k = 0; k < outLen; k++) {
+                    const si = candidateIndices[k];
+                    if (!Number.isInteger(si) || si < 0 || si >= nStars) scores[k] = NaN;
+                }
+            }
+            return scores;
+        }
+
+        const blindLut = new Float32Array(blindCount * 8);
+        for (let bi = 0; bi < blindCount; bi++) {
+            const d = blindDims[bi];
+            const dst = bi * 8;
+            for (let b = 0; b < 8; b++) {
+                blindLut[dst + b] = lut[b * dim + d];
+            }
+        }
+
+        for (let k = 0; k < outLen; k++) {
+            const si = candidateIndices ? candidateIndices[k] : k;
+            if (!Number.isInteger(si) || si < 0 || si >= nStars) {
+                scores[k] = NaN;
+                continue;
+            }
+            const base = si * dim;
+            let acc = 0;
+            for (let bi = 0; bi < blindCount; bi++) {
+                const d = blindDims[bi];
+                acc += blindLut[bi * 8 + codes[base + d]];
+            }
+            scores[k] = acc;
+        }
+        return scores;
+    }
+
+    /**
      * 只读加载并缓存星池完整张量库（~716 星，支持未来扩编至数千星及多 Chunk 星卡），
      * 预计算 V5 全局方向 x̂、星池去中心化方向 ẑ、测地半径 leg 及 Fisher-Tippett 无尺度统计描述子。
      */
@@ -1936,6 +2144,9 @@ class MetaThinkingManager {
             const coarseSubspace = (needsCoarseSubspace && options.syncCoarseSubspace === true)
                 ? this._v3BuildCoarseSubspace(zMatrix, stars.length, dim, pairStdCos)
                 : null;
+            const exposureIndex3 = stars.length >= 16
+                ? this._v3BuildExposureIndex3(zMatrix, stars.length, dim)
+                : null;
 
             const nowLoaded = Date.now();
             const pool = {
@@ -1948,6 +2159,7 @@ class MetaThinkingManager {
                 zMatrix,
                 zDim: dim,
                 coarseSubspace,
+                exposureIndex3,
                 indexByStarName,
                 byChunkId,
                 byStarName,
@@ -3700,6 +3912,9 @@ class MetaThinkingManager {
         const flatZIndex = hasFlatZMatrix ? starPool.indexByStarName : null;
 
         const zQuery = this._v3NormalizeVector(options.zQuery);
+        const zExpQuery = options.zExpQuery !== undefined
+            ? this._v3NormalizeVector(options.zExpQuery)
+            : zQuery;
         const tensionTangentZ = this._v3NormalizeVector(options.tensionTangentZ || options.tensionTangent);
         const ejectImpulseZ = this._v3NormalizeVector(options.ejectImpulseZ || options.ejectImpulse);
         const timeFlowZ = this._v3NormalizeVector(options.timeFlowZ);
@@ -4092,7 +4307,23 @@ class MetaThinkingManager {
             }
         }
 
-        for (let idx = 0; idx < evalThirdCandidates.length; idx++) {
+        const evalThirdCount = evalThirdCandidates.length;
+        const hasVecArr = new Uint8Array(evalThirdCount);
+        const evalPoolIndices = new Int32Array(evalThirdCount);
+        evalPoolIndices.fill(-1);
+        const rawTorqueArr = new Float64Array(evalThirdCount);
+        const diaryBridgeArr = new Float64Array(evalThirdCount);
+        const coneClearanceArr = new Float64Array(evalThirdCount);
+        const cos1Arr = new Float64Array(evalThirdCount);
+        const cos2Arr = new Float64Array(evalThirdCount);
+        const coneProjArr = new Float64Array(evalThirdCount);
+        const coneEscapeArr = new Float64Array(evalThirdCount);
+        const pAlignArr = new Float64Array(evalThirdCount);
+        const normTauGainArr = new Float64Array(evalThirdCount);
+        const prevAlignArr = new Float64Array(evalThirdCount);
+        const fallbackScoreArr = new Float64Array(evalThirdCount);
+
+        for (let idx = 0; idx < evalThirdCount; idx++) {
             const entry = evalThirdCandidates[idx];
             const c = entry.item;
             const flatIdx = flatZIndex ? flatZIndex.get(entry.starName) : undefined;
@@ -4108,9 +4339,9 @@ class MetaThinkingManager {
                 hasVec = Boolean(zi && z1 && z2);
             }
 
-            let slingshotScore;
-            let torqueOnlyScore = -Infinity;
             if (hasVec) {
+                hasVecArr[idx] = 1;
+                if (flatIdx !== undefined) evalPoolIndices[idx] = flatIdx;
                 const off = useFlat ? (flatIdx * flatZDim) : 0;
                 const cos1 = useFlat ? this._v3DotFlat(z1, flatZMatrix, off) : this._v3Dot(zi, z1);
                 const cos2 = useFlat ? this._v3DotFlat(z2, flatZMatrix, off) : this._v3Dot(zi, z2);
@@ -4151,11 +4382,109 @@ class MetaThinkingManager {
                 const uRaySq = uRay * uRay;
                 const biteTorque = Math.min(1.0, uRaySq * Math.exp(1 - uRaySq));
                 const normTauGain = timeFlowZ ? (tauGain / (tauGain + Math.max(1e-6, tauScale))) : biteTorque;
-                const torqueDeficit = 0.5 * biteTorque + 0.5 * normTauGain;
+                const rawTorqueDeficit = 0.5 * biteTorque + 0.5 * normTauGain;
+
+                cos1Arr[idx] = cos1;
+                cos2Arr[idx] = cos2;
+                diaryBridgeArr[idx] = diaryBridge;
+                coneProjArr[idx] = coneProj;
+                coneEscapeArr[idx] = coneEscape;
+                coneClearanceArr[idx] = coneClearance;
+                pAlignArr[idx] = pAlign;
+                normTauGainArr[idx] = normTauGain;
+                rawTorqueArr[idx] = rawTorqueDeficit;
+                if (hasV37Modality && escapePhase > 0 && repelAnchor) {
+                    prevAlignArr[idx] = Math.max(0, useFlat ? this._v3DotFlat(repelAnchor, flatZMatrix, off) : this._v3Dot(zi, repelAnchor));
+                }
+            } else {
+                fallbackScoreArr[idx] = Number(c.score) || 0;
+            }
+        }
+
+        // Star 3 净新增曝光通道 U_new(x | s1, s2) 与 Rayleigh torqueDeficit 一阶尺度守恒几何融合
+        let fusedTorqueArr = rawTorqueArr;
+        let uniqueExposureCdfArr = null;
+        const expIdx3 = (
+            starPool?.exposureIndex3
+            && starPool.exposureIndex3.nStars === starPool.stars?.length
+            && starPool.exposureIndex3.dim === flatZDim
+        ) ? starPool.exposureIndex3 : null;
+        const s1ExpIdx = (expIdx3 && primary?.starName && flatZIndex) ? flatZIndex.get(primary.starName) : undefined;
+        const s2ExpIdx = (expIdx3 && conjugate?.starName && flatZIndex) ? flatZIndex.get(conjugate.starName) : undefined;
+        if (expIdx3 && zExpQuery && zExpQuery.length === expIdx3.dim && s1ExpIdx !== undefined && s2ExpIdx !== undefined && evalThirdCount >= 2) {
+            const uNewRaw = this._v3ComputeUniqueExposureScores(expIdx3, zExpQuery, s1ExpIdx, s2ExpIdx, evalPoolIndices);
+            if (uNewRaw) {
+                let uSum = 0;
+                let uCount = 0;
+                for (let idx = 0; idx < evalThirdCount; idx++) {
+                    if (hasVecArr[idx] && Number.isFinite(uNewRaw[idx])) {
+                        uSum += uNewRaw[idx];
+                        uCount++;
+                    }
+                }
+                if (uCount >= 2) {
+                    const uMean = uSum / uCount;
+                    let uVarAcc = 0;
+                    for (let idx = 0; idx < evalThirdCount; idx++) {
+                        if (hasVecArr[idx] && Number.isFinite(uNewRaw[idx])) {
+                            const d = uNewRaw[idx] - uMean;
+                            uVarAcc += d * d;
+                        }
+                    }
+                    const uStd = Math.sqrt(uVarAcc / uCount);
+                    if (uStd > 1e-9) {
+                        const invUStd = 1 / uStd;
+                        const tempUCdf = new Float64Array(evalThirdCount);
+                        const gArr = new Float64Array(evalThirdCount);
+                        let sumRawTorque = 0;
+                        let sumG = 0;
+                        for (let idx = 0; idx < evalThirdCount; idx++) {
+                            if (hasVecArr[idx] && Number.isFinite(uNewRaw[idx])) {
+                                const uc = this._v3NormalCdf((uNewRaw[idx] - uMean) * invUStd);
+                                const g = Math.sqrt(Math.max(0, rawTorqueArr[idx]) * uc);
+                                tempUCdf[idx] = uc;
+                                gArr[idx] = g;
+                                sumRawTorque += rawTorqueArr[idx];
+                                sumG += g;
+                            } else {
+                                tempUCdf[idx] = NaN;
+                            }
+                        }
+                        if (sumRawTorque > 1e-12 && sumG > 1e-12) {
+                            const scale = sumRawTorque / sumG;
+                            fusedTorqueArr = new Float64Array(rawTorqueArr);
+                            for (let idx = 0; idx < evalThirdCount; idx++) {
+                                if (hasVecArr[idx] && Number.isFinite(uNewRaw[idx])) {
+                                    fusedTorqueArr[idx] = Math.min(1, gArr[idx] * scale);
+                                }
+                            }
+                            uniqueExposureCdfArr = tempUCdf;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (let idx = 0; idx < evalThirdCount; idx++) {
+            const entry = evalThirdCandidates[idx];
+            if (hasVecArr[idx]) {
+                const cos1 = cos1Arr[idx];
+                const cos2 = cos2Arr[idx];
+                const diaryBridge = diaryBridgeArr[idx];
+                const coneProj = coneProjArr[idx];
+                const coneEscape = coneEscapeArr[idx];
+                const coneClearance = coneClearanceArr[idx];
+                const pAlign = pAlignArr[idx];
+                const normTauGain = normTauGainArr[idx];
+                const torqueDeficit = fusedTorqueArr[idx];
+                const uCdf = (uniqueExposureCdfArr && Number.isFinite(uniqueExposureCdfArr[idx]))
+                    ? uniqueExposureCdfArr[idx]
+                    : null;
 
                 const baseScore = wTorque * torqueDeficit + wDiary * diaryBridge;
                 let effMemContrib = wDiary * diaryBridge;
                 let effTorqueContrib = wTorque * torqueDeficit;
+                let slingshotScore;
 
                 if (hasV37Modality) {
                     if (drillPhase > 0) {
@@ -4164,9 +4493,7 @@ class MetaThinkingManager {
                         slingshotScore = (wTorque * drillTorqueTerm + wDiary * diaryBridge) * coneClearance;
                         effTorqueContrib = wTorque * drillTorqueTerm;
                     } else if (escapePhase > 0) {
-                        const prevAlign = repelAnchor
-                            ? Math.max(0, useFlat ? this._v3DotFlat(repelAnchor, flatZMatrix, off) : this._v3Dot(zi, repelAnchor))
-                            : 0;
+                        const prevAlign = prevAlignArr[idx];
                         const escapeRepel = 1.0 - 0.30 * escapePhase * prevAlign;
                         slingshotScore = baseScore * escapeRepel * coneClearance;
                         effTorqueContrib = wTorque * torqueDeficit * escapeRepel;
@@ -4177,7 +4504,7 @@ class MetaThinkingManager {
                 } else {
                     slingshotScore = baseScore * coneClearance;
                 }
-                torqueOnlyScore = effTorqueContrib * coneClearance;
+                const torqueOnlyScore = effTorqueContrib * coneClearance;
                 if (torqueOnlyScore > bestTorqueOnlyScore) {
                     bestTorqueOnlyScore = torqueOnlyScore;
                     bestTorqueOnlyName = entry.starName;
@@ -4199,13 +4526,14 @@ class MetaThinkingManager {
                         dDiff: Math.sqrt(dDiffSq),
                         torqueDeficit,
                         tauGain: normTauGain,
+                        uniqueExposureCdf: uCdf,
                         diaryBridge,
                         _effectiveMemContrib: effMemContrib,
                         _effectiveTorqueContrib: effTorqueContrib
                     };
                 }
             } else {
-                const fallbackScore = Number(c.score) || 0;
+                const fallbackScore = fallbackScoreArr[idx];
                 if (!bestThirdHasVec && fallbackScore > bestThirdScore) {
                     bestThirdScore = fallbackScore;
                     bestThirdEntry = entry;
@@ -5202,12 +5530,16 @@ class MetaThinkingManager {
             }
         }
 
+        const zExpQuery = preferIndependentObs
+            ? (zPrevAi || (obsQueryVector ? toZ(obsQueryVector) : null))
+            : (obsQueryVector ? toZ(obsQueryVector) : null);
         const selectedStars = this._selectV3TrinityStars(fullCandidates, {
             deduplicatedCandidates: deduplicatedFull,
             lockedPrimary: prelimTrinity[0] || lockedPrimary,
             lockedConjugate: prelimTrinity[1] || null,
             primaryCandidates: effectivePrimaryCandidates,
             zQuery,
+            zExpQuery,
             tensionTangentZ,
             ejectImpulseZ,
             timeFlowZ: effectiveTimeFlowZ,
@@ -5477,6 +5809,7 @@ class MetaThinkingManager {
                     pAlign: s.pAlign ?? null,
                     dDiff: s.dDiff ?? null,
                     torqueDeficit: s.torqueDeficit ?? null,
+                    uniqueExposureCdf: s.uniqueExposureCdf ?? null,
                     diaryBridge: s.diaryBridge ?? null,
                     coneProj: s.coneProj ?? null,
                     coneClearance: s.coneClearance ?? null,

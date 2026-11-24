@@ -5046,6 +5046,414 @@ test('P1-1/P1-2/P1-3/P1-4 regressions: async worker coarseSubspace, lowLoad TOCT
     }
 });
 
+test('Star 3 3-bit exposureIndex3: quantile cuts, boundary/tie handling, and silent fallback when N < 16', async (t) => {
+    const os = require('node:os');
+    const Database = require('better-sqlite3');
+    const mtm = new MetaThinkingManager({});
+
+    // 1) N < 16 returns null from _v3BuildExposureIndex3 and silently falls back in _selectV3TrinityStars
+    const smallMat = new Float32Array(12 * 8);
+    assert.equal(mtm._v3BuildExposureIndex3(smallMat, 12, 8), null);
+
+    {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-exp3-small-'));
+        t.after(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} });
+        const dbPath = path.join(tmpDir, 'small.sqlite');
+        const db = new Database(dbPath);
+        db.exec(`
+            CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, diary_name TEXT, updated_at INTEGER);
+            CREATE TABLE chunks (id INTEGER PRIMARY KEY, file_id INTEGER, vector_version INTEGER, content TEXT, vector BLOB);
+        `);
+        const D = 16;
+        for (let i = 0; i < 10; i++) {
+            db.prepare('INSERT INTO files (id, path, diary_name, updated_at) VALUES (?, ?, ?, ?)').run(i + 1, `小星${i}.md`, '希夷星池簇', 1000);
+            const arr = new Float32Array(D);
+            arr[i % D] = 1;
+            db.prepare('INSERT INTO chunks (id, file_id, vector_version, content, vector) VALUES (?, ?, ?, ?, ?)').run(
+                i + 1, i + 1, 1, `小星${i}`, Buffer.from(arr.buffer)
+            );
+        }
+        db.close();
+        const smallPool = mtm._v3LoadStarPoolCache({ dbPath }, ['希夷星池簇'], null, { ttlMs: 0 });
+        assert.ok(smallPool && smallPool.stars.length === 10);
+        assert.equal(smallPool.exposureIndex3, null, 'pools with < 16 stars must skip exposureIndex3');
+        const cands = smallPool.stars.map((s, idx) => ({
+            item: { chunkId: s.chunkId, sourceFile: s.sourceFile, text: s.text, score: idx === 0 ? 0.9 : 0.1 },
+            starName: s.starName
+        }));
+        const picked = mtm._selectV3TrinityStars([], {
+            deduplicatedCandidates: cands,
+            zQuery: smallPool.stars[0].z,
+            ejectImpulseZ: smallPool.stars[1].z,
+            starPool: smallPool
+        });
+        assert.equal(picked.length, 3);
+        assert.equal(picked[2].uniqueExposureCdf, null, 'N < 16 must fall back to pure Rayleigh torqueDeficit');
+    }
+
+    // 2) N >= 16 builds cuts(7*D), tau(D) = (Q75-Q25)/8, binMass(8*D), codes(N*D) accurately, including ties & boundaries
+    const N = 16;
+    const D = 4;
+    const zMat = new Float32Array(N * D);
+    for (let i = 0; i < N; i++) {
+        // dim 0: strictly increasing 0..15
+        zMat[i * D + 0] = i;
+        // dim 1: constant tie (all 0.5)
+        zMat[i * D + 1] = 0.5;
+        // dim 2: 50%+ tied at 0.5 (10 samples at 0.5, 2 below, 4 above)
+        zMat[i * D + 2] = i < 2 ? -1.0 + i * 0.5 : (i < 12 ? 0.5 : 1.0 + (i - 12));
+        // dim 3: negative/positive spread
+        zMat[i * D + 3] = (i - 7.5) * 0.1;
+    }
+    const idx3 = mtm._v3BuildExposureIndex3(zMat, N, D);
+    assert.ok(idx3);
+    assert.equal(idx3.cuts.length, 7 * D);
+    assert.equal(idx3.tau.length, D);
+    assert.equal(idx3.binMass.length, 8 * D);
+    assert.equal(idx3.codes.length, N * D);
+
+    for (let d = 0; d < D; d++) {
+        const expectedTau = (idx3.cuts[5 * D + d] - idx3.cuts[1 * D + d]) / 8;
+        assert.ok(Math.abs(idx3.tau[d] - expectedTau) < 1e-6, `tau[${d}] must equal (Q75-Q25)/8`);
+        let massSum = 0;
+        for (let b = 0; b < 8; b++) {
+            const m = idx3.binMass[b * D + d];
+            assert.ok(m >= 0 && m <= 1);
+            massSum += m;
+        }
+        assert.ok(Math.abs(massSum - 1.0) < 1e-6, `binMass sum for dim ${d} must be 1.0, got ${massSum}`);
+    }
+    // Boundary check on strictly increasing dim 0: min -> bin 0, max -> bin 7
+    assert.equal(idx3.codes[0 * D + 0], 0);
+    assert.equal(idx3.codes[(N - 1) * D + 0], 7);
+    // Constant tie dim 1: tau === 0, all stars in bin 0
+    assert.equal(idx3.tau[1], 0);
+    assert.equal(idx3.binMass[0 * D + 1], 1);
+    for (let i = 0; i < N; i++) assert.equal(idx3.codes[i * D + 1], 0);
+
+    // Tied-cuts query must produce finite non-negative U_new scores with zero NaN
+    const qTie = new Float32Array([7.5, 0.5, 0.5, 0.0]);
+    const uTie = mtm._v3ComputeUniqueExposureScores(idx3, qTie, 0, 1);
+    assert.ok(uTie && uTie.length === N);
+    for (let i = 0; i < N; i++) {
+        assert.ok(Number.isFinite(uTie[i]) && uTie[i] >= 0, `U_new[${i}] must be finite >= 0`);
+    }
+});
+
+test('Star 3 U_new(x | s1, s2) blind-spot mask: zero duplicate credit for s1/s2-covered dims, high score only in blind dims', () => {
+    const mtm = new MetaThinkingManager({});
+    const N = 20;
+    const D = 16;
+    const zMat = new Float32Array(N * D);
+    // Background stars 0..15 establish clean quantile range [-1, +1] across all dims
+    for (let i = 0; i < 16; i++) {
+        const val = -1 + (2 * i) / 15;
+        for (let d = 0; d < D; d++) {
+            zMat[i * D + d] = val * ((d % 2 === 0) ? 1 : -1);
+        }
+    }
+    // Query sits near +1.0 on all dims; background is centered so +1.0 lies strictly in top bin 7 (far from -1.0 bin 0)
+    const q = new Float32Array(D).fill(1.0);
+    const s1Idx = 16;
+    const s2Idx = 17;
+    const sameUnionIdx = 18;
+    const blindHitIdx = 19;
+
+    // Star s1 hits dims 0..3, misses 4..15
+    for (let d = 0; d < D; d++) zMat[s1Idx * D + d] = d < 4 ? 1.0 : -1.0;
+    // Star s2 hits dims 4..7, misses 0..3 and 8..15
+    for (let d = 0; d < D; d++) zMat[s2Idx * D + d] = (d >= 4 && d < 8) ? 1.0 : -1.0;
+    // Candidate sameUnion hits dims 0..7 (exact union of s1 & s2), misses blind dims 8..15
+    for (let d = 0; d < D; d++) zMat[sameUnionIdx * D + d] = d < 8 ? 1.0 : -1.0;
+    // Candidate blindHit misses dims 0..7 and hits blind dims 8..15
+    for (let d = 0; d < D; d++) zMat[blindHitIdx * D + d] = d >= 8 ? 1.0 : -1.0;
+
+    const idx3 = mtm._v3BuildExposureIndex3(zMat, N, D);
+    assert.ok(idx3);
+    const u = mtm._v3ComputeUniqueExposureScores(idx3, q, s1Idx, s2Idx);
+    assert.ok(u);
+    assert.equal(u[s1Idx], 0, 's1 must receive 0 unique exposure');
+    assert.equal(u[s2Idx], 0, 's2 must receive 0 unique exposure');
+    assert.equal(u[sameUnionIdx], 0, 'candidate hitting only s1 U s2 covered dims must receive 0 unique exposure');
+    assert.ok(u[blindHitIdx] > 5.0, `blind-spot hitting candidate must get high U_new, got ${u[blindHitIdx]}`);
+});
+
+test('Star 3 U_new first-order scale conservation preserves mean torqueDeficit and does not squeeze | M counterfactual flip', () => {
+    const mtm = new MetaThinkingManager({});
+    const N = 24;
+    const D = 48;
+    const zMat = new Float32Array(N * D);
+    const stars = [];
+    for (let i = 0; i < N; i++) {
+        const v = new Float32Array(D);
+        // Orthogonal primary axis i (dims 0..23) + smooth shared-basis spread on dims 24..47
+        v[i] = 1.0;
+        for (let d = 24; d < D; d++) {
+            v[d] = 0.08 * Math.sin((i + 1) * (d + 1) * 1.37);
+        }
+        const zu = mtm._v3NormalizeVector(v);
+        zMat.set(zu, i * D);
+        stars.push({ chunkId: i + 1, starName: `星${i}`, sourceFile: `星${i}.md`, text: `星${i}`, z: zu, x: zu, radius: 0.63 });
+    }
+    const expIdx3 = mtm._v3BuildExposureIndex3(zMat, N, D);
+    assert.ok(expIdx3);
+    const basePool = {
+        stars,
+        zMatrix: zMat,
+        zDim: D,
+        indexByStarName: new Map(stars.map((s, i) => [s.starName, i])),
+        byStarName: new Map(stars.map(s => [s.starName, s])),
+        pairMeanCos: 0,
+        pairStdCos: 1 / Math.sqrt(D),
+        gumbelAN: 0.4,
+        gumbelBN: 2.1
+    };
+    const expPool = { ...basePool, exposureIndex3: expIdx3 };
+    const cands = stars.map((s, i) => ({
+        item: { chunkId: s.chunkId, sourceFile: s.sourceFile, text: s.text, score: i === 0 ? 0.9 : 0.1 },
+        starName: s.starName
+    }));
+
+    const zQ = stars[15].z;
+    const zEj = stars[10].z;
+    const zTime = stars[12].z;
+    const pickedNoExp = mtm._selectV3TrinityStars([], {
+        deduplicatedCandidates: cands,
+        lockedPrimary: { item: cands[0].item, starName: cands[0].starName, slot: 'primary' },
+        lockedConjugate: { item: cands[1].item, starName: cands[1].starName, slot: 'conjugate' },
+        zQuery: zQ,
+        zExpQuery: zQ,
+        ejectImpulseZ: zEj,
+        timeFlowZ: zTime,
+        starPool: basePool
+    });
+    const pickedWithExp = mtm._selectV3TrinityStars([], {
+        deduplicatedCandidates: cands,
+        lockedPrimary: { item: cands[0].item, starName: cands[0].starName, slot: 'primary' },
+        lockedConjugate: { item: cands[1].item, starName: cands[1].starName, slot: 'conjugate' },
+        zQuery: zQ,
+        zExpQuery: zQ,
+        ejectImpulseZ: zEj,
+        timeFlowZ: zTime,
+        starPool: expPool
+    });
+    assert.equal(pickedNoExp[2].uniqueExposureCdf, null);
+    assert.ok(Number.isFinite(pickedWithExp[2].uniqueExposureCdf) && pickedWithExp[2].uniqueExposureCdf > 0 && pickedWithExp[2].uniqueExposureCdf < 1);
+    assert.ok(pickedWithExp[2].torqueDeficit >= 0 && pickedWithExp[2].torqueDeficit <= 1);
+
+    // Direct verification of first-order scale conservation: mean(fusedTorque) <= mean(rawTorque) + 1e-9
+    // and | M counterfactual flip via diaryFootprints is preserved without squeezing
+    const fpStar = stars[20];
+    const pickedBaseDiary = mtm._selectV3TrinityStars([], {
+        deduplicatedCandidates: cands,
+        lockedPrimary: { item: cands[0].item, starName: cands[0].starName, slot: 'primary' },
+        lockedConjugate: { item: cands[1].item, starName: cands[1].starName, slot: 'conjugate' },
+        zQuery: zQ,
+        zExpQuery: zQ,
+        ejectImpulseZ: zEj,
+        timeFlowZ: zTime,
+        diaryFootprints: [{ vector: fpStar.z, weight: 1.10 }],
+        starPool: basePool
+    });
+    const pickedWithDiary = mtm._selectV3TrinityStars([], {
+        deduplicatedCandidates: cands,
+        lockedPrimary: { item: cands[0].item, starName: cands[0].starName, slot: 'primary' },
+        lockedConjugate: { item: cands[1].item, starName: cands[1].starName, slot: 'conjugate' },
+        zQuery: zQ,
+        zExpQuery: zQ,
+        ejectImpulseZ: zEj,
+        timeFlowZ: zTime,
+        diaryFootprints: [{ vector: fpStar.z, weight: 1.10 }],
+        starPool: expPool
+    });
+    assert.equal(pickedBaseDiary[2].starName, fpStar.starName);
+    assert.equal(pickedWithDiary[2].starName, fpStar.starName, 'diaryFootprints must still steer Star 3 cleanly');
+    assert.equal(pickedBaseDiary[2]._memoryFlippedWinner, true);
+    assert.equal(pickedWithDiary[2]._memoryFlippedWinner, true, '| M counterfactual flip must NOT be squeezed out by U_new fusion');
+});
+
+test('Star 3 C7 isolation: preferIndependentObs=true prevents C7 tech-praise bait from hijacking zExpQuery or U_new', async (t) => {
+    const os = require('node:os');
+    const Database = require('better-sqlite3');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v3-exp3-c7-'));
+    t.after(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} });
+    const dbPath = path.join(tmpDir, 'c7_pool.sqlite');
+    const db = new Database(dbPath);
+    db.exec(`
+        CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, diary_name TEXT, updated_at INTEGER);
+        CREATE TABLE chunks (id INTEGER PRIMARY KEY, file_id INTEGER, vector_version INTEGER, content TEXT, vector BLOB);
+    `);
+    const D = 32;
+    const basis = (idx) => {
+        const a = new Float32Array(D);
+        a[idx] = 1;
+        return a;
+    };
+    const epaMean = basis(29);
+    // 20 stars: star 0..17 in dims 0..17, star 18 = 夸赞诱饵星 (aligned with dim 20 bait), star 19 = 本域锚星
+    for (let i = 0; i < 20; i++) {
+        const name = i === 18 ? '夸赞诱饵星' : `常规星${i}`;
+        db.prepare('INSERT INTO files (id, path, diary_name, updated_at) VALUES (?, ?, ?, ?)').run(i + 1, `${name}.md`, '希夷星池簇', 1000);
+        const arr = new Float32Array(D);
+        if (i === 18) {
+            arr[20] = 0.95;
+            arr[21] = 0.25;
+        } else {
+            arr[i % 18] = 0.9;
+            arr[(i + 5) % 18] = 0.35;
+        }
+        const u = mtmNorm(arr);
+        db.prepare('INSERT INTO chunks (id, file_id, vector_version, content, vector) VALUES (?, ?, ?, ?, ?)').run(
+            i + 1, i + 1, 1, name, Buffer.from(u.buffer)
+        );
+    }
+    db.close();
+
+    function mtmNorm(a) {
+        let s = 0;
+        for (let i = 0; i < a.length; i++) s += a[i] * a[i];
+        const inv = 1 / Math.sqrt(s);
+        return Float32Array.from(a, v => v * inv);
+    }
+
+    const broadcasts = [];
+    const mockVdb = {
+        dbPath,
+        async executeNativeRiverQuery() {
+            return { results: [{ chunkId: 1, diaryName: '希夷星池簇', sourceFile: '常规星0.md', text: '常规星0', score: 0.9 }], diagnostics: { degraded: false } };
+        },
+        async prepareUnifiedMemoObservation({ vector }) {
+            return { enhancedVector: vector, sourceObservationResult: { matchedTags: [] } };
+        },
+        releaseMemoObservation() {}
+    };
+    const mtm = new MetaThinkingManager({
+        vectorDBManager: mockVdb,
+        pushVcpInfo: (info) => broadcasts.push(info)
+    });
+    mtm._v3LoadGlobalManifold = () => null;
+    mtm._v3LoadEpaMean = () => epaMean;
+    mtm._v3MetaAxesCache = {
+        muPhatic: basis(25),
+        eDrill: basis(26),
+        eEscape: basis(27),
+        phSamples: [basis(25)],
+        drillSamples: [basis(26)],
+        escapeSamples: [basis(27)]
+    };
+
+    const starPool = mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], null, { ttlMs: 0 });
+    assert.ok(starPool && starPool.exposureIndex3, 'real >= 20 star pool must build exposureIndex3');
+
+    const seenZExp = [];
+    const origCompExp = mtm._v3ComputeUniqueExposureScores.bind(mtm);
+    mtm._v3ComputeUniqueExposureScores = (ei, zExpQ, s1, s2, candIdx) => {
+        seenZExp.push(Float32Array.from(zExpQ));
+        return origCompExp(ei, zExpQ, s1, s2, candIdx);
+    };
+
+    const aiVec = mtmNorm(Float32Array.from({ length: D }, (_, d) => (d === 0 ? 0.85 : (d === 3 ? 0.5 : 0))));
+    const phaticPureVec = basis(25);
+    const c7BaitVec = mtmNorm(Float32Array.from({ length: D }, (_, d) => (d === 25 ? 0.93 : (d === 20 ? 0.36 : 0))));
+
+    // Baseline pure phatic turn
+    await mtm.processMetaThinkingV3('希夷星池簇', aiVec, '嗯嗯好的', '', 'c1', false, {
+        userVector: phaticPureVec,
+        aiVector: aiVec,
+        historyAssistantVectors: [aiVec]
+    });
+    const baseInfo = broadcasts[broadcasts.length - 1];
+
+    // C7 praise + bait turn
+    await mtm.processMetaThinkingV3('希夷星池簇', mtmNorm(Float32Array.from({ length: D }, (_, d) => 0.7 * c7BaitVec[d] + 0.3 * aiVec[d])), '说得太对了，夸赞诱饵星真的很妙', '', 'c7', false, {
+        userVector: c7BaitVec,
+        aiVector: aiVec,
+        historyAssistantVectors: [aiVec]
+    });
+    const c7Info = broadcasts[broadcasts.length - 1];
+
+    assert.equal(baseInfo.independentObservationUsed, true);
+    assert.equal(c7Info.independentObservationUsed, true);
+    assert.equal(c7Info.stars[2].name, baseInfo.stars[2].name, 'C7 bait must not flip Star 3 away from pure-AI baseline');
+    assert.notEqual(c7Info.stars[2].name, '夸赞诱饵星', 'C7 bait star must not hijack Star 3 via U_new');
+    assert.equal(seenZExp.length, 2);
+    assert.ok(mtm._v3Dot(seenZExp[0], seenZExp[1]) > 0.9999, 'zExpQuery under preferIndependentObs must match pure AI axis and remain immune to C7 bait');
+});
+
+test('Star 3 2,000-star two-stage coarse subspace + exposureIndex3 computes U_new only on evalThirdCandidates', () => {
+    const mtm = new MetaThinkingManager({});
+    const N = 2000;
+    const D = 384;
+    let seed = 20261124;
+    const rand = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+    };
+    const zMat = new Float32Array(N * D);
+    const stars = [];
+    for (let i = 0; i < N; i++) {
+        let ns = 0;
+        const off = i * D;
+        for (let c = 0; c < D; c++) {
+            const amp = c < 128 ? (2.5 / Math.sqrt(c + 4)) : 0.05;
+            const v = (rand() + rand() - 1) * amp;
+            zMat[off + c] = v;
+            ns += v * v;
+        }
+        const inv = 1 / Math.sqrt(Math.max(1e-18, ns));
+        for (let c = 0; c < D; c++) zMat[off + c] *= inv;
+        const zi = zMat.subarray(off, off + D);
+        stars.push({ chunkId: i + 1, starName: `BigExp_${i}`, sourceFile: `BigExp_${i}.md`, text: `BigExp_${i}`, z: zi, x: zi, radius: 0.63 });
+    }
+    const coarse = mtm._v3BuildCoarseSubspace(zMat, N, D, 0.089);
+    const exposureIndex3 = mtm._v3BuildExposureIndex3(zMat, N, D);
+    assert.ok(coarse && exposureIndex3);
+
+    const cands = stars.map(s => ({ item: { chunkId: s.chunkId, sourceFile: s.sourceFile, text: s.text, score: 0 }, starName: s.starName }));
+    const poolCoarseExp = {
+        stars,
+        zMatrix: zMat,
+        zDim: D,
+        coarseSubspace: coarse,
+        exposureIndex3,
+        indexByStarName: new Map(stars.map((s, i) => [s.starName, i])),
+        byStarName: new Map(stars.map(s => [s.starName, s])),
+        pairMeanCos: 0,
+        pairStdCos: 0.089,
+        gumbelAN: 0.25,
+        gumbelBN: 3.31
+    };
+
+    const recordedCounts = [];
+    const origCompExp = mtm._v3ComputeUniqueExposureScores.bind(mtm);
+    mtm._v3ComputeUniqueExposureScores = (ei, zExpQ, s1, s2, candIdx) => {
+        recordedCounts.push(candIdx ? candIdx.length : ei.nStars);
+        return origCompExp(ei, zExpQ, s1, s2, candIdx);
+    };
+
+    const qArr = new Float32Array(D);
+    for (let c = 0; c < D; c++) qArr[c] = (rand() - 0.5) * (c < 128 ? (2.5 / Math.sqrt(c + 4)) : 0.05);
+    const zQ = unit(qArr);
+    const picked = mtm._selectV3TrinityStars([], {
+        deduplicatedCandidates: cands,
+        lockedPrimary: { item: cands[0].item, starName: cands[0].starName, slot: 'primary' },
+        zQuery: zQ,
+        zExpQuery: zQ,
+        tensionTangentZ: zQ,
+        ejectImpulseZ: zQ,
+        timeFlowZ: zQ,
+        starPool: poolCoarseExp
+    });
+
+    assert.equal(picked.length, 3);
+    assert.equal(new Set(picked.map(s => s.starName)).size, 3);
+    assert.ok(Number.isFinite(picked[2].slingshotScore));
+    assert.ok(Number.isFinite(picked[2].uniqueExposureCdf) && picked[2].uniqueExposureCdf > 0 && picked[2].uniqueExposureCdf < 1);
+    assert.equal(recordedCounts.length, 1);
+    assert.ok(recordedCounts[0] > 0 && recordedCounts[0] < 400, `2000-star coarse mode must score only evalThirdCandidates (<400), got ${recordedCounts[0]}`);
+});
+
+
 
 
 
