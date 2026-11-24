@@ -12,11 +12,12 @@ test('short context stays intact and non-context embeddings are not limited', ()
     assert.equal(project(doc), doc);
 });
 
-test('oversized text parts preserve both ends and obey independent role budgets', () => {
+test('oversized user and assistant text preserves both ends within 5000 tokens', () => {
     const content = `附件：交付说明\n${'测试工程中文🚀🧪字节覆盖。'.repeat(20000)}\n用户问题：哪些地方没有通过回归？`;
     const user = project(content, 'user');
     const assistant = project(content, 'assistant');
-    for (const [input, budget] of [[user, 2000], [assistant, 4000]]) {
+    const budget = 5000;
+    for (const input of [user, assistant]) {
         assert.ok(input.startsWith('附件：交付说明'));
         assert.ok(input.endsWith('用户问题：哪些地方没有通过回归？'));
         assert.ok(input.isWellFormed());

@@ -2,7 +2,7 @@
 
 const { getTokenCount } = require('../TextChunker');
 
-const CONTEXT_EMBEDDING_BUDGETS = Object.freeze({ user: 2000, assistant: 4000, tool: 2000 });
+const CONTEXT_EMBEDDING_BUDGETS = Object.freeze({ user: 5000, assistant: 5000, tool: 2000 });
 const GAP = '\n\n[…]\n\n';
 function stripContextSourceTail(text) {
     let end = text.trimEnd().length;

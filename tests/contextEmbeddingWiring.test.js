@@ -33,7 +33,7 @@ test('long context shares one upstream request and the same exact cache entry', 
     const timeline = bridge.embedText(clean, { contextRole: 'user' });
     const vector = [1, 0];
     assert.equal(calls.length, 1);
-    assert.ok(getTokenCount(calls[0]) <= 2000);
+    assert.ok(getTokenCount(calls[0]) <= 5000);
     assert.ok(calls[0].endsWith(question));
     complete(vector);
     assert.strictEqual(await route, vector);
