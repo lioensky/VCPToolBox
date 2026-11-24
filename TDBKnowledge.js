@@ -333,7 +333,13 @@ class TDBKnowledgeManager {
                 memoryLimitMb: this.config.memoryLimitMb
             });
         } catch (error) {
-            throw new Error(`Failed to open TriviumDB at ${dbPath}: ${error.message}`);
+            const hint = error?.code === 'TDB_MIGRATION_REQUIRED'
+                ? ' (Offline migration required: run TriviumDB scripts/migrate.py while server is stopped)'
+                : '';
+            const wrapped = new Error(`Failed to open TriviumDB at ${dbPath}: ${error.message}${hint}`);
+            if (error?.code) wrapped.code = error.code;
+            if (error?.details) wrapped.details = error.details;
+            throw wrapped;
         }
     }
 
@@ -1047,6 +1053,25 @@ class TDBKnowledgeManager {
                 } else {
                     return handle.db.tql(trimmed);
                 }
+            } finally {
+                this._endLibraryUse(handle);
+            }
+        });
+    }
+
+    async pelorusRequest(library, request) {
+        if (!this.initialized || !TriviumDB) return null;
+        const safeName = safeLibraryName(library);
+        return this._withLibraryQueue(safeName, async () => {
+            const handle = this.getOrOpenLibrary(safeName);
+            this._beginLibraryUse(handle);
+            try {
+                if (typeof handle.db.pelorusRequest !== 'function') {
+                    throw new Error('pelorusRequest is not supported by this TriviumDB version');
+                }
+                const payload = typeof request === 'string' ? request : JSON.stringify(request || {});
+                const raw = handle.db.pelorusRequest(payload);
+                return typeof raw === 'string' && raw.length > 0 ? JSON.parse(raw) : raw;
             } finally {
                 this._endLibraryUse(handle);
             }
