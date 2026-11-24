@@ -1776,11 +1776,11 @@ class RAGDiaryPlugin {
             }
             // ⚠️ 隐式时序契约：requestCache.riverThinking.deferred 与 requestCache.metaThinkingV3Tasks
             // 依赖 _processSingleSystemMessage 在首个 await 之前完成同步注册；禁止在其前置逻辑引入异步等待。
-            let v3Tasks = [];
-            if (Array.isArray(requestCache.metaThinkingV3Tasks) && requestCache.metaThinkingV3Tasks.length > 0) {
-                v3Tasks = requestCache.metaThinkingV3Tasks.map(task => task.run());
-                systemMessageTasks.push(...v3Tasks);
-            }
+            const v3Tasks = Array.from(requestCache.metaThinkingV3Tasks.values(), async ({ token, run }) => ({
+                token,
+                result: await run()
+            }));
+            systemMessageTasks.push(...v3Tasks);
             await Promise.all(systemMessageTasks);
 
             if (requestCache.riverThinking) {
@@ -1795,56 +1795,19 @@ class RAGDiaryPlugin {
                 }
             }
 
-            // 🌟 元思考 V3 独立裸奔注入：以独立消息注入尾部、紧贴用户发言正上方（无系统提示前缀/无解释）
+            // 同一配置只计算一次，但每个声明都在原承载消息内回填。
             throwIfRagAborted();
-            if (v3Tasks.length > 0) {
-                // 若虚拟系统 user 托盘（如 [系统提示:]\n[[VCP元思考V3]]）剥离 V3 占位符后仅剩空壳前缀，
-                // 且不包含图片/多模态附件，才将其干净移除
-                for (let i = targetSystemMessageIndices.length - 1; i >= 0; i--) {
-                    const sysIdx = targetSystemMessageIndices[i];
-                    const msg = newMessages[sysIdx];
-                    if (msg && msg.role === 'user') {
-                        const hasNonTextPart = Array.isArray(msg.content)
-                            && msg.content.some(part => !part || part.type !== 'text');
-                        if (hasNonTextPart) continue;
-                        const text = this._extractTextFromContent(msg.content).trim();
-                        if (/^\[系统[^\]]*\]$/.test(text)) {
-                            newMessages.splice(sysIdx, 1);
-                        }
-                    }
-                }
-
-                const v3Formulas = (await Promise.all(v3Tasks))
-                    .map(res => String(res?.content || '').trim())
-                    .filter(Boolean);
-                const combinedFormula = [...new Set(v3Formulas)].join('\n');
-                if (combinedFormula) {
-                    const lastRealUser = findLastRealUserMessage(newMessages, {
-                        sanitize: this.sanitizeForEmbedding.bind(this)
-                    });
-                    // 仅检查紧邻本轮 lastRealUser 上方的同轮注入块（跳过虚拟系统提示/通知，遇 assistant 或真实用户即停），
-                    // 防止早期历史轮次中残留或用户自发的 V3 公式永久屏蔽后续轮次注入
-                    let alreadyInjected = false;
-                    for (let idx = lastRealUser.index - 1; idx >= 0; idx--) {
-                        const msg = newMessages[idx];
-                        if (!msg || msg.role !== 'user') break;
-                        if (msg.__vcpMetaThinkingV3__ || isMetaThinkingV3Message(msg)) {
-                            alreadyInjected = true;
-                            break;
-                        }
-                        const txt = this._extractTextFromContent(msg.content);
-                        if (!isBetaSystemUserText(txt) && !isSystemNotificationText(txt)) break;
-                    }
-                    if (!alreadyInjected && lastRealUser.index >= 0) {
-                        const v3Message = { role: 'user', content: combinedFormula };
-                        Object.defineProperty(v3Message, '__vcpMetaThinkingV3__', {
-                            value: true,
-                            enumerable: false,
-                            configurable: true
-                        });
-                        newMessages.splice(lastRealUser.index, 0, v3Message);
-                        console.log(`[RAGDiaryPlugin] ✨ 元思考V3已独立注入至 messages[${lastRealUser.index}] (last_user=${lastRealUser.index + 1} 正上方)`);
-                    }
+            for (const { token, result } of await Promise.all(v3Tasks)) {
+                const formula = String(result?.content ?? '').trim();
+                const emptyLine = formula ? null : new RegExp(
+                    `(?:^|(?<=\\n))[ \\t]*${token}[ \\t]*(?:\\r?\\n|$)`, 'g'
+                );
+                for (const index of targetSystemMessageIndices) {
+                    const message = newMessages[index];
+                    if (!this._extractTextFromContent(message.content).includes(token)) continue;
+                    message.content = this._replaceTextInContent(message.content, text =>
+                        (emptyLine ? text.replace(emptyLine, '') : text).replaceAll(token, () => formula)
+                    );
                 }
             }
 
@@ -2140,7 +2103,7 @@ class RAGDiaryPlugin {
             }
         }
 
-        // --- 1b. 处理 [[VCP元思考V3...]] 纯张量三体引擎（从托盘剥离，独立尾注到用户发言正上方） ---
+        // --- 1b. 处理 [[VCP元思考V3...]]：延迟计算，原位回填 ---
         for (const match of metaThinkingV3Declarations) {
             const placeholder = match[0];
             const modifiersAndParams = match[1] || '';
@@ -2217,7 +2180,7 @@ class RAGDiaryPlugin {
                             } : {}),
                             getActiveDiaryChunks: async () => {
                                 const waitDiary = requestCache?.v3DiaryTasksPromise || requestCache?.riverThinking?.diaryTasks;
-                                if (requestCache?.hasVectorDiaryPlaceholder && Array.isArray(requestCache?.metaThinkingV3Tasks) && waitDiary) {
+                                if (requestCache?.hasVectorDiaryPlaceholder && requestCache.metaThinkingV3Tasks instanceof Map && waitDiary) {
                                     await raceWithAbort(waitDiary, v3Signal);
                                 }
                                 return Array.isArray(requestCache?.v3ActiveDiaryChunks)
@@ -2245,17 +2208,13 @@ class RAGDiaryPlugin {
                 }
             };
 
-            if (Array.isArray(requestCache?.metaThinkingV3Tasks)) {
-                // 从原 system/托盘文本中干净移除占位符：独占一行时连同换行移除，行内仅移除占位符本身，防止吞掉行尾换行
-                const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                processedContent = processedContent
-                    .replace(new RegExp(`(?:^|(?<=\\r?\\n))[ \\t]*${escapedPlaceholder}[ \\t]*(?:\\r?\\n|$)`, 'g'), '')
-                    .replace(new RegExp(`[ \\t]*${escapedPlaceholder}[ \\t]*`, 'g'), '');
-                if (!requestCache.v3SeenTaskKeys) requestCache.v3SeenTaskKeys = new Set();
-                if (!requestCache.v3SeenTaskKeys.has(v3TaskKey)) {
-                    requestCache.v3SeenTaskKeys.add(v3TaskKey);
-                    requestCache.metaThinkingV3Tasks.push({ placeholder, run: runMetaThinkingV3 });
+            if (requestCache?.metaThinkingV3Tasks instanceof Map) {
+                let task = requestCache.metaThinkingV3Tasks.get(v3TaskKey);
+                if (!task) {
+                    task = { token: `__VCP_META_V3_PENDING_${crypto.randomUUID()}__`, run: runMetaThinkingV3 };
+                    requestCache.metaThinkingV3Tasks.set(v3TaskKey, task);
                 }
+                processedContent = processedContent.replace(placeholder, () => task.token);
             } else {
                 processingPromises.push(runMetaThinkingV3());
             }
@@ -4842,7 +4801,7 @@ class RAGDiaryPlugin {
             timeRangeFilePaths: new Map(),
             diarySimilarity: new Map(),
             diaryDateIndex: new Map(),
-            metaThinkingV3Tasks: [],
+            metaThinkingV3Tasks: new Map(),
             v3ActiveDiaryChunks: []
         };
     }

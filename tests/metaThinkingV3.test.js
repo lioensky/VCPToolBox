@@ -829,26 +829,11 @@ test('RAGDiaryPlugin V3 splice does not mutate original input messages when atta
     assert.equal(cvm._isVirtualSystemUser(userMsg), false);
     assert.equal(cvm._isVirtualSystemUser(injectedV3), true);
 
-    // 验证行内 V3 占位符剥离不吞掉行尾换行
-    const escaped = '\\[\\[VCP元思考V3\\]\\]';
-    const inlineText = '前缀提示 [[VCP元思考V3]]\n下一行正文';
-    const cleanedInline = inlineText
-        .replace(new RegExp(`(?:^|(?<=\\r?\\n))[ \\t]*${escaped}[ \\t]*(?:\\r?\\n|$)`, 'g'), '')
-        .replace(new RegExp(`[ \\t]*${escaped}[ \\t]*`, 'g'), '');
-    assert.equal(cleanedInline, '前缀提示\n下一行正文');
-
-    // 验证独占一行 V3 占位符剥离干净移除整行
-    const standaloneText = '第一行\n  [[VCP元思考V3]]  \n第三行';
-    const cleanedStandalone = standaloneText
-        .replace(new RegExp(`(?:^|(?<=\\r?\\n))[ \\t]*${escaped}[ \\t]*(?:\\r?\\n|$)`, 'g'), '')
-        .replace(new RegExp(`[ \\t]*${escaped}[ \\t]*`, 'g'), '');
-    assert.equal(cleanedStandalone, '第一行\n第三行');
     assert.ok(rag);
 });
 
-test('multi-turn history containing an earlier V3 formula does not block V3 injection on later turns', async () => {
+test('V3 replaces a system placeholder in place without touching historical formulas or user content', async () => {
     const ragSingleton = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
-    const { isMetaThinkingV3Message } = require('../modules/messageProcessor');
 
     const rag = new ragSingleton.constructor();
     rag.contextVectorManager = { updateContext: async () => {}, segmentContext: () => [] };
@@ -856,29 +841,31 @@ test('multi-turn history containing an earlier V3 formula does not block V3 inje
     rag.ragParams = { RAGDiaryPlugin: {} };
     rag.getSingleEmbeddingCached = async () => unit([1, 0, 0, 0]);
     rag._calculateDynamicParams = async () => ({ k: 3, tagWeight: 0.15, tagTruncationRatio: 0.5, metrics: {} });
-    rag.metaThinkingManager = {
-        processMetaThinkingV3: async () => '$$势陷[∂新星甲 ∧ ∇新星乙]_φ ↦ 思奇 σ_∞(新星丙 ⊖ φ) →_{τ,x} ?$$'
-    };
+    const formula = '$$势陷[∂新星甲 ∧ ∇新星乙]_φ ↦ 思奇 σ_∞(新星丙 ⊖ φ) →_{τ,x} ?$$';
+    rag.metaThinkingManager = { processMetaThinkingV3: async () => formula };
 
     const oldFormula = '$$势陷[∂旧星甲 ∧ ∇旧星乙]_φ ↦ 思奇 σ_∞(旧星丙 ⊖ φ) →_{τ,x} ?$$';
     const messages = [
-        { role: 'system', content: '系统设定\n[[VCP元思考V3]]' },
+        { role: 'system', content: '系统设定\n公式：[[VCP元思考V3]]；正文' },
         { role: 'user', content: oldFormula },
         { role: 'assistant', content: '这是上一轮的解释。' },
         { role: 'user', content: '这一轮讨论新话题' }
     ];
 
     const out = await rag._processMessagesWithMemoScope(messages, {});
-    assert.equal(out.length, 5, 'Turn 2 must still inject a fresh V3 formula above Turn 2 user message');
-    assert.equal(out[3].content, '$$势陷[∂新星甲 ∧ ∇新星乙]_φ ↦ 思奇 σ_∞(新星丙 ⊖ φ) →_{τ,x} ?$$');
-    assert.equal(out[4].content, '这一轮讨论新话题');
+    assert.deepEqual(out, [
+        { role: 'system', content: `系统设定\n公式：${formula}；正文` },
+        ...messages.slice(1)
+    ]);
+    assert.equal(messages[0].content, '系统设定\n公式：[[VCP元思考V3]]；正文');
+    assert.deepEqual(await rag._processMessagesWithMemoScope(JSON.parse(JSON.stringify(out)), {}), out);
 
-    // 同轮经 JSON 深拷贝失标后再次进入处理，仍保持幂等不重复注入
-    const reentered = JSON.parse(JSON.stringify(out));
-    reentered[0].content = '系统设定\n[[VCP元思考V3]]';
-    const out2 = await rag._processMessagesWithMemoScope(reentered, {});
-    assert.equal(out2.length, 5, 'same-turn re-entry after JSON clone must stay idempotent');
-    assert.equal(out2.filter(m => isMetaThinkingV3Message(m)).length, 2);
+    rag.metaThinkingManager.processMetaThinkingV3 = async () => '';
+    const empty = await rag._processMessagesWithMemoScope([
+        { role: 'system', content: '第一行\r\n  [[VCP元思考V3]]  \r\n行内 [[VCP元思考V3]] 后缀\r\n下一行' },
+        ...messages.slice(1)
+    ], {});
+    assert.equal(empty[0].content, '第一行\r\n行内  后缀\r\n下一行');
 });
 
 test('hybrid 《《diary》》 outer cache hit replays v3ActiveDiaryChunks to V3 diary bridge', async () => {
@@ -1699,11 +1686,12 @@ test('V3.5 audit repro #5 & #6 & #8: canonical v3TaskKey dedupe, weighted RiverM
     rag._calculateDynamicParams = async () => ({ k: 3, tagWeight: 0.15, tagTruncationRatio: 0.5, metrics: {} });
     const realMtm = new MetaThinkingManager(rag);
     let v3Calls = 0;
+    const formula = '$$势陷[∂星甲 ∧ ∇星乙]_φ ↦ 思奇 σ_∞(星丙 ⊖ φ) →_{τ,x} ?$$';
     rag.metaThinkingManager = {
         _resolveV3StarPoolDiaries: realMtm._resolveV3StarPoolDiaries.bind(realMtm),
         processMetaThinkingV3: async () => {
             v3Calls++;
-            return '$$势陷[∂星甲 ∧ ∇星乙]_φ ↦ 思奇 σ_∞(星丙 ⊖ φ) →_{τ,x} ?$$';
+            return formula;
         }
     };
 
@@ -1720,8 +1708,12 @@ test('V3.5 audit repro #5 & #6 & #8: canonical v3TaskKey dedupe, weighted RiverM
     ];
     const out = await rag._processMessagesWithMemoScope(messages, {});
     assert.equal(v3Calls, 1, 'reordered/spaced equivalent poolScopes A|B and B|A must deduplicate to a single V3 execution');
-    const carrierWithImg = out.find(m => Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'));
-    assert.ok(carrierWithImg, 'multimodal virtual system user carrier must NOT be spliced out when it contains image_url');
+    assert.equal(out.length, messages.length);
+    assert.equal(out[0].content, `${formula}\n${formula}`);
+    assert.deepEqual(out[1].content, [
+        { type: 'text', text: `[系统提示:]\n${formula}` },
+        messages[1].content[1]
+    ]);
 });
 
 test('V3.5 audit repro #7: AbortController aborts MetaThinkingV3 cleanly with zero phantom pushVcpInfo and zero handle leaks', async () => {
@@ -3340,7 +3332,7 @@ test('V3.9 Item 4: end-to-end RAGDiaryPlugin + OneRing + ContextVectorManager is
     const ragSingleton = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
     const oneRing = require('../Plugin/OneRing/OneRing');
     const ContextVectorManager = require('../Plugin/RAGDiaryPlugin/ContextVectorManager');
-    const { isMetaThinkingV3Message } = require('../modules/messageProcessor');
+    const tray = require('../Plugin/MemoryThinkingTray/MemoryThinkingTray');
 
     const dim = 24;
     const basis = (idx) => {
@@ -3453,26 +3445,33 @@ test('V3.9 Item 4: end-to-end RAGDiaryPlugin + OneRing + ContextVectorManager is
     rag.metaThinkingManager = mtm;
 
     const messages = [
-        { role: 'system', content: '设定\n[[VCP元思考V3]]' },
+        { role: 'system', content: '设定\n<---VCP记忆思维区Start--->前文\n[[VCP元思考V3]]\n后文<---VCP记忆思维区End--->' },
         { role: 'user', content: '第一轮架构提问' },
         { role: 'assistant', content: '第一轮AI架构解析' },
         { role: 'user', content: '绝了绝了卡尔曼滤波讲得太丝滑继续' }
     ];
-    const processed = await rag._processMessagesWithMemoScope(messages, {});
-    assert.equal(processed.length, 5);
-    assert.equal(isMetaThinkingV3Message(processed[3]), true, 'V3 formula must inject directly above final user turn');
-    assert.equal(processed[4].content, '绝了绝了卡尔曼滤波讲得太丝滑继续');
+    const moved = await tray.processMessages(messages, { MEMORY_THINKING_TRAY_DEPTH: 2 });
+    const processed = await rag._processMessagesWithMemoScope(moved, {});
+    assert.equal(processed.length, moved.length);
+    assert.equal(processed[0].content, moved[0].content);
+    assert.match(processed[2].content, /^\[系统提示:\]\n前文\n\$\$[\s\S]+\$\$\n后文$/);
+    assert.deepEqual(processed.slice(3), messages.slice(2));
     assert.equal(broadcasts.length, 1);
     assert.ok(broadcasts[0].contentAlpha < 0.45, `E2E C7 trap must clamp contentAlpha < 0.45, got ${broadcasts[0].contentAlpha}`);
     assert.equal(broadcasts[0].independentObservationUsed, true);
 
-    // Verify OneRing strips injected V3 from working view and restores it strictly above last user turn
-    const view = oneRing._buildOneRingWorkingView(processed);
-    assert.equal(view.workingMessages.length, 4);
-    const restored = oneRing._restoreWorkingViewToOriginalMessages(processed, view.workingMessages, view);
-    assert.equal(restored.length, 5);
-    assert.equal(isMetaThinkingV3Message(restored[3]), true);
-    assert.equal(restored[4].content, '绝了绝了卡尔曼滤波讲得太丝滑继续');
+    // The tray reaches the model in its original position but is not a conversation record for either strategy.
+    const inferred = oneRing._createServerInferredTimelineStrategy();
+    const view = inferred.buildWorkingView(processed);
+    assert.deepEqual(view.workingToOriginalIndex, [0, 1, 3, 4]);
+    assert.equal(view.removedItems[0].reason, 'system-user');
+    assert.deepEqual(inferred.restoreWorkingViewToOriginalMessages(processed, view.workingMessages, view), processed);
+
+    const raw = oneRing._createRawClientTimelineStrategy();
+    const contextMap = raw._buildClientContextMap(processed, '测试用户', '测试助手');
+    assert.equal(contextMap.records[2].kind, 'side-pseudo-system-user');
+    assert.equal(contextMap.records[2].dbText, '');
+    assert.deepEqual(contextMap.contextRecords.map(record => record.rawIndex), [1, 3, 4]);
 });
 
 test('V3.10 redline contracts: C7 directional praise, C4 r_meta decoupling, V3 geodesic progression, multi-chunk, quantile radius, dimMismatch, RAGDiary handoff', async () => {
