@@ -10,6 +10,7 @@
 const crypto = require('crypto');
 const { extractTextFromContent } = require('./MessageContentUtils');
 const { projectContextEmbeddingInput } = require('../../modules/contextEmbeddingInput');
+const { isMetaThinkingV3Message } = require('../../modules/messageProcessor');
 
 class ContextVectorManager {
     constructor(plugin, maxVectorMapSize = 1000) {
@@ -41,10 +42,32 @@ class ContextVectorManager {
     }
 
     /**
-     * 判断是否为以 [系统...] 开头的虚拟系统用户消息
+     * 判断是否为以 [系统...] 开头的虚拟系统用户消息或元思考 V3 注入块：
+     * - 显式 __vcpMetaThinkingV3__ 恒视为注入块；
+     * - 失标（浅/深拷贝后）的纯公式消息，仅当其紧邻同一轮后续真实 user 发言上方时视为注入块，
+     *   保留用户单独发送纯公式作为真实历史发言的能力。
      */
-    _isVirtualSystemUser(msg) {
-        return msg?.role === 'user' && /^\s*\[系统/.test(this._extractContent(msg));
+    _isVirtualSystemUser(msg, messages = null, index = -1) {
+        if (msg?.role !== 'user') return false;
+        const text = this._extractContent(msg);
+        if (
+            msg.__vcpMetaThinkingV3__
+            || /^\s*\[系统/.test(text)
+            || /^\s*<!--\s*VCP_TOOL_PAYLOAD\s*-->/.test(text)
+        ) {
+            return true;
+        }
+        if (Array.isArray(messages) && index >= 0 && isMetaThinkingV3Message(msg)) {
+            for (let j = index + 1; j < messages.length; j++) {
+                const next = messages[j];
+                if (!next || next.role === 'assistant') break;
+                if (next.role !== 'user' || next.__vcpMetaThinkingV3__ || isMetaThinkingV3Message(next)) continue;
+                const nextText = this._extractContent(next);
+                if (/^\s*\[系统/.test(nextText) || /^\s*<!--\s*VCP_TOOL_PAYLOAD\s*-->/.test(nextText)) continue;
+                return true;
+            }
+        }
+        return false;
     }
 
     _normalize(text) {
@@ -163,6 +186,7 @@ class ContextVectorManager {
 
         const newAssistantVectors = [];
         const newUserVectors = [];
+        const snapshotVectorByHash = new Map();
 
         const stats = {
             totalHistoricalAssistantMessages: 0,
@@ -180,7 +204,7 @@ class ContextVectorManager {
         };
 
         // 识别最后的消息索引以进行排除（排除最后一轮真实用户消息和最后 AI 消息）
-        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
+        const lastUserIndex = messages.findLastIndex((m, idx) => m.role === 'user' && !this._isVirtualSystemUser(m, messages, idx));
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const tasks = messages.map(async (msg, index) => {
@@ -202,7 +226,7 @@ class ContextVectorManager {
             }
 
             // 排除虚拟系统消息（以 [系统...] 开头的 user 消息，与全库 findLastRealUserMessage 规则保持一致）
-            if (this._isVirtualSystemUser(msg)) {
+            if (this._isVirtualSystemUser(msg, messages, index)) {
                 stats.skippedSystemMessages++;
                 return;
             }
@@ -219,23 +243,25 @@ class ContextVectorManager {
             let vector = null;
             let vectorSource = 'none';
 
-            // 1. 精确匹配
+            // 1. 精确匹配 (vectorMap)
             if (this.vectorMap.has(hash)) {
                 vector = this.vectorMap.get(hash).vector;
                 vectorSource = 'exact';
             }
-            // 2. 模糊匹配 (处理微小编辑)
             else {
-                vector = this._findFuzzyMatch(normalized);
-                if (vector) {
-                    vectorSource = 'fuzzy';
-                }
-
-                // 统一缓存的精确投影优先于历史局部近似。
+                // 2. 统一缓存的精确投影优先于 O(N) 历史模糊近似，避免先做无谓 Bigram 扫描
                 const cached = this.plugin._getEmbeddingFromCacheOnly(input);
                 if (cached) {
                     vector = cached;
                     vectorSource = 'embeddingCache';
+                }
+
+                // 3. 模糊匹配 (处理微小编辑)
+                if (!vector) {
+                    vector = this._findFuzzyMatch(normalized);
+                    if (vector) {
+                        vectorSource = 'fuzzy';
+                    }
                 }
 
                 // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
@@ -274,6 +300,7 @@ class ContextVectorManager {
             else stats.unresolved++;
 
             if (vector) {
+                snapshotVectorByHash.set(hash, vector);
                 const entry = { vector, index, role: msg.role };
                 if (msg.role === 'assistant') {
                     newAssistantVectors.push(entry);
@@ -292,9 +319,11 @@ class ContextVectorManager {
             throw abortErr;
         }
 
-        // 保持原始顺序
-        this.historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
-        this.historyUserVectors = newUserVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
+        // 保持原始顺序，同时返回请求级独立快照以隔离多 Agent 并发场景
+        const historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
+        const historyUserVectors = newUserVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
+        this.historyAssistantVectors = historyAssistantVectors;
+        this.historyUserVectors = historyUserVectors;
 
         console.log(
             `[ContextVectorManager] 上下文向量映射已更新。` +
@@ -304,6 +333,12 @@ class ContextVectorManager {
             `；跳过[system:${stats.skippedSystemMessages}, 最后一轮:${stats.skippedLastTurnMessages}, 空消息:${stats.skippedEmptyMessages}]` +
             `；历史向量API开关=${allowApi}`
         );
+
+        return {
+            historyAssistantVectors,
+            historyUserVectors,
+            snapshotVectorByHash
+        };
     }
 
     /**
@@ -468,9 +503,9 @@ class ContextVectorManager {
      * @param {number} similarityThreshold - 分段阈值，低于此值则断开 (默认 0.70)
      * @returns {Array<{vector: Float32Array, text: string, role: string, range: [number, number]}>}
      */
-    segmentContext(messages, similarityThreshold = 0.70) {
+    segmentContext(messages, similarityThreshold = 0.70, snapshotVectorByHash = null) {
         // 1. 重新遍历消息，按原始顺序对齐向量并排除最后一轮
-        const lastUserIndex = messages.findLastIndex(m => m.role === 'user' && !this._isVirtualSystemUser(m));
+        const lastUserIndex = messages.findLastIndex((m, idx) => m.role === 'user' && !this._isVirtualSystemUser(m, messages, idx));
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const sequence = [];
@@ -482,19 +517,23 @@ class ContextVectorManager {
             const content = this._extractContent(msg);
 
             if (!content || content.length < 2) return;
-            if (this._isVirtualSystemUser(msg)) return;
+            if (this._isVirtualSystemUser(msg, messages, index)) return;
 
-            const { hash } = this._getNormalizedAndHash(content, msg.role);
+            const { input, hash } = this._getNormalizedAndHash(content, msg.role);
 
-            // 尝试精确匹配
-            const entry = this.vectorMap.get(hash);
+            // 优先从本次请求级快照读取，防止高并发下共享 vectorMap FIFO 淘汰导致静默丢段；若已淘汰则兜底读统一 embedding 缓存
+            const vector = (snapshotVectorByHash instanceof Map ? snapshotVectorByHash.get(hash) : null)
+                || this.vectorMap.get(hash)?.vector
+                || (input && typeof this.plugin?._getEmbeddingFromCacheOnly === 'function'
+                    ? this.plugin._getEmbeddingFromCacheOnly(input)
+                    : null);
 
-            if (entry && entry.vector) {
+            if (vector) {
                 sequence.push({
                     index,
                     role: msg.role,
                     text: content,
-                    vector: entry.vector
+                    vector
                 });
             }
         });
@@ -505,6 +544,7 @@ class ContextVectorManager {
         const segments = [];
         let currentSegment = {
             vectors: [sequence[0].vector],
+            assistantVectors: sequence[0].role === 'assistant' ? [sequence[0].vector] : [],
             texts: [sequence[0].text],
             startIndex: sequence[0].index,
             endIndex: sequence[0].index,
@@ -525,6 +565,7 @@ class ContextVectorManager {
             if (sim >= similarityThreshold) {
                 // 合并
                 currentSegment.vectors.push(curr.vector);
+                if (curr.role === 'assistant') currentSegment.assistantVectors.push(curr.vector);
                 currentSegment.texts.push(curr.text);
                 currentSegment.endIndex = curr.index;
                 currentSegment.roles.push(curr.role);
@@ -534,6 +575,7 @@ class ContextVectorManager {
                 // 开启新段
                 currentSegment = {
                     vectors: [curr.vector],
+                    assistantVectors: curr.role === 'assistant' ? [curr.vector] : [],
                     texts: [curr.text],
                     startIndex: curr.index,
                     endIndex: curr.index,
@@ -570,8 +612,27 @@ class ContextVectorManager {
             for (let d = 0; d < dim; d++) avgVec[d] /= mag;
         }
 
+        let assistantVector = null;
+        if (Array.isArray(seg.assistantVectors) && seg.assistantVectors.length > 0) {
+            const aiVec = new Float32Array(dim);
+            for (const v of seg.assistantVectors) {
+                for (let d = 0; d < dim; d++) aiVec[d] += v[d];
+            }
+            let aiMag = 0;
+            for (let d = 0; d < dim; d++) {
+                aiVec[d] /= seg.assistantVectors.length;
+                aiMag += aiVec[d] * aiVec[d];
+            }
+            aiMag = Math.sqrt(aiMag);
+            if (aiMag > 1e-9) {
+                for (let d = 0; d < dim; d++) aiVec[d] /= aiMag;
+                assistantVector = aiVec;
+            }
+        }
+
         return {
             vector: avgVec,
+            assistantVector,
             // 组合文本用于展示或日志
             text: seg.texts.join('\n'),
             roles: [...new Set(seg.roles)], // 去重角色

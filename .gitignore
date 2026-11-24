@@ -170,6 +170,8 @@ dailynote/*
 !dailynote/VCP桌面知识/**
 !dailynote/VCP开发/
 !dailynote/VCP开发/**
+!dailynote/希夷星池簇/
+!dailynote/希夷星池簇/**
 ip_blacklist.json
 /VectorStore
 /VectorStoreTDB/

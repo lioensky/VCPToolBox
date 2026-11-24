@@ -15,6 +15,7 @@ const timelineCommon = require('./OneRingTimelineCommon.js');
 const { RawClientTimelineStrategy, probeRawClientTimestampBindings } = require('./OneRingRawClientTimeline.js');
 const { ServerInferredTimelineStrategy } = require('./OneRingServerInferredTimeline.js');
 const oneRingMemo = require('./OneRingMemo.js');
+const { isMetaThinkingV3Message } = require(path.resolve(__dirname, '../../modules/messageProcessor.js'));
 
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
 // 每个字段都必须被限制在同一个 [[...]] 内，尤其不能吞入右方括号或换行。
@@ -142,6 +143,8 @@ const DISCARD_PATTERNS = [
     /^\s*\[系统提示/,
     /^\s*\[系统警告/,
     /^\s*\[系统指示/,
+    /^\s*\[系统邀请指令[:：]?/,
+    /^\s*<!--\s*VCP_TOOL_PAYLOAD\s*-->/,
     /by\[Vchat群聊\]/,
     // 群聊邀请心跳：如"现在轮到你{{VCPChatAgentName}}发言"或"邀请xxx发言"
     /现在轮到你.{0,30}发言/,
@@ -1297,12 +1300,40 @@ class OneRingPreprocessor {
         return this._applyTailTagPlacement(patchMessages);
     }
 
+    _isInjectedV3MessageAt(messages, index) {
+        if (typeof timelineCommon.isInjectedMetaThinkingV3Message === 'function') {
+            return timelineCommon.isInjectedMetaThinkingV3Message(messages, index, {
+                isMetaThinkingV3Message,
+                extractText: fuzzy.extractText,
+                sanitizeUserText: sanitizeUserTextAtPipelineEntry,
+                discardPatterns: DISCARD_PATTERNS
+            });
+        }
+        if (!Array.isArray(messages) || index < 0 || index >= messages.length) return false;
+        const msg = messages[index];
+        if (!msg || msg.role !== 'user') return false;
+        if (msg.__vcpMetaThinkingV3__) return true;
+        if (!isMetaThinkingV3Message(msg)) return false;
+        for (let j = index + 1; j < messages.length; j++) {
+            const next = messages[j];
+            if (!next || next.role === 'assistant') break;
+            if (next.role !== 'user') continue;
+            if (next.__vcpMetaThinkingV3__ || isMetaThinkingV3Message(next)) continue;
+            const nextText = fuzzy.extractText(next.content);
+            if (!sanitizeUserTextAtPipelineEntry(nextText).trim() || DISCARD_PATTERNS.some(pattern => pattern.test(nextText))) continue;
+            return true;
+        }
+        return false;
+    }
+
     _createRawClientTimelineStrategy(bindingInfo) {
         return new RawClientTimelineStrategy({
             bindingInfo,
             projectBasePath,
             debug: debugMode,
             discardPatterns: DISCARD_PATTERNS,
+            sanitizeUserTextAtPipelineEntry,
+            isMetaThinkingV3Message,
             classifyUserContent,
             classifyAssistantContent
         });
@@ -1314,6 +1345,8 @@ class OneRingPreprocessor {
             debug: debugMode,
             discardPatterns: DISCARD_PATTERNS,
             sanitizeUserContentAtPipelineEntry,
+            sanitizeUserTextAtPipelineEntry,
+            isMetaThinkingV3Message,
             hasUserTextContent,
             markOneRingOriginalIndex,
             getOneRingOriginalIndex,
@@ -1568,6 +1601,11 @@ class OneRingPreprocessor {
                 continue;
             }
 
+            if (this._isInjectedV3MessageAt(messages, i)) {
+                skippedSystemUserCount++;
+                continue;
+            }
+
             const classifiedUser = classifyUserContent(message.content, defaultUserName, agentName);
             if (!classifiedUser) {
                 skippedSystemUserCount++;
@@ -1666,7 +1704,9 @@ class OneRingPreprocessor {
             const originalText = fuzzy.extractText(message.content);
             const sanitizedContent = sanitizeUserContentAtPipelineEntry(message.content);
             const sanitizedText = fuzzy.extractText(sanitizedContent);
-            const shouldDropSystemPromptUser = DISCARD_PATTERNS.some(pattern => pattern.test(sanitizedText));
+            const isInjectedV3Formula = this._isInjectedV3MessageAt(messages, originalIndex);
+            const shouldDropSystemPromptUser = isInjectedV3Formula
+                || DISCARD_PATTERNS.some(pattern => pattern.test(sanitizedText));
 
             if (shouldDropSystemPromptUser) {
                 removedSystemUser++;
@@ -1784,10 +1824,14 @@ class OneRingPreprocessor {
 
         const flushPendingBefore = (originalIndex) => {
             if (pendingInjected.length === 0 || !Number.isInteger(originalIndex)) return;
-            if (!injectedBeforeOriginalIndex.has(originalIndex)) {
-                injectedBeforeOriginalIndex.set(originalIndex, []);
+            let targetIdx = originalIndex;
+            while (targetIdx > 0 && this._isInjectedV3MessageAt(originalMessages, targetIdx - 1)) {
+                targetIdx--;
             }
-            injectedBeforeOriginalIndex.get(originalIndex).push(...pendingInjected);
+            if (!injectedBeforeOriginalIndex.has(targetIdx)) {
+                injectedBeforeOriginalIndex.set(targetIdx, []);
+            }
+            injectedBeforeOriginalIndex.get(targetIdx).push(...pendingInjected);
             pendingInjected = [];
         };
 
@@ -1889,6 +1933,8 @@ class OneRingPreprocessor {
                 if (classifiedAssistant) return i;
                 continue;
             }
+
+            if (this._isInjectedV3MessageAt(messages, i)) continue;
 
             const classified = classifyUserContent(message.content, defaultUserName, agentName);
             if (classified) return i;
@@ -2514,6 +2560,7 @@ class OneRingPreprocessor {
                 const tailMeta = getOneRingTailMeta(m.content);
                 const rawText = fuzzy.extractText(m.content);
                 if (m.role === 'user') {
+                    if (this._isInjectedV3MessageAt(messages, index)) return null;
                     const classified = classifyUserContent(rawText, defaultUserName, agentName);
                     if (!classified) return null;
                     return {

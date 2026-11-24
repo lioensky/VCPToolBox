@@ -872,9 +872,27 @@ class DynamicToolRegistry {
             return fallbackBlock.content;
         }
 
-        const conversation = asArray(options.messages).slice(-12).flatMap((message, index) => {
+        const { isMetaThinkingV3Message } = require('./messageProcessor');
+        const recentWindow = asArray(options.messages).slice(-12);
+        const conversation = recentWindow.flatMap((message, index) => {
             const role = message?.role;
             if (role !== 'user' && role !== 'assistant') return [];
+            if (role === 'user') {
+                if (message.__vcpMetaThinkingV3__) return [];
+                if (isMetaThinkingV3Message(message)) {
+                    // 失标纯公式若紧邻本轮后续真实 user 上方，视为 V3 注入块跳过；用户单独发送的纯公式保留
+                    for (let j = index + 1; j < recentWindow.length; j++) {
+                        const next = recentWindow[j];
+                        if (!next || next.role === 'assistant') break;
+                        if (next.role === 'user' && !next.__vcpMetaThinkingV3__ && !isMetaThinkingV3Message(next)) {
+                            const nextText = extractTextFromContent(next.content);
+                            if (!/^\s*(?:\[系统(?!通知)[^\]]*\]|<!-- VCP_TOOL_PAYLOAD -->)/.test(nextText)) {
+                                return [];
+                            }
+                        }
+                    }
+                }
+            }
             const text = extractTextFromContent(message.content);
             if (role === 'user' && /^\s*(?:\[系统(?!通知)[^\]]*\]|<!-- VCP_TOOL_PAYLOAD -->)/.test(text)) return [];
             const clean = typeof ragPlugin.sanitizeForEmbedding === 'function'
