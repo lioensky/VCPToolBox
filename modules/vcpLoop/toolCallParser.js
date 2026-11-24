@@ -440,6 +440,193 @@ class ToolCallParser {
     }
     return !!last && last.nextOffset === text.length && !!this.parseBlock(last.blockContent);
   }
+  static _findHallucinatedSentinelInSegment(segment, isImmediatelyAfterTool) {
+    if (!segment) return null;
+    // Strong sentinels: line-leading tool payload/batch markers (optionally preceded by a bare `user` line).
+    const strongRegex = /(?:^|\r?\n)[ \t]*(?:user[ \t]*\r?\n+[ \t]*)?(?:<!--\s*VCP_TOOL_PAYLOAD\s*-->|<<<\[VCP_TOOL_BATCH_START:|(?:\[\[VCP调用结果信息汇总:))/;
+    const strongMatch = strongRegex.exec(segment);
+    if (strongMatch) {
+      return { index: strongMatch.index, matched: strongMatch[0].trim() };
+    }
+    // Secondary sentinel: only right after a completed tool block with only whitespace before `user\nResults:`.
+    if (isImmediatelyAfterTool) {
+      const userResultsRegex = /^[ \t]*(?:\r?\n[ \t]*)*user[ \t]*\r?\n+[ \t]*Results:[ \t]*(?:\r?\n|$)/;
+      const userResultsMatch = userResultsRegex.exec(segment);
+      if (userResultsMatch) {
+        return { index: userResultsMatch.index, matched: userResultsMatch[0].trim() };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 检测在至少一个完整合法工具块之后，正文（工具块外、非思考块、非代码围栏）是否出现伪造工具回灌哨兵。
+   * 命中时返回应截断的原始索引，保护并发工具块与自指代码参数不被误杀。
+   * @param {string} content
+   * @returns {{cutIndex: number, sentinelIndex: number, matched: string}|null}
+   */
+  static findHallucinatedToolPayloadCut(content) {
+    if (!content || typeof content !== 'string') return null;
+    if (
+      !content.includes('VCP_TOOL_PAYLOAD') &&
+      !content.includes('VCP_TOOL_BATCH_START:') &&
+      !content.includes('[[VCP调用结果信息汇总:') &&
+      !content.includes('Results:')
+    ) {
+      return null;
+    }
+
+    const len = content.length;
+    const thinkOpenRe = /^<[ \t]*(think(?:ing)?|thought(?:s)?|antthinking)\b(?:[ \t]+[^>\r\n<]*?)?[ \t]*>/i;
+    const thinkCloseRe = /^<[ \t]*\/[ \t]*(think(?:ing)?|thought(?:s)?|antthinking)[ \t]*>/i;
+
+    let cursor = 0;
+    let lastValidToolEnd = 0;
+    let inFence = false;
+    let fenceChar = '';
+    let fenceLen = 0;
+    let thinkDepth = 0;
+
+    const scanSegmentForSentinel = (segStart, segEnd) => {
+      if (lastValidToolEnd <= 0 || segEnd <= segStart) return null;
+      const seg = content.slice(segStart, segEnd);
+      const hit = this._findHallucinatedSentinelInSegment(seg, segStart === lastValidToolEnd);
+      if (!hit) return null;
+      const sentinelIndex = segStart + hit.index;
+      const between = content.slice(lastValidToolEnd, sentinelIndex);
+      const cutIndex = /^[ \t\r\n]*$/.test(between) ? lastValidToolEnd : sentinelIndex;
+      return { cutIndex, sentinelIndex, matched: hit.matched };
+    };
+
+    let plainSegStart = 0;
+    while (cursor < len) {
+      const atLineStart = cursor === 0 || content[cursor - 1] === '\n';
+
+      // Skip reasoning blocks so draft text inside <think> never triggers a body cut.
+      if (!inFence && content[cursor] === '<') {
+        const slice = content.slice(cursor, cursor + 48);
+        if (thinkDepth > 0) {
+          const closeM = thinkCloseRe.exec(slice);
+          if (closeM) {
+            thinkDepth -= 1;
+            cursor += closeM[0].length;
+            if (thinkDepth === 0) plainSegStart = cursor;
+            continue;
+          }
+          const nestedOpenM = thinkOpenRe.exec(slice);
+          if (nestedOpenM) {
+            thinkDepth += 1;
+            cursor += nestedOpenM[0].length;
+            continue;
+          }
+          cursor += 1;
+          continue;
+        }
+        if (atLineStart) {
+          const openM = thinkOpenRe.exec(slice);
+          if (openM) {
+            const hit = scanSegmentForSentinel(plainSegStart, cursor);
+            if (hit) return hit;
+            thinkDepth = 1;
+            cursor += openM[0].length;
+            continue;
+          }
+        }
+      }
+
+      if (thinkDepth > 0) {
+        cursor += 1;
+        continue;
+      }
+
+      // Skip fenced code blocks (``` or ~~~) at line start.
+      if (atLineStart) {
+        const lineEndIdx = content.indexOf('\n', cursor);
+        const lineEnd = lineEndIdx === -1 ? len : lineEndIdx + 1;
+        const lineText = content.slice(cursor, lineEnd);
+        const fenceM = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(lineText);
+        if (fenceM) {
+          const marker = fenceM[1];
+          if (!inFence) {
+            const hit = scanSegmentForSentinel(plainSegStart, cursor);
+            if (hit) return hit;
+            inFence = true;
+            fenceChar = marker[0];
+            fenceLen = marker.length;
+            cursor = lineEnd;
+            continue;
+          }
+          if (marker[0] === fenceChar && marker.length >= fenceLen && /^[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*\r?\n?$/.test(lineText)) {
+            inFence = false;
+            fenceChar = '';
+            fenceLen = 0;
+            cursor = lineEnd;
+            plainSegStart = cursor;
+            continue;
+          }
+        }
+      }
+
+      if (inFence) {
+        const nextNl = content.indexOf('\n', cursor);
+        cursor = nextNl === -1 ? len : nextNl + 1;
+        continue;
+      }
+
+      // Check for a tool block starting at or after cursor.
+      const startMatch = toolMarkerFuzzyMatcher.findBlockStartMarker(content, cursor);
+      if (!startMatch) {
+        // No more tool blocks; check the remaining tail if not inside a fence or think block.
+        const nextPossibleSpecial = content.indexOf('\n', cursor);
+        if (nextPossibleSpecial === -1) {
+          return scanSegmentForSentinel(plainSegStart, len);
+        }
+        cursor = nextPossibleSpecial + 1;
+        continue;
+      }
+
+      // Advance line-by-line up to startMatch.index so fences/think tags before startMatch are still respected.
+      if (startMatch.index > cursor) {
+        const nextNl = content.indexOf('\n', cursor);
+        if (nextNl !== -1 && nextNl < startMatch.index) {
+          cursor = nextNl + 1;
+          continue;
+        }
+        cursor = startMatch.index;
+      }
+
+      if (startMatch.index > plainSegStart) {
+        const hit = scanSegmentForSentinel(plainSegStart, startMatch.index);
+        if (hit) return hit;
+      }
+
+      const blockStart = startMatch.index + startMatch.marker.length;
+      const endMatch = this._findBlockEnd(content, blockStart);
+      if (!endMatch) {
+        // Unclosed tool block (e.g., streaming a subsequent concurrent tool call): never cut inside it.
+        return null;
+      }
+
+      const blockContent = content.substring(blockStart, endMatch.index).trim();
+      const nextOffset = endMatch.index + endMatch.marker.length;
+      if (this.parseBlock(blockContent)) {
+        lastValidToolEnd = nextOffset;
+      }
+      cursor = nextOffset;
+      plainSegStart = cursor;
+    }
+
+    if (!inFence && thinkDepth === 0) {
+      return scanSegmentForSentinel(plainSegStart, len);
+    }
+    return null;
+  }
+
+  static truncateHallucinatedToolPayload(content) {
+    const cut = this.findHallucinatedToolPayloadCut(content);
+    return cut ? content.slice(0, cut.cutIndex) : content;
+  }
+
   /**
    * 解析AI响应中的所有工具调用
    * @param {string} content - AI响应内容
@@ -448,7 +635,7 @@ class ToolCallParser {
   static parse(content) {
     if (!content || typeof content !== 'string') return [];
 
-    const contentWithoutThink = this.stripReasoningBlocks(content);
+    const contentWithoutThink = this.truncateHallucinatedToolPayload(this.stripReasoningBlocks(content));
     const toolCalls = [];
     let searchOffset = 0;
 

@@ -62,12 +62,126 @@ function findBatchEnd(text, match) {
 }
 
 /**
+ * Strip hallucinated `<!-- VCP_TOOL_PAYLOAD -->` blocks from historical assistant
+ * turns on outbound projection only, preventing few-shot snowballing without
+ * mutating persisted conversation history or touching code blocks.
+ */
+function stripHallucinatedToolPayloadsFromAssistantText(text) {
+    if (typeof text !== 'string' || !text.includes('VCP_TOOL_PAYLOAD')) return text;
+    if (!text.includes('END_TOOL_REQUEST')) return text;
+
+    const lines = text.split(/(?<=\n)/);
+    let inFence = false;
+    let fenceChar = '';
+    let fenceLen = 0;
+    let inToolBlock = false;
+    let sawToolEnd = false;
+    let skippingPayload = false;
+    let pendingBareUserLine = null;
+    const out = [];
+
+    for (const line of lines) {
+        if (!skippingPayload && !inFence) {
+            const hasStart = line.includes('<<<[TOOL_REQUEST]>>>');
+            const hasEnd = line.includes('<<<[END_TOOL_REQUEST]>>>');
+            if (hasStart && !hasEnd) {
+                if (pendingBareUserLine !== null) {
+                    out.push(pendingBareUserLine);
+                    pendingBareUserLine = null;
+                }
+                inToolBlock = true;
+                out.push(line);
+                continue;
+            }
+            if (inToolBlock) {
+                if (hasEnd) {
+                    inToolBlock = false;
+                    sawToolEnd = true;
+                }
+                out.push(line);
+                continue;
+            }
+        }
+
+        const fenceM = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+        if (!skippingPayload && fenceM) {
+            const marker = fenceM[1];
+            if (!inFence) {
+                if (pendingBareUserLine !== null) {
+                    out.push(pendingBareUserLine);
+                    pendingBareUserLine = null;
+                }
+                inFence = true;
+                fenceChar = marker[0];
+                fenceLen = marker.length;
+                out.push(line);
+                continue;
+            }
+            if (marker[0] === fenceChar && marker.length >= fenceLen && /^[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*\r?\n?$/.test(line)) {
+                inFence = false;
+                fenceChar = '';
+                fenceLen = 0;
+                out.push(line);
+                continue;
+            }
+        }
+
+        if (inFence) {
+            out.push(line);
+            continue;
+        }
+
+        if (skippingPayload) {
+            if (/<!--\s*VCP_TOOL_PAYLOAD_END\s*-->/.test(line)) {
+                const endIdx = line.search(/<!--\s*VCP_TOOL_PAYLOAD_END\s*-->/);
+                const after = line.slice(endIdx).replace(/^<!--\s*VCP_TOOL_PAYLOAD_END\s*-->/, '');
+                skippingPayload = false;
+                if (after.trim()) {
+                    out.push(after);
+                }
+            }
+            continue;
+        }
+
+        if (sawToolEnd) {
+            if (/^[ \t]*user[ \t]*\r?\n?$/.test(line)) {
+                if (pendingBareUserLine !== null) out.push(pendingBareUserLine);
+                pendingBareUserLine = line;
+                continue;
+            }
+            if (/^[ \t]*<!--\s*VCP_TOOL_PAYLOAD\s*-->/.test(line)) {
+                pendingBareUserLine = null;
+                if (!/<!--\s*VCP_TOOL_PAYLOAD_END\s*-->/.test(line)) {
+                    skippingPayload = true;
+                }
+                continue;
+            }
+            if (pendingBareUserLine !== null) {
+                out.push(pendingBareUserLine);
+                pendingBareUserLine = null;
+            }
+        }
+
+        if (line.includes('END_TOOL_REQUEST')) {
+            sawToolEnd = true;
+        }
+        out.push(line);
+    }
+
+    if (pendingBareUserLine !== null) out.push(pendingBareUserLine);
+    return out.join('');
+}
+
+/**
  * Project only wrapper boundaries, never protocol-looking text inside a payload.
  * This is structural recognition, not authentication of server origin.
  */
 function projectBatchWrapperText(text, role) {
     if (!['assistant', 'user'].includes(role) ||
         typeof text !== 'string' || /^\s*<!-- VCP_TOOL_PAYLOAD -->/.test(text)) return text;
+    if (role === 'assistant') {
+        text = stripHallucinatedToolPayloadsFromAssistantText(text);
+    }
     const scanner = createBatchStartScanner();
     const edits = [];
     let cursor = 0;

@@ -22,11 +22,11 @@ class ToolMarkerFuzzyMatcher {
   }
 
   getEscapeStartRegex(anchor = false) {
-    return new RegExp(`${anchor ? '^' : ''}[「{]始ESCAPE[」}]`, 'i');
+    return new RegExp(`${anchor ? '^' : ''}[「{«]始ESCAPE[」}»]`, 'i');
   }
 
   getEscapeEndRegex(anchor = false) {
-    return new RegExp(`${anchor ? '^' : ''}[「{]末ESCAPE[」}]`, 'i');
+    return new RegExp(`${anchor ? '^' : ''}[「{«]末ESCAPE[」}»]`, 'i');
   }
 
   _findToolBlockMarker(content, cursor, label, canonicalMarker) {
@@ -80,7 +80,7 @@ class ToolMarkerFuzzyMatcher {
 
     const slice = content.slice(cursor);
     const strictCandidates = this.enabled
-      ? ['「始」', '{始}', '{始」', '「始}']
+      ? ['「始」', '{始}', '{始」', '「始}', '«始»', '«始」', '「始»']
       : ['「始」'];
 
     for (const candidate of strictCandidates) {
@@ -96,7 +96,7 @@ class ToolMarkerFuzzyMatcher {
       return null;
     }
 
-    const fuzzyMatch = /^[「{]始(?!ESCAPE)(?:[^\r\n「{]*?[」}])/i.exec(slice);
+    const fuzzyMatch = /^[「{«]始(?!ESCAPE)(?:[^\r\n「{«]*?[」}»])/i.exec(slice);
     if (!fuzzyMatch) {
       return null;
     }
@@ -114,7 +114,7 @@ class ToolMarkerFuzzyMatcher {
     }
 
     const strictCandidates = this.enabled
-      ? ['「末」', '{末}', '{末」', '「末}']
+      ? ['「末」', '{末}', '{末」', '「末}', '«末»', '«末」', '「末»']
       : ['「末」'];
 
     let bestMatch = null;
@@ -131,7 +131,7 @@ class ToolMarkerFuzzyMatcher {
     }
 
     if (this.enabled) {
-      const fuzzyEndRegex = /[「{]末(?!ESCAPE)(?:[^\r\n「{]*?[」}])/gi;
+      const fuzzyEndRegex = /[「{«]末(?!ESCAPE)(?:[^\r\n「{«]*?[」}»])/gi;
       fuzzyEndRegex.lastIndex = cursor;
       const fuzzyMatch = fuzzyEndRegex.exec(content);
       if (fuzzyMatch && (!bestMatch || fuzzyMatch.index < bestMatch.index)) {

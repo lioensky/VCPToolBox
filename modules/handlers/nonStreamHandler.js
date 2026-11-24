@@ -333,6 +333,26 @@ class NonStreamHandler {
       }
 
       let anyToolProcessedInCurrentIteration = false;
+      if (!vcpToolUseForbidden) {
+        const hallucinatedCut = ToolCallParser.findHallucinatedToolPayloadCut?.(currentAIContentForLoop);
+        if (hallucinatedCut) {
+          console.warn(`[VCP NonStream HallucinationGuard] 检测到工具块后伪造工具回灌哨兵 (${hallucinatedCut.matched})，已截断后续内容。`);
+          currentAIContentForLoop = currentAIContentForLoop.slice(0, hallucinatedCut.cutIndex);
+          if (typeof currentAIContentForClient === 'string') {
+            const clientCut = ToolCallParser.findHallucinatedToolPayloadCut?.(currentAIContentForClient);
+            if (clientCut) {
+              currentAIContentForClient = currentAIContentForClient.slice(0, clientCut.cutIndex);
+            }
+          }
+          if (oneRingAssistantTurnParts.length > 0) {
+            const lastIdx = oneRingAssistantTurnParts.length - 1;
+            const lastCut = ToolCallParser.findHallucinatedToolPayloadCut?.(oneRingAssistantTurnParts[lastIdx]);
+            if (lastCut) {
+              oneRingAssistantTurnParts[lastIdx] = oneRingAssistantTurnParts[lastIdx].slice(0, lastCut.cutIndex);
+            }
+          }
+        }
+      }
       conversationHistoryForClient.push(currentAIContentForClient);
 
       const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(currentAIContentForLoop);

@@ -364,6 +364,89 @@ class StreamHandler {
           };
           res.write(`data: ${JSON.stringify(closePayload)}\n\n`);
         };
+
+        const MAX_HALLUCINATION_HOLDBACK = 64;
+        const HALLUCINATION_SENTINEL_PREFIXES = [
+          '<!-- VCP_TOOL_PAYLOAD -->',
+          '<!--VCP_TOOL_PAYLOAD-->',
+          '<<<[VCP_TOOL_BATCH_START:',
+          '[[VCP调用结果信息汇总:'
+        ];
+        let pendingClientOutputs = [];
+        let holdbackText = '';
+
+        const isPrefixOfAny = (str, candidates) =>
+          candidates.some(cand => cand.startsWith(str) || str.startsWith(cand));
+
+        const isPotentialHallucinationPrefix = (text) => {
+          if (!text || text.length > MAX_HALLUCINATION_HOLDBACK) return false;
+          const trimmed = text.replace(/^[ \t\r\n]+/, '');
+          if (!trimmed) return true;
+          if (isPrefixOfAny(trimmed, HALLUCINATION_SENTINEL_PREFIXES)) return true;
+          if ('user'.startsWith(trimmed)) return true;
+          const userMatch = /^user[ \t]*(\r?\n[\s\S]*)?$/.exec(trimmed);
+          if (userMatch) {
+            const afterUser = (userMatch[1] || '').replace(/^[ \t\r\n]+/, '');
+            if (!afterUser) return true;
+            return isPrefixOfAny(afterUser, [...HALLUCINATION_SENTINEL_PREFIXES, 'Results:']);
+          }
+          return false;
+        };
+
+        const flushPendingClientOutputs = () => {
+          if (pendingClientOutputs.length === 0) return;
+          const queued = pendingClientOutputs;
+          pendingClientOutputs = [];
+          holdbackText = '';
+          if (res.writableEnded || res.destroyed) return;
+          for (const outLine of queued) {
+            try {
+              res.write(outLine);
+            } catch (e) {
+              streamAborted = true;
+              break;
+            }
+          }
+        };
+
+        const discardPendingClientOutputs = () => {
+          pendingClientOutputs = [];
+          holdbackText = '';
+        };
+
+        const takeHallucinatedToolPayload = (cutInfo, prevLen, parsedDataForSafePrefix) => {
+          if (streamSettled || streamAborted) return false;
+          if (cutInfo.cutIndex > prevLen && parsedDataForSafePrefix) {
+            flushPendingClientOutputs();
+            const safeSlice = collectedContentThisTurn.slice(prevLen, cutInfo.cutIndex);
+            if (safeSlice && !res.writableEnded && !res.destroyed) {
+              try {
+                const safeData = JSON.parse(JSON.stringify(parsedDataForSafePrefix));
+                if (safeData.choices?.[0]?.delta) {
+                  safeData.choices[0].delta.content = safeSlice;
+                }
+                const transformedSafe = transformParsedDataForClient(safeData);
+                res.write(`data: ${JSON.stringify(transformedSafe)}\n\n`);
+              } catch (e) { /* ignore */ }
+            }
+          } else {
+            discardPendingClientOutputs();
+          }
+
+          collectedContentThisTurn = collectedContentThisTurn.slice(0, cutInfo.cutIndex);
+          message.content = message.content.slice(0, cutInfo.cutIndex);
+          streamSettled = true;
+          if (toolTailTimer) clearTimeout(toolTailTimer);
+          if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
+          abortController?.signal.removeEventListener('abort', abortHandler);
+          writeClientReasoningCloseChunk();
+          console.warn(`[VCP Stream HallucinationGuard] requestId=${id || 'unknown'} 检测到工具块后伪造工具回灌哨兵 (${cutInfo.matched})；已截断后续内容、销毁上游流并继续 ToolLoop。`);
+          aiResponse.body?.destroy();
+          resolve({ ...result(), malformedFunctionCall: false, completed: true });
+          return true;
+        };
+
         const canTakeToolTail = () =>
           !streamSettled && !streamAborted && !hasPayloadError && aiResponse.ok &&
           !vcpToolUseForbidden && !abortController?.signal.aborted &&
@@ -374,6 +457,7 @@ class StreamHandler {
 
         const takeToolTail = (reason) => {
           if (!canTakeToolTail()) return false;
+          flushPendingClientOutputs();
           streamSettled = true;
           if (toolTailTimer) clearTimeout(toolTailTimer);
           if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
@@ -467,10 +551,13 @@ class StreamHandler {
           sseLineBuffer = lines.pop(); // 最后一项可能是截断的，留到下一轮
 
           for (const line of lines) {
+            if (streamSettled || streamAborted) break;
             const trimmedLine = line.trim();
             const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
             if (isDoneLine) sawDone = true;
             let parsedData = null;
+            const prevContentLen = collectedContentThisTurn.length;
+            let deltaContent = '';
 
             if (trimmedLine.startsWith('data:')) {
               const jsonData = trimmedLine.substring(5).trim();
@@ -478,8 +565,17 @@ class StreamHandler {
                 try {
                   parsedData = JSON.parse(jsonData);
                   observePayload(parsedData);
+                  deltaContent = typeof parsedData.choices?.[0]?.delta?.content === 'string'
+                    ? parsedData.choices[0].delta.content
+                    : '';
                   // 后台始终收集未经展示转换的原始 delta。
                   appendDelta(parsedData.choices?.[0]?.delta);
+                  if (!vcpToolUseForbidden && deltaContent && !malformedFunctionCall) {
+                    const hallucinatedCut = ToolCallParser.findHallucinatedToolPayloadCut?.(collectedContentThisTurn);
+                    if (hallucinatedCut && takeHallucinatedToolPayload(hallucinatedCut, prevContentLen, parsedData)) {
+                      break;
+                    }
+                  }
                 } catch (e) { invalidPayload = true; hasPayloadError = true; }
               }
             }
@@ -490,13 +586,43 @@ class StreamHandler {
             if (!res.writableEnded && !res.destroyed) {
               try {
                 if (isDoneLine) {
+                  flushPendingClientOutputs();
                   writeClientReasoningCloseChunk();
                 } else if (parsedData) {
                   const transformedData = transformParsedDataForClient(parsedData);
-                  res.write(`data: ${JSON.stringify(transformedData)}\n`);
+                  const serialized = `data: ${JSON.stringify(transformedData)}\n`;
+                  const hasFinish = Boolean(parsedData.choices?.[0]?.finish_reason);
+                  if (!vcpToolUseForbidden && !hasFinish && deltaContent) {
+                    if (pendingClientOutputs.length > 0) {
+                      const nextHoldback = holdbackText + deltaContent;
+                      if (isPotentialHallucinationPrefix(nextHoldback)) {
+                        holdbackText = nextHoldback;
+                        pendingClientOutputs.push(serialized);
+                        continue;
+                      }
+                      flushPendingClientOutputs();
+                    } else if (
+                      ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn.slice(0, prevContentLen)) === true &&
+                      isPotentialHallucinationPrefix(deltaContent)
+                    ) {
+                      holdbackText = deltaContent;
+                      pendingClientOutputs.push(serialized);
+                      continue;
+                    }
+                  } else if (hasFinish) {
+                    flushPendingClientOutputs();
+                  } else if (pendingClientOutputs.length > 0) {
+                    pendingClientOutputs.push(serialized);
+                    continue;
+                  }
+                  res.write(serialized);
                 } else {
-                  // 保留空行，因为 SSE 依靠空行分隔消息块。
-                  res.write(line + '\n');
+                  if (pendingClientOutputs.length > 0) {
+                    pendingClientOutputs.push(line + '\n');
+                  } else {
+                    // 保留空行，因为 SSE 依靠空行分隔消息块。
+                    res.write(line + '\n');
+                  }
                 }
               } catch (writeError) {
                 streamAborted = true;
@@ -521,6 +647,8 @@ class StreamHandler {
             const isDoneLine = trimmedLine === 'data: [DONE]' || trimmedLine === 'data:[DONE]';
             if (isDoneLine) sawDone = true;
             let parsedData = null;
+            const prevContentLen = collectedContentThisTurn.length;
+            let deltaContent = '';
 
             if (trimmedLine.startsWith('data:')) {
               const jsonData = trimmedLine.substring(5).trim();
@@ -528,13 +656,24 @@ class StreamHandler {
                 try {
                   parsedData = JSON.parse(jsonData);
                   observePayload(parsedData);
+                  deltaContent = typeof parsedData.choices?.[0]?.delta?.content === 'string'
+                    ? parsedData.choices[0].delta.content
+                    : '';
                   appendDelta(parsedData.choices?.[0]?.delta);
+                  if (!vcpToolUseForbidden && deltaContent && !malformedFunctionCall) {
+                    const hallucinatedCut = ToolCallParser.findHallucinatedToolPayloadCut?.(collectedContentThisTurn);
+                    if (hallucinatedCut && takeHallucinatedToolPayload(hallucinatedCut, prevContentLen, parsedData)) {
+                      sseLineBuffer = '';
+                      return;
+                    }
+                  }
                 } catch (e) { invalidPayload = true; hasPayloadError = true; }
               }
             }
 
             if (!res.writableEnded && !res.destroyed) {
               try {
+                flushPendingClientOutputs();
                 if (isDoneLine) {
                   writeClientReasoningCloseChunk();
                 } else if (parsedData && !malformedFunctionCall) {
@@ -546,6 +685,7 @@ class StreamHandler {
             }
           }
 
+          flushPendingClientOutputs();
           sseLineBuffer = '';
           if (!finishReason && !sawDone && takeToolTail('upstream_end_without_terminal')) return;
           writeClientReasoningCloseChunk();
