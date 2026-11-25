@@ -3712,3 +3712,7 @@ mod production_warped_config_tests {
             r#"{"warpedRadiusStrategy":"unknown"}"#).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "memo_v6_transport_probe.rs"]
+mod memo_v6_transport_probe;
