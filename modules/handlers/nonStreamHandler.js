@@ -179,6 +179,7 @@ class NonStreamHandler {
       roleDividerSwitches,
       roleDividerScanSwitches,
       roleDividerRemoveDisabledTags,
+      touchRequestActivity,
       toolExecutor,
       ToolCallParser,
       abortController,
@@ -326,11 +327,12 @@ class NonStreamHandler {
     let currentMessagesForNonStreamLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
 
     do {
-      // 检查中止信号
+      // 检查中止信号并刷新非流式多轮工具循环活性时间戳
       if (abortController && abortController.signal.aborted) {
         if (DEBUG_MODE) console.log('[VCP NonStream Loop] Abort detected, exiting loop.');
         break;
       }
+      touchRequestActivity?.();
 
       let anyToolProcessedInCurrentIteration = false;
       conversationHistoryForClient.push(currentAIContentForClient);
@@ -455,7 +457,17 @@ class NonStreamHandler {
         }
         currentMessagesForNonStreamLoop.push(...assistantMessages);
 
-        const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForNonStreamLoop);
+        const nonStreamActivityTimer = setInterval(() => {
+          touchRequestActivity?.();
+        }, 5000);
+        nonStreamActivityTimer.unref?.();
+        let toolResults;
+        try {
+          toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForNonStreamLoop);
+        } finally {
+          clearInterval(nonStreamActivityTimer);
+          touchRequestActivity?.();
+        }
         const normalCallLogs = (() => {
           let logs = [];
           if (writeChatLog) {

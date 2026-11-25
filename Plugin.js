@@ -1761,11 +1761,68 @@ class PluginManager extends EventEmitter {
             });
 
 
-            let outputBuffer = ''; // Buffer to accumulate data chunks
+            const outputChunks = []; // 收集 stdout 分块，避免同步插件大输出时反复触发 ConsString 扁平化与正则回溯
             let errorOutput = '';
             let processExited = false;
             let initialResponseSent = false; // Flag for async plugins
             const isAsyncPlugin = plugin.pluginType === 'asynchronous';
+
+            // 线性 O(N) 括号深度平衡扫描器：支持嵌套对象、格式化换行与前置杂音日志，零正则回溯
+            const extractFirstStatusJsonObject = (text) => {
+                if (!text || typeof text !== 'string') return null;
+                const len = text.length;
+                let searchFrom = 0;
+                while (searchFrom < len) {
+                    const startIdx = text.indexOf('{', searchFrom);
+                    if (startIdx === -1) return null;
+                    let depth = 0;
+                    let inString = false;
+                    let escape = false;
+                    let endIdx = -1;
+                    for (let i = startIdx; i < len; i++) {
+                        const ch = text.charCodeAt(i);
+                        if (inString) {
+                            if (escape) {
+                                escape = false;
+                            } else if (ch === 92) { // '\\'
+                                escape = true;
+                            } else if (ch === 34) { // '"'
+                                inString = false;
+                            }
+                            continue;
+                        }
+                        if (ch === 34) { // '"'
+                            inString = true;
+                        } else if (ch === 123) { // '{'
+                            depth++;
+                        } else if (ch === 125) { // '}'
+                            depth--;
+                            if (depth === 0) {
+                                endIdx = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (endIdx === -1) {
+                        // 当前顶层 '{' 尚未闭合，等待后续 chunk 或尝试下一个 '{'（防止前置日志含孤立 '{'）
+                        const nextBrace = text.indexOf('{', startIdx + 1);
+                        if (nextBrace === -1) return null;
+                        searchFrom = startIdx + 1;
+                        continue;
+                    }
+                    const candidate = text.slice(startIdx, endIdx + 1);
+                    try {
+                        const parsed = JSON.parse(candidate);
+                        if (parsed && typeof parsed === 'object' && (parsed.status === 'success' || parsed.status === 'error')) {
+                            return parsed;
+                        }
+                    } catch {
+                        // 非合法 JSON，继续从下一个 '{' 扫描
+                    }
+                    searchFrom = startIdx + 1;
+                }
+                return null;
+            };
             const isArcheryNoReply = isAsyncPlugin && executionOptions?.archeryNoReply === true;
             const noReplyGraceMs = Number.isFinite(Number(executionOptions?.archeryNoReplyGraceMs))
                 ? Math.max(0, Number(executionOptions.archeryNoReplyGraceMs))
@@ -1820,47 +1877,33 @@ class PluginManager extends EventEmitter {
             pluginProcess.stdout.on('data', (data) => {
                 if (processExited || (isAsyncPlugin && initialResponseSent)) {
                     // If async and initial response sent, or process exited, ignore further stdout for this Promise.
-                    // The plugin's background task might still log to its own stdout, but we don't collect it here.
                     if (this.debugMode && isAsyncPlugin && initialResponseSent) console.log(`[PluginManager executePlugin Internal] Async plugin ${pluginName} (initial response sent) produced more stdout: ${data.substring(0, 100)}...`);
                     return;
                 }
-                outputBuffer += data;
-                try {
-                    // Try to parse a complete JSON object from the buffer.
-                    // This is a simple check; for robust streaming JSON, a more complex parser is needed.
-                    // We assume the first complete JSON is the one we want for async initial response.
-                    const potentialJsonMatch = outputBuffer.match(/(\{[\s\S]*?\})(?:\s|$)/);
-                    if (potentialJsonMatch && potentialJsonMatch[1]) {
-                        const jsonString = potentialJsonMatch[1];
-                        const parsedOutput = JSON.parse(jsonString);
+                outputChunks.push(data);
 
-                        if (parsedOutput && (parsedOutput.status === "success" || parsedOutput.status === "error")) {
-                            if (isAsyncPlugin) {
-                                if (!initialResponseSent) {
-                                    if (noReplyTimerId) clearTimeout(noReplyTimerId);
-                                    if (isArcheryNoReply && parsedOutput.status === "success") {
-                                        resolveArcheryNoReplySilent('initial_success_json');
-                                        return;
-                                    }
-                                    if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" sent initial JSON response. Resolving promise.`);
-                                    initialResponseSent = true;
-                                    // For async, we resolve with the first valid JSON and let the process continue if it has non-daemon threads.
-                                    // We don't clear the main timeout here for async, as the process might still need to be killed if it misbehaves badly later.
-                                    // However, the primary purpose of this promise is fulfilled.
-                                    resolve(parsedOutput);
-                                    // We don't return or clear outputBuffer here, as more data might be part of a *synchronous* plugin's single large JSON output.
-                                }
-                            } else { // Synchronous plugin
-                                // For sync plugins, we wait for 'exit' to ensure all output is collected.
-                                // This block within 'data' event is more for validating if the output *looks* like our expected JSON.
-                                // The actual resolve for sync plugins happens in 'exit'.
-                                if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Sync plugin "${pluginName}" current output buffer contains a potential JSON.`);
-                            }
-                        }
+                // 同步插件固定在 exit 事件一次性拼接并解析，绝不在每个 64KB chunk 上重复扫描几十 MB 缓冲区
+                if (!isAsyncPlugin) {
+                    return;
+                }
+
+                // 异步插件首包探测：只有当新到达的分块包含 '}' 时才可能刚闭合一个顶层 JSON 对象
+                if (!data.includes('}')) {
+                    return;
+                }
+
+                const currentAsyncBuffer = outputChunks.join('');
+                const parsedOutput = extractFirstStatusJsonObject(currentAsyncBuffer);
+                if (parsedOutput && !initialResponseSent) {
+                    if (noReplyTimerId) clearTimeout(noReplyTimerId);
+                    outputChunks.length = 0; // 首包已提取，释放缓冲区防止后台长耗时任务 stdout 累积占内存
+                    if (isArcheryNoReply && parsedOutput.status === "success") {
+                        resolveArcheryNoReplySilent('initial_success_json');
+                        return;
                     }
-                } catch (e) {
-                    // Incomplete JSON or invalid JSON, wait for more data or 'exit' event.
-                    if (this.debugMode && outputBuffer.length > 2) console.log(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout buffer not yet a complete JSON or invalid. Buffer: ${outputBuffer.substring(0, 100)}...`);
+                    if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" sent initial JSON response. Resolving promise.`);
+                    initialResponseSent = true;
+                    resolve(parsedOutput);
                 }
             });
 
@@ -1898,8 +1941,17 @@ class PluginManager extends EventEmitter {
                     return;
                 }
 
+                const finalStdout = outputChunks.join('').trim();
+                outputChunks.length = 0;
                 try {
-                    const parsedOutput = JSON.parse(outputBuffer.trim()); // Use accumulated outputBuffer
+                    let parsedOutput = null;
+                    try {
+                        parsedOutput = JSON.parse(finalStdout);
+                    } catch (directParseErr) {
+                        // 若 stdout 前后混有非 JSON 调试行，回退至线性括号平衡提取器捞取完整状态 JSON
+                        parsedOutput = extractFirstStatusJsonObject(finalStdout);
+                        if (!parsedOutput) throw directParseErr;
+                    }
                     if (parsedOutput && (parsedOutput.status === "success" || parsedOutput.status === "error")) {
                         if (code !== 0 && parsedOutput.status === "success" && this.debugMode) {
                             console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code ${code} but reported success in JSON. Trusting JSON.`);
@@ -1913,9 +1965,9 @@ class PluginManager extends EventEmitter {
                         else if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Plugin ${pluginName} exited, initial async response already sent.`);
                         return;
                     }
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${outputBuffer.trim().substring(0, 100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${finalStdout.substring(0, 100)}`);
                 } catch (e) {
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${outputBuffer.trim().substring(0, 100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${finalStdout.substring(0, 100)}`);
                 }
 
                 if (!initialResponseSent) { // Only reject if no response has been sent yet
@@ -1937,12 +1989,12 @@ class PluginManager extends EventEmitter {
                         });
                     } else if (code !== 0) {
                         let detailedError = `Plugin "${pluginName}" exited with code ${code}.`;
-                        if (outputBuffer.trim()) detailedError += ` Stdout: ${outputBuffer.trim().substring(0, 200)}`;
+                        if (finalStdout) detailedError += ` Stdout: ${finalStdout.substring(0, 200)}`;
                         if (errorOutput.trim()) detailedError += ` Stderr: ${errorOutput.trim().substring(0, 200)}`;
                         reject(new Error(detailedError));
                     } else {
                         // Exit code 0, but no valid initial JSON response was sent/parsed.
-                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${outputBuffer.trim().substring(0, 200)}`));
+                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${finalStdout.substring(0, 200)}`));
                     }
                 }
             });
