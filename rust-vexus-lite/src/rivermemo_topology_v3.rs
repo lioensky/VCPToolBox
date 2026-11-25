@@ -3251,8 +3251,7 @@ pub(crate) fn run_native_with_observation(
             })
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
-    let wormhole_traces = wormhole::apply_unified_bonus(
-        &mut work, &wormhole::Model::default(), &input, &omega, &artifact);
+    let wormhole_traces = wormhole::apply_ordinary_proxy(&mut work, &input, &omega, &artifact);
     // Stable sort retains the complete baseline comparator for equal fusion scores.
     work.sort_by(|a, b| b.ranking_score.total_cmp(&a.ranking_score));
     let ranked_count = work.len();

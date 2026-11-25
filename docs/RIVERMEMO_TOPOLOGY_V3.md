@@ -72,7 +72,7 @@ C_T[1-(1-g/C_T)(1-t/C_T)],
 
 内部虫洞通道不将分数转换为倒数名次。最终按连续分降序稳定排序，同分保留按原最终分、联合候选分和联合候选序号得到的比较器次序。外部 Rerank+ 的 RRF 排位融合不属于内部拓扑评分。
 
-实现见 [`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs)、[`apply_unified_bonus()`](../rust-vexus-lite/src/rivermemo_wormhole.rs)。
+实现见 [`assign_v3_scores()`](../rust-vexus-lite/src/rivermemo_topology_v3.rs)、[`apply_ordinary_proxy()`](../rust-vexus-lite/src/rivermemo_wormhole.rs)。
 
 ## 2. 对象、职责与生命周期
 
