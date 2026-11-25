@@ -14,6 +14,10 @@ mod snapshot;
 #[path = "warped_convert_tests.rs"]
 mod convert_tests;
 
+#[cfg(test)]
+#[path = "lain_b1_export.rs"]
+mod lain_b1_export;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WarpedFieldConfig {
     pub profile: WarpedProfile,

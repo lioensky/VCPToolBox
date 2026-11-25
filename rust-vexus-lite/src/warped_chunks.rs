@@ -7,6 +7,10 @@ use vcp_tdb_index::index::quiver::hyperbolic::{
 };
 use vcp_tdb_index::index::quiver::hyperbolic::warped_geometry::WarpedProfile;
 
+#[cfg(test)]
+#[path = "lain_b0_replay.rs"]
+mod lain_b0_replay;
+
 const LEGACY_RULE: &str = "chunk-axis-residual-v1";
 const RULE: &str = "chunk-axis-alignment-quantiles-v2";
 const MAGIC: &[u8; 8] = b"VCPWC001";
