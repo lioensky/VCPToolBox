@@ -4,6 +4,31 @@ const fs = require('node:fs');
 const path = require('node:path');
 const MetaThinkingManager = require('../Plugin/RAGDiaryPlugin/MetaThinkingManager');
 
+// Geometry/cache unit tests use a reader stub over their own fixtures.
+// Real N-API storage is exercised separately on a disposable database.
+function fixtureStarReader(dbPath, epaMean) {
+    return {
+        dbPath,
+        async readMetaStarPool(diaries, knownFingerprint) {
+            const Database = require('better-sqlite3');
+            const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+            try {
+                const rows = db.prepare(`
+                    SELECT c.id AS chunkId, c.file_id AS fileId, c.vector_version AS vectorVersion,
+                           c.content AS text, c.vector, f.diary_name AS diaryName, f.path AS sourceFile
+                    FROM chunks c JOIN files f ON f.id = c.file_id
+                    WHERE f.diary_name IN (${diaries.map(() => '?').join(',')}) ORDER BY c.id
+                `).all(...diaries);
+                const fingerprint = require('node:crypto').createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+                const mean = epaMean && Buffer.from(epaMean.buffer, epaMean.byteOffset, epaMean.byteLength).toString('base64');
+                return knownFingerprint === fingerprint ? { fingerprint } : { fingerprint, rows, epaMean: mean };
+            } finally {
+                db.close();
+            }
+        }
+    };
+}
+
 function unit(arr) {
     let normSq = 0;
     for (const v of arr) normSq += v * v;
@@ -176,17 +201,35 @@ test('processMetaThinkingV3 invokes executeNativeRiverQuery once and integrates 
     assert.equal(names[2], '星戊', 'awakened personal diary bridge must steer slingshot star toward 星戊');
 });
 
+function singleStarReader() {
+    const row = {
+        chunkId: 1, fileId: 1, vectorVersion: 1, sourceFile: '星甲.md',
+        diaryName: '希夷星池簇', text: '星甲', vector: Buffer.from(unit([1, 0, 0, 0]).buffer)
+    };
+    return {
+        dbPath: path.join(require('node:os').tmpdir(), 'vcp-meta-unit-star-pool.sqlite'),
+        async readMetaStarPool() { return { fingerprint: 'single-star', rows: [row] }; }
+    };
+}
 test('real local VectorStore read-only smoke test for V3.1 star-pool cache and latency', async (t) => {
     const dbPath = path.join(__dirname, '..', 'VectorStore', 'knowledge_base.sqlite');
     if (!fs.existsSync(dbPath)) {
         t.skip('local VectorStore/knowledge_base.sqlite not present');
         return;
     }
+    const hasStars = new (require('better-sqlite3'))(dbPath, { readonly: true, fileMustExist: true });
+    let isStarScopePresent;
+    try {
+        isStarScopePresent = hasStars.prepare(`
+            SELECT 1 FROM chunks c JOIN files f ON c.file_id = f.id
+            WHERE f.diary_name = ? AND length(c.vector) > 0 LIMIT 1
+        `).get('希夷星池簇');
+    } finally {
+        hasStars.close();
+    }
+    if (!isStarScopePresent) return t.skip('local VectorStore does not contain the smoke test star scope');
     const storePath = path.dirname(dbPath);
-    const mockVdb = {
-        dbPath,
-        config: { storePath }
-    };
+    const mockVdb = { ...fixtureStarReader(dbPath), config: { storePath } };
     const mtm = new MetaThinkingManager({ vectorDBManager: mockVdb });
     const manifold = mtm._v3LoadGlobalManifold(mockVdb);
     if (!manifold) {
@@ -194,13 +237,13 @@ test('real local VectorStore read-only smoke test for V3.1 star-pool cache and l
         return;
     }
 
-    const pool1 = mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], manifold);
+    const pool1 = await mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], manifold);
     assert.ok(pool1 && pool1.stars.length > 0, 'star pool cache should load stars from real DB');
     assert.ok(pool1.starMeanAxis && pool1.starMeanAxis.length === manifold.meanAxis.length);
 
     // Second call must hit cache (exact same object reference)
     const tCache0 = Date.now();
-    const pool2 = mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], manifold);
+    const pool2 = await mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], manifold);
     const cacheMs = Date.now() - tCache0;
     assert.strictEqual(pool1, pool2, 'second load must hit in-memory star pool cache');
     assert.ok(cacheMs < 50, `cache check should be fast, got ${cacheMs}ms`);
@@ -479,7 +522,7 @@ test('multi-chunk star card aggregates all chunk vectors in starPool and populat
     }
     try {
         const mtm = new MetaThinkingManager({});
-        const pool = mtm._v3LoadStarPoolCache({ dbPath }, ['希夷星池簇'], null, { ttlMs: 0 });
+        const pool = await mtm._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['希夷星池簇'], null, { ttlMs: 0 });
         assert.equal(pool.stars.length, 2, 'multi-chunk star must deduplicate to 1 star entry');
         const starA = pool.byStarName.get('星甲');
         assert.equal(starA.chunks.length, 2, 'starA must retain both chunks');
@@ -491,31 +534,22 @@ test('multi-chunk star card aggregates all chunk vectors in starPool and populat
     }
 });
 
-test('starPool & manifold TTL cache serves repeated calls in-memory without re-opening SQLite', (t) => {
-    const dbPath = path.join(__dirname, '..', 'VectorStore', 'knowledge_base.sqlite');
-    if (!fs.existsSync(dbPath)) {
-        t.skip('local VectorStore/knowledge_base.sqlite not present');
-        return;
-    }
-    const storePath = path.dirname(dbPath);
-    const vdb = { dbPath, config: { storePath } };
-    const mtm = new MetaThinkingManager({ vectorDBManager: vdb });
-    const m1 = mtm._v3LoadGlobalManifold(vdb);
-    if (!m1) {
-        t.skip('no .vcpwc snapshot present');
-        return;
-    }
-    const p1 = mtm._v3LoadStarPoolCache(vdb, ['希夷星池簇'], m1);
-    assert.ok(p1 && p1.checkedAt > 0);
-
-    // Within 3s TTL, repeated loads return identical references in < 2ms (zero disk/SQLite I/O)
-    const t0 = Date.now();
+test('star-pool TTL serves repeated calls without a second native read', async () => {
+    const vdb = singleStarReader();
+    let reads = 0;
+    const read = vdb.readMetaStarPool;
+    vdb.readMetaStarPool = async () => {
+        reads++;
+        return read();
+    };
+    const mtm = new MetaThinkingManager({});
+    const scope = ['希夷星池簇'];
+    const first = await mtm._v3LoadStarPoolCache(vdb, scope, null, { ttlMs: 60_000 });
+    assert.ok(first?.stars.length);
     for (let i = 0; i < 20; i++) {
-        assert.strictEqual(mtm._v3LoadGlobalManifold(vdb), m1);
-        assert.strictEqual(mtm._v3LoadStarPoolCache(vdb, ['希夷星池簇'], m1), p1);
+        assert.strictEqual(await mtm._v3LoadStarPoolCache(vdb, scope, null, { ttlMs: 60_000 }), first);
     }
-    const elapsed = Date.now() - t0;
-    assert.ok(elapsed < 10, `20 TTL-cached lookups should take <10ms, got ${elapsed}ms`);
+    assert.equal(reads, 1);
 });
 
 test('diary bridge uses exact 2D orthonormal-basis projection and suppresses zero-novelty / noisy residuals', async () => {
@@ -1513,7 +1547,7 @@ test('V3.5 regression: RAGDiaryPlugin tracks riverDiaryUseGroupFlags per useGrou
     }
 });
 
-test('V3.5 audit repro #1: _v3StarPoolCache bounds LRU size, normalizes direct diaryNames, and evicts stale entry when empty', () => {
+test('V3.5 audit repro #1: _v3StarPoolCache bounds LRU size, normalizes direct diaryNames, and evicts stale entry when empty', async () => {
     const fs = require('node:fs');
     const os = require('node:os');
     const path = require('node:path');
@@ -1534,26 +1568,26 @@ test('V3.5 audit repro #1: _v3StarPoolCache bounds LRU size, normalizes direct d
             insChunk.run(i, i, `内容${i}`, vecBuf([1, i * 0.1, 0, 0]), 1);
         }
         const mtm = new MetaThinkingManager({});
-        const vdb = { dbPath };
+        const vdb = fixtureStarReader(dbPath);
 
-        // Equivalent unsorted/whitespace/duplicate scopes must share the exact same cache entry
-        const p1 = mtm._v3LoadStarPoolCache(vdb, ['星池2', '星池1'], null, { ttlMs: 60000 });
-        const p2 = mtm._v3LoadStarPoolCache(vdb, [' 星池1 ', '星池2', '星池1'], null, { ttlMs: 60000 });
-        assert.strictEqual(p1, p2, 'equivalent diaryNames with whitespace/order/duplicates must hit same cache entry');
+        // Equivalent scopes share the same cache entry.
+        const p1 = await mtm._v3LoadStarPoolCache(vdb, ['星池2', '星池1'], null, { ttlMs: 60000 });
+        const p2 = await mtm._v3LoadStarPoolCache(vdb, [' 星池1 ', '星池2', '星池1'], null, { ttlMs: 60000 });
+        assert.strictEqual(p1, p2);
 
-        // Loading >8 distinct scopes must evict oldest entries (bounded LRU <= 8)
         for (let i = 1; i <= 12; i++) {
-            const p = mtm._v3LoadStarPoolCache(vdb, [`星池${i}`], null, { ttlMs: 0 });
+            const p = await mtm._v3LoadStarPoolCache(vdb, [`星池${i}`], null, { ttlMs: 0 });
             assert.ok(p && p.stars.length === 1);
         }
-        assert.ok(mtm._v3StarPoolCache.size <= 8, `expected bounded _v3StarPoolCache <= 8, got ${mtm._v3StarPoolCache.size}`);
+        assert.ok(mtm._v3StarPoolCache.size <= 8);
 
-        // Deleting all rows in a cached scope must clear its stale cache entry
         db.prepare('DELETE FROM chunks WHERE file_id = 12').run();
-        const emptyPool = mtm._v3LoadStarPoolCache(vdb, ['星池12'], null, { ttlMs: 0 });
+        const emptyPool = await mtm._v3LoadStarPoolCache(vdb, ['星池12'], null, { ttlMs: 0 });
         assert.equal(emptyPool, null);
-        // Simulate subsequent DB failure: must NOT resurrect the deleted stale entry
-        const afterErr = mtm._v3LoadStarPoolCache({ dbPath: path.join(tmpDir, 'nonexistent.sqlite') }, ['星池12'], null, { ttlMs: 0 });
+        const afterErr = await mtm._v3LoadStarPoolCache({
+            dbPath,
+            async readMetaStarPool() { throw new Error('native unavailable'); }
+        }, ['星池12'], null, { ttlMs: 0 });
         assert.equal(afterErr, null);
         const key12 = [...mtm._v3StarPoolCache.keys()].find(k => k.includes('星池12'));
         assert.equal(key12, undefined, 'emptied star pool must be evicted from _v3StarPoolCache');
@@ -1616,7 +1650,7 @@ test('V3.5 audit repro #3: _v3LoadGlobalManifold guards empty/cleared directorie
     }
 });
 
-test('V3.5 audit repro #4: _v3LoadStarPoolCache handles mixed-dimension neighbor smoothing without NaN or truncation', () => {
+test('V3.5 audit repro #4: _v3LoadStarPoolCache handles mixed-dimension neighbor smoothing without NaN or truncation', async () => {
     const fs = require('node:fs');
     const os = require('node:os');
     const path = require('node:path');
@@ -1651,7 +1685,7 @@ test('V3.5 audit repro #4: _v3LoadStarPoolCache handles mixed-dimension neighbor
             defaultRadius: 0.5,
             geo: null
         };
-        const pool = mtm._v3LoadStarPoolCache({ dbPath }, ['混维簇'], manifold, { ttlMs: 0 });
+        const pool = await mtm._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['混维簇'], manifold, { ttlMs: 0 });
         assert.ok(pool);
         const s2 = pool.byStarName.get('四维星甲');
         assert.ok(s2 && s2.z && s2.z.length === 4, `expected 4-dim smoothed z for 四维星甲 (no truncation to dim=2), got len=${s2?.z?.length}`);
@@ -3088,8 +3122,7 @@ test('V3.9 retires negative-gain rust-dual-field, blocks C7 tech-praise trap via
     });
     mtm._v3MetaAxesCache = { muPhatic: muP, eDrill: eD, eEscape: eE };
     mtm._v3LoadGlobalManifold = () => null;
-    mtm._v3LoadStarPoolCache = () => starPool;
-    mtm._v3LoadEpaMean = () => epaMean;
+    mtm._v3LoadStarPoolCache = () => ({ ...starPool, epaMean });
     mtm._v3LoadSharedTransportCache = () => {
         jsTransportLoadCalls++;
         return null;
@@ -3423,7 +3456,6 @@ test('V3.9 Item 4: end-to-end RAGDiaryPlugin + OneRing + ContextVectorManager is
     const mtm = new MetaThinkingManager(rag);
     mtm._v3MetaAxesCache = { muPhatic: muP, eDrill: eD, eEscape: eE };
     mtm._v3LoadGlobalManifold = () => null;
-    mtm._v3LoadEpaMean = () => epaMean;
     mtm._v3LoadStarPoolCache = () => ({
         versionKey: 'e2e-mock',
         manifoldKey: 'no-manifold',
@@ -3536,7 +3568,6 @@ test('V3.10 redline contracts: C7 directional praise, C4 r_meta decoupling, V3 g
     });
     mtmC7._v3MetaAxesCache = axes;
     mtmC7._v3LoadGlobalManifold = () => null;
-    mtmC7._v3LoadEpaMean = () => epaMean;
     mtmC7._v3LoadStarPoolCache = () => ({
         versionKey: 'c7-dir', manifoldKey: 'none', checkedAt: Date.now(), stars,
         byChunkId: new Map(stars.map(s => [s.chunkId, s])),
@@ -3707,7 +3738,7 @@ test('P0 regression: segmentContext.assistantVector isolates mixed C7 praise seg
             radiusByChunkId: new Map([[1, 0.64]]),
             defaultRadius: 0.63
         };
-        const pool = mtm._v3LoadStarPoolCache({ dbPath }, ['测试星池'], mockManifold, { ttlMs: 0 });
+        const pool = await mtm._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['测试星池'], mockManifold, { ttlMs: 0 });
         assert.ok(pool && pool.stars.length === 1);
         assert.equal(pool.stars[0].slot, undefined, 'version-mismatched star must NOT retain stale CSR slot');
         assert.ok(Math.abs(pool.stars[0].radius - 0.35) < 1e-5, `expected live quantile radius 0.35, got ${pool.stars[0].radius}`);
@@ -3715,7 +3746,7 @@ test('P0 regression: segmentContext.assistantVector isolates mixed C7 praise seg
 
         // When DB stat is unchanged after TTL expiry, cache returns identical reference via stat-guard fast path
         pool.checkedAt = 0;
-        const poolFast = mtm._v3LoadStarPoolCache({ dbPath }, ['测试星池'], mockManifold, { ttlMs: 3000 });
+        const poolFast = await mtm._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['测试星池'], mockManifold, { ttlMs: 3000 });
         assert.strictEqual(poolFast, pool, 'unchanged DB stat after TTL expiry must reuse cached starPool without re-reading SQLite');
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3953,8 +3984,7 @@ test('V3.11 audit fixes: z-space probe reuse, discrete queryMorphology eject ste
     });
     mtmReuse._v3MetaAxesCache = axes;
     mtmReuse._v3LoadGlobalManifold = () => manifold;
-    mtmReuse._v3LoadEpaMean = () => epaMean;
-    mtmReuse._v3LoadStarPoolCache = () => starPool;
+    mtmReuse._v3LoadStarPoolCache = () => ({ ...starPool, epaMean });
     // Slight phatic signal triggers L0 probe, but non-phatic color stays high -> should reuse probe!
     const rawUserWithMildPh = makeConeVec([[0, 0.82], [2, 0.50], [20, 0.28]]);
     await mtmReuse.processMetaThinkingV3('希夷星池簇', rawUserWithMildPh, '新话题', '', 'new', false, {
@@ -4019,7 +4049,7 @@ test('V3.12 audit closing pack: multi-chunk byChunkId sync, counterfactual | M s
     db.close();
 
     const mtmMc = new MetaThinkingManager({});
-    const mcPool = mtmMc._v3LoadStarPoolCache({ dbPath }, ['希夷星池簇'], null, { ttlMs: 0 });
+    const mcPool = await mtmMc._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['希夷星池簇'], null, { ttlMs: 0 });
     const aggStar = mcPool.byStarName.get('多块星');
     const byId2 = mtmMc._v3LookupStarMeta(mcPool, { chunkId: 102, sourceFile: '多块星.md' });
     assert.ok(aggStar && byId2);
@@ -4224,8 +4254,7 @@ test('P0-1/P0-2/P0-3/P1 regressions: OneRing active strategies exclude V3, C7 bl
     });
     mtmP02._v3MetaAxesCache = { muPhatic: muP, eDrill: eD, eEscape: eE };
     mtmP02._v3LoadGlobalManifold = () => null;
-    mtmP02._v3LoadStarPoolCache = () => sp20;
-    mtmP02._v3LoadEpaMean = () => epaMean;
+    mtmP02._v3LoadStarPoolCache = () => ({ ...sp20, epaMean });
     const phaticPraise = unit(Array.from({ length: dim }, (_, i) => (i === 20 ? 0.96 : i === 4 ? 0.28 : 0)));
     const fP02 = await mtmP02.processMetaThinkingV3('希夷星池簇', basisVec(0), '太秀了继续！', '', 'p02', false, {
         userVector: phaticPraise,
@@ -4264,7 +4293,7 @@ test('P0-1/P0-2/P0-3/P1 regressions: OneRing active strategies exclude V3, C7 bl
             defaultRadius: 0.63,
             geo: { distance: (ra, rb, th) => Math.abs(ra - rb) + th, regime: () => 'dip', leg: r => ({ angle: r }) }
         };
-        const poolMc = mtmMc2._v3LoadStarPoolCache({ dbPath: mcDbPath }, ['希夷星池簇'], fakeManifold, { ttlMs: 0 });
+        const poolMc = await mtmMc2._v3LoadStarPoolCache(fixtureStarReader(mcDbPath), ['希夷星池簇'], fakeManifold, { ttlMs: 0 });
         const c101 = poolMc.byChunkId.get(101);
         const c102 = poolMc.byChunkId.get(102);
         assert.ok(mtmMc2._v3Dot(c101.raw, c102.raw) > 0.999999, 'all chunks of a multi-chunk star must share aggregated raw');
@@ -4764,17 +4793,11 @@ test('Frenet torsion3 & normalStep3: singularity-free 1D collinearity, 2D planar
     assert.ok(bc[0].agentNormalStep3 >= halfStep / Math.sqrt(3));
 });
 
-test('Spectral Coarse Subspace (Partial-Go 2a): U_k is orthonormal, small pools skip coarse build, and large pools match full Star 2/3 & | M', () => {
+test('Spectral Coarse Subspace (Partial-Go 2a): U_k is orthonormal, small pools skip coarse build, and large pools match full Star 2/3 & | M', async () => {
     const mtm = new MetaThinkingManager({});
-    // 1) Current 716-star pool must NOT trigger coarse build (zero overhead)
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const liveDb = path.resolve(__dirname, '..', 'VectorStore', 'knowledge_base.sqlite');
-    if (fs.existsSync(liveDb)) {
-        const manifold = mtm._v3LoadGlobalManifold({ dbPath: liveDb });
-        const realPool = mtm._v3LoadStarPoolCache({ dbPath: liveDb }, ['希夷星池簇'], manifold);
-        assert.equal(realPool.coarseSubspace, null, '716-star pool must stay on exact linear scan without coarse overhead');
-    }
+    const smallPool = await mtm._v3LoadStarPoolCache(singleStarReader(), ['希夷星池簇'], null);
+    assert.ok(smallPool?.stars.length);
+    assert.equal(smallPool.coarseSubspace, null, 'small star pools stay on the exact scan');
 
     // 2) Orthonormality & lossless 2-stage Star 2/3 + | M agreement on a 2000-star multi-mode pool (dim=384)
     const N = 2000;
@@ -4929,7 +4952,7 @@ test('P1-1/P1-2/P1-3/P1-4 regressions: async worker coarseSubspace, lowLoad TOCT
 
         const mtmWorker = new MetaThinkingManager({});
         const t0 = Date.now();
-        const pool = mtmWorker._v3LoadStarPoolCache({ dbPath }, ['大星池'], null, { ttlMs: 0 });
+        const pool = await mtmWorker._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['大星池'], null, { ttlMs: 0 });
         const syncLoadMs = Date.now() - t0;
         assert.ok(pool && pool.stars.length === N);
         assert.equal(pool.coarseSubspace, null, 'initial load must NOT block main thread building coarseSubspace');
@@ -4979,7 +5002,6 @@ test('P1-1/P1-2/P1-3/P1-4 regressions: async worker coarseSubspace, lowLoad TOCT
         const mtmT = new MetaThinkingManager({ vectorDBManager: mockVdb });
         mtmT._v3MetaAxesCache = { muPhatic: basis(20), eDrill: basis(21), eEscape: basis(22), phSamples: [basis(20)], drillSamples: [basis(21)], escapeSamples: [basis(22)] };
         mtmT._v3LoadGlobalManifold = () => null;
-        mtmT._v3LoadEpaMean = () => epaMean;
         mtmT._v3LoadStarPoolCache = () => ({
             versionKey: 'toctou-v1', manifoldKey: 'none', checkedAt: Date.now(), stars,
             byChunkId: new Map(stars.map(s => [s.chunkId, s])),
@@ -5073,7 +5095,7 @@ test('Star 3 3-bit exposureIndex3: quantile cuts, boundary/tie handling, and sil
             );
         }
         db.close();
-        const smallPool = mtm._v3LoadStarPoolCache({ dbPath }, ['希夷星池簇'], null, { ttlMs: 0 });
+        const smallPool = await mtm._v3LoadStarPoolCache(fixtureStarReader(dbPath), ['希夷星池簇'], null, { ttlMs: 0 });
         assert.ok(smallPool && smallPool.stars.length === 10);
         assert.equal(smallPool.exposureIndex3, null, 'pools with < 16 stars must skip exposureIndex3');
         const cands = smallPool.stars.map((s, idx) => ({
@@ -5317,7 +5339,7 @@ test('Star 3 C7 isolation: preferIndependentObs=true prevents C7 tech-praise bai
 
     const broadcasts = [];
     const mockVdb = {
-        dbPath,
+        ...fixtureStarReader(dbPath, epaMean),
         async executeNativeRiverQuery() {
             return { results: [{ chunkId: 1, diaryName: '希夷星池簇', sourceFile: '常规星0.md', text: '常规星0', score: 0.9 }], diagnostics: { degraded: false } };
         },
@@ -5331,7 +5353,6 @@ test('Star 3 C7 isolation: preferIndependentObs=true prevents C7 tech-praise bai
         pushVcpInfo: (info) => broadcasts.push(info)
     });
     mtm._v3LoadGlobalManifold = () => null;
-    mtm._v3LoadEpaMean = () => epaMean;
     mtm._v3MetaAxesCache = {
         muPhatic: basis(25),
         eDrill: basis(26),
@@ -5341,7 +5362,7 @@ test('Star 3 C7 isolation: preferIndependentObs=true prevents C7 tech-praise bai
         escapeSamples: [basis(27)]
     };
 
-    const starPool = mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], null, { ttlMs: 0 });
+    const starPool = await mtm._v3LoadStarPoolCache(mockVdb, ['希夷星池簇'], null, { ttlMs: 0 });
     assert.ok(starPool && starPool.exposureIndex3, 'real >= 20 star pool must build exposureIndex3');
 
     const seenZExp = [];

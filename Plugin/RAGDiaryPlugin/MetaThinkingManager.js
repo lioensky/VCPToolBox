@@ -1793,7 +1793,7 @@ class MetaThinkingManager {
      * 只读加载并缓存星池完整张量库（~716 星，支持未来扩编至数千星及多 Chunk 星卡），
      * 预计算 V5 全局方向 x̂、星池去中心化方向 ẑ、测地半径 leg 及 Fisher-Tippett 无尺度统计描述子。
      */
-    _v3LoadStarPoolCache(vdb, diaryNames, manifold, options = {}) {
+    async _v3LoadStarPoolCache(vdb, diaryNames, manifold, options = {}) {
         const dbPath = vdb?.dbPath;
         if (!dbPath || !Array.isArray(diaryNames) || diaryNames.length === 0) return null;
         const normalizedDiaries = [...new Set(
@@ -1801,8 +1801,23 @@ class MetaThinkingManager {
         )].sort();
         if (normalizedDiaries.length === 0) return null;
         if (!this._v3StarPoolCache) this._v3StarPoolCache = new Map();
-        const MAX_STAR_POOL_CACHE_ENTRIES = 8;
         const scopeKey = `${dbPath}\0${normalizedDiaries.join('\0')}`;
+        if (!this._v3StarPoolReads) this._v3StarPoolReads = new Map();
+        const pending = this._v3StarPoolReads;
+        const previous = pending.get(scopeKey);
+        const read = (previous ? previous.catch(() => {}) : Promise.resolve())
+            .then(() => this._v3ReadStarPool(vdb, normalizedDiaries, manifold, options, scopeKey));
+        pending.set(scopeKey, read);
+        try {
+            return await read;
+        } finally {
+            if (pending.get(scopeKey) === read) pending.delete(scopeKey);
+        }
+    }
+
+    async _v3ReadStarPool(vdb, normalizedDiaries, manifold, options, scopeKey) {
+        const dbPath = vdb.dbPath;
+        const MAX_STAR_POOL_CACHE_ENTRIES = 8;
         const manifoldKey = manifold?.cacheKey || 'no-manifold';
         const ttlMs = options.ttlMs ?? 3000;
         const now = Date.now();
@@ -1845,64 +1860,23 @@ class MetaThinkingManager {
             this._v3StarPoolCache.set(scopeKey, cached);
             return cached;
         }
-        let Database;
         try {
-            Database = require('better-sqlite3');
-        } catch (_) {
-            return cached && cached.manifoldKey === manifoldKey ? cached : null;
-        }
-        let db = null;
-        try {
-            const crypto = require('node:crypto');
-            db = new Database(dbPath, { readonly: true, timeout: 1000 });
-            const placeholders = normalizedDiaries.map(() => '?').join(',');
-            const fp = db.prepare(
-                `SELECT COUNT(*) AS cnt,
-                        COALESCE(MAX(c.id), 0) AS maxId,
-                        COALESCE(MAX(c.vector_version), 0) AS maxVer,
-                        COALESCE(SUM(c.vector_version), 0) AS sumVer,
-                        COALESCE(MAX(f.updated_at), 0) AS maxUpd
-                 FROM chunks c JOIN files f ON c.file_id = f.id
-                 WHERE f.diary_name IN (${placeholders})`
-            ).get(...normalizedDiaries);
-            let globalChunkFacts = '0';
-            try {
-                const factRow = db.prepare("SELECT value FROM kbm_runtime_meta WHERE key = 'global_chunk_facts'").get();
-                if (factRow?.value !== undefined && factRow?.value !== null) {
-                    globalChunkFacts = String(factRow.value);
+            const knownFingerprint = cached?.manifoldKey === manifoldKey ? cached.fingerprint : null;
+            const { fingerprint, rows, epaDigest, epaMean: epaMeanB64 } =
+                await vdb.readMetaStarPool(normalizedDiaries, knownFingerprint ?? null);
+            if (rows == null) {
+                if (knownFingerprint == null || fingerprint !== knownFingerprint) {
+                    throw new Error('Invalid unchanged star-pool snapshot');
                 }
-            } catch (_) {
-                globalChunkFacts = '0';
-            }
-            let epaRow = null;
-            let epaDigest = null;
-            try {
-                epaRow = db.prepare("SELECT value FROM kv_store WHERE key = 'epa_basis_cache'").get();
-                if (epaRow?.value) {
-                    epaDigest = crypto.createHash('sha256').update(epaRow.value).digest('hex').slice(0, 16);
-                }
-            } catch (_) {
-                epaRow = null;
-            }
-            const versionKey = `${manifoldKey}|${fp?.cnt || 0}:${fp?.maxId || 0}:${fp?.maxVer || 0}:${fp?.sumVer || 0}:${fp?.maxUpd || 0}|${globalChunkFacts}|${epaDigest || 'none'}`;
-            if (cached && cached.versionKey === versionKey) {
                 const refreshedNow = Date.now();
                 cached.checkedAt = refreshedNow;
                 cached.sqlVerifiedAt = refreshedNow;
-                if (currentStatSig) cached.dbStatSig = currentStatSig;
+                cached.dbStatSig = currentStatSig;
                 this._v3StarPoolCache.delete(scopeKey);
                 this._v3StarPoolCache.set(scopeKey, cached);
                 return cached;
             }
-
-            const rows = db.prepare(
-                `SELECT c.id AS chunkId, c.file_id AS fileId, c.vector_version AS vectorVersion,
-                        c.content AS text, c.vector AS vec,
-                        f.diary_name AS diaryName, f.path AS sourceFile
-                 FROM chunks c JOIN files f ON c.file_id = f.id
-                 WHERE f.diary_name IN (${placeholders})
-                 ORDER BY c.id ASC`
-            ).all(...normalizedDiaries);
+            const versionKey = `${manifoldKey}|${fingerprint}`;
 
             const byName = new Map();
             const allChunks = [];
@@ -1912,7 +1886,7 @@ class MetaThinkingManager {
                 || (manifold?.convertedVersions && Object.keys(manifold.convertedVersions).length > 0)
             );
             for (const row of rows) {
-                const buf = row.vec;
+                const buf = row.vector;
                 if (!buf || buf.byteLength === 0 || buf.byteLength % 4 !== 0) continue;
                 const f32 = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
                 const raw = this._v3NormalizeVector(f32);
@@ -2031,18 +2005,10 @@ class MetaThinkingManager {
                 : 0.85;
 
             let epaMeanRaw = null;
-            if (epaRow?.value) {
-                try {
-                    const parsedEpa = JSON.parse(epaRow.value);
-                    const b64 = parsedEpa?.mean;
-                    if (typeof b64 === 'string' && b64) {
-                        const buf = Buffer.from(b64, 'base64');
-                        if (buf.byteLength > 0 && buf.byteLength % 4 === 0) {
-                            epaMeanRaw = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-                        }
-                    }
-                } catch (_) {
-                    epaMeanRaw = null;
+            if (typeof epaMeanB64 === 'string' && epaMeanB64) {
+                const buf = Buffer.from(epaMeanB64, 'base64');
+                if (buf.byteLength > 0 && buf.byteLength % 4 === 0) {
+                    epaMeanRaw = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
                 }
             }
 
@@ -2151,8 +2117,9 @@ class MetaThinkingManager {
             const nowLoaded = Date.now();
             const pool = {
                 versionKey,
+                fingerprint,
                 manifoldKey,
-                dbStatSig: currentStatSig || getDbStatSig(),
+                dbStatSig: currentStatSig,
                 checkedAt: nowLoaded,
                 sqlVerifiedAt: nowLoaded,
                 stars,
@@ -2201,8 +2168,6 @@ class MetaThinkingManager {
                 return cached;
             }
             return null;
-        } finally {
-            try { db?.close(); } catch (_) { /* noop */ }
         }
     }
 
@@ -2335,59 +2300,6 @@ class MetaThinkingManager {
         return { load, top1, zScore, meanAlign, denBoost };
     }
 
-    /**
-     * 只读加载并缓存 V5.2 全局 Tag 均值轴 epa_basis_cache.mean（供 31k-Tag 切空间去均值分布检验）。
-     */
-    _v3LoadEpaMean(vdb, options = {}) {
-        const dbPath = vdb?.dbPath;
-        if (!dbPath || dbPath === ':memory:') return null;
-        if (!this._v3EpaMeanCache) this._v3EpaMeanCache = new Map();
-        const ttlMs = options.ttlMs ?? 15000;
-        const now = Date.now();
-        const cached = this._v3EpaMeanCache.get(dbPath);
-        if (cached && ttlMs > 0 && (now - (cached.checkedAt || 0)) < ttlMs) {
-            return cached.value;
-        }
-        let Database;
-        try {
-            Database = require('better-sqlite3');
-        } catch (_) {
-            return cached?.value || null;
-        }
-        let db = null;
-        try {
-            db = new Database(dbPath, { readonly: true, timeout: 1000 });
-            const row = db.prepare("SELECT value FROM kv_store WHERE key = 'epa_basis_cache'").get();
-            if (!row?.value) {
-                this._v3EpaMeanCache.set(dbPath, { checkedAt: now, value: null });
-                return null;
-            }
-            const parsed = JSON.parse(row.value);
-            const sig = String(parsed?.artifactSig || '');
-            if (cached && cached.sig === sig && cached.value) {
-                cached.checkedAt = Date.now();
-                return cached.value;
-            }
-            const b64 = parsed?.mean;
-            if (typeof b64 !== 'string' || !b64) return null;
-            const buf = Buffer.from(b64, 'base64');
-            if (buf.byteLength === 0 || buf.byteLength % 4 !== 0) return null;
-            const f32 = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-            const unit = this._v3NormalizeVector(f32);
-            if (!unit) return null;
-            while (this._v3EpaMeanCache.size >= 4) {
-                const oldestKey = this._v3EpaMeanCache.keys().next().value;
-                if (oldestKey === undefined) break;
-                this._v3EpaMeanCache.delete(oldestKey);
-            }
-            this._v3EpaMeanCache.set(dbPath, { sig, checkedAt: Date.now(), value: unit });
-            return unit;
-        } catch (_) {
-            return cached?.value || null;
-        } finally {
-            try { db?.close(); } catch (_) { /* noop */ }
-        }
-    }
 
     /**
      * 在 epaMean(β=0.7) 切空间中对指定单位向量集合做 2-pass MGS 正交剥离，计算舒尔补条件附和 R² (partialPh) 与总控制比 (partialCtrl)，
@@ -4675,12 +4587,12 @@ class MetaThinkingManager {
 
         const vdb = this.ragPlugin?.vectorDBManager;
         const manifold = this._v3LoadGlobalManifold(vdb);
-        const starPool = this._v3LoadStarPoolCache(vdb, diaryNames, manifold);
+        const starPool = await this._v3LoadStarPoolCache(vdb, diaryNames, manifold);
         await this._v3EnsureMetaPolarityAxes();
         throwIfAborted();
 
         const hasRealStarPool = Boolean(starPool?.stars?.length >= 16);
-        const epaMean = hasRealStarPool ? (starPool?.epaMean || this._v3LoadEpaMean(vdb)) : null;
+        const epaMean = hasRealStarPool ? (starPool.epaMean ?? null) : null;
         const epaDigest = starPool?.epaDigest || null;
         const expectedDim = manifold?.meanAxis?.length || starPool?.stars?.[0]?.raw?.length || epaMean?.length || 0;
         if (expectedDim > 0 && (!effectiveVector || effectiveVector.length !== expectedDim)) {

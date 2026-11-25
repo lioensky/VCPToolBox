@@ -26,6 +26,103 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use crate::retrieval_index::{RetrievalIndex as Index, RetrievalSearchOptions};
 
+#[napi(object)]
+pub struct MetaStarChunk {
+    pub chunk_id: i64,
+    pub file_id: i64,
+    pub vector_version: Option<i64>,
+    pub text: Option<String>,
+    pub vector: Option<Buffer>,
+    pub diary_name: String,
+    pub source_file: String,
+}
+
+#[napi(object)]
+pub struct MetaStarPoolSnapshot {
+    pub fingerprint: String,
+    pub epa_digest: Option<String>,
+    pub epa_mean: Option<String>,
+    // None means unchanged, Some([]) is an authoritative empty scope.
+    pub rows: Option<Vec<MetaStarChunk>>,
+}
+
+pub struct MetaStarPoolTask {
+    db_path: String,
+    diaries: Vec<String>,
+    known_fingerprint: Option<String>,
+}
+
+impl Task for MetaStarPoolTask {
+    type Output = MetaStarPoolSnapshot;
+    type JsValue = MetaStarPoolSnapshot;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use sha2::{Digest, Sha256};
+
+        crate::storage::with_registered_read_transaction(&self.db_path, |conn| {
+            let placeholders = vec!["?"; self.diaries.len()].join(",");
+            let scope = format!(
+                " FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.diary_name IN ({placeholders})"
+            );
+            let sql_err = |error: rusqlite::Error| error.to_string();
+            let (count, max_id, max_version, sum_version, max_updated):
+                (i64, i64, i64, i64, i64) = conn.query_row(
+                &format!("SELECT COUNT(*), COALESCE(MAX(c.id),0),
+                    COALESCE(MAX(c.vector_version),0), COALESCE(SUM(c.vector_version),0),
+                    COALESCE(MAX(f.updated_at),0){scope}"),
+                rusqlite::params_from_iter(&self.diaries),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            ).map_err(sql_err)?;
+            let facts: Option<String> = conn.query_row(
+                "SELECT value FROM kbm_runtime_meta WHERE key='global_chunk_facts'",
+                [], |r| r.get(0),
+            ).optional().map_err(sql_err)?;
+            let epa: Option<String> = conn.query_row(
+                "SELECT value FROM kv_store WHERE key='epa_basis_cache'",
+                [], |r| r.get(0),
+            ).optional().map_err(sql_err)?.flatten();
+            let epa = epa.as_deref().filter(|raw| !raw.is_empty());
+            let epa_digest = epa.map(|raw| {
+                format!("{:x}", Sha256::digest(raw.as_bytes()))[..16].to_owned()
+            });
+            let fingerprint = format!("{count}:{max_id}:{max_version}:{sum_version}:{max_updated}|{}|{}",
+                facts.as_deref().unwrap_or("0"), epa_digest.as_deref().unwrap_or("none"));
+            let mut snapshot = MetaStarPoolSnapshot {
+                fingerprint,
+                epa_digest,
+                epa_mean: None,
+                rows: None,
+            };
+            if self.known_fingerprint.as_deref() == Some(snapshot.fingerprint.as_str()) {
+                return Ok(snapshot);
+            }
+            snapshot.epa_mean = epa
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|value| value.get("mean")?.as_str().map(str::to_owned));
+
+            let mut stmt = conn.prepare(&format!(
+                "SELECT c.id,c.file_id,c.vector_version,c.content,c.vector,f.diary_name,f.path{scope} ORDER BY c.id ASC"
+            )).map_err(sql_err)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(&self.diaries), |r| {
+                Ok(MetaStarChunk {
+                    chunk_id: r.get(0)?,
+                    file_id: r.get(1)?,
+                    vector_version: r.get(2)?,
+                    text: r.get(3)?,
+                    vector: r.get::<_, Option<Vec<u8>>>(4)?.map(Buffer::from),
+                    diary_name: r.get(5)?,
+                    source_file: r.get(6)?,
+                })
+            }).map_err(sql_err)?;
+            snapshot.rows = Some(rows.collect::<rusqlite::Result<Vec<_>>>().map_err(sql_err)?);
+            Ok(snapshot)
+        }).map_err(Error::from_reason)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
 pub struct GlobalTagSearchTask {
     search_options: RetrievalSearchOptions,
     db_path: String,
@@ -3955,6 +4052,26 @@ impl NativeKnowledgeRuntime {
             chunk_id,
             dimension: self.dimension as usize,
         }))
+    }
+
+    /// 只读星池快照；指纹命中时不回传向量或 EPA 载荷。
+    #[napi]
+    pub fn read_meta_star_pool(
+        &self,
+        db_path: String,
+        mut diaries: Vec<String>,
+        known_fingerprint: Option<String>,
+    ) -> Result<AsyncTask<TrackedTask<MetaStarPoolTask>>> {
+        if !self.accepting_queries.load(Ordering::Acquire) {
+            return Err(Error::from_reason("NativeKnowledgeRuntime is shutting down"));
+        }
+        diaries.retain(|name| !name.is_empty());
+        diaries.sort_unstable();
+        diaries.dedup();
+        if db_path.trim().is_empty() || diaries.is_empty() {
+            return Err(Error::from_reason("readMetaStarPool requires dbPath and diary names"));
+        }
+        Ok(self.tracked_task(MetaStarPoolTask { db_path, diaries, known_fingerprint }))
     }
 
     /// 按 Chunk ID 批量回填正文和文件元数据，结果按请求 ID 顺序返回。

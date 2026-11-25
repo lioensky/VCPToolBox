@@ -1607,6 +1607,15 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             .filter(row => Number.isSafeInteger(row.id) && row.id > 0 && row.name);
     }
 
+    async readMetaStarPool(diaryNames, knownFingerprint = null) {
+        const runtime = this.nativeKnowledgeRuntime;
+        if (typeof runtime?.readMetaStarPool !== 'function') {
+            const error = new Error('NativeKnowledgeRuntime star-pool API unavailable; rebuild rust-vexus-lite');
+            error.code = 'NATIVE_STORAGE_ABI_UNAVAILABLE';
+            throw error;
+        }
+        return runtime.readMetaStarPool(this.dbPath, diaryNames, knownFingerprint);
+    }
     async hydrateChunksByIds(chunkIds) {
         if (!this.nativeKnowledgeRuntime
             || typeof this.nativeKnowledgeRuntime.hydrateChunksByIds !== 'function') {

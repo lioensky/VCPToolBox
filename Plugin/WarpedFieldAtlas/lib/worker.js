@@ -1,18 +1,22 @@
 'use strict';
 
-// 双曲场图的工作线程。读快照、读向量、算距离都在这里，不占后端主线程。
-
-const { parentPort, workerData } = require('node:worker_threads');
+// 独立进程持有场图的只读连接，不参与主服 SQLite 的进程级锁。
 const { createAtlas } = require('./atlas');
-
+const options = JSON.parse(process.argv[2]);
 let atlas = null;
 
-parentPort.on('message', ({ id, pathname, search }) => {
+process.on('disconnect', () => {
+    try { atlas?.close(); } finally { process.exit(0); }
+});
+
+process.on('message', ({ id, pathname, search }) => {
+    let reply;
     try {
-        if (!atlas) atlas = createAtlas(workerData);
+        if (!atlas) atlas = createAtlas(options);
         const body = JSON.stringify(atlas.handle(pathname, new URLSearchParams(search || '')));
-        parentPort.postMessage({ id, ok: true, body });
+        reply = { id, ok: true, body };
     } catch (error) {
-        parentPort.postMessage({ id, ok: false, status: Number.isInteger(error.status) ? error.status : 500, message: error.message });
+        reply = { id, ok: false, status: Number.isInteger(error.status) ? error.status : 500, message: error.message };
     }
+    if (process.connected) process.send(reply, () => {});
 });
