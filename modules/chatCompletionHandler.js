@@ -489,6 +489,13 @@ async function fetchWithRetry(
         signal: attemptController.signal,
       });
       cleanup();
+      // 容灾链在重试时会换模型：把这次实际请求的模型记在响应上，用量校准和渠道记忆按它归属。
+      if (Array.isArray(modelFallbackCandidates) && modelFallbackCandidates.length > 0) {
+        const attemptModel = modelFallbackCandidates[Math.min(i, modelFallbackCandidates.length - 1)];
+        if (attemptModel) {
+          try { Object.defineProperty(response, 'vcpAttemptModel', { value: attemptModel, configurable: true }); } catch (_) { }
+        }
+      }
       if (timelineTrace) {
         timelineTrace.responses.set(response, attempt);
         timelineTrace.emit('upstream_headers_received', { attempt, status: response.status });
@@ -1272,15 +1279,17 @@ class ChatCompletionHandler {
         requestId: req.body.requestId || req.body.messageId || null
       });
       const pruningEnabled = contextManager.isPruningEnabled();
-      if (budgetGuard.limit !== null && Array.isArray(processedMessages) && (budgetGuard.enforcing || pruningEnabled)) {
-        // 第一步：超预算时先把历史里较早的工具结果压成摘要（当前轮不动）。它们通常占了绝大部分体积，
-        // 压掉之后多数请求就不需要删消息、也不需要拒绝了。
+      if (budgetGuard.enforcing && Array.isArray(processedMessages)) {
+        // 第一步（仅 enforce）：超预算时先把历史里较早的工具结果压成摘要（当前轮不动）。它们通常占了
+        // 绝大部分体积，压掉之后多数请求就不需要删消息、也不需要拒绝了。
+        // observe / off 不改写任何消息内容，即使服务端开了裁剪也一样。
         const draftBody = () => ({ ...originalBody, messages: processedMessages });
         const isOverBudget = () => budgetGuard.estimate(draftBody()) > budgetGuard.limit;
         if (isOverBudget()) {
           const slimmedMessages = copyArrayMetadata(processedMessages, processedMessages.slice());
           const beforeSlim = budgetGuard.estimate(draftBody());
-          const slimmedCount = contextBudget.slimEarlierToolResults(slimmedMessages, contextBudget.lastRealUserIndex(slimmedMessages));
+          const slimmedCount = contextBudget.slimToFit(slimmedMessages, undefined,
+            () => budgetGuard.estimate({ ...originalBody, messages: slimmedMessages }) > budgetGuard.limit);
           if (slimmedCount > 0) {
             processedMessages = slimmedMessages;
             console.warn(`[ContextBudget] 超预算，已压缩历史中 ${slimmedCount} 条消息里的工具结果: ${beforeSlim} -> ${budgetGuard.estimate(draftBody())} / ${budgetGuard.limit}`);
@@ -1338,7 +1347,7 @@ class ChatCompletionHandler {
         const budgetBreakdown = budgetGuard.breakdown(finalUpstreamBody);
         throw Object.assign(new Error(contextBudget.exceededMessage(budgetCheck, 'outbound', budgetBreakdown)), {
           name: 'ContextBudgetExceededError',
-          budget: { estimated: budgetCheck.estimated, limit: budgetCheck.limit, breakdown: budgetBreakdown }
+          budget: { stage: 'outbound', estimated: budgetCheck.estimated, limit: budgetCheck.limit, breakdown: budgetBreakdown }
         });
       }
       budgetGuard.noteRequest(finalUpstreamBody);

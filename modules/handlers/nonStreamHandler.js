@@ -288,7 +288,7 @@ class NonStreamHandler {
       try {
         const usage = JSON.parse(responseText)?.usage;
         if (isInitial) finalContextStore.recordUpstreamUsage(originalBody.requestId || originalBody.messageId, usage);
-        budgetGuard?.noteUsage(usage);
+        budgetGuard?.noteUsage(usage, isInitial ? firstAiAPIResponse?.vcpAttemptModel : undefined);
       } catch (_) { /* 非 JSON 响应没有 usage，面板保留本地估算 */ }
     };
     noteUpstreamUsage(aiResponseText, true);

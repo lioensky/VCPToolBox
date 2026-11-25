@@ -19,6 +19,7 @@ function withEnv(values, fn) {
             else process.env[key] = previous[key];
         }
         contextBudget.resetModelRatios();
+        contextManager.resetPruneWatermarks();
     };
     let result;
     try { result = fn(); } catch (error) { restore(); throw error; }
@@ -186,30 +187,137 @@ test('压缩工具结果块：嵌套按标记配对，代码围栏里的示例�
     assert.equal(contextBudget.slimToolResultBlocks(short), short);
 });
 
-test('分级压缩：先压最后一条用户发言之前的历史，够了就不碰当前轮的工具结果', () => {
+test('分级压缩：远的历史压紧、最近几轮留宽，够了就不碰当前轮的工具结果', () => {
     const build = () => [
         { role: 'system', content: `系统 ${resultBlock('示'.repeat(3000))}` },
-        { role: 'user', content: '旧问题' },
-        { role: 'assistant', content: resultBlock('旧'.repeat(30000)) },
+        { role: 'user', content: '很早的问题' },
+        { role: 'assistant', content: resultBlock('远'.repeat(30000)) },
+        { role: 'user', content: '问题二' }, { role: 'assistant', content: '答' },
+        { role: 'user', content: '问题三' }, { role: 'assistant', content: '答' },
+        { role: 'user', content: '上一轮的问题' },
+        { role: 'assistant', content: resultBlock('近'.repeat(30000)) },
         { role: 'user', content: '新问题' },
         { role: 'assistant', content: '调用一' },
-        payload('一'.repeat(6000)),
+        payload('一'.repeat(60000)),
         { role: 'assistant', content: '调用二' },
-        payload('二'.repeat(6000)),
+        payload('二'.repeat(60000)),
     ];
-    const historyOnly = build();
-    const original = historyOnly[2];
-    assert.equal(contextBudget.slimToFit(historyOnly, 6, () => false), 1);
-    assert.ok(historyOnly[2].content.length < 1200);
-    assert.equal(original.content.length > 30000, true); // 原对象不被改写
-    assert.ok(historyOnly[0].content.includes('示'.repeat(3000)));
-    assert.ok(historyOnly[5].content.length > 6000);
+    // 第一级就够：远的压成紧凑存根，最近三轮内的留 6000 + 2000，当前轮不动。
+    const first = build();
+    const original = first[2];
+    assert.equal(contextBudget.slimToFit(first, 12, () => false), 2);
+    assert.ok(first[2].content.length < 1200);
+    assert.ok(original.content.length > 30000); // 原对象不被改写
+    assert.ok(first[8].content.length > 8000 && first[8].content.length < 8500);
+    assert.ok(first[0].content.includes('示'.repeat(3000)));
+    assert.ok(first[11].content.length > 60000);
 
-    const both = build();
-    assert.equal(contextBudget.slimToFit(both, 6, () => true), 2);
-    assert.ok(both[5].content.length < 1000);
-    assert.ok(both[7].content.length > 6000);
+    // 一直不够：最近几轮也压紧，当前轮较早一步先留 18000 + 6000 再压紧，最新一步始终不动。
+    const all = build();
+    let checks = 0;
+    contextBudget.slimToFit(all, 12, () => { checks++; return true; });
+    assert.ok(all[8].content.length < 1200);
+    assert.ok(all[11].content.length < 1000);
+    assert.ok(all[13].content.length > 60000);
+    assert.equal(checks, 3);
+
+    // 压到第三级就够：当前轮较早一步保留宽裕的头尾。
+    const third = build();
+    let calls = 0;
+    contextBudget.slimToFit(third, 12, () => ++calls < 3);
+    assert.ok(third[11].content.length > 24000 && third[11].content.length < 24300);
+
+    // 出站前没有工具循环：只压历史。
+    const outbound = build();
+    contextBudget.slimToFit(outbound, undefined, () => true);
+    assert.ok(outbound[8].content.length < 1200);
+    assert.ok(outbound[11].content.length > 60000);
 });
+
+const roleDivider = require('../modules/roleDivider');
+// 一条真实落盘的历史回复：发起调用 + 用角色分割标记包着的工具批次 + 后续结论。
+const persistedToolTurn = (text, conclusion = '结论') =>
+    `调用 <<<[TOOL_REQUEST]>>>x<<<[END_TOOL_REQUEST]>>>\n<<<[ROLE_DIVIDE_USER]>>>\n` +
+    `<<<[VCP_TOOL_BATCH_START:2026-11-25T11:08:27.499+08:00]>>>\n${resultBlock(text)}\n` +
+    `<<<[VCP_TOOL_BATCH_END:2026-11-25T11:08:27.499+08:00]>>>\n<<<[END_ROLE_DIVIDE_USER]>>>\n${conclusion}`;
+
+test('角色分割拆出来的历史工具结果仍被认作工具结果，不当成用户发言', () => withEnv({ ContextPruneEnabled: 'true' }, () => {
+    const split = roleDivider.process([
+        { role: 'system', content: 'S' },
+        { role: 'user', content: '第一问'.padEnd(900, 'x') },
+        { role: 'assistant', content: persistedToolTurn('旧'.repeat(3000)) },
+        { role: 'user', content: '第二问' },
+        { role: 'assistant', content: persistedToolTurn('新'.repeat(3000), '') },
+    ], { skipCount: 1 });
+    const toolIndexes = split.map((m, i) => (contextBudget.isToolResultMessage(m) ? i : -1)).filter(i => i >= 0);
+    assert.equal(toolIndexes.length, 2);
+    assert.ok(toolIndexes.every(i => split[i].role === 'user'));
+    // 当前轮从「第二问」开始，而不是从末尾那条拆出来的工具结果开始。
+    const turnStart = contextBudget.lastRealUserIndex(split);
+    assert.equal(split[turnStart].content, '第二问');
+    // 调用和它的结果是同一个删除单元。
+    const units = contextManager.computeDeletableUnits(split, contextManager.computeMustKeepIndices(split));
+    assert.ok(units.some(unit => unit.length === 2 && unit[1] === toolIndexes[0]));
+    // 只需要删掉第一问就够，但第一条留下来的不能是没头的调用或工具结果。
+    const total = contextManager.estimateTokens(split);
+    const pruned = contextManager.pruneMessages(split, total - 100);
+    assert.equal(pruned[1].content, '第二问');
+    // 压缩时逐块压，保留块的起止标记和工具名；当前轮不动。
+    const slimmed = split.slice();
+    assert.equal(contextBudget.slimEarlierToolResults(slimmed, turnStart), 1);
+    assert.match(slimmed[toolIndexes[0]].content, /\[\[VCP调用结果信息汇总:\n- 工具名称: FileOperator[\s\S]*已省略[\s\S]*VCP调用结果结束\]\]/);
+    assert.ok(slimmed[toolIndexes[1]].content.includes('新'.repeat(3000)));
+}));
+
+test('当前轮起点：续写提示这类系统替用户说的话不算，找不到真正发言时退回最后一条 user', () => {
+    const messages = [
+        { role: 'user', content: '真正的问题' },
+        { role: 'assistant', content: '调用' },
+        payload('结果'),
+        { role: 'assistant', content: '写到一半' },
+        { role: 'user', content: '[系统提示:] 请继续' },
+    ];
+    assert.equal(contextBudget.lastRealUserIndex(messages), 0);
+    assert.equal(contextBudget.lastRealUserIndex([{ role: 'system', content: 'S' }, { role: 'user', content: '[系统提示:] 唤醒' }]), 1);
+    assert.equal(contextBudget.lastRealUserIndex([{ role: 'system', content: 'S' }]), -1);
+    const formula = Object.defineProperty({ role: 'user', content: '$$x$$' }, '__vcpMetaThinkingV3__', { value: true });
+    assert.equal(contextBudget.lastRealUserIndex([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }, formula]), 0);
+});
+
+test('压缩工具结果块：四个反引号的围栏、行内反引号不会让状态翻转；截断不劈开 emoji', () => {
+    const real = resultBlock('真'.repeat(3000));
+    const fourTicks = `\`\`\`\`markdown\n\`\`\`\n示例\n\`\`\`\`\n${real}`;
+    assert.ok(contextBudget.slimToolResultBlocks(fourTicks).length < 1500);
+    const inline = `请不要用 \`\`\` 包裹。\n${real}`;
+    assert.ok(contextBudget.slimToolResultBlocks(inline).length < 1500);
+    const tilde = `~~~\n${resultBlock('例'.repeat(3000))}\n~~~\n${real}`;
+    const slimTilde = contextBudget.slimToolResultBlocks(tilde);
+    assert.ok(slimTilde.includes('例'.repeat(3000)));
+    assert.ok(!slimTilde.includes('真'.repeat(3000)));
+
+    const emoji = `[[VCP调用结果信息汇总:${'a'.repeat(499)}${'🔍'.repeat(3000)}VCP调用结果结束]]`;
+    assert.ok(contextBudget.slimToolResultBlocks(emoji).isWellFormed());
+    const messages = [payload(`${'a'.repeat(490)}${'🔍'.repeat(3000)}`), { role: 'user', content: 'q' }];
+    contextBudget.slimEarlierToolResults(messages, 1);
+    assert.ok(messages[0].content.isWellFormed());
+});
+
+test('保留的头尾长度可以用环境变量调', () => withEnv({ ContextSlimHeadChars: '6000', ContextSlimTailChars: '2000' }, () => {
+    const out = contextBudget.slimToolResultBlocks(resultBlock('旧'.repeat(50000)));
+    assert.ok(out.length > 8000 && out.length < 8400);
+    assert.equal(contextBudget.slimToolResultBlocks(resultBlock('旧'.repeat(7000))).length, resultBlock('旧'.repeat(7000)).length);
+}));
+
+test('图片占比高的请求只校准本请求，不改这个模型的长期比例', () => withEnv({ ContextBudgetGuard: 'enforce' }, () => {
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } };
+    const body = { messages: [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(2988) }, ...Array(15).fill(image)] }] };
+    const guard = contextBudget.createBudgetGuard({ limit: 100000, model: 'm' });
+    const before = guard.estimate(body);
+    guard.noteRequest(body);
+    guard.noteUsage({ prompt_tokens: before * 2 });
+    assert.equal(guard.estimate(body), before * 2);
+    assert.equal(contextBudget.createBudgetGuard({ limit: 100000, model: 'm' }).estimate(body), before);
+}));
 
 const nativeCall = (id, text = '') => ({ role: 'assistant', content: text, tool_calls: [{ id, type: 'function', function: { name: 'f', arguments: '{}' } }] });
 const nativeResult = (id, text) => ({ role: 'tool', tool_call_id: id, content: text });
@@ -290,8 +398,29 @@ test('裁剪：ContextPruneTargetRatio 成档地删，对话在同一档内增�
     assert.equal(new Set(firstKept).size, 1, firstKept.join(','));
     // 默认（比例 1）下每长一轮边界就挪一次。
     process.env.ContextPruneTargetRatio = '1';
+    contextManager.resetPruneWatermarks();
     const moving = [20, 22, 24].map(count => contextManager.pruneMessages(turns(count), 1900)[1].content.slice(0, 3));
     assert.equal(new Set(moving).size, 3);
+}));
+
+test('裁剪：边界只进不退，总量回落也不会把上一轮删掉的消息放回来', () => withEnv({ ContextPruneEnabled: 'true', ContextPruneTargetRatio: '0.5' }, () => {
+    const firstKept = out => out[1].content.slice(0, 3);
+    // 这一轮超出刚过一档的线，删了两档。
+    const big = contextManager.pruneMessages(turns(30), 1900);
+    // 下一轮上限因为校准宽了一点（等价于记忆注入变短），按当轮算只需要删一档。
+    const next = contextManager.pruneMessages(turns(30), 2100);
+    assert.equal(firstKept(next), firstKept(big));
+    // 没有记录时，同样的输入确实只删一档：说明上面保持不动靠的是水位。
+    contextManager.resetPruneWatermarks();
+    assert.notEqual(firstKept(contextManager.pruneMessages(turns(30), 2100)), firstKept(big));
+    // 对话明显变短（用户删了大半）后水位作废，不再裁剪。
+    contextManager.pruneMessages(turns(30), 1900);
+    const short = turns(8);
+    assert.equal(contextManager.pruneMessages(short, 1900), short);
+    // 对话被改写、边界消息不在了：按当轮重新算。
+    contextManager.pruneMessages(turns(30), 1900);
+    const edited = turns(30).map((m, i) => (i > 0 && i < 25 ? { ...m, content: `改${m.content}` } : m));
+    assert.ok(contextManager.estimateTokens(contextManager.pruneMessages(edited, 2400)) <= 2400);
 }));
 
 test('裁剪：留下来的第一条不会是没头的 assistant 回复', () => withEnv({ ContextPruneEnabled: 'true' }, () => {

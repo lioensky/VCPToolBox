@@ -57,9 +57,11 @@ function withStreamUsage(fetchUpstream) {
     const usageOption = applyStreamUsageOption(url, options);
     const response = await fetchUpstream(url, usageOption.options, retryOptions);
     if (!usageOption.key || !(await rejectsStreamUsageOption(response))) return response;
-    markStreamUsageUnsupported(usageOption.key);
+    // 容灾链换过模型时，拒绝参数的是实际请求的那个模型，不是最初的模型。
+    const rejectedKey = response.vcpAttemptModel ? `${url}|${response.vcpAttemptModel}` : usageOption.key;
+    markStreamUsageUnsupported(rejectedKey);
     response.text?.().catch(() => {});
-    console.warn(`[StreamUsage] 上游不支持 stream_options.include_usage，已去掉该参数重试并记住此渠道: ${usageOption.key}`);
+    console.warn(`[StreamUsage] 上游不支持 stream_options.include_usage，已去掉该参数重试并记住此渠道: ${rejectedKey}`);
     return fetchUpstream(url, options, retryOptions);
   };
 }

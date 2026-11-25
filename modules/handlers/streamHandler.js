@@ -243,7 +243,7 @@ class StreamHandler {
           // 首个上游调用的 usage 就是「最终上下文」快照那份请求体的真实计数。
           if (isInitialCall && parsedData?.usage) finalContextStore.recordUpstreamUsage(id, parsedData.usage);
           // 每一轮的真实用量都用来校准下一轮的预算估算。
-          if (parsedData?.usage) budgetGuard?.noteUsage(parsedData.usage);
+          if (parsedData?.usage) budgetGuard?.noteUsage(parsedData.usage, aiResponse?.vcpAttemptModel);
           if (parsedData?.error) {
             invalidPayload = true;
             hasPayloadError = true;
@@ -631,7 +631,7 @@ class StreamHandler {
               created: Math.floor(Date.now() / 1000),
               model: originalBody.model || 'unknown',
               vcp_incomplete: true,
-              vcp_context_budget: { estimated: check.estimated, limit: check.limit },
+              vcp_context_budget: { stage: 'tool_loop', estimated: check.estimated, limit: check.limit },
               choices: [{ index: 0, delta: {
                 content: `\n\n> [!WARNING]\n> ${contextBudget.exceededMessage(check, 'tool_loop', budgetGuard.breakdown(body))}\n`
               }, finish_reason: 'stop' }],

@@ -60,11 +60,9 @@ function computeMustKeepIndices(messages) {
     // --- 规则 4: 当前轮完整保留 ---
     // 从最后一条真正的用户发言（不是工具回执）到末尾，是模型正在处理的这一轮；
     // 工具链进行到一半时，末尾可能是好几条工具结果，只保最后两条会把发起调用的那条删掉。
-    for (let i = totalLen - 1; i >= 0; i--) {
-        mustKeepIndices.add(i);
-        const msg = messages[i];
-        if (msg && msg.role === 'user' && !contextBudget.isToolResultMessage(msg)) break;
-    }
+    // 起点的判定和出站压缩共用一处：续写提示这类系统替用户说的话不算一轮的开始。
+    const turnStart = contextBudget.lastRealUserIndex(messages);
+    for (let i = totalLen - 1; i >= Math.max(0, turnStart); i--) mustKeepIndices.add(i);
 
     return mustKeepIndices;
 }
@@ -95,22 +93,63 @@ function computeDeletableUnits(messages, mustKeepIndices) {
     return units;
 }
 
+// --- 裁剪水位：同一段对话的裁剪边界只进不退 ---
+// 客户端每次都带完整历史，而每轮的总量会小幅波动（记忆注入长短不一、估算比例在校准）。
+// 只按当轮总量算「删多少」的话，边界会在档位附近来回跳：上一轮删掉的消息下一轮又回来，
+// 上游的提示缓存连续失效。这里在内存里按对话记住上次的边界，下一轮至少删到同一位置。
+// 不落盘：进程重启后最多重新对齐一次。对话被改写（边界消息找不到了）或明显变短时自动作废。
+const MAX_TRACKED_CONVERSATIONS = 200;
+const WATERMARK_RELEASE_RATIO = 0.7;
+const pruneWatermarks = new Map();
+
+function messageHead(message, size) {
+    const text = jevContextPruner.extractText(message && message.content) || '';
+    return `${message && message.role}|${text.slice(0, size)}`;
+}
+
+function conversationKey(messages) {
+    const first = messages.find(msg => msg && msg.role !== 'system');
+    return first ? messageHead(first, 200) : null;
+}
+
+/** 边界 = 留下来的第一条非系统消息；用它和下一条的开头一起当指纹，避免「好的」这类短句重复。 */
+function boundaryFingerprint(messages, index) {
+    return `${messageHead(messages[index], 120)}\u0000${messageHead(messages[index + 1], 120)}`;
+}
+
+function findWatermarkIndex(messages, fingerprint) {
+    for (let i = 0; i < messages.length - 1; i++) {
+        if (messages[i] && messages[i].role !== 'system' && boundaryFingerprint(messages, i) === fingerprint) return i;
+    }
+    return -1;
+}
+
+function rememberWatermark(key, fingerprint) {
+    pruneWatermarks.delete(key);
+    pruneWatermarks.set(key, fingerprint);
+    if (pruneWatermarks.size > MAX_TRACKED_CONVERSATIONS) pruneWatermarks.delete(pruneWatermarks.keys().next().value);
+}
+
+function resetPruneWatermarks() {
+    pruneWatermarks.clear();
+}
+
 /**
  * 按给定顺序删除单元，直到估算不超过上限；返回被删下标集合。
- * 请求是无状态的（客户端每次都带完整历史），所以「删多少」只由当前总量决定：
- * 把超出量向上取整到档位的整数倍，同一档内每次算出的删除量相同，裁剪边界就不动。
+ * 「删多少」把超出量向上取整到档位的整数倍，一次腾出一档；floorIndex（上次的裁剪边界）
+ * 之前的单元无论如何都删，保证边界不后退。
  */
-function dropUnitsUntilFits(messages, orderedUnits, limit, mustKeepIndices) {
+function dropUnitsUntilFits(messages, orderedUnits, limit, mustKeepIndices, floorIndex = -1) {
     const weights = messages.map(msg => estimateTokens([msg]));
     const total = weights.reduce((sum, w) => sum + w, 0);
     const dropped = new Set();
-    if (total <= limit) return dropped;
+    if (total <= limit && floorIndex <= 0) return dropped;
     const step = limit * (1 - pruneTargetRatio());
-    const over = total - limit;
+    const over = Math.max(0, total - limit);
     const required = step >= 1 ? Math.ceil(over / step) * step : over;
     let removed = 0;
     for (const unit of orderedUnits) {
-        if (removed >= required) break;
+        if (removed >= required && unit[unit.length - 1] >= floorIndex) break;
         for (const index of unit) {
             dropped.add(index);
             removed += weights[index];
@@ -151,10 +190,22 @@ function pruneMessages(messages, limit, debugMode = false) {
 
     const mustKeepIndices = computeMustKeepIndices(messages);
     const units = computeDeletableUnits(messages, mustKeepIndices);
+    // 上次的裁剪边界：对话没被改写、也没有明显变短时沿用。
+    const total = estimateTokens(messages);
+    const key = conversationKey(messages);
+    let floorIndex = -1;
+    if (key && pruneWatermarks.has(key)) {
+        floorIndex = total > limit * WATERMARK_RELEASE_RATIO ? findWatermarkIndex(messages, pruneWatermarks.get(key)) : -1;
+        if (floorIndex === -1) pruneWatermarks.delete(key);
+    }
     // 位置规则：从最老的单元开始删。
-    const dropped = dropUnitsUntilFits(messages, units, limit, mustKeepIndices);
+    const dropped = dropUnitsUntilFits(messages, units, limit, mustKeepIndices, floorIndex);
+    if (key && dropped.size > 0) {
+        const boundary = messages.findIndex((msg, i) => !dropped.has(i) && msg && msg.role !== 'system');
+        if (boundary !== -1 && boundary < messages.length - 1) rememberWatermark(key, boundaryFingerprint(messages, boundary));
+    }
     if (debugMode) {
-        console.log(`[ContextManager] 估算 ${estimateTokens(messages)}，限制 ${limit}，移除 ${dropped.size} 条消息`);
+        console.log(`[ContextManager] 估算 ${total}，限制 ${limit}，移除 ${dropped.size} 条消息`);
     }
     if (dropped.size === 0) return messages;
     return messages.filter((msg, i) => !dropped.has(i));
@@ -257,6 +308,7 @@ async function pruneMessagesSmart(messages, limit, debugMode = false, options = 
 
 module.exports = {
     isPruningEnabled,
+    resetPruneWatermarks,
     pruneMessages,
     pruneMessagesSmart,
     computeMustKeepIndices,

@@ -1059,7 +1059,7 @@ function formatNumber(value: number | undefined): string {
 }
 
 // 只展示一个 Token 总数：上游返回了 usage 就用它，否则用本地计数，界面不区分来源。
-// 分块只展示占比，分项数字和总数口径不同，并列显示会造成误读。
+// 分块展示占比和按占比折算的大约数量：折算以上面这个总数为准，各块加起来与总数一致。
 function contextTokens(summary: { totalTokenCount?: number; upstreamUsage?: FinalContextUpstreamUsage | null } | undefined): number {
   return summary?.upstreamUsage?.promptTokens || summary?.totalTokenCount || 0
 }
@@ -1068,7 +1068,9 @@ function formatShare(tokenCount: number | undefined): string {
   const total = snapshot.value?.summary.totalTokenCount || 0
   if (!total || !tokenCount) return '0%'
   const percent = (tokenCount / total) * 100
-  return `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
+  const share = `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
+  const approx = Math.round((tokenCount / total) * contextTokens(snapshot.value?.summary))
+  return approx > 0 ? `${share}（约 ${formatNumber(approx)}）` : share
 }
 
 function blockToSearchText(block: FinalContextBlockSummary): string {

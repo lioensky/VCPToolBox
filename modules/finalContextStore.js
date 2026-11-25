@@ -12,8 +12,7 @@
 // - 分块数字是本地估算：汉字按 2 个字符、其余按 1 个字符计，再除以 3。只用于看各块占比，
 //   不再用 cl100k_base（GPT-4 旧词表对中文多算约 1.5 倍）。
 const TOKEN_METHOD = 'estimate:cjk2/3';
-const { promptTokensFromUsage } = require('./contextBudget.js');
-const ESTIMATED_TOKEN_CHAR_DIVISOR = 3;
+const { promptTokensFromUsage, estimateTextTokens } = require('./contextBudget.js');
 
 const MAX_SNAPSHOTS = 5;
 const snapshots = []; // 数组首位为最新快照（unshift 写入）
@@ -35,8 +34,7 @@ function safeClone(value) {
 }
 
 function estimateTokensForText(text) {
-  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  return Math.ceil((chineseChars * 2 + text.length - chineseChars) / ESTIMATED_TOKEN_CHAR_DIVISOR);
+  return estimateTextTokens(text);
 }
 
 function countTokensForText(text) {
