@@ -104,24 +104,16 @@
             <strong>{{ snapshot.summary.messageCount }}</strong>
           </div>
           <div class="summary-item">
-            <span>总 Token</span>
-            <strong>{{ formatNumber(snapshot.summary.totalTokenCount) }}</strong>
+            <span>Token</span>
+            <strong>{{ formatNumber(contextTokens(snapshot.summary)) }}</strong>
           </div>
-          <div class="summary-item">
-            <span>文本 Token</span>
-            <strong>{{ formatNumber(snapshot.summary.totalTextTokenCount) }}</strong>
-          </div>
-          <div class="summary-item">
-            <span>附件估算 Token</span>
-            <strong>{{ formatNumber(snapshot.summary.totalAttachmentTokenCount) }}</strong>
+          <div v-if="snapshot.summary.toolsTokenCount" class="summary-item">
+            <span>工具定义占比</span>
+            <strong>{{ formatShare(snapshot.summary.toolsTokenCount) }}</strong>
           </div>
           <div class="summary-item">
             <span>总字符</span>
             <strong>{{ formatNumber(snapshot.summary.totalTextLength) }}</strong>
-          </div>
-          <div class="summary-item">
-            <span>Token 算法</span>
-            <strong>{{ snapshot.summary.tokenMethod || '-' }}</strong>
           </div>
           <div class="summary-item">
             <span>Stream</span>
@@ -208,10 +200,7 @@
               <div class="block-header-right">
                 <div class="block-meta">
                   <span>{{ formatNumber(block.textLength) }} 字符</span>
-                  <span>{{ formatNumber(block.tokenCount) }} tokens</span>
-                  <span>文本 {{ formatNumber(block.textTokenCount) }}</span>
-                  <span v-if="block.attachmentTokenCount">附件估算 {{ formatNumber(block.attachmentTokenCount) }}</span>
-                  <span>{{ block.tokenMethod || snapshot.summary.tokenMethod || 'unknown' }}</span>
+                  <span>占比 {{ formatShare(block.tokenCount) }}</span>
                   <span v-if="block.attachments.length > 0">
                     附件 {{ block.attachments.length }} 个：{{ attachmentCountsText(block) }}
                   </span>
@@ -499,7 +488,7 @@ import UiIconButton from '@/components/ui/UiIconButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiPageActions from '@/components/ui/UiPageActions.vue'
 import UiSelect from '@/components/ui/UiSelect.vue'
-import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot } from '@/types/api.system'
+import type { FinalContextBlockSummary, FinalContextListItem, FinalContextSnapshot, FinalContextUpstreamUsage } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 import {
   getDefaultMoonlightOptions,
@@ -640,7 +629,7 @@ function formatSnapshotLabel(item: FinalContextListItem): string {
   const captured = item.capturedAt || ''
   const time = captured ? captured.replace('T', ' ').replace(/\.\d+Z?$/, '') : '-'
   const model = item.summary?.model || 'unknown'
-  const tokens = formatNumber(item.summary?.totalTokenCount || 0)
+  const tokens = formatNumber(contextTokens(item.summary))
   return `${time} · ${model} · ${tokens} tokens`
 }
 
@@ -895,7 +884,7 @@ function jumpChipTitle(block: FinalContextBlockSummary): string {
   const meta = getDisplayOneRingMeta(block)
   const sourceText = meta?.frontendSource ? `｜${meta.frontendSource}` : ''
   const senderText = meta?.senderName ? `｜${meta.senderName}` : ''
-  return `#${block.index} ${normalizeRoleLabel(displayRole(block))}${senderText}${sourceText}｜${formatNumber(block.tokenCount)} tokens`
+  return `#${block.index} ${normalizeRoleLabel(displayRole(block))}${senderText}${sourceText}｜占比 ${formatShare(block.tokenCount)}`
 }
 
 function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; className: string } | null {
@@ -1062,14 +1051,26 @@ function attachmentCountsText(block: FinalContextBlockSummary): string {
 
 function attachmentDescription(block: FinalContextBlockSummary): string {
   const countText = attachmentCountsText(block)
-  const tokenText = block.attachmentTokenCount
-    ? `，估算 ${formatNumber(block.attachmentTokenCount)} tokens`
-    : ''
-  return `本块包含多模态/非文本附件 ${block.attachments.length} 个：${countText}${tokenText}`
+  return `本块包含多模态/非文本附件 ${block.attachments.length} 个：${countText}`
 }
 
 function formatNumber(value: number | undefined): string {
   return Number(value || 0).toLocaleString('zh-CN')
+}
+
+// 只展示一个 Token 总数：上游返回了 usage 就用它，否则用本地计数，界面不区分来源。
+// 分块展示占比和按占比折算的大约数量：折算以上面这个总数为准，各块加起来与总数一致。
+function contextTokens(summary: { totalTokenCount?: number; upstreamUsage?: FinalContextUpstreamUsage | null } | undefined): number {
+  return summary?.upstreamUsage?.promptTokens || summary?.totalTokenCount || 0
+}
+
+function formatShare(tokenCount: number | undefined): string {
+  const total = snapshot.value?.summary.totalTokenCount || 0
+  if (!total || !tokenCount) return '0%'
+  const percent = (tokenCount / total) * 100
+  const share = `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
+  const approx = Math.round((tokenCount / total) * contextTokens(snapshot.value?.summary))
+  return approx > 0 ? `${share}（约 ${formatNumber(approx)}）` : share
 }
 
 function blockToSearchText(block: FinalContextBlockSummary): string {
@@ -1079,10 +1080,6 @@ function blockToSearchText(block: FinalContextBlockSummary): string {
     displayRole(block),
     normalizeRoleLabel(displayRole(block)),
     block.contentType,
-    String(block.tokenCount || 0),
-    String(block.textTokenCount || 0),
-    String(block.attachmentTokenCount || 0),
-    block.tokenMethod || '',
     block.text,
     attachmentCountsText(block),
     getDisplayOneRingMeta(block)?.senderName || '',
@@ -1203,7 +1200,7 @@ function formatBlockAsText(block: FinalContextBlockSummary): string {
   return [
     `===== #${block.index} ${normalizeRoleLabel(displayRole(block))} (${block.contentType}) =====`,
     `字符数：${formatNumber(block.textLength)}`,
-    `Token：${formatNumber(block.tokenCount)} = 文本 ${formatNumber(block.textTokenCount)} + 附件估算 ${formatNumber(block.attachmentTokenCount)} (${block.tokenMethod || snapshot.value?.summary.tokenMethod || 'unknown'})`,
+    `占比：${formatShare(block.tokenCount)}`,
     attachmentLine,
     oneRingLine,
     block.text || '(空文本块)',

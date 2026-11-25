@@ -1,6 +1,8 @@
 // modules/handlers/streamHandler.js
 const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
+const contextBudget = require('../contextBudget.js');
+const finalContextStore = require('../finalContextStore.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream, buildToolPayloadMessage } = require('../toolResultBatch.js');
 const { matchesNativeToolIsolation } = require('../nativeToolIsolation.js');
@@ -89,6 +91,7 @@ class StreamHandler {
       apiConnectionTimeoutMs,
       semanticModelFallbackCandidates,
       oneRingResponseMeta,
+      budgetGuard,
       shouldProcessMedia,
       shouldProcessMediaPlus,
       isTextOnlyForceTranslateModel,
@@ -237,6 +240,10 @@ class StreamHandler {
           };
         };
         const observePayload = (parsedData) => {
+          // 首个上游调用的 usage 就是「最终上下文」快照那份请求体的真实计数。
+          if (isInitialCall && parsedData?.usage) finalContextStore.recordUpstreamUsage(id, parsedData.usage);
+          // 每一轮的真实用量都用来校准下一轮的预算估算。
+          if (parsedData?.usage) budgetGuard?.noteUsage(parsedData.usage, aiResponse?.vcpAttemptModel);
           if (parsedData?.error) {
             invalidPayload = true;
             hasPayloadError = true;
@@ -590,6 +597,57 @@ class StreamHandler {
       return { ...data, completed: true };
     };
 
+    const noteLoopRequest = (body) => {
+      budgetGuard?.noteRequest(body);
+      return body;
+    };
+
+    /**
+     * 工具循环每次再发上游之前的预算检查。返回要发送的请求体；返回 null 表示已超预算、
+     * 已向客户端说明并结束响应，调用方应退出循环。
+     * 超预算时先把本轮之前的工具结果压缩成摘要（当前轮不动），仍然超才停止。
+     */
+    const prepareLoopRequest = (roundStartIndex) => {
+      const build = () => projectToolBatchForUpstream({ ...originalBody, messages: currentMessagesForLoop, stream: true });
+      let body = build();
+      if (!budgetGuard?.active) return body;
+      let check = budgetGuard.check(body, 'tool_loop', { silent: budgetGuard.enforcing });
+      if (check.over && budgetGuard.enforcing) {
+        const slimmed = contextBudget.slimToFit(currentMessagesForLoop, roundStartIndex, () => budgetGuard.check(build(), 'tool_loop', { silent: true }).over);
+        if (slimmed > 0) {
+          body = build();
+          const before = check.estimated;
+          check = budgetGuard.check(body, 'tool_loop', { silent: true });
+          console.warn(`[ContextBudget] 工具循环超预算，已压缩 ${slimmed} 条较早的工具结果: requestId=${id || 'none'} ${before} -> ${check.estimated} / ${check.limit}`);
+        }
+      }
+      if (check.over && budgetGuard.enforcing) {
+        console.warn(`[ContextBudget] 工具循环已停止: requestId=${id || 'none'} estimated=${check.estimated} limit=${check.limit}`);
+        if (!res.writableEnded && !res.destroyed) {
+          try {
+            res.write(`data: ${JSON.stringify({
+              id: `chatcmpl-VCP-context-budget-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: originalBody.model || 'unknown',
+              vcp_incomplete: true,
+              vcp_context_budget: { stage: 'tool_loop', estimated: check.estimated, limit: check.limit },
+              choices: [{ index: 0, delta: {
+                content: `\n\n> [!WARNING]\n> ${contextBudget.exceededMessage(check, 'tool_loop', budgetGuard.breakdown(body))}\n`
+              }, finish_reason: 'stop' }],
+            })}\n\n`);
+            res.write('data: [DONE]\n\n', () => {
+              try { res.end(); } catch (e) { }
+            });
+          } catch (e) {
+            try { res.end(); } catch (_) { }
+          }
+        }
+        return null;
+      }
+      return noteLoopRequest(body);
+    };
+
     // Semantic recovery is per upstream turn, separate from transport retries and tool execution.
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
       let data = await readAIResponseStream(aiResponse, isInitialCall);
@@ -635,9 +693,9 @@ class StreamHandler {
               Authorization: `Bearer ${apiKey}`,
               Accept: 'text/event-stream'
             },
-            body: JSON.stringify(projectToolBatchForUpstream({
+            body: JSON.stringify(noteLoopRequest(projectToolBatchForUpstream({
               ...originalBody, messages: currentMessagesForLoop, stream: true
-            })),
+            }))),
             signal: abortController.signal
           }, {
             retries: 1, delay: apiRetryDelay, debugMode: DEBUG_MODE,
@@ -693,6 +751,7 @@ class StreamHandler {
         break;
       }
 
+      const roundStartIndex = currentMessagesForLoop.length;
       let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
       if (enableRoleDivider && enableRoleDividerInLoop) {
         assistantMessages = roleDivider.process(assistantMessages, {
@@ -833,6 +892,8 @@ class StreamHandler {
 
         if (this.context.handoffGate?.isReady()) await waitForHandoff();
         if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
+        const archeryLoopBody = prepareLoopRequest(roundStartIndex);
+        if (!archeryLoopBody) { completed = false; break; }
         const nextAiAPIResponse = await fetchWithRetry(
           `${apiUrl}/v1/chat/completions`,
           {
@@ -842,7 +903,7 @@ class StreamHandler {
               Authorization: `Bearer ${apiKey}`,
               Accept: 'text/event-stream',
             },
-            body: JSON.stringify(projectToolBatchForUpstream({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
+            body: JSON.stringify(archeryLoopBody),
             signal: abortController.signal,
           },
           { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
@@ -993,6 +1054,8 @@ class StreamHandler {
       try {
         if (this.context.handoffGate?.isReady()) await waitForHandoff();
         if (abortController.signal.aborted || res.writableEnded || res.destroyed) break;
+        const loopBody = prepareLoopRequest(roundStartIndex);
+        if (!loopBody) { completed = false; break; }
         nextAiAPIResponse = await fetchWithRetry(
           `${apiUrl}/v1/chat/completions`,
           {
@@ -1002,7 +1065,7 @@ class StreamHandler {
               Authorization: `Bearer ${apiKey}`,
               Accept: 'text/event-stream',
             },
-            body: JSON.stringify(projectToolBatchForUpstream({ ...originalBody, messages: currentMessagesForLoop, stream: true })),
+            body: JSON.stringify(loopBody),
             signal: abortController.signal,
           },
           { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, connectionTimeout: apiConnectionTimeoutMs, modelFallbackCandidates: semanticModelFallbackCandidates }
