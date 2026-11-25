@@ -77,6 +77,7 @@ class StreamHandler {
       roleDividerSwitches,
       roleDividerScanSwitches,
       roleDividerRemoveDisabledTags,
+      touchRequestActivity,
       toolExecutor,
       ToolCallParser,
       abortController,
@@ -457,6 +458,7 @@ class StreamHandler {
         aiResponse.body.on('data', chunk => {
           if (streamSettled || streamAborted) return;
           resetChunkIdleTimer(); // 每收到一个 chunk 就重置空闲计时器
+          touchRequestActivity?.();
 
           const chunkString = decoder.write(chunk);
           sseLineBuffer += chunkString;
@@ -890,8 +892,10 @@ class StreamHandler {
         break;
       }
 
-      // 执行普通调用（启动 SSE 保活心跳，防止长耗时工具/RAG刷新/下轮首字等待期间连接空闲断开）
+      // 执行普通调用（启动 SSE 保活心跳并刷新请求活性时间戳，防止长耗时工具/RAG刷新/下轮首字等待期间连接被误判为空闲）
+      touchRequestActivity?.();
       const loopKeepAliveTimer = setInterval(() => {
+        touchRequestActivity?.();
         if (!res.writableEnded && !res.destroyed) {
           try {
             res.write(': vcp-tool-keepalive\n\n');

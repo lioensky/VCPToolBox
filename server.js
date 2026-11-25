@@ -363,15 +363,63 @@ async function abortAllActiveRequests(reason = '服务器正在关闭') {
     }
 }
 
-// 新增：定时清理 activeRequests 防止内存泄漏
+// 活跃请求（流式与非流式多轮工具循环共用）超时配置：
+// ActiveRequestIdleTimeoutMs：无推进空闲超时（默认 30 分钟；上游流输出或工具循环推进时自动续期）
+// ActiveRequestMaxLifetimeMs：单请求跨所有循环轮次的总寿命硬上限（默认 120 分钟；防止异常循环无限驻留）
+const ACTIVE_REQUEST_IDLE_TIMEOUT_MS = Math.max(
+    60 * 1000,
+    parseInt(process.env.ActiveRequestIdleTimeoutMs, 10) || 30 * 60 * 1000
+);
+const ACTIVE_REQUEST_MAX_LIFETIME_MS = Math.max(
+    ACTIVE_REQUEST_IDLE_TIMEOUT_MS,
+    parseInt(process.env.ActiveRequestMaxLifetimeMs, 10) || 120 * 60 * 1000
+);
+
+// 定时清理 activeRequests 防止内存泄漏，同时兼顾长耗时多轮工具活跃续期与总寿命硬上限
 setInterval(() => {
     const now = Date.now();
     for (const [id, context] of activeRequests.entries()) {
-        // 30分钟超时
-        if (now - (context.timestamp || 0) > 30 * 60 * 1000) {
-            console.log(`[Request Cleanup] Aborting and removing timed-out request: ${id}`);
-            if (context.abortController) {
+        const createdAt = context.timestamp || now;
+        const lastActivityAt = context.lastActivityAt || createdAt;
+        const totalElapsedMs = now - createdAt;
+        const idleElapsedMs = now - lastActivityAt;
+        const isMaxLifetimeExceeded = totalElapsedMs > ACTIVE_REQUEST_MAX_LIFETIME_MS;
+        const isIdleTimedOut = idleElapsedMs > ACTIVE_REQUEST_IDLE_TIMEOUT_MS;
+
+        if (isMaxLifetimeExceeded || isIdleTimedOut) {
+            const reason = isMaxLifetimeExceeded
+                ? `request_max_lifetime_timeout (${Math.round(totalElapsedMs / 60000)}min > ${Math.round(ACTIVE_REQUEST_MAX_LIFETIME_MS / 60000)}min)`
+                : `request_idle_timeout (idle ${Math.round(idleElapsedMs / 60000)}min > ${Math.round(ACTIVE_REQUEST_IDLE_TIMEOUT_MS / 60000)}min)`;
+            console.log(`[Request Cleanup] Aborting and removing timed-out request: ${id} [${reason}]`);
+            context.aborted = true;
+            context.abortReason = reason;
+            if (context.abortController && !context.abortController.signal.aborted) {
                 context.abortController.abort();
+            }
+            if (context.res && !context.res.writableEnded && !context.res.destroyed) {
+                try {
+                    if (context.res.headersSent && String(context.res.getHeader('Content-Type') || '').includes('text/event-stream')) {
+                        const timeoutNotice = isMaxLifetimeExceeded
+                            ? `\n\n> [!WARNING]\n> **请求总时长已达硬上限 (${Math.round(ACTIVE_REQUEST_MAX_LIFETIME_MS / 60000)} 分钟)，流已安全中止**。\n`
+                            : `\n\n> [!WARNING]\n> **请求连续空闲超过 ${Math.round(ACTIVE_REQUEST_IDLE_TIMEOUT_MS / 60000)} 分钟无推进，流已安全中止**。\n`;
+                        context.res.write(`data: ${JSON.stringify({
+                            id: `chatcmpl-VCP-request-timeout-${now}`,
+                            object: 'chat.completion.chunk',
+                            created: Math.floor(now / 1000),
+                            model: context.req?.body?.model || 'unknown',
+                            choices: [{ index: 0, delta: { content: timeoutNotice }, finish_reason: 'stop' }]
+                        })}\n\n`);
+                        context.res.write('data: [DONE]\n\n');
+                        context.res.end();
+                    } else if (!context.res.headersSent) {
+                        context.res.status(504).json({
+                            error: 'Gateway Timeout',
+                            message: `Request timed out: ${reason}`
+                        });
+                    }
+                } catch {
+                    try { context.res.destroy(); } catch { /* ignore */ }
+                }
             }
             activeRequests.delete(id);
         }

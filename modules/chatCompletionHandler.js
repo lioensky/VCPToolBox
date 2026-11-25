@@ -859,11 +859,13 @@ class ChatCompletionHandler {
       if (isOriginalRequestStreaming && !res.headersSent) {
         res.setHeader('x-vcp-tool-loop-handoff', '1');
       }
+      const initialRequestNow = Date.now();
       activeRequests.set(id, {
         req,
         res,
         abortController,
-        timestamp: Date.now(),
+        timestamp: initialRequestNow,
+        lastActivityAt: initialRequestNow,
         aborted: false, // 修复 Bug #4: 添加中止标志
         abortReason: null,
         handoffGate
@@ -1425,9 +1427,20 @@ class ChatCompletionHandler {
         res.setHeader('x-vcp-tool-loop-handoff', '1');
         res.flushHeaders?.();
       }
+      let lastActivityTouchMs = 0;
+      const touchRequestActivity = () => {
+        if (!id) return;
+        const now = Date.now();
+        if (now - lastActivityTouchMs < 1000) return;
+        lastActivityTouchMs = now;
+        const reqEntry = activeRequests.get(id);
+        if (reqEntry) reqEntry.lastActivityAt = now;
+      };
+
       const context = {
         ...this.config,
         handoffGate,
+        touchRequestActivity,
         toolExecutor: this.toolExecutor,
         ToolCallParser,
         abortController,

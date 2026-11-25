@@ -1,4 +1,4 @@
-// WebSocketServer.js
+﻿// WebSocketServer.js
 const WebSocket = require('ws');
 const url = require('url');
 const fs = require('fs').promises;
@@ -160,7 +160,11 @@ function initialize(httpServer, config) {
         console.warn('[WebSocketServer] VCP_Key not set. WebSocket connections will not be authenticated if default path is used.');
     }
 
-    wssInstance = new WebSocket.Server({ noServer: true });
+    const configuredMaxPayloadMB = Number(process.env.WEBSOCKET_MAX_PAYLOAD_MB);
+    const maxPayloadBytes = (Number.isFinite(configuredMaxPayloadMB) && configuredMaxPayloadMB > 0
+        ? configuredMaxPayloadMB
+        : 256) * 1024 * 1024;
+    wssInstance = new WebSocket.Server({ noServer: true, maxPayload: maxPayloadBytes });
 
     upgradeHandler = (request, socket, head) => {
         if (isDraining) {
@@ -936,7 +940,7 @@ function rejectPendingToolRequestsForServer(serverId) {
 async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout) {
     // 优先从插件 manifest 获取超时设置
     const plugin = pluginManager.getPlugin(toolName);
-    const defaultTimeout = plugin?.communication?.timeout || 60000;
+    const defaultTimeout = plugin?.communication?.timeout || 180000;
     const effectiveTimeout = timeout ?? defaultTimeout;
 
     let targetServerId = serverIdOrName;

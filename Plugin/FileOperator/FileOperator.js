@@ -1937,11 +1937,18 @@ function convertToVCPFormat(response) {
       }
     }
 
+    // 避免 data.content（如多模态图片 Base64）在 result.content 与 result.details.content 中双份重复造成 200% 载荷膨胀
+    let sanitizedDetails = data;
+    if (data && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, 'content')) {
+      sanitizedDetails = { ...data };
+      delete sanitizedDetails.content;
+    }
+
     return {
       status: 'success',
       result: {
         content: contentArray,
-        details: data
+        details: sanitizedDetails
       },
     };
   } else {
