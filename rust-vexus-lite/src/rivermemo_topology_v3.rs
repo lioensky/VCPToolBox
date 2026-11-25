@@ -17,9 +17,13 @@ use crate::storage::{TagVectorPool, ensure_tag_vectors_loaded};
 
 #[path = "rivermemo_wormhole.rs"]
 mod wormhole;
+#[path = "rivermemo_chart_rotation.rs"]
+mod chart_rotation;
+#[path = "rivermemo_route_omega.rs"]
+mod route_omega;
 
 const RESULT_SCHEMA: &str = "rivermemo-topology-v3-native-result-v1";
-const ALGORITHM_VERSION: &str = "rivermemo.unified-omega-experiment-c-v1";
+const ALGORITHM_VERSION: &str = "rivermemo.topological-transport-omega-v6.1";
 
 fn clamp01(value: f64) -> f64 {
     if value.is_finite() {
@@ -1820,11 +1824,11 @@ impl GenusEvidence {
 
 #[cfg(test)]
 fn field_resonance(curve: &Curve, input: &NativeInput, support: f64) -> (f64, f64, f64) {
-    gated_field_resonance(curve, input, support, &GenusEvidence::default())
+    gated_field_resonance(curve, input, support, &GenusEvidence::default(), curve.query_score)
 }
 
 fn gated_field_resonance(curve: &Curve, input: &NativeInput, support: f64,
-    genus: &GenusEvidence) -> (f64, f64, f64) {
+    genus: &GenusEvidence, measured_query: f64) -> (f64, f64, f64) {
     let local = if input.local_vector.iter().all(|v| v.is_finite())
         && squared_norm(&input.local_vector) > 1e-12 {
         positive(input.config.pure_local_weight)
@@ -1834,7 +1838,7 @@ fn gated_field_resonance(curve: &Curve, input: &NativeInput, support: f64,
         positive(input.config.pure_transfer_weight)
     } else { 0.0 };
     let total = local + transfer;
-    let raw_query = clamp01(curve.query_score);
+    let raw_query = clamp01(measured_query);
     let calibration = &input.calibration;
     let mixing = if calibration.differentia_vector.len() == input.query.vector.len()
         && !calibration.differentia_vector.is_empty() && genus.missing_parent.is_none() {
@@ -3119,9 +3123,7 @@ pub(crate) fn run_native_with_observation(
     drop(readout_vectors);
     let query_tag_sql_batches = query_stats.sql_batches;
     let query_and_seed_tag_vectors = tag_vectors;
-    let mut wormhole_model = wormhole::build(&input, &query_and_seed_tag_vectors, &artifact);
-    let mut wormhole_gate = wormhole::gate(&mut wormhole_model, connection)?;
-    wormhole::refine(&mut wormhole_model, &mut wormhole_gate, connection, &input, &artifact)?;
+    let chart = route_omega::prepare(&input, &query_and_seed_tag_vectors, &artifact);
     let load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
 
     let compute_started = Instant::now();
@@ -3181,8 +3183,9 @@ pub(crate) fn run_native_with_observation(
                 observables.genus.exact_focus_target = curve.tags.iter()
                     .find(|tag| focus_targets.contains(&tag.id)).map(|tag| tag.id);
             }
+            let measured = chart.vector.as_ref().map_or(curve.query_score, |q| cosine(q, &curve.chunk_vector));
             let (semantic_base, field_score, field_resonance_bonus) =
-                gated_field_resonance(&curve, &input, observables.field_support, &observables.genus);
+                gated_field_resonance(&curve, &input, observables.field_support, &observables.genus, measured);
             let topology_raw = clamp01(
                 0.625 * geometry.path_quality
                     + 0.375
@@ -3249,7 +3252,7 @@ pub(crate) fn run_native_with_observation(
             .then_with(|| left.curve.union_rank.cmp(&right.curve.union_rank))
     });
     let wormhole_traces = wormhole::apply_unified_bonus(
-        &mut work, &wormhole_model, &input, &omega, &artifact);
+        &mut work, &wormhole::Model::default(), &input, &omega, &artifact);
     // Stable sort retains the complete baseline comparator for equal fusion scores.
     work.sort_by(|a, b| b.ranking_score.total_cmp(&a.ranking_score));
     let ranked_count = work.len();
@@ -3274,6 +3277,7 @@ pub(crate) fn run_native_with_observation(
                 .cloned()
                 .collect();
             let topology_v3 = if input.include_trace {
+                let measured = chart.vector.as_ref().map_or(item.curve.query_score, |q| cosine(q, &item.curve.chunk_vector));
                 Some(serde_json::json!({
                     "mode": "conservative_candidate_self_topology_v2.2",
                     "branchNodeCoverage": clamp01(item.topology.matched_node_coverage / 0.35),
@@ -3283,7 +3287,7 @@ pub(crate) fn run_native_with_observation(
                     "strongestNodeMatchQuality": item.topology.strongest_node_match_quality,
                     "precisionGrounding": precision_grounding(&item.topology),
                     "fieldSupport": item.observables.field_support,
-                    "fieldResonanceBeforeSupport": gated_field_resonance(&item.curve, &input, 1.0, &item.observables.genus).2,
+                    "fieldResonanceBeforeSupport": gated_field_resonance(&item.curve, &input, 1.0, &item.observables.genus, measured).2,
                     "queryScore": clamp01(item.curve.query_score),
 
                     "fieldScore": item.field_score,
@@ -3318,6 +3322,7 @@ pub(crate) fn run_native_with_observation(
                     "finalScore": item.final_score,
                     "nativeBackend": "rust-rayon"
                 })).map(|mut trace| {
+                    trace["transportedQueryScore"] = Value::from(clamp01(measured));
                     let genus = &item.observables.genus;
                     trace["genusGate"] = serde_json::json!(genus.limiting.map(|_| genus.gate()));
                     trace["genusGateBeforeFocus"] = serde_json::json!(genus.limiting.map(|_| genus.base_gate()));
@@ -3410,20 +3415,20 @@ pub(crate) fn run_native_with_observation(
         results,
         parameters: serde_json::json!({
             "parsedConfig": input.config,
-            "wormholeGateMode": "global-two-joint-files-distinct-checksums-third-tag-explicit-focus",
-            "wormholeEvidenceScope": "global-file-tag-graph; independent-of-candidate-and-retrieval-scope",
-            "wormholeGate": wormhole_gate,
-            "wormholeEligibleRoutes": wormhole_model.eligible_routes,
-            "wormholeAcceptedRoutes": wormhole_model.routes.len(),
-            "wormholeScoring": "continuous-shared-topology-budget; rankingScore=finalScore",
+            "wormholeGateMode": "directed-ordinary-neighbourhood-v1",
+            "wormholeEvidenceScope": "request-observation-and-published-csr; no-witness-sql",
+            "wormholeGate": chart.routes,
+            "wormholeEligibleRoutes": chart.routes.len(),
+            "wormholeAcceptedRoutes": usize::from(chart.selected.is_some()),
+            "selectedChartSourceTargetOmegaAngle": chart.selected,
+            "wormholeScoring": "common-query-rotation; no-special-bonus; rankingScore=finalScore",
             "queryCalibration": {
                 "supersededIds": input.calibration.superseded_ids,
                 "differentiaConfidence": input.calibration.differentia_confidence,
                 "explainedRatio": input.calibration.explained_ratio,
                 "differentiaMixingCap": 0.5
             },
-            "wormholeStrongFlowRatio": 0.5,
-            "wormholeWeightReference": "maximum observed non-return ordinary edge flow; observation maximum if absent",
+            "wormholeWeightReference": "positive observed non-return flow to first-hop targets of same explicit source",
             "baselineAlgorithm": "rivermemo.conservative-topology-v2.2",
             "fieldResonanceCap": 0.03,
             "fieldSupportPotentialSaturation": 0.02,
