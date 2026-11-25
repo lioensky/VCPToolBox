@@ -7,16 +7,13 @@
 // - 管理面板可通过 listFinalContexts() 拉取所有快照的元信息（id + capturedAt + metadata.model 等）
 //   并通过 getFinalContextById(id) 切换查看具体快照内容
 
-let encoding = null;
-const TOKENIZER_NAME = 'cl100k_base';
-const TOKENIZER_METHOD = '@dqbd/tiktoken:cl100k_base';
-
-try {
-  const { get_encoding } = require('@dqbd/tiktoken');
-  encoding = get_encoding(TOKENIZER_NAME);
-} catch (error) {
-  encoding = null;
-}
+// Token 计数：
+// - 权威数字是上游 API 返回的 usage.prompt_tokens，请求结束后由 recordUpstreamUsage 写回快照；
+// - 分块数字是本地估算：汉字按 2 个字符、其余按 1 个字符计，再除以 3。只用于看各块占比，
+//   不再用 cl100k_base（GPT-4 旧词表对中文多算约 1.5 倍）。
+const TOKEN_METHOD = 'estimate:cjk2/3';
+const { promptTokensFromUsage } = require('./contextBudget.js');
+const ESTIMATED_TOKEN_CHAR_DIVISOR = 3;
 
 const MAX_SNAPSHOTS = 5;
 const snapshots = []; // 数组首位为最新快照（unshift 写入）
@@ -38,34 +35,36 @@ function safeClone(value) {
 }
 
 function estimateTokensForText(text) {
-  const cjkCount = (text.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
-  const wordCount = (text.match(/[A-Za-z0-9]+/g) || []).length;
-  const symbolCount = (text.match(/[^\s\w\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
-  return Math.max(0, Math.ceil((cjkCount + wordCount + Math.ceil(symbolCount / 3)) * 1.08));
+  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  return Math.ceil((chineseChars * 2 + text.length - chineseChars) / ESTIMATED_TOKEN_CHAR_DIVISOR);
 }
 
 function countTokensForText(text) {
-  if (typeof text !== 'string' || text.length === 0) {
-    return {
-      tokenCount: 0,
-      tokenMethod: encoding ? TOKENIZER_METHOD : 'estimate'
-    };
-  }
-
-  if (encoding) {
-    try {
-      return {
-        tokenCount: encoding.encode(text).length,
-        tokenMethod: TOKENIZER_METHOD
-      };
-    } catch (error) {
-      // Fall back to heuristic below.
-    }
-  }
-
   return {
-    tokenCount: estimateTokensForText(text),
-    tokenMethod: 'estimate'
+    tokenCount: typeof text === 'string' && text.length > 0 ? estimateTokensForText(text) : 0,
+    tokenMethod: TOKEN_METHOD
+  };
+}
+
+function tokenNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : undefined;
+}
+
+/** OpenAI / Anthropic 风格 usage → { promptTokens, completionTokens?, totalTokens?, cachedTokens? }。 */
+function normalizeUpstreamUsage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  // Anthropic 风格的 input_tokens 不含缓存读写部分，统一由 promptTokensFromUsage 加回。
+  const promptTokens = tokenNumber(promptTokensFromUsage(raw));
+  if (!promptTokens) return null;
+  const completionTokens = tokenNumber(raw.completion_tokens ?? raw.output_tokens);
+  const totalTokens = tokenNumber(raw.total_tokens);
+  const cachedTokens = tokenNumber(raw.prompt_tokens_details?.cached_tokens ?? raw.cache_read_input_tokens);
+  return {
+    promptTokens,
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(cachedTokens ? { cachedTokens } : {})
   };
 }
 
@@ -268,7 +267,10 @@ function buildSummary(body) {
   const totalTextLength = blocks.reduce((sum, block) => sum + (block.textLength || 0), 0);
   const totalTextTokenCount = blocks.reduce((sum, block) => sum + (block.textTokenCount || 0), 0);
   const totalAttachmentTokenCount = blocks.reduce((sum, block) => sum + (block.attachmentTokenCount || 0), 0);
-  const totalTokenCount = totalTextTokenCount + totalAttachmentTokenCount;
+  const toolsTokenCount = Array.isArray(body?.tools) && body.tools.length > 0
+    ? estimateTokensForText(JSON.stringify(body.tools))
+    : 0;
+  const totalTokenCount = totalTextTokenCount + totalAttachmentTokenCount + toolsTokenCount;
   const tokenMethods = [...new Set(blocks.map(block => block.tokenMethod).filter(Boolean))];
 
   return {
@@ -278,7 +280,9 @@ function buildSummary(body) {
     totalTextLength,
     totalTextTokenCount,
     totalAttachmentTokenCount,
+    toolsTokenCount,
     totalTokenCount,
+    upstreamUsage: null,
     tokenMethod: tokenMethods.length === 1 ? tokenMethods[0] : tokenMethods.join(' + '),
     roleCounts,
     blocks
@@ -298,6 +302,20 @@ function setLastFinalContext(body, metadata = {}) {
   while (snapshots.length > MAX_SNAPSHOTS) {
     snapshots.pop();
   }
+}
+
+/**
+ * 把上游对这次最终请求报告的 usage 记到对应快照上（按 requestId 匹配，先到先得）。
+ * 只应传入首个上游调用的 usage：工具循环后续调用的请求体与快照不同。
+ */
+function recordUpstreamUsage(requestId, rawUsage) {
+  if (!requestId) return false;
+  const usage = normalizeUpstreamUsage(rawUsage);
+  if (!usage) return false;
+  const target = snapshots.find(snapshot => snapshot.metadata?.requestId === requestId || snapshot.metadata?.messageId === requestId);
+  if (!target || target.summary.upstreamUsage) return false;
+  target.summary.upstreamUsage = usage;
+  return true;
 }
 
 function getLastFinalContext() {
@@ -320,6 +338,8 @@ function listFinalContexts() {
       totalTokenCount: snapshot.summary?.totalTokenCount ?? 0,
       totalTextTokenCount: snapshot.summary?.totalTextTokenCount ?? 0,
       totalAttachmentTokenCount: snapshot.summary?.totalAttachmentTokenCount ?? 0,
+      toolsTokenCount: snapshot.summary?.toolsTokenCount ?? 0,
+      upstreamUsage: snapshot.summary?.upstreamUsage ?? null,
       tokenMethod: snapshot.summary?.tokenMethod ?? null,
       roleCounts: snapshot.summary?.roleCounts ?? {}
     }
@@ -345,6 +365,7 @@ function clearFinalContexts() {
 
 module.exports = {
   setLastFinalContext,
+  recordUpstreamUsage,
   getLastFinalContext,
   listFinalContexts,
   getFinalContextById,

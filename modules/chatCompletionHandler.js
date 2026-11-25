@@ -2,6 +2,7 @@
 const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
+const contextBudget = require('./contextBudget.js');
 const roleDivider = require('./roleDivider.js');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
 const { isolateNativeToolsForUpstream, isolateNativeToolRequestOptions } = require('./nativeToolIsolation.js');
@@ -11,6 +12,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const finalContextStore = require('./finalContextStore.js');
+const { withStreamUsage } = require('./streamUsageOption.js');
 
 // 多模态配置真相源（JSON 优先 + 热更新），用于在请求时动态拉取 MultiModalForceTranslateModels
 let multiModalConfigStore = null;
@@ -589,6 +591,9 @@ function stripMarkdownCodeFencesForRagRefresh(text) {
   return text.replace(/```[\s\S]*?```/g, '');
 }
 
+// 上游请求的统一出口：流式请求默认请求真实用量，渠道不支持时自动去掉重发。
+const fetchUpstreamWithUsage = withStreamUsage(fetchWithRetry);
+
 // 安全解析 RAG metadata：必须是合法 JSON 对象，否则跳过（不抛错污染用户请求）
 function safeParseRagBlockMetadata(rawMetadata, debugMode = false) {
   if (typeof rawMetadata !== 'string') return null;
@@ -918,26 +923,17 @@ class ChatCompletionHandler {
     }
 
     // --- 上下文控制 (Context Control) ---
-    // 1. 拦截 contextTokenLimit 参数
+    // 1. 拦截 contextTokenLimit 参数：它是 VCP 自己的预算参数，不发给上游。
+    //    裁剪和预算检查都放在所有展开完成之后（见下方「出站前预算」），
+    //    因为展开前的消息体积和真正发给模型的体积可以差出很多。
     const contextTokenLimit = originalBody.contextTokenLimit;
     if (contextTokenLimit !== undefined) {
       if (DEBUG_MODE) console.log(`[ContextControl] 检测到 contextTokenLimit: ${contextTokenLimit}`);
-      // 2. 从发送给后端的 body 中移除该参数
       delete originalBody.contextTokenLimit;
-
-      // 3. 执行上下文修剪
-      if (originalBody.messages && Array.isArray(originalBody.messages)) {
-        const originalCount = originalBody.messages.length;
-        originalBody.messages = await contextManager.pruneMessagesSmart(
-          originalBody.messages,
-          contextTokenLimit,
-          DEBUG_MODE
-        );
-        if (DEBUG_MODE && originalBody.messages.length < originalCount) {
-          console.log(`[ContextControl] 上下文已修剪: ${originalCount} -> ${originalBody.messages.length} 条消息`);
-        }
-      }
     }
+    const inboundBudgetEstimate = contextBudget.guardMode() !== 'off' && contextBudget.effectiveLimit(contextTokenLimit)
+      ? contextBudget.estimateBodyTokens(originalBody)
+      : 0;
 
     try {
       if (originalBody.model) {
@@ -1267,6 +1263,44 @@ class ChatCompletionHandler {
         if (DEBUG_MODE) await writeDebugLog('LogAfterFinalRoleDivider', processedMessages);
       }
 
+      // --- 出站前预算：压缩与裁剪 ---
+      // 所有展开和拆分都已完成，这里量到的才是模型真正收到的体积。
+      // 预算 = 请求里的 contextTokenLimit 与服务端硬上限取小；非法值（负数、非数字）视为没有。
+      const budgetGuard = contextBudget.createBudgetGuard({
+        limit: contextTokenLimit,
+        model: originalBody.model,
+        requestId: req.body.requestId || req.body.messageId || null
+      });
+      const pruningEnabled = contextManager.isPruningEnabled();
+      if (budgetGuard.limit !== null && Array.isArray(processedMessages) && (budgetGuard.enforcing || pruningEnabled)) {
+        // 第一步：超预算时先把历史里较早的工具结果压成摘要（当前轮不动）。它们通常占了绝大部分体积，
+        // 压掉之后多数请求就不需要删消息、也不需要拒绝了。
+        const draftBody = () => ({ ...originalBody, messages: processedMessages });
+        const isOverBudget = () => budgetGuard.estimate(draftBody()) > budgetGuard.limit;
+        if (isOverBudget()) {
+          const slimmedMessages = copyArrayMetadata(processedMessages, processedMessages.slice());
+          const beforeSlim = budgetGuard.estimate(draftBody());
+          const slimmedCount = contextBudget.slimEarlierToolResults(slimmedMessages, contextBudget.lastRealUserIndex(slimmedMessages));
+          if (slimmedCount > 0) {
+            processedMessages = slimmedMessages;
+            console.warn(`[ContextBudget] 超预算，已压缩历史中 ${slimmedCount} 条消息里的工具结果: ${beforeSlim} -> ${budgetGuard.estimate(draftBody())} / ${budgetGuard.limit}`);
+          }
+        }
+      }
+      // 第二步：裁剪（需服务端开启）。
+      if (budgetGuard.limit !== null && pruningEnabled && Array.isArray(processedMessages)) {
+        const messagesBeforePrune = processedMessages;
+        const prunedMessages = await contextManager.pruneMessagesSmart(
+          processedMessages,
+          budgetGuard.messageBudget(originalBody),
+          DEBUG_MODE
+        );
+        if (prunedMessages !== messagesBeforePrune) {
+          processedMessages = copyArrayMetadata(messagesBeforePrune, prunedMessages);
+          if (DEBUG_MODE) console.log(`[ContextControl] 上下文已修剪: ${messagesBeforePrune.length} -> ${processedMessages.length} 条消息`);
+        }
+      }
+
       // ToolLoop 从这份上下文起步；显示名仅在模型出站投影中剥离。
       originalBody.messages = processedMessages;
 
@@ -1295,6 +1329,20 @@ class ChatCompletionHandler {
       const willStreamResponse = isOriginalRequestStreaming;
       const finalUpstreamBody = projectToolBatchForUpstream({ ...originalBody, stream: willStreamResponse });
 
+      // --- 出站前预算：检查 ---
+      const budgetCheck = budgetGuard.check(finalUpstreamBody, 'outbound');
+      if (budgetGuard.active && (budgetCheck.over || DEBUG_MODE)) {
+        console.log(`[ContextBudget] 展开前估算 ${budgetGuard.scale(inboundBudgetEstimate)}，展开后估算 ${budgetCheck.estimated}，上限 ${budgetCheck.limit}`);
+      }
+      if (budgetCheck.over && budgetGuard.enforcing) {
+        const budgetBreakdown = budgetGuard.breakdown(finalUpstreamBody);
+        throw Object.assign(new Error(contextBudget.exceededMessage(budgetCheck, 'outbound', budgetBreakdown)), {
+          name: 'ContextBudgetExceededError',
+          budget: { estimated: budgetCheck.estimated, limit: budgetCheck.limit, breakdown: budgetBreakdown }
+        });
+      }
+      budgetGuard.noteRequest(finalUpstreamBody);
+
       finalContextStore.setLastFinalContext(isolateNativeToolsForUpstream(finalUpstreamBody), {
         requestId: req.body.requestId || null,
         messageId: req.body.messageId || null,
@@ -1306,7 +1354,7 @@ class ChatCompletionHandler {
       throwIfRequestAborted();
       await writeDebugLog('LogOutputAfterProcessing', isolateNativeToolsForUpstream(finalUpstreamBody));
 
-      let firstAiAPIResponse = await fetchWithRetry(
+      let firstAiAPIResponse = await fetchUpstreamWithUsage(
         `${apiUrl}/v1/chat/completions`,
         {
           method: 'POST',
@@ -1448,7 +1496,7 @@ class ChatCompletionHandler {
         clientIp,
         forceShowVCP,
         _refreshRagBlocksIfNeeded,
-        fetchWithRetry,
+        fetchWithRetry: fetchUpstreamWithUsage,
         timelineTrace,
         isToolResultError,
         formatToolResult,
@@ -1456,6 +1504,7 @@ class ChatCompletionHandler {
         apiConnectionTimeoutMs,
         semanticModelFallbackCandidates,
         oneRingResponseMeta,
+        budgetGuard,
         shouldProcessMedia,
         shouldProcessMediaPlus,
         isTextOnlyForceTranslateModel,
@@ -1475,6 +1524,37 @@ class ChatCompletionHandler {
         const abortReason = clientDisconnectedAbortReason || activeRequests.get(id)?.abortReason || 'explicit_interrupt_or_abort';
         console.log(`[Abort] Caught AbortError for request ${id}. Execution halted. reason=${abortReason}`);
         return; // Stop processing and allow the 'finally' block to clean up.
+      }
+      if (error.name === 'ContextBudgetExceededError') {
+        // 预算检查拦下的请求：没有发往上游，明确告诉客户端原因和数字。
+        if (!res.headersSent) {
+          if (isOriginalRequestStreaming) {
+            res.status(200);
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            try {
+              res.write(`data: ${JSON.stringify({
+                id: `chatcmpl-VCP-context-budget-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: originalBody.model || 'unknown',
+                vcp_incomplete: true,
+                vcp_context_budget: error.budget,
+                choices: [{ index: 0, delta: { content: `[ERROR] ${error.message}` }, finish_reason: 'stop' }],
+              })}\n\n`);
+              res.write('data: [DONE]\n\n', () => res.end());
+            } catch (writeError) {
+              if (!res.writableEnded && !res.destroyed) { try { res.end(); } catch (_) {} }
+            }
+          } else {
+            res.status(400).json({
+              error: { message: error.message, type: 'invalid_request_error', code: 'context_length_exceeded' },
+              vcp_context_budget: error.budget
+            });
+          }
+        }
+        return;
       }
       // Only log full stack trace for non-abort errors
       console.error('处理请求或转发时出错:', error.message, error.stack);

@@ -1,5 +1,7 @@
 // modules/handlers/nonStreamHandler.js
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
+const contextBudget = require('../contextBudget.js');
+const finalContextStore = require('../finalContextStore.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream, buildToolPayloadMessage } = require('../toolResultBatch.js');
 const { matchesNativeToolIsolation } = require('../nativeToolIsolation.js');
@@ -187,6 +189,7 @@ class NonStreamHandler {
       clientIp,
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
+      budgetGuard,
       timelineTrace,
       vcpToolUseForbidden,
       apiConnectionTimeoutMs,
@@ -281,6 +284,44 @@ class NonStreamHandler {
     });
     firstAiAPIResponse = firstReadResult.response;
     const aiResponseText = firstReadResult.text;
+    const noteUpstreamUsage = (responseText, isInitial = false) => {
+      try {
+        const usage = JSON.parse(responseText)?.usage;
+        if (isInitial) finalContextStore.recordUpstreamUsage(originalBody.requestId || originalBody.messageId, usage);
+        budgetGuard?.noteUsage(usage);
+      } catch (_) { /* 非 JSON 响应没有 usage，面板保留本地估算 */ }
+    };
+    noteUpstreamUsage(aiResponseText, true);
+
+    /**
+     * 工具循环每次再发上游之前的预算检查。超预算时先压缩本轮之前的工具结果，
+     * 仍然超则返回说明文字（调用方把它交给客户端并退出循环）；可以发送时返回 null。
+     */
+    const checkLoopBudget = (messages) => {
+      if (!budgetGuard?.active) return null;
+      const build = () => projectToolBatchForUpstream({ ...originalBody, messages, stream: false });
+      let body = build();
+      let check = budgetGuard.check(body, 'tool_loop', { silent: budgetGuard.enforcing });
+      if (check.over && budgetGuard.enforcing) {
+        let roundStartIndex = messages.length;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i]?.role === 'assistant') { roundStartIndex = i; break; }
+        }
+        const slimmed = contextBudget.slimToFit(messages, roundStartIndex, () => budgetGuard.check(build(), 'tool_loop', { silent: true }).over);
+        if (slimmed > 0) {
+          body = build();
+          const before = check.estimated;
+          check = budgetGuard.check(body, 'tool_loop', { silent: true });
+          console.warn(`[ContextBudget] 工具循环超预算，已压缩 ${slimmed} 条较早的工具结果: ${before} -> ${check.estimated} / ${check.limit}`);
+        }
+      }
+      if (check.over && budgetGuard.enforcing) {
+        console.warn(`[ContextBudget] 工具循环已停止: estimated=${check.estimated} limit=${check.limit}`);
+        return `\n\n> [!WARNING]\n> ${contextBudget.exceededMessage(check, 'tool_loop', budgetGuard.breakdown(body))}\n`;
+      }
+      budgetGuard.noteRequest(body);
+      return null;
+    };
     let chatLogs = [];
     const stripInitialNativeTools = matchesNativeToolIsolation(originalBody?.model);
     let oneRingAssistantTurnParts = [];
@@ -399,6 +440,11 @@ class NonStreamHandler {
           }
           conversationHistoryForClient.push(formatToolResultBatch(visibleToolResults, enableRoleDivider));
 
+          const archeryBudgetNotice = checkLoopBudget(currentMessagesForNonStreamLoop);
+          if (archeryBudgetNotice) {
+            conversationHistoryForClient.push(archeryBudgetNotice);
+            break;
+          }
           const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
           const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
             fetchResponse: () => fetchNonStreamCompletion(recursionBody, `archery_error_depth_${recursionDepth}`),
@@ -413,6 +459,7 @@ class NonStreamHandler {
           if (recursionAiResponse.ok) {
             validUpstreamTurns = validUpstreamTurns && isCompleteNonStreamResponse(recursionReadResult);
             const recursionText = recursionReadResult.text;
+            noteUpstreamUsage(recursionText);
             const recursionParsedResponse = extractedResponse(recursionText);
             const recursionMessage = recursionParsedResponse.message;
             if (recursionMessage) {
@@ -534,6 +581,11 @@ class NonStreamHandler {
           ...archeryGroups
         ], maybeTranslateToolPayloadMedia));
 
+        const loopBudgetNotice = checkLoopBudget(currentMessagesForNonStreamLoop);
+        if (loopBudgetNotice) {
+          conversationHistoryForClient.push(loopBudgetNotice);
+          break;
+        }
         const recursionBody = { ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false };
         const recursionReadResult = await readNonStreamResponseWithSemanticRetry({
           fetchResponse: () => fetchNonStreamCompletion(recursionBody, `tool_loop_depth_${recursionDepth}`),
@@ -549,6 +601,7 @@ class NonStreamHandler {
 
         validUpstreamTurns = validUpstreamTurns && isCompleteNonStreamResponse(recursionReadResult);
         const recursionText = recursionReadResult.text;
+        noteUpstreamUsage(recursionText);
         const recursionParsedResponse = extractedResponse(recursionText);
         const recursionMessage = recursionParsedResponse.message;
         if (recursionMessage) {
