@@ -2,7 +2,9 @@
 
 ![VCP Logo](docs/image/VCPLogo.png)
 
-**VCP官网：[通过官网迅速了解 VCP | VCPToolBox.com](https://www.vcptoolbox.com)**
+**VCP 官网：[VCPToolBox.com](https://www.vcptoolbox.com)**
+
+VCP 由四个仓库组成，每天都有新进展。官网汇总了各仓库的[更新日志](https://www.vcptoolbox.com/?page=changelog)，也提供了查阅整个 VCP 项目[技术文档](https://www.vcptoolbox.com/?page=learn-vcp)的统一入口。
 
 [English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
@@ -177,9 +179,7 @@ VCP 的终极愿景，从来不是"让人类更高效地使用 AI"。而是构�
 >
 > 想快速扫一遍技术地图，请看 [VCP 技术 Lite 索引](docs/TECHNICAL_LITE.md)。
 >
-> 工程实现细节、API、配置、运维，请见 [完整文档体系](docs/DOCUMENTATION_INDEX.md)。
->
-> 了解VCP动向、更新内容，请见 [VCP更新日志](https://www.vcptoolbox.com/?page=changelog)。
+> 查阅 VCPToolBox 的工程实现、API、配置与运维说明，请见[本仓库文档索引](docs/DOCUMENTATION_INDEX.md)。
 
 ---
 
