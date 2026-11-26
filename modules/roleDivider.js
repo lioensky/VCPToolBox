@@ -801,7 +801,8 @@ function process(messages, { ignoreList = [], switches = { system: true, assista
     const newMessages = [];
     for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
-        if (i < skipCount) {
+        if (i < skipCount || msg?.role === 'tool' || msg?.role === 'function' ||
+            (msg?.role === 'assistant' && (msg.tool_calls?.length || msg.function_call))) {
             newMessages.push(msg);
             continue;
         }

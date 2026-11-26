@@ -324,7 +324,23 @@ function normalizeResponsesFunctionArguments(argumentsValue) {
 
 function normalizeResponsesFunctionOutput(output) {
     if (typeof output === 'string') return output;
-    return stableJsonStringify(output);
+    if (!Array.isArray(output) || !output.some(part => part?.type === 'input_image')) {
+        return stableJsonStringify(output);
+    }
+    return output.map(part => {
+        if (part?.type === 'input_image') {
+            return {
+                type: 'image_url',
+                image_url: { url: part.image_url, detail: part.detail }
+            };
+        }
+        return {
+            type: 'text',
+            text: part?.type === 'input_text' && typeof part.text === 'string'
+                ? part.text
+                : stableJsonStringify(part)
+        };
+    });
 }
 
 function extractEncryptedContentFromValue(value, seen = new Set()) {

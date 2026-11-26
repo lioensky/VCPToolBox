@@ -4,7 +4,8 @@ const contextBudget = require('../contextBudget.js');
 const finalContextStore = require('../finalContextStore.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream, buildToolPayloadMessage } = require('../toolResultBatch.js');
-const { matchesNativeToolIsolation } = require('../nativeToolIsolation.js');
+const { NATIVE_CALL_ID, normalizeNativeVcpCalls, buildNativeToolMessages } = require('../nativeToolLoop');
+
 const {
   buildClientVisibleContent,
   removeReasoningFields,
@@ -67,12 +68,12 @@ function hasNativeToolCallPayload(message) {
   );
 }
 
-function isCompleteNonStreamResponse(readResult, stripNativeTools = false) {
+function isCompleteNonStreamResponse(readResult) {
   const { parsedJson, message, choice } = parseNonStreamResponse(readResult.text);
   if (!readResult.response.ok || readResult.semanticRetryExhausted || !parsedJson || parsedJson.error || !message) {
     return false;
   }
-  if (!stripNativeTools && hasNativeToolCallPayload(message) &&
+  if (hasNativeToolCallPayload(message) &&
       ['tool_calls', 'function_call', 'stop'].includes(choice?.finish_reason)) {
     return true;
   }
@@ -323,9 +324,8 @@ class NonStreamHandler {
       return null;
     };
     let chatLogs = [];
-    const stripInitialNativeTools = matchesNativeToolIsolation(originalBody?.model);
     let oneRingAssistantTurnParts = [];
-    let validUpstreamTurns = isCompleteNonStreamResponse(firstReadResult, stripInitialNativeTools);
+    let validUpstreamTurns = isCompleteNonStreamResponse(firstReadResult);
     let completed = false;
 
     let fullContentFromAI = '';
@@ -365,6 +365,8 @@ class NonStreamHandler {
     const maxRecursion = maxVCPLoopNonStream || 5;
     let conversationHistoryForClient = [];
     let currentAIContentForLoop = fullContentFromAI;
+    let currentParsedResponse = initParsedResponse;
+    let nativeTerminalResponse = null;
     let currentMessagesForNonStreamLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
 
     do {
@@ -378,7 +380,35 @@ class NonStreamHandler {
       let anyToolProcessedInCurrentIteration = false;
       conversationHistoryForClient.push(currentAIContentForClient);
 
-      const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(currentAIContentForLoop);
+      const nativeMessage = currentParsedResponse.message;
+      let nativeCalls = null;
+      let ownedCalls = null;
+      if (validUpstreamTurns && hasNativeToolCallPayload(nativeMessage)) {
+        if (!this.context.ownsNativeVcpTools) {
+          nativeTerminalResponse = currentParsedResponse.parsedJson;
+          completed = true;
+          break;
+        }
+        nativeCalls = nativeMessage.tool_calls;
+        ownedCalls = !vcpToolUseForbidden && !nativeMessage.function_call && normalizeNativeVcpCalls(nativeCalls);
+        if (!ownedCalls) {
+          conversationHistoryForClient.push('\n[VCP 原生工具调用格式无效，本批未执行。]\n');
+          completed = false;
+          break;
+        }
+      }
+      const toolCalls = vcpToolUseForbidden ? [] : ownedCalls ?? ToolCallParser.parse(currentAIContentForLoop);
+      const makeAssistantMessage = () => {
+        if (!ownedCalls) return { role: 'assistant', content: currentAIContentForLoop };
+        const { content, reasoning_content, reasoning_details } = nativeMessage;
+        return {
+          role: 'assistant',
+          content: content ?? null,
+          tool_calls: nativeCalls,
+          ...(reasoning_content != null ? { reasoning_content } : {}),
+          ...(reasoning_details != null ? { reasoning_details } : {})
+        };
+      };
 
       if (toolCalls.length > 0) {
         const expandedCalls = await (toolExecutor.expandCalls?.(toolCalls) ?? toolCalls);
@@ -397,7 +427,7 @@ class NonStreamHandler {
 
             if (isError) {
               archeryStatusSummaryItems.push(`${toolCall.name} 调用失败${result.recordId ? ` (记录ID: ${result.recordId})` : ''}`);
-              archeryReceiptGroups[index] = { name: toolCall.name, parts: [{
+              archeryReceiptGroups[index] = { name: toolCall.name, callId: toolCall[NATIVE_CALL_ID], parts: [{
                 type: 'text',
                 text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
               }] };
@@ -408,7 +438,7 @@ class NonStreamHandler {
               }
             } else if (result.approvalFeedbackContent?.length) {
               // 用户明确输入的审核留言优先于 archery 静默；业务成功状态保持不变。
-              archeryReceiptGroups[index] = { name: toolCall.name, parts: result.approvalFeedbackContent };
+              archeryReceiptGroups[index] = { name: toolCall.name, callId: toolCall[NATIVE_CALL_ID], parts: result.approvalFeedbackContent };
             }
             return { tool: toolCall, result: result.content };
           } catch (e) {
@@ -421,7 +451,7 @@ class NonStreamHandler {
 
         // 处理纯 Archery 的错误或用户审核留言。
         if (normalCalls.length === 0 && archeryErrorContents.length > 0) {
-          let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+          let assistantMessages = [makeAssistantMessage()];
           if (enableRoleDivider && enableRoleDividerInLoop) {
             assistantMessages = roleDivider.process(assistantMessages, {
               ignoreList: roleDividerIgnoreList,
@@ -433,7 +463,8 @@ class NonStreamHandler {
           }
           currentMessagesForNonStreamLoop.push(...assistantMessages);
 
-          currentMessagesForNonStreamLoop.push(await buildToolPayloadMessage(archeryGroups));
+          if (ownedCalls) currentMessagesForNonStreamLoop.push(...buildNativeToolMessages(nativeCalls, archeryGroups));
+          else currentMessagesForNonStreamLoop.push(await buildToolPayloadMessage(archeryGroups));
 
           if (archeryStatusSummaryItems.length > 0) {
             visibleToolResults.push(`\n[本轮工具调用摘要:]\n${archeryStatusSummaryItems.join('；')}。\n[本轮工具调用摘要结束]\n`);
@@ -461,6 +492,7 @@ class NonStreamHandler {
             const recursionText = recursionReadResult.text;
             noteUpstreamUsage(recursionText);
             const recursionParsedResponse = extractedResponse(recursionText);
+            currentParsedResponse = recursionParsedResponse;
             const recursionMessage = recursionParsedResponse.message;
             if (recursionMessage) {
               currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
@@ -492,7 +524,7 @@ class NonStreamHandler {
         }
 
         // 执行普通调用
-        let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+        let assistantMessages = [makeAssistantMessage()];
         if (enableRoleDivider && enableRoleDividerInLoop) {
           assistantMessages = roleDivider.process(assistantMessages, {
             ignoreList: roleDividerIgnoreList,
@@ -573,13 +605,16 @@ class NonStreamHandler {
           }, pluginManager, DEBUG_MODE);
         }
 
-        currentMessagesForNonStreamLoop.push(await buildToolPayloadMessage([
+        const modelResultGroups = [
           ...toolResults.map((result, index) => ({
             name: normalCalls[index]?.name,
+            callId: normalCalls[index]?.[NATIVE_CALL_ID],
             parts: result.contentForAI ?? result.content
           })),
           ...archeryGroups
-        ], maybeTranslateToolPayloadMedia));
+        ];
+        if (ownedCalls) currentMessagesForNonStreamLoop.push(...buildNativeToolMessages(nativeCalls, modelResultGroups));
+        else currentMessagesForNonStreamLoop.push(await buildToolPayloadMessage(modelResultGroups, maybeTranslateToolPayloadMedia));
 
         const loopBudgetNotice = checkLoopBudget(currentMessagesForNonStreamLoop);
         if (loopBudgetNotice) {
@@ -603,6 +638,7 @@ class NonStreamHandler {
         const recursionText = recursionReadResult.text;
         noteUpstreamUsage(recursionText);
         const recursionParsedResponse = extractedResponse(recursionText);
+        currentParsedResponse = recursionParsedResponse;
         const recursionMessage = recursionParsedResponse.message;
         if (recursionMessage) {
           currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
@@ -634,21 +670,21 @@ class NonStreamHandler {
     const finalContentForClient = conversationHistoryForClient.join('');
     let finalJsonResponse;
     try {
-      finalJsonResponse = JSON.parse(aiResponseText);
-      const stripTools = matchesNativeToolIsolation(finalJsonResponse?.model || originalBody?.model);
+      finalJsonResponse = nativeTerminalResponse || JSON.parse(aiResponseText);
+
       const choice0 = finalJsonResponse.choices?.[0];
       const msg0 = choice0?.message;
-      const preserveNativeToolTurn = !stripTools && recursionDepth === 0 && hasNativeToolCallPayload(msg0);
+      const preserveNativeToolTurn = nativeTerminalResponse !== null;
 
       if (!msg0) {
         finalJsonResponse.choices = [{ message: { content: finalContentForClient } }];
         finalJsonResponse.choices[0].finish_reason = recursionDepth >= maxRecursion ? 'length' : 'stop';
       } else {
-        if (stripTools) {
+        if (!preserveNativeToolTurn) {
           delete msg0.tool_calls;
           delete msg0.function_call;
         }
-        if (!preserveNativeToolTurn || finalContentForClient.length > 0 || msg0.content !== null) {
+        if (!preserveNativeToolTurn || finalContentForClient.trim().length > 0 || msg0.content !== null) {
           msg0.content = finalContentForClient;
         }
         if (reasoningToContentEnabled) {

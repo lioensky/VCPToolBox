@@ -8,6 +8,7 @@ const { findLastRealUserMessage } = require('../messageProcessor');
 const toolCallRecordStore = require('../toolCallRecordStore');
 const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
 const jevToolCallExp = require('../jevToolCallExp');
+const { NATIVE_CALL_ID } = require('../nativeToolLoop');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 const JEV_PLANNING_ERROR = Symbol('jevPlanningError');
@@ -195,6 +196,9 @@ class ToolExecutor {
       if (!jevToolCallExp.isVirtualToolName(call.name)) return [call];
       try {
         const planned = await jevToolCallExp.plan(call.args?.expression, call);
+        if (planned.length > 0 && call[NATIVE_CALL_ID]) {
+          return planned.map(child => ({ ...child, [NATIVE_CALL_ID]: call[NATIVE_CALL_ID] }));
+        }
         return planned.length > 0 ? planned : [
           { ...call, [JEV_PLANNING_ERROR]: 'JEV 没有生成可执行的真实工具调用。' }
         ];

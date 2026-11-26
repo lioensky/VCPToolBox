@@ -480,3 +480,54 @@ test('Responses does not create native reasoning for ordinary think-tag content'
   assert.deepEqual(result.body.output.map(item => item.type), ['message']);
   assert.equal(result.body.output_text, '<think>already visible</think>answer');
 });
+
+test('Responses native tool image output bridges without losing visual input or call_id', async t => {
+  const { projectToolBatchForUpstream } = require('../modules/toolResultBatch');
+  let received;
+  let outbound;
+  const upstream = express();
+  upstream.use(express.json());
+  upstream.post('/v1/chat/completions', (req, res) => {
+    received = req.body;
+    outbound = projectToolBatchForUpstream(req.body);
+    res.json({
+      id: 'chatcmpl-image-result',
+      model: req.body.model,
+      choices: [{ index: 0, message: { role: 'assistant', content: 'image received' }, finish_reason: 'stop' }]
+    });
+  });
+  const upstreamInfo = await listen(upstream);
+  const previousPort = process.env.PORT;
+  process.env.PORT = String(upstreamInfo.port);
+  const bridgeInfo = await listen(http.createServer(createBridgeApp()));
+  t.after(async () => {
+    if (previousPort === undefined) delete process.env.PORT;
+    else process.env.PORT = previousPort;
+    await close(bridgeInfo.server);
+    await close(upstreamInfo.server);
+  });
+
+  const url = 'https://example.com/result.png';
+  const { response, body } = await requestJson(`http://127.0.0.1:${bridgeInfo.port}/v1/responses`, {
+    model: 'test-vision',
+    input: [
+      { type: 'function_call', call_id: 'call_a', name: 'make_image', arguments: '{}' },
+      { type: 'function_call', call_id: 'call_b', name: 'read_status', arguments: '{}' },
+      { type: 'function_call_output', id: 'fc_output_a', call_id: 'call_a', output: [
+        { type: 'input_text', text: 'generated' },
+        { type: 'input_image', image_url: url, detail: 'low' }
+      ] },
+      { type: 'function_call_output', call_id: 'call_b', output: 'done' }
+    ]
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(body.output_text, 'image received');
+  assert.deepEqual(received.messages[1].content[1], { type: 'image_url', image_url: { url, detail: 'low' } });
+  assert.deepEqual(outbound.messages.map(message => message.role), ['assistant', 'tool', 'tool', 'user']);
+  assert.deepEqual(outbound.messages.slice(1, 3).map(message => message.tool_call_id), ['call_a', 'call_b']);
+  assert.match(outbound.messages[1].content, /^generated\n/);
+  assert.equal(outbound.messages[2].content, 'done');
+  assert.deepEqual(outbound.messages[3].content[1], { type: 'image_url', image_url: { url, detail: 'low' } });
+  assert.doesNotMatch(JSON.stringify(outbound), /ROLE_DIVIDE|VCP_TOOL_PAYLOAD/);
+});

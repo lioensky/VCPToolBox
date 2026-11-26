@@ -73,10 +73,27 @@ test('malformed frame without trailing newline is intercepted', async () => {
   assert.doesNotMatch(s.res.output, /content_filter/);
 });
 test('ordinary content filter does not trigger semantic recovery', async () => {
-  const s = setup(async () => { throw new Error('must not retry'); });
+  const s = setup(async () => { throw new Error('must not retry'); }, {
+    originalBody: { model: 'ordinary', messages: [{ role: 'user', content: 'hello' }] }
+  });
   const result = await s.handler.handle({}, s.res, response(frame({}, 'content_filter') + 'data: [DONE]\n\n'));
   assert.equal(result.completed, false);
   assert.match(s.res.output, /content_filter/);
+});
+
+test('empty Hydrogen content_filter recovers without publishing the failed terminal', async () => {
+  let count = 0;
+  const s = setup(async () => {
+    count++;
+    assert.doesNotMatch(s.res.output, /content_filter|\[DONE\]/);
+    return response(success('recovered'));
+  });
+  const result = await s.handler.handle({}, s.res, response(frame({}, 'content_filter') + 'data: [DONE]\n\n'));
+  assert.equal(count, 1);
+  assert.equal(result.completed, true);
+  assert.equal(result.aiText, 'recovered');
+  assert.doesNotMatch(s.res.output, /content_filter/);
+  assert.equal((s.res.output.match(/data: \[DONE\]/g) || []).length, 1);
 });
 test('visible content followed by malformed FC is not replayed or executed', async () => {
   const s = setup(async () => { throw new Error('must not retry'); }, {

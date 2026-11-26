@@ -5,7 +5,8 @@ const contextManager = require('./contextManager.js');
 const contextBudget = require('./contextBudget.js');
 const roleDivider = require('./roleDivider.js');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
-const { isolateNativeToolsForUpstream, isolateNativeToolRequestOptions } = require('./nativeToolIsolation.js');
+const { withNativeToolDebug } = require('./nativeToolDebug.js');
+
 const { createHandoffGate } = require('./vcpLoop/handoffGate.js');
 const fs = require('fs').promises;
 const path = require('path');
@@ -478,9 +479,7 @@ async function fetchWithRetry(
     };
 
     try {
-      const attemptOptions = isolateNativeToolRequestOptions(
-        applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode)
-      );
+      const attemptOptions = applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode);
       attempt = timelineTrace?.nextAttempt();
       timelineTrace?.emit('upstream_fetch_started', { attempt });
       const response = await fetch(url, {
@@ -1336,6 +1335,9 @@ class ChatCompletionHandler {
       });
 
       const willStreamResponse = isOriginalRequestStreaming;
+      const nativeToolBody = vcpToolUseForbidden ? originalBody : withNativeToolDebug(originalBody);
+      const ownsNativeVcpTools = nativeToolBody !== originalBody;
+      originalBody = nativeToolBody;
       const finalUpstreamBody = projectToolBatchForUpstream({ ...originalBody, stream: willStreamResponse });
 
       // --- 出站前预算：检查 ---
@@ -1352,7 +1354,7 @@ class ChatCompletionHandler {
       }
       budgetGuard.noteRequest(finalUpstreamBody);
 
-      finalContextStore.setLastFinalContext(isolateNativeToolsForUpstream(finalUpstreamBody), {
+      finalContextStore.setLastFinalContext(finalUpstreamBody, {
         requestId: req.body.requestId || null,
         messageId: req.body.messageId || null,
         clientIp,
@@ -1361,7 +1363,7 @@ class ChatCompletionHandler {
       });
 
       throwIfRequestAborted();
-      await writeDebugLog('LogOutputAfterProcessing', isolateNativeToolsForUpstream(finalUpstreamBody));
+      await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
 
       let firstAiAPIResponse = await fetchUpstreamWithUsage(
         `${apiUrl}/v1/chat/completions`,
@@ -1499,6 +1501,7 @@ class ChatCompletionHandler {
         handoffGate,
         touchRequestActivity,
         toolExecutor: this.toolExecutor,
+        ownsNativeVcpTools,
         ToolCallParser,
         abortController,
         originalBody,

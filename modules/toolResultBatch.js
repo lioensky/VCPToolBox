@@ -1,6 +1,7 @@
 'use strict';
 
 const { guardMarkdownDataImagesForUpstream } = require('./markdownDataImageGuard.js');
+const { projectNativeToolResultMedia } = require('./nativeToolResultMedia.js');
 
 let lastTimestampMs = 0;
 const START_PREFIX = '<<<[VCP_TOOL_BATCH_START:';
@@ -119,7 +120,7 @@ function projectToolBatchForUpstream(body) {
         changed = true;
         return outboundMessage;
     });
-    return changed ? { ...projected, messages } : projected;
+    return projectNativeToolResultMedia(changed ? { ...projected, messages } : projected);
 }
 
 function projectBatchWrappersForUpstream(body) {
