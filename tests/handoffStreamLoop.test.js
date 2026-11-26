@@ -7,9 +7,15 @@ const { createHandoffGate } = require('../modules/vcpLoop/handoffGate');
 const response = text => ({ ok: true, body: Readable.from([
     `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
 ]) });
-for (const [native, archery] of [[false, false], [false, true], [true, false], [true, true]]) {
+for (const [native, archery, forward = false] of [[false, false], [false, true], [true, false], [true, true], [true, false, true], [true, true, true]]) {
     for (const abort of [false, true]) {
-        test(`actual loop holds after receipts: native=${native} archery=${archery} abort=${abort}`, { timeout: 4000 }, async () => {
+        test(`actual loop holds after receipts: native=${native} archery=${archery} forward=${forward} abort=${abort}`, { timeout: 4000 }, async t => {
+            const previous = process.env.VCP_FC_FORWARD_TO_CLIENT;
+            process.env.VCP_FC_FORWARD_TO_CLIENT = String(forward);
+            t.after(() => {
+                if (previous === undefined) delete process.env.VCP_FC_FORWARD_TO_CLIENT;
+                else process.env.VCP_FC_FORWARD_TO_CLIENT = previous;
+            });
             const controller = new AbortController();
             const gate = createHandoffGate(controller.signal);
             gate.control({ action: 'prepare_handoff', handoffId: 'h', revision: 1 });
@@ -64,7 +70,15 @@ for (const [native, archery] of [[false, false], [false, true], [true, false], [
             assert.equal(res.writableEnded, false);
             assert.deepEqual(executed, native && !archery ? ['Demo', 'Other'] : ['Demo']);
             assert.ok(writes.some(text => text.includes('VCP_TOOL_BATCH_END') && text.includes('tcr-test')));
-            assert.doesNotMatch(writes.join(''), /\[DONE\]|"finish_reason":"tool_calls"|"tool_calls":/);
+            assert.doesNotMatch(writes.join(''), /\[DONE\]|"finish_reason":"tool_calls"/);
+            const fcFrames = writes.filter(text => text.includes('"tool_calls":'));
+            assert.equal(fcFrames.length, forward ? 1 : 0);
+            if (forward) {
+                assert.ok(writes.indexOf(fcFrames[0]) < writes.findIndex(text => text.includes('VCP_TOOL_BATCH_END')));
+                const [choice] = JSON.parse(fcFrames[0].slice(6)).choices;
+                assert.equal(choice.finish_reason, null);
+                assert.deepEqual(choice.delta.tool_calls, nativeBatch);
+            }
             if (abort) {
                 controller.abort();
                 await assert.rejects(pending, { name: 'AbortError' });

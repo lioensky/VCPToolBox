@@ -421,6 +421,15 @@ class StreamHandler {
               return;
             }
             ownedNativeTurn = { calls, normalized };
+            if (process.env.VCP_FC_FORWARD_TO_CLIENT === 'true') {
+              res.write(`data: ${JSON.stringify({
+                object: 'chat.completion.chunk',
+                model: originalBody.model,
+                choices: [{ index: 0, delta: {
+                  tool_calls: calls.map((call, index) => ({ ...call, index })),
+                }, finish_reason: null }],
+              })}\n\n`);
+            }
             return;
           }
           for (const frame of nativeToolFrames) res.write(frame);
