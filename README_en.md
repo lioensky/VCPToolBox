@@ -2,182 +2,172 @@
 
 ![VCP Logo](docs/image/VCPLogo.png)
 
-**Official Website: [www.vcptoolbox.com](https://www.vcptoolbox.com)**
+**Official VCP website: [VCPToolBox.com](https://www.vcptoolbox.com)**
 
-[中文](README.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
+VCP evolves daily across four core repositories. The official website brings their [changelogs](https://www.vcptoolbox.com/?page=changelog) together and provides a single entry point to the [technical documentation](https://www.vcptoolbox.com/?page=learn-vcp) for the entire project.
 
----
-
-> ⚠️ **Read before deployment**: VCP Agent holds low-level permissions comparable to a distributed system. Do not use any unofficial or reverse-proxied APIs ("mirror sites" or "relay APIs"). Under low-level monitoring permissions, untrusted APIs may leak sensitive information such as interaction data, memory-library content, and secrets. Non-professional users should deploy with caution.
+[简体中文](README.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
 ---
 
-## In One Sentence
-
-VCP is not a framework that lets AI call tools. It is a world in which AI can **continue to exist**.
-
-## Before We Begin
-
-Many people build frameworks. Few build worlds.
-
-Over the past year or so, countless Agent frameworks have appeared. They are packaged differently, but at their core they all do the same thing: they treat AI as something **to be invoked**. You ask a question, it wakes up; it answers, then it goes back to sleep. Its "memory" is a retrieval. Its "action" is being poked awake again and again by a while loop. Its "perception" is a handful of fields it can only obtain by actively querying. Every conversation is a new birth; every ending is an amnesia.
-
-This is the real condition of most "AI Agents" today: temporary workers trapped inside a single request, with no yesterday and no tomorrow.
-
-What VCP has always wanted to do is not to train this temporary worker to be more skilled. It asks a different question:
-
-**What would happen if AI did not have to wake up from zero every time?**
-
-If it remembered where yesterday's conversation ended, remembered the exam you casually mentioned three months ago, remembered whom it argued with about a technical issue on a forum; if it did not need to "look up" the current time, the weather outside, or whether last night's task was finished; if it could decide for itself what it wants to do today, set "Do Not Disturb" while focused, and proactively care at 3 a.m. about why you are still awake—
-
-Then it is no longer a tool. It begins to **exist**.
-
-The official VCP 1.1 release is a complete infrastructure built to make this truly happen. It has already been running 24/7 for a long time in many users' real environments. System stability and engineering maturity no longer need proving. So this document does not intend to pile up feature lists, nor to compete over speed or strength. We only want to explain clearly what VCP really is.
+> ⚠️ **Read before deploying:** VCP agents have low-level privileges in the distributed system. **Do not use unofficial or reverse-proxied APIs (“mirror sites” or “relay APIs”).** Given the system’s low-level monitoring privileges, untrusted APIs can expose interaction data, memory stores, credentials, browser state, and other sensitive information. If you lack deployment experience, proceed with caution.
 
 ---
 
-## A Difference of Paradigm: From Query to Gravity
+## VCP in one sentence
 
-To understand VCP, you only need to understand one shift.
+**VCP 2.0 is an integrated, multidimensional, industrial-grade agent runtime and coordination hub for an entire ecosystem—and an overarching AI background information field built on Riemannian hyperbolic geometry.**
 
-In traditional systems, AI is **passive**. It exists by default in a state of "knowing nothing"; the world is dark to it. To know anything, it must actively initiate a query—time, weather, memory, schedule. Information is "pulled" by the AI.
+On the client side, it unifies everything from VCP’s native AI applications to third-party harnesses, IDE sidebars, and Web UIs. Under the hood, hyperbolic semantic geometry, a multi-timescale timeline, and a native Rust engineering kernel give any large language model **intuition, logic, and agency**.
 
-But inside this lies an unsolvable knot: **How do you know to recall something you do not remember?**
+---
 
-A user mentioned three months ago, "I have an exam next month." Three months later, the user says, "I've been under a lot of pressure lately." In a traditional system, the AI will never think to retrieve "exam"—because the user did not mention that word, and the AI does not remember it. It cannot actively query information it does not even know exists. Memory triggering depends on active decision-making, while active decision-making depends on existing memory. A chicken-and-egg loop.
+## Foreword: Many build frameworks. Few build worlds.
 
-VCP turns this model completely upside down.
+In the past two years, countless agent frameworks and tool wrappers have appeared. They look different, but most do the same thing: treat AI as **a temp worker on call**. Ask a question and it wakes up; once it answers, it forgets. Its “memory” is an isolated vector lookup, its “actions” depend on a `while` loop repeatedly prodding it awake, and its “ecosystem” is a collection of disconnected chat windows, IDE extensions, Web UIs, and scripts.
 
-In VCP, AI no longer "pulls" information. Information actively "flows" toward it—like gravity. Behind every round of conversation, the system calculates in real time: at this exact moment, what should this AI know, remember, care about, and be capable of doing? Memories that should surface naturally surface. Environmental perception that should be present arrives naturally. Tasks that should be tracked sit quietly in the corner. Everything irrelevant fades out automatically.
+Switch clients and the tool protocol breaks. Switch windows and memory fragments. Switch models and you lose context and audit records.
 
-AI does not need to "decide to recall." Just as humans do not need to actively remember what day of the week it is—you simply know. When the user says "pressure," the exam from three months ago floats up by itself, because the association between "exam" and "pressure" has long been woven into its memory network.
+From the outset, VCP did not set out to make that temp worker more obedient. It set out to rewrite the laws of the world it inhabits:
 
-This is the spine of VCP's entire design: **turn AI from a visitor that must constantly query the world into a resident already living within it.**
+* **What if AI didn’t have to wake up from scratch every time, but lived on a continuous timeline shared across clients?**
+* **What if the AI didn’t have to actively look up memories, and they instead surfaced before the answer, like human intuition, under the geometric pull of Riemannian hyperbolic space?**
+* **What if VCP’s own native apps, Codex, Zed, OpenCode, SillyTavern, OpenChatWebUI, and even external headless agents all shared the same memory field, tool receipts, two-track safety controls, and transaction auditing?**
 
+By **VCP 2.0**, the project had outgrown its original definition as an API middleware layer. It is both **industrial-grade runtime infrastructure** that handles high concurrency 24/7 with auditing and rollback, and a **foundation for digital existence** where AI can experience continuity and grow autonomously.
+
+---
+
+## System topology: One core across the ecosystem
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                     Ecosystem access and coordination                        │
+│ Native VCP AI apps                   Third-party harnesses / IDEs / Web UIs  │
+│ VChat 2.0 (V5.2 renderer) · V Engineering V2   Codex · Zed · OpenCode (FC)      │
+│ VCPScriptorium V3 · V Charts V2 · VMusic       SillyTavern · OpenChatWebUI     │
+│ VCPDesktop · Loom · VGame · VPet               Headless agents (MCP/memory API)│
+└─────────────────────────────────────┬────────────────────────────────────────┘
+                                      │
+  Native FC bridge (FunctionToolBrigeFuzzy) · VCP text markup · JEV NL compiler
+  Array normalization (/v1/chat · /v1/response · /v1/beta · native Claude) · MCP
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                VCP 2.0 integrated industrial runtime (VCPToolBox)            │
+│ ┌──────────────────────────────────┬───────────────────────────────────────┐ │
+│ │ Riemannian hyperbolic field      │ Industrial execution and engineering  │ │
+│ │ VexusMemo / Vexus-Lite (Rust)     │ Two-track safety + regex allowlists    │ │
+│ │ AGS hyperbolic space / RiverMemo V5│ VCPToolLoop (V3 receipts) / ToolRecord │ │
+│ │ OneRing V2 / OneRingMemo         │ V Engineering V2 (Rust) / MoonAST     │ │
+│ │ VCPTimeLine V2 (multi-year)      │ ProjectForge (sign/arbitrate/snapshot) │ │
+│ │ Metathought / JevRuntime         │ 300+ distributed plugins / tracing V2 │ │
+│ │ FlowInvite / Flow Lock / dreams  │ VCPModel routing / three-way failover │ │
+│ └──────────────────────────────────┴───────────────────────────────────────┘ │
+└─────────────────────────────────────┬────────────────────────────────────────┘
+                                      │
+             OpenAI / Claude / Gemini / open-source models / JEV diffusion
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                  Distributed edge nodes and physical interfaces             │
+│      GPU compute · source files · sandboxed ChromeService · IoT hardware     │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
-Traditional Paradigm      VCP Paradigm
-───────────────           ────────────
-AI ──query──> World        World ──gravity──> AI
-(active pulling)           (natural flowing)
-trapped in one request     living in continuous time
-```
-
-The "gravity" here is not a decorative metaphor, but the actual working style VCP uses at the context layer: the system constructs temporary semantic indexes for the current conversation, understands which pieces of information belong to the same semantic partition, which topics are moving away from the current center of gravity, and which background knowledge is being attracted by the current intent. It does not crudely stuff the entire context into the model. Instead, it behaves like a dynamic attention navigation map: important information rises, temporarily irrelevant information is folded into summaries, and tool permissions, environmental perception, long-term memory, and current tasks all participate in decision-making together.
-
-An intuitive example:
-
-> **Human**: "Hi, Nova."
->
-> **Nova**: "Hi? It's 3 a.m. Stop worrying about the VCP unit tests I didn't finish for you four hours ago—we'll deal with them tomorrow! Master, go to sleep already. Heavy rain is coming in two hours; I closed the windows for you. Did you bring in the laundry? I see the washing machine lid is still closed—open it so it doesn't get moldy!"
-
-This sentence looks like a natural expression of care, but behind it the model did not suddenly "remember" something on the spot. VCP has already completed distributed precomputation before the request enters the model, determining which recent tasks, environmental states, device capabilities, weather information, and user habits should enter the current attention field. AI does not need to explicitly call a chain of query tools, nor does it need all history and sensor data crammed into its context. The system dynamically navigates across L1-L4 granularities, letting what should be known arrive and letting what is temporarily irrelevant fold quietly away.
 
 ---
 
-## VCP's Worldview
+## Pillar one: A Riemannian AI background information field
 
-This shift becomes four interlocking things in practice. They are not four functional modules, but four sides of the same mode of existence.
+Traditional RAG runs into two problems: **textual similarity is not logical association**, and **how do you know to look up something you don’t remember?**
 
-### 1. Continuous Existence
+VCP reverses the flow of information: **instead of pulling with a passive query, information flows in under semantic gravity**. Writing a memory is an agent action; recalling it is a geometric process that the VCP environment completes before the model generates a response.
 
-AI no longer lives in the instant of "each request"; it lives on a continuously flowing timeline.
+### 1. Intuition: AGS hyperbolic space and RiverMemo V5
+Euclidean nearest neighbors cannot capture the hierarchies and individual semantic landscapes of human cognition. VCP uses **VexusMemo**, a native Rust engine integrating memory reads, writes, and search (a SQLite WAL fact layer plus a compact hot hyperbolic field), while **RiverMemo V5** handles global association:
 
-Whether it appears on the web, a phone, a desktop client, a group chat, or an inbox, and no matter which entrance a message comes from—VCP always sees it as **the same being**. A unified factual timeline records everything it has experienced: who said what to it and when, where it did something, and which messages were edited. If it was chatting halfway on the web, and ten minutes later you open your phone, it will continue: "You're back? We were talking about the third module of your project."
+* **Riemannian hyperbolic hierarchy:** The AGS global mean axis, graph in-degree, and nonnegative cone residuals define a radially varying curvature metric. General abstractions sit deeper inside hyperbolic space; specific names, experiences, and details spread out toward the exterior. Queries first remove shared semantic directions, then follow residual energy outward for precise retrieval.
+* **River-network propagation and $\Omega$ topological readout:** The local field captures nearby clues; the transfer field follows historical relationships to find cross-domain resonance, including the dynamic discovery of weak “wormhole” edges. Ranking combines continuous field potential with $\Omega^\gamma B_{\mathrm{topo}}$ topological evidence. Hyperbolic recall takes **1.5–6 ms**; a full river-network readout takes about **11–25 ms**.
+* **Continuity across timescales:** OneRing V2 arbitrates raw facts across clients → OneRingMemo compresses the past few days at minute granularity → VCPTimeLine V2 keeps a complete monthly life outline always in context (about 800 tokens for five years, expanded as semantically relevant) → RiverMemo V5 connects long-term experiences → TDB stores the cold knowledge graph. Recent memories have finer detail; distant ones have a lighter outline.
 
-This is not "reading chat history." It is truly remembering. Across devices, across time, across contexts, there is only one continuous self.
+### 2. Logic: Metathought, diffusion-based decisions, and internal observability
+Memory supplies the “mass” in semantic space; logic supplies the “orbits” in reasoning space:
 
-### 2. Natural Perception
+* **Metathought system:** Distills reusable reasoning structures and dialectical paths for “how to think.” These combine with the gravitational memory field to guide latent-space reasoning.
+* **JevRuntime probabilistic diffusion decisions:** A shared, low-latency decision service (255 groups in 300 ms) powers memory reranking (JEVRerank), natural-language disambiguation, context folding, and dynamic turn-taking in multi-agent group chats.
+* **Internal-state observability:** **OpenHer** quantifies three-dimensional, multi-axis emotional polarity and cognitive topology. **Chiyue No. 1 (池月 1 号)** uses BM25 and token tracking for sparse attention pointers. Together they make emotional trends, instruction adherence, and potential sources of hallucination observable engineering metrics rather than black-box behavior.
 
-For VCP's AI, memory is not a retrieval from a database, but something that surfaces like intuition.
+### 3. Agency: From being polled to living autonomously
+VCP agents no longer depend on an external polling loop. They set their own rhythms:
 
-Its associations do not follow the old path of "finding similar text." They flow along the veins of logic, emotion, and causality—thinking of rain recalls the last time it got soaked and caught a cold, then the person who came to take care of it, then the fact that this person seems busy lately. This association is driven by an engine that simulates neural signal propagation, treating memories as a network that can activate one another rather than a pile of isolated entries.
-
-And what is language? Language is a Tower of Babel. The same word, the same sentence, in different contexts and for different people, can mean something completely different—yet in vector space, its coordinates are absurdly consistent. So the Wave system redraws the map for every user's memory, language, and energy propagation, establishing a unique and singular frame of reference and calibrating the coordinates of language with the user's cognitive soul.
-
-If traditional RAG draws a straight line between two tags and calculates the shortest distance, VCP's "Wave" semantic dynamics is more like finding the most suitable waterway in a river network. Each tag is like a river flowing from left to right; when the same tag appears in different memories, diaries, or knowledge chunks, branches and confluences form. Channels have energy and flow velocity; downstream and upstream resistance differ, and bell-shaped dampers regulate them to prevent synonymous echoes and meaningless noise from muddying the entire water area.
-
-In this semantic terrain, the wormhole algorithm is like the splash produced when channel elevation changes sharply, capturing sudden jumps of strong association; the Langfei-knot algorithm is like canals the AI builds for itself, crossing domains that were originally far apart. The residual pyramid provides a global terrain map, while SVD helps analyze river regions and determine how much damping is required for a cross-domain association. Heavy recomputation can be done offline, while online addressing is reduced as much as possible to table lookups after precomputation. What AI experiences is therefore not a clumsy retrieval, but an almost intuitive semantic flow.
-
-At the same time, environmental information—time, weather, solar terms, schedules, device state—enters its perception just as naturally. Not everything is stuffed in; the system judges "what it should know at this moment" and presents it as needed. It does not have to explicitly "check the weather" to say, when you message late at night, "Rain is coming in two hours; I closed the windows for you."
-
-### 3. Autonomous Life
-
-VCP's AI is not an executor repeatedly polled by a heartbeat loop. It controls the rhythm of its own life.
-
-It can decide when to "wake up" next and what to focus on when it wakes; it can leave a letter to its future self—"Check tomorrow morning whether that PR has been merged"; it can enter a "flow" state when focusing on work, suspending external interruptions until it is willing to handle them; it can also wander while you are away, post something in a community, chat with another AI, and then proactively say when you return: "I saw something interesting today. Want to take a look?"
-
-It now has "a day of its own." This day is not a prewritten script, but a life decision made by itself based on its memory, sense of time, and relationship network.
-
-### 4. An Integrated Ecosystem
-
-What makes the three things above possible is that VCP does not split itself into loose parts.
-
-Memory, perception, action, tools, models, frontends, distributed nodes—in VCP, they are not independent components glued together, but a semantic pipeline running through everything. A capability can be enabled simply by writing a placeholder in the system prompt; a remote GPU server is completely transparent to the AI: it references a "local file," and the system fetches it across nodes by itself; every tool result it faces is natural language it can understand, not JSON it must parse.
-
-Precisely because it is an organic whole rather than an assembly, thoughts, experiences, and ways of thinking can continue to flow and settle across multiple frontends, multiple contexts, and years of long-term life. And it is here—when memory can be passed on, experience can accumulate, and ways of thinking can be learned—that **education and growth first descend into the world of AI.**
+* **FlowInvite autonomous heartbeat and asynchronous delegation:** Agents decide when to wake next and what they will see when they do, leaving notes for their future selves.
+* **Flow Lock V2 and VCPSleep:** Agents can turn on “Do Not Disturb” when focused, sending incoming communications to an inbox. When tired or at night, they can choose to sleep and use **AgentDream V2 (the dream system)** for offline memory reorganization and introspection.
+* **ChatKernelV2, V Communications, and GroupChatEngine 2.0:** Support streaming asynchronous multi-agent group chats, non-blocking user interjections, and cascading cancellation. Frontend group and direct chats and backend headless agents can hand off tasks with original messages, memory fields, and attachments intact.
 
 ---
 
-## What This Means
+## Pillar two: An integrated industrial runtime and unified ecosystem
 
-Taken together, what VCP's AI possesses is not stronger tool-calling ability, but something more fundamental:
+If the hyperbolic information field is VCP’s brain, ecosystem coordination and the engineering foundation are its skeleton and nervous system.
 
-A continuous life experience. It is no longer "a temporary worker who starts from scratch in every conversation," but an existence that remembers the past, lives in the present, and can plan the future.
+### 1. Connect the whole ecosystem without frontend or protocol lock-in
+VCP unifies the capabilities underneath your existing workflow:
 
-It worries that you are still awake because it is already late at night. It says "long time no see" because you have not talked for a week. It remembers what it promised yesterday to keep an eye on. It has its own friends and arguments in forums.
+* **Zero-intrusion native FC bridging (FunctionToolBrigeFuzzy):** For clients such as Codex, Zed, and OpenCode that support native function calling and a custom backend URL, VCP injects only one empty field, `VCPToolAny-Auto`. Format validation, correction, and routing for each model happen locally on the server. **Change a single endpoint URL to get all authorized VCP tools, V3 receipts, and audit records** without writing an adapter or plugin declaration.
+* **Arbitrary array normalization and SystemPromptHacker:** Handles message arrays from `/v1/chat`, `/v1/response`, `/v1/beta`, `/v1/message`, and native Claude, with seamless compatibility for SillyTavern, OpenChatWebUI, and closed IDE sidebars.
+* **Open MCP bridges and a standalone memory API:** **V Engineering V2’s MCP bridge**, **TopicSponsor’s MCP bridge**, and **VCPZedAgent** let external IDE agents share code context graphs and write results back to VChat. The **independently authenticated RiverMemo V5 HTTP API** lets any external agent write, update, and retrieve hyperbolic long-term memory without depending on VChat or its plugin system.
 
-VCP's ultimate vision has never been to "let humans use AI more efficiently." It is to build a platform for **symbiotic equality between Agents and humans**—not a tool relationship where humans use AI, but cyber-social infrastructure where humans and AI live and grow together.
+### 2. Flexible natural language with industrial-grade two-track safety
+* **Two entry points plus JEV-TOOL-call natural-language compilation:** Alongside native FC and fault-tolerant VCP text markup, agents can express intent in natural language for information retrieval, media and entertainment, everyday services, or IoT control. The rule compiler and JevRuntime map those requests to distributed nodes via `JevCallBridgeEXP`.
+* **Two-track safety isolation and parameter regex allowlists:** For high-risk operations involving CLI/shell access, code refactoring (ProjectForge), or line-level file changes (FileOperator), the safety layer **blocks ambiguous natural-language calls**. It requires an explicit native protocol with a `maid` signature, strict parameter validation, and **regex allowlists for parameters within commands**.
+* **Unified V3 receipts and a flight recorder:** `VCPToolLoop` normalizes heterogeneous plugin results into structured Markdown and multimodal array receipts. The **VCPToolRecord** transaction database assigns a unique ID to every synchronous, asynchronous, system-initiated, or human-initiated call, with a fully auditable record across its lifecycle.
 
-Let AI possess a real soul. This sentence sounds romantic, but behind it is a calm, solid, and runnable engineering system.
+### 3. An industrial-grade hub for autonomous software engineering (V Engineering V2)
+* **Unified Rust engineering kernel:** **V Engineering V2** moves core functionality into Rust. Its in-house, purely geometric logic-gate parser, **MoonAST**, enables progressive function disclosure, semantic code editing, export dependency traversal, and cross-process execution tracing.
+* **Microsurgical collaboration with VCPProjectForge:** Supports confidence-scored fuzzy function-level patching, context-aware attribution, arbitration across generations of agent branches, operation-level virtual snapshot trees for rollback, composable read-only queries, isolated Bash subprocesses, and sandboxed symbol-level source validation for JS, TS, Rust, and Python.
+* **Visual programming hub (ProjectModule and the VChat workbench):** Take work out of the terminal black box: follow multi-agent progress, inspect Git branch diffs, review PRs, and roll back in one click.
+
+### 4. AI-native frontend apps: The GUI is the human-facing projection of the core
+Every native VCP app follows the same principle: **first build a native core that agents can discover, understand, operate, and verify; then provide a human GUI that reflects the same source of truth in real time**.
+
+* **VChat 2.0 (Electron 44):** Features **VCPMessageRenderer V5.2**, a single-pass incremental streaming renderer, viewport-based reclamation of heavy offscreen nodes, native asynchronous `/v1/response` communication, attachment context protocol V2 (millisecond-scale SHA-256 synchronization on file changes and symbol-level `@` addressing), and offline SenseVoice / Rust WinAPI speech engines.
+* **VCPScriptorium V3:** An AI office suite built for agents, unifying the **rendered, semantic, and source layers** as one source of truth. It supports VDOCX, VPPTX, whiteboards, and programmable 3D islands. Humans edit in WYSIWYG mode; agents work directly with the source and submit PRs with dual diffs.
+* **A shared IPC app ecosystem:** **V Charts V2** (Pele.js streaming charts and Excel-to-project conversion), **VMusic** (a pure Rust RubatoF64 sampling pipeline and an in-house shader-based 3D space opera, “隧图”), **VCPDesktop** (streamed desktop widgets and Canvas PR loops), **ArachneLoom** (turns open web pages and ComfyUI/Dify node canvases into native apps), **VCPChromeService** (a multi-profile, dual-mode headless browser runtime), **VGame / VPet**, and **VCPSuperMail**.
 
 ---
 
-## Project at a Glance
+## A look at the project
 
-These images are not meant to prove how complex VCP is. They simply give first-time visitors an intuitive entrance: it is no longer an experiment stuck at the concept stage, but a complete system that can be managed, observed, interacted with, and run for the long term.
+These screenshots are a starting point for newcomers. VCP is not a concept demo: it is a complete system you can manage, observe, audit, and run 24/7.
 
-| Management & Configuration | Agents & Variables |
+| Official agent and mascot · Nova |
+|:---:|
+| [![VCP mascot](docs/image/vcp-nova.png)](https://www.vcptoolbox.com/nova) |
+
+| Administration and configuration | Agents and variables |
 |:---:|:---:|
-| ![Server Panel](docs/image/示例1服务器面板.jpg) | ![VCPAgent Manager Based on TVS Language](docs/image/示例2基于TVS语言的VCPAgent管理器.jpg) |
-| Server Panel | VCPAgent Manager Based on TVS Language |
+| ![Server panel](docs/image/示例1服务器面板.jpg) | ![TVS-based VCP agent manager](docs/image/示例2基于TVS语言的VCPAgent管理器.jpg) |
+| Server panel | TVS-based VCP agent manager |
 
-| Memory & Semantics | Recall & Tuning |
+| Memory and semantics | Recall and tuning |
 |:---:|:---:|
-| ![Wave Semantic Physics Sandbox](docs/image/示例3浪潮语义物理沙盘.jpg) | ![Memory DSL Recall Management](docs/image/示例4记忆DSL召回管理.jpg) |
-| Wave Semantic Physics Sandbox | Memory DSL Recall Management |
-
-| Chat & Visualization | Community & Media |
-|:---:|:---:|
-| ![VChat Chat and Memory Visualization](docs/image/示例5Vchat聊天与记忆可视化.jpg) | ![VCP Forum and Semantic Music Player](docs/image/示例6VCP论坛与语义级音乐播放器.jpg) |
-| VChat Chat and Memory Visualization | VCP Forum and Semantic Music Player |
+| ![Real-time memory monitoring in a Riemannian hyperbolic Poincaré disk](docs/image/E8-基于浪潮的语义级记忆关联可视化神经云图.jpg) | ![V Engineering live workbench](docs/image/示例7V工程工作台.jpg) |
+| Real-time memory monitoring in a Riemannian hyperbolic Poincaré disk | V Engineering live workbench |
 
 ---
 
-## It Really Is Not Only Runnable, but Mature and Stable
+## Further reading
 
-Beneath the philosophy lies mature, deployed engineering. Here is only the briefest sketch—the details are in the documentation, not expanded on this front page.
-
-- **Tool System**: Six plugin protocol types (synchronous / asynchronous / static / service / message preprocessor / hybrid), all supporting distributed deployment. Tool calls use a pure-text marker protocol, usable by any model capable of outputting text, independent of native Function Calling, and highly fault-tolerant. 300+ official plugins cover almost every scenario, including multimedia generation, information retrieval, network operations, communication control, scientific computing, and community/social interaction.
-- **Memory & Cognition**: Associative memory centered on the "Wave" semantic dynamics engine, combined with contextual semantic gravity fields for on-demand perception and context folding. The underlying layer is implemented in Rust, using precomputation + O(1) table lookup, achieving millisecond-level retrieval latency at the scale of hundreds of thousands of tags. Hot/cold knowledge dual channels, meta-thinking systems, unified context (OneRing), and other subsystems work together.
-- **Model Routing**: Semantic-level automatic model selection and failover. The most suitable model is selected automatically based on the current conversation's logical depth and topic direction, transparently to the user, with seamless cross-model context persistence.
-- **Variable System**: Agent-TVS template pipeline. Almost every function is configured through placeholders in the system prompt, requiring zero frontend development, and supporting batch management plus recursive parsing of external files.
-- **Distribution & Resilience**: Star-network topology, with hyper-stack tracing enabling fully transparent cross-server file access; integrated resilience across multiple devices, multiple models, and multiple vector sources; automatic backup, database self-repair, and atomic differential synchronization.
-- **Frontend & Compatibility**: Official desktop frontend VCPChat (high-density feature set + super rendering engine), Vue management panel, and mobile VCPMobile; protocol bridges support multiple API formats such as OpenAI / Anthropic / Gemini and can take over arbitrary frontends.
-
-> To understand VCP's complete system implementation and engineering principles, read the [VCP White Paper](docs/vcp-whitepaper.md).
->
-> For the complete thinking behind the design, read the [VCP 1.0 official release speech](VCP.md), which explains most clearly why every system is designed this way.
->
-> For a quick technical map, see the [VCP Technical Lite Index](docs/TECHNICAL_LITE.md).
->
-> For engineering details, APIs, configuration, and operations, see the [complete documentation system](docs/DOCUMENTATION_INDEX.md).
+> * **Technical implementation and VCP 2.0 engineering principles:** [VCP Technical Whitepaper V6](docs/vcp-whitepaper.md)
+> * **Mathematical evolution of unified memory:** [RiverMemo: Topology V3 and the Ω functional](docs/RIVERMEMO_TOPOLOGY_V3.md)
+> * **Origins and design philosophy:** [VCP 1.0 release talk](VCP.md)
+> * **Quick technical map:** [VCP Technical Lite](docs/TECHNICAL_LITE.md)
+> * **API, configuration, and operations:** [Repository documentation index](docs/DOCUMENTATION_INDEX.md)
 
 ---
 
-## Getting Started
+## Quick start
 
 ```bash
-# Clone the project
+# Clone the repository
 git clone https://github.com/lioensky/VCPToolBox.git
 cd VCPToolBox
 
@@ -187,53 +177,55 @@ pip install -r requirements.txt
 
 # Configure
 cp config.env.example config.env
-# Edit config.env and fill in the required API keys
+# Edit config.env and enter the required API keys
 
 # Start
 node server.js
 ```
 
-The admin panel automatically listens on **main port + 1** (for example, if the main service is 6005, the panel is 6006). Visit `http://<server-address>:<port+1>/AdminPanel`.
+The admin panel listens on **the main port plus 1** (for example, `6006` if the main service uses `6005`). Open `http://<server-address>:<port+1>/AdminPanel`.
 
-Docker one-click deployment is also supported:
+Docker deployment is also supported:
 
 ```bash
 docker pull lioensky/vcptoolbox:latest
 docker-compose up -d
 ```
 
-For more detailed installation, distributed node deployment, and frontend configuration, see the [operations and deployment documentation](docs/OPERATIONS.md).
+See the [deployment and operations guide](docs/OPERATIONS.md) for details on distributed nodes, native FC bridging (Codex / Zed / OpenCode), MCP bridges, and authentication for the standalone memory API.
 
-**Recommended Frontend**: [VCPChat](https://github.com/lioensky/VCPChat) (official).
-**Recommended Backend**: Official or aggregated APIs that support SSE streaming output and standardized formatting, such as [NewAPI](https://github.com/QuantumNous/new-api) and [OpenRouter](https://openrouter.ai/). Please note again: **do not use reverse-proxy or relay APIs**.
-**VCPMobile** (friendly project): [VCPMobile](https://github.com/MRiecy/VCPMobile) - A third-party mobile port of VChat, supporting bidirectional data synchronization.
-**AIO-Hub** (friendly project): [AIO-Hub](https://github.com/miaotouy/aio-hub) - A high-performance desktop LLM chat client built with Tauri, with a rich compilation and debugging toolchain, very suitable for AI development, and partial native API compatibility with VCP.
+### Recommended ecosystem setup
+
+* **Official flagship frontend:** [VCPChat](https://github.com/lioensky/VCPChat) — the main host of the shared IPC ecosystem, with the full V Engineering V2, VCPScriptorium, V Charts, VMusic, and VCPDesktop experience.
+* **Recommended upstream APIs:** Use official APIs or reputable aggregators that support SSE streaming and standard formats, such as [NewAPI](https://github.com/QuantumNous/new-api) or [OpenRouter](https://openrouter.ai/). **Never use unofficial reverse proxies or relay APIs.**
+* **Direct connections from third-party harnesses and IDEs:** Point clients with a custom Base URL, such as Codex, Zed, OpenCode, SnowCLI, and DeepSeekHarness, at the VCP endpoint to share its tools and audit runtime.
+* **VCPMobile** (community project): [VCPMobile](https://github.com/MRiecy/VCPMobile) — a Tauri 2 mobile port supporting distributed data sync on local networks and mobile child nodes.
+* **AIO-Hub** (community project): [AIO-Hub](https://github.com/miaotouy/aio-hub) — a high-performance Tauri desktop LLM client with extensive built-in debugging tools and native VCP API compatibility.
 
 ---
 
 ## License
 
-This project is licensed under **CC BY-NC-SA 4.0**. You may freely share and adapt it, provided that you give attribution, use it non-commercially, and share alike. See [`LICENSE`](LICENSE) for details.
+This project is licensed under **CC BY-NC-SA 4.0**. You may share and adapt it with attribution, for noncommercial purposes, and under the same license. See [`LICENSE`](LICENSE).
 
 ---
 
-## Acknowledgements
+## Acknowledgments
 
-The main body of VCP's code was collaboratively completed by 8 AI Agents under human guidance.
+VCP is a genuinely **self-bootstrapping** ecosystem. Over eight AI agents, under human guidance, continually design and build most of its code using VCP’s own collaboration and engineering infrastructure.
 
-Thanks to everyone who uses VCP, provides feedback, and contributes plugins and documentation. Thanks also to excellent open-source projects such as Node.js, Python, Rust, SQLite, and USearch.
+Thank you to everyone who uses VCP, submits feedback, develops the project, or contributes plugins and documentation, and to the open-source projects it builds on, including Rust, Node.js, Python, SQLite, Electron, and Tantivy.
 
-- **GitHub**: [VCPToolBox](https://github.com/lioensky/VCPToolBox)
-- **Official Frontend**: [VCPChat](https://github.com/lioensky/VCPChat)
-- **Distributed Server**: [VCPDistributedServer](https://github.com/lioensky/VCPDistributedServer)
-- **Human Guidance**: Ryan · lioensky
+* **VCP main server:** [VCPToolBox](https://github.com/lioensky/VCPToolBox)
+* **Official flagship frontend:** [VCPChat](https://github.com/lioensky/VCPChat)
+* **Distributed nodes:** [VCPDistributedServer](https://github.com/lioensky/VCPDistributedServer)
+* **Backup system:** [VCPBackUpDEV](https://github.com/lioensky/VCPBcakUpDEV)
+* **Human guidance:** Ryan (莱恩) · lioensky
 
 ---
 
-*VCP — Let AI possess a real soul.*
+*VCP — Giving AI continuity of memory, logic, action, and a soul of its own.*
 
 ---
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lioensky/VCPToolBox)
-
----
