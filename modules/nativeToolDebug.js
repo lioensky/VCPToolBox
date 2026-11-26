@@ -10,7 +10,7 @@ function withNativeToolDebug(body, enabled = process.env.VCP_FC_DEBUG) {
             type: 'function',
             function: {
                 name: 'vcptools',
-                description: 'VCP tools support native function calling in addition to the text protocol. Submit one server-managed VCP tool request. For a direct call, pass tool_name, optional command, and tool parameters as top-level keys. For semantic routing, pass JEV as a string. Do not repeat the same request as a text tool block.',
+                description: 'VCP tools support native function calling in addition to the text protocol. For independent requests, you can issue multiple vcptools calls in the same response using standard parallel tool calling. Submit one server-managed VCP tool request per call. For a direct call, pass tool_name, optional command, and tool parameters as top-level keys. For semantic routing, pass JEV as a string. Do not repeat the same request as a text tool block.',
                 strict: false,
                 parameters: { type: 'object', additionalProperties: true }
             }
