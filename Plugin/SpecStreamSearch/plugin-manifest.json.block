@@ -1,0 +1,40 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SpecStreamSearch",
+  "version": "0.1.0",
+  "displayName": "SpecStream 联网搜索",
+  "description": "调用 SpecStream 搜索 API 返回网页结果（标题、链接、站点、摘要）；事实类问题另附答案及其来源页。需要 SpecStreamKey。",
+  "author": "Tarek Etman",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SpecStreamSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "SpecStreamKey": {
+      "type": "string",
+      "description": "必填。SpecStream API Key，以 Authorization: Bearer 请求头发送到 https://api.specstream.ai/v1/web-search；未配置时插件不发出请求。"
+    },
+    "SpecStreamMaxResults": {
+      "type": "integer",
+      "description": "默认返回结果数，1-20，未配置时为 8。"
+    },
+    "SpecStreamSpeed": {
+      "type": "string",
+      "description": "可选。填 fast 使用快速档（约 1 秒）；留空为标准档。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SpecStreamSearch",
+        "description": "使用 SpecStream 进行网页搜索，返回标题、链接、站点和摘要组成的 Markdown 列表；事实类问题会先给出答案和来源页。\n参数:\n- query (字符串, 必需): 搜索内容，可用任意语言的自然语句。\n- max_results (整数, 可选): 返回结果数，1-20。\n- site (字符串, 可选): 只搜索某个域名，例如 github.com。\n- published_after (字符串, 可选): 只返回该日期之后发布的页面，格式 YYYY-MM-DD。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SpecStreamSearch「末」,\nquery:「始」最近一周的 AI 智能体新闻「末」,\nmax_results:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
