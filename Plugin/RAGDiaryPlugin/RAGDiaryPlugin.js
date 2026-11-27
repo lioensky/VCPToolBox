@@ -6213,7 +6213,7 @@ class RAGDiaryPlugin {
      */
     getContextBridge() {
         const self = this;
-        const BRIDGE_VERSION = '1.3';
+        const BRIDGE_VERSION = '1.4';
 
         return Object.freeze({
             /** 接口版本号，用于未来兼容性检查 */
@@ -6459,6 +6459,228 @@ class RAGDiaryPlugin {
                 if (!Array.isArray(vectors)) return null;
                 return self._getAverageVector(vectors);
             },
+
+            // ═══════════════════════════════════════════════════
+            // 结构化记忆召回（/v1/memory/search 等只读 HTTP 接口专用）
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 解析元思考 V3 星池作用域为日记库名数组，供调用方在嵌入与检索之前
+             * 做授权范围校验。空作用域回落到默认池。
+             * @param {string} [poolScope] - 星池作用域（|、,、， 分隔）
+             * @returns {string[]} 日记库名数组
+             */
+            resolveStarPoolDiaries(poolScope) {
+                if (typeof self.metaThinkingManager?._resolveV3StarPoolDiaries !== 'function') return [];
+                return self.metaThinkingManager._resolveV3StarPoolDiaries(poolScope);
+            },
+
+            /**
+             * 结构化记忆召回：复用与聊天完全相同的原生召回管线（RiverMemo 原生
+             * 联合查询、shotgun 历史主题段、幽灵锚、联想共现、服务端排名修饰符），
+             * 返回整形后的结构化结果而非占位符文本。只读：不 broadcast、不写日记、
+             * 不改动检索索引；embedding 缓存与聊天共用。
+             *
+             * @param {object} options
+             * @param {string} options.query - 当前用户消息原文（必填）
+             * @param {string[]} options.diaries - 目标日记库（必填，授权校验在调用方）
+             * @param {number} [options.k=10] - 主召回条数
+             * @param {Array<{role:string,content:string}>} [options.conversation] - 多轮上下文；
+             *   提供时按用户/助手加权投影查询向量，并启用历史主题段补充检索与上下文去重
+             * @param {string[]} [options.coreTags] - 显式幽灵锚（按强引力处理）
+             * @param {boolean} [options.associate=false] - 跨种子联想共现
+             * @param {string} [options.rankModifiers=''] - 服务端排名修饰符（'::Jev' / '::Rerank' / ''）
+             * @param {{pool?:string, group?:boolean}|null} [options.metaThinking] - 元思考 V3 公式
+             * @returns {Promise<{direct:Array, associated?:Array, metaFormula?:string|null}>}
+             */
+            async recallMemory(options = {}) {
+                const {
+                    query,
+                    diaries,
+                    k = 10,
+                    conversation = null,
+                    coreTags = [],
+                    associate = false,
+                    rankModifiers = '',
+                    metaThinking = null
+                } = options;
+                const diaryNames = [...new Set((Array.isArray(diaries) ? diaries : [diaries])
+                    .map(name => String(name || '').trim()).filter(Boolean))];
+                if (!diaryNames.length) throw new Error('diaries required');
+                if (typeof query !== 'string' || !query.trim()) throw new Error('query required');
+
+                // ── 1. 查询投影：单句或与聊天同构的多轮加权投影 ──
+                let userContent = query.trim();
+                let aiContent = null;
+                let userVector = null;
+                let aiVector = null;
+                let queryVector = null;
+                let historySegments = [];
+                let historyAssistantVectors = [];
+                let contextDiaryPrefixes = new Set();
+                let combinedQueryForDisplay = userContent;
+
+                if (Array.isArray(conversation) && conversation.length > 0) {
+                    const messages = conversation
+                        .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+                        .map(m => ({ role: m.role, content: m.content }));
+                    const lastUser = findLastRealUserMessage(messages, {
+                        sanitize: self.sanitizeForEmbedding.bind(self)
+                    });
+                    if (lastUser.sanitizedContent) userContent = lastUser.sanitizedContent;
+                    const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
+                    if (lastAiIndex > -1) {
+                        const rawAi = self._extractTextFromContent(messages[lastAiIndex].content);
+                        aiContent = rawAi ? self.sanitizeForEmbedding(rawAi, 'assistant') : null;
+                    }
+                    combinedQueryForDisplay = aiContent
+                        ? `[AI]: ${aiContent}\n[User]: ${userContent}`
+                        : userContent;
+                    const weights = Array.isArray(self.ragParams?.RAGDiaryPlugin?.mainSearchWeights)
+                        ? self.ragParams.RAGDiaryPlugin.mainSearchWeights
+                        : [0.7, 0.3];
+                    [userVector, aiVector] = await Promise.all([
+                        userContent ? self.getSingleEmbeddingCached(userContent, { contextRole: 'user' }) : null,
+                        aiContent ? self.getSingleEmbeddingCached(aiContent, { contextRole: 'assistant' }) : null
+                    ]);
+                    queryVector = self._getWeightedAverageVector([userVector, aiVector], weights);
+                    if (self.shotgunHistoryEnabled !== false) {
+                        const snapshot = await self.contextVectorManager.updateContext(messages, {
+                            allowApi: self.contextVectorAllowApi
+                        });
+                        historySegments = self.contextVectorManager.segmentContext(
+                            messages, 0.70, snapshot?.snapshotVectorByHash || null
+                        ) || [];
+                        historyAssistantVectors = Array.isArray(snapshot?.historyAssistantVectors)
+                            ? snapshot.historyAssistantVectors
+                            : [];
+                    }
+                    contextDiaryPrefixes = self._extractContextDiaryPrefixes(messages);
+                } else {
+                    userVector = queryVector = await self.getSingleEmbeddingCached(userContent, { contextRole: 'user' });
+                }
+                if (!queryVector || !queryVector.length) throw new Error('Memory query embedding unavailable');
+
+                // ── 2. 显式幽灵锚（强引力）──
+                const ghostTags = Array.isArray(coreTags) && coreTags.length > 0
+                    ? await self._resolveGhostAnchors(coreTags.slice(0, 16), true)
+                    : [];
+
+                // ── 3. 请求级缓存与元思考观测共享（与聊天同一条河流）──
+                const wantMeta = Boolean(metaThinking)
+                    && typeof self.metaThinkingManager?.processMetaThinkingV3 === 'function';
+                const requestCache = self._createRequestCache();
+                if (wantMeta && self.riverThinkingConfig?.enabled) {
+                    const ready = [false, true].map(() => {
+                        let resolve;
+                        const promise = new Promise(done => { resolve = done; });
+                        return { promise, resolve };
+                    });
+                    requestCache.riverThinking = {
+                        config: self.riverThinkingConfig,
+                        observations: [],
+                        deferred: [],
+                        ready
+                    };
+                    requestCache.ownedMemoObservations = new Set();
+                }
+
+                const modifiers = `::RiverMemo${rankModifiers || ''}${associate ? '::Associate' : ''}`;
+                let rawResults = [];
+                let metaFormula;
+                try {
+                    rawResults = await self._processRAGPlaceholder({
+                        dbName: diaryNames,
+                        modifiers,
+                        queryVector,
+                        userContent,
+                        aiContent,
+                        combinedQueryForDisplay,
+                        dynamicK: k,
+                        historySegments,
+                        contextDiaryPrefixes,
+                        ghostTags,
+                        associateDiaries: diaryNames,
+                        requestCache,
+                        returnRawResults: true
+                    }) || [];
+
+                    if (wantMeta) {
+                        const poolScope = typeof metaThinking.pool === 'string' && metaThinking.pool.trim()
+                            ? metaThinking.pool.trim()
+                            : undefined;
+                        try {
+                            metaFormula = await self.metaThinkingManager.processMetaThinkingV3(
+                                poolScope,
+                                queryVector,
+                                userContent,
+                                aiContent || '',
+                                combinedQueryForDisplay,
+                                Boolean(metaThinking.group),
+                                {
+                                    config: self.riverThinkingConfig,
+                                    getObservation: async () => requestCache.riverThinking?.observations?.[0]?.prepared || null,
+                                    getActiveDiaryChunks: async () => Array.isArray(requestCache.v3ActiveDiaryChunks)
+                                        ? requestCache.v3ActiveDiaryChunks
+                                        : [],
+                                    userVector,
+                                    aiVector,
+                                    mainSearchWeights: Array.isArray(self.ragParams?.RAGDiaryPlugin?.mainSearchWeights)
+                                        ? self.ragParams.RAGDiaryPlugin.mainSearchWeights
+                                        : null,
+                                    coreTags: ghostTags,
+                                    historySegments,
+                                    historyAssistantVectors
+                                }
+                            ) ?? null;
+                        } catch (error) {
+                            console.warn('[RAGDiaryPlugin] recallMemory meta thinking unavailable:', error.message);
+                            metaFormula = null;
+                        }
+                    }
+                } finally {
+                    if (requestCache.ownedMemoObservations) {
+                        for (const prepared of requestCache.ownedMemoObservations) {
+                            try {
+                                self.vectorDBManager.releaseMemoObservation(prepared);
+                            } catch (releaseError) {
+                                console.warn('[RAGDiaryPlugin] memo observation release failed:', releaseError.message);
+                            }
+                        }
+                    }
+                }
+
+                // ── 4. 整形：只暴露安全字段，永不泄漏 fullPath/向量/内部签名 ──
+                const shape = (row, index) => {
+                    const item = {
+                        rank: index + 1,
+                        diary: row.diaryName,
+                        file: path.win32.basename(row.sourceFile || row.fullPath || ''),
+                        text: row.text,
+                        score: row.rrf_score ?? row.rerank_score ?? row.score ?? 0,
+                        scoreSource: row.rrf_score != null ? 'rrf' : (row.rerank_score != null ? 'rerank' : 'retrieval')
+                    };
+                    if (typeof row.chunkId === 'string' || typeof row.chunkId === 'number') item.chunkId = row.chunkId;
+                    return item;
+                };
+                const directRows = [];
+                const associateRows = [];
+                for (const row of rawResults) {
+                    if (!row || !row.text) continue;
+                    if (row.source === 'associate') associateRows.push(row);
+                    else directRows.push(row);
+                }
+                const result = { direct: directRows.map((row, index) => shape(row, index)) };
+                if (associate) {
+                    result.associated = associateRows.map((row, index) => ({
+                        ...shape(row, index),
+                        seedCount: row._associateCoCount || 1
+                    }));
+                }
+                if (wantMeta) result.metaFormula = metaFormula ?? null;
+                return result;
+            },
+
 
             // ═══════════════════════════════════════════════════
             // 🌟 V2折叠：FoldingStore 接口（动态 Getter，解决初始化时序竞态）
