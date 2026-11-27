@@ -1006,6 +1006,13 @@ function findServerByIp(ip) {
            return ipInfo.serverName || serverId;
        }
    }
+   // 经隧道/反代连接时请求来源是 127.0.0.1 等地址，节点不会自报它（reportIPAddress 跳过 internal）。
+   // 退一步比对节点 WebSocket 连接的真实来源 IP；仅在恰好一个已连接节点匹配时采用，避免拉错电脑。
+   const byConnection = [];
+   for (const [serverId, info] of distributedServers.entries()) {
+       if (info.ws && info.ws.readyState === WebSocket.OPEN && info.ws.clientIp === ip) byConnection.push(serverId);
+   }
+   if (byConnection.length === 1) return byConnection[0];
    return null;
 }
 
