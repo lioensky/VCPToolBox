@@ -531,3 +531,33 @@ test('Responses native tool image output bridges without losing visual input or 
   assert.deepEqual(outbound.messages[3].content[1], { type: 'image_url', image_url: { url, detail: 'low' } });
   assert.doesNotMatch(JSON.stringify(outbound), /ROLE_DIVIDE|VCP_TOOL_PAYLOAD/);
 });
+
+test('Gemini chat forwards standard text parts in turn order', async t => {
+  let forwarded;
+  const app = createBridgeApp();
+  app.post('/v1/chat/completions', (req, res) => {
+    forwarded = req.body.messages;
+    res.json({ choices: [{ message: { content: 'ok' } }] });
+  });
+  const { server, port } = await listen(app);
+  const oldPort = process.env.PORT;
+  process.env.PORT = String(port);
+  t.after(async () => {
+    if (oldPort === undefined) delete process.env.PORT;
+    else process.env.PORT = oldPort;
+    await close(server);
+  });
+  const { response, body } = await requestJson(`http://127.0.0.1:${port}/v1beta/models/test:generateContent`, {
+    contents: [
+      { role: 'user', parts: [{ text: 'first' }] },
+      { role: 'model', parts: [{ text: 'answer' }] },
+      { role: 'user', parts: [{ text: 'next' }, { text: 'question' }] }
+    ]
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(forwarded, [
+    { role: 'user', content: 'first' }, { role: 'assistant', content: 'answer' },
+    { role: 'user', content: 'next\nquestion' }
+  ]);
+  assert.equal(body.candidates[0].content.parts[0].text, 'ok');
+});

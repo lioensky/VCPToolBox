@@ -1068,11 +1068,12 @@ function applySystemPromptHijack(messages) {
 // 消息提取（各协议 → 统一 messages 数组）
 // ============================================================
 
-function normalizeTextContent(content) {
+function normalizeTextContent(content, geminiParts = false) {
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
         return content.map(item => {
             if (typeof item === 'string') return item;
+            if (geminiParts && item?.type === undefined && item?.thought !== true && typeof item?.text === 'string') return item.text;
             if (item?.type === 'text' && typeof item.text === 'string') return item.text;
             if (item?.type === 'input_text' && typeof item.text === 'string') return item.text;
             if (item?.type === 'output_text' && typeof item.text === 'string') return item.text;
@@ -1270,7 +1271,7 @@ function extractFromGeminiBody(body) {
     if (Array.isArray(body.contents)) {
         for (const c of body.contents) {
             const role = c.role === 'model' ? 'assistant' : 'user';
-            const text = normalizeTextContent(c.parts);
+            const text = normalizeTextContent(c.parts, true);
             if (text) messages.push({ role, content: text });
         }
     }
