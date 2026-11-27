@@ -166,11 +166,11 @@ function attachProtectedToolFields(chatBody, originalBody) {
     }
 
     const toolChoice = normalizeToolChoice(originalBody?.tool_choice, originalBody);
-    if (toolChoice !== undefined) {
+    if (toolChoice !== undefined && (tools.length > 0 || toolChoice === 'none')) {
         chatBody.tool_choice = toolChoice;
     }
 
-    if (typeof originalBody?.parallel_tool_calls === 'boolean') {
+    if (typeof originalBody?.parallel_tool_calls === 'boolean' && tools.length > 0) {
         chatBody.parallel_tool_calls = originalBody.parallel_tool_calls;
     }
 

@@ -430,6 +430,8 @@ export interface OneRingMemoStatusResponse {
   status: OneRingMemoGenerationStatus;
 }
 
+export type BridgeTriState = 'inherit' | 'true' | 'false';
+
 export interface BridgeHijackConfig {
   port: number;
   upstreamUrl: string;
@@ -441,6 +443,8 @@ export interface BridgeHijackConfig {
   modelMap: Record<string, string>;
   debugMode: boolean;
   defaultProfile: string;
+  stripClientTools: boolean;
+  filterHostedVcptools: boolean;
 }
 
 export interface BridgeProfile {
@@ -449,6 +453,8 @@ export interface BridgeProfile {
   systemPrompt: string;
   hijackMode: 'off' | 'replace' | 'prepend' | 'append' | 'merge';
   modelOverride: string;
+  stripClientTools?: BridgeTriState | boolean;
+  filterHostedVcptools?: BridgeTriState | boolean;
   description: string;
 }
 

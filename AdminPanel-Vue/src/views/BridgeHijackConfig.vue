@@ -81,6 +81,8 @@
                   </UiSelect>
                 </UiField>
 
+                <UiSettingsSwitchRow v-model="draft.stripClientTools" label="剥离客户端工具（交由后端 vcptools 托管）" :description="descriptions.stripClientTools || '剥离下游 IDE 自带 tools/tool_choice 并将历史客户端工具块展平为文本，配合主服 VCP_FC_DEBUG=true 强制使用后端 vcptools。'" />
+                <UiSettingsSwitchRow v-model="draft.filterHostedVcptools" label="过滤后端托管 vcptools 展示帧" :description="descriptions.filterHostedVcptools || '托管模式下在 6003 流式出口剥离仅面向 VChat 展示的 vcptools 帧，防止外部 IDE 误报未知本地工具。'" />
                 <UiSettingsSwitchRow v-model="draft.debugMode" label="开启调试日志" :description="descriptions.debugMode" />
                 <UiSettingsSwitchRow v-model="showKey" label="显示 API Key" description="仅影响当前页面输入框显示方式，不会修改配置语义。" />
               </UiSettingsForm>
@@ -200,6 +202,7 @@
                       <span>{{ profileDraft.hijackMode || 'off' }}</span>
                       <span v-if="selectedProfile.name === activeDefault">默认路由</span>
                       <span v-if="profileDraft.modelOverride">模型覆盖</span>
+                      <span v-if="profileDraft.stripClientTools === 'true'">剥离客户端工具</span>
                     </div>
                     <UiButton
                       variant="outline"
@@ -235,6 +238,20 @@
                 </UiField>
                 <UiField label="模型覆盖（留空则使用全局 defaultModel）" class="config-field">
                   <UiInput v-model="profileDraft.modelOverride" type="text" placeholder="" />
+                </UiField>
+                <UiField label="客户端工具剥离（vcptools 托管控制）" class="config-field">
+                  <UiSelect v-model="profileDraft.stripClientTools">
+                    <option value="inherit">inherit：跟随全局设置</option>
+                    <option value="true">true：强制剥离客户端工具</option>
+                    <option value="false">false：保留客户端工具透传</option>
+                  </UiSelect>
+                </UiField>
+                <UiField label="托管 vcptools 展示帧过滤" class="config-field">
+                  <UiSelect v-model="profileDraft.filterHostedVcptools">
+                    <option value="inherit">inherit：跟随全局设置</option>
+                    <option value="true">true：过滤展示帧（适配外部 IDE）</option>
+                    <option value="false">false：保留展示帧（适配 VChat）</option>
+                  </UiSelect>
                 </UiField>
                 <UiField label="描述" class="config-field" data-settings-span="full">
                   <UiTextarea v-model="profileDraft.description" rows="2" />
@@ -311,7 +328,7 @@ import UiSettingsForm from '@/components/ui/UiSettingsForm.vue'
 import UiSettingsSwitchRow from '@/components/ui/UiSettingsSwitchRow.vue'
 import UiTextarea from '@/components/ui/UiTextarea.vue'
 import { systemApi } from '@/api'
-import type { BridgeHijackConfig, BridgeProfile } from '@/types/api.system'
+import type { BridgeHijackConfig, BridgeProfile, BridgeTriState } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 
 // ─── Global Config State ─────────────────────────────────────────────────────
@@ -327,6 +344,8 @@ const defaultConfig: BridgeHijackConfig = {
   modelMap: {},
   debugMode: false,
   defaultProfile: '',
+  stripClientTools: false,
+  filterHostedVcptools: true,
 }
 
 const draft = ref<BridgeHijackConfig>({ ...defaultConfig })
@@ -357,6 +376,8 @@ const normalizedDraft = computed<BridgeHijackConfig>(() => ({
   modelMap: parseModelMapText(modelMapText.value),
   debugMode: Boolean(draft.value.debugMode),
   defaultProfile: String(draft.value.defaultProfile || ''),
+  stripClientTools: Boolean(draft.value.stripClientTools),
+  filterHostedVcptools: draft.value.filterHostedVcptools !== false,
 }))
 
 const jsonPreview = computed(() => JSON.stringify(normalizedDraft.value, null, 2))
@@ -458,6 +479,8 @@ function applyConfig(config: BridgeHijackConfig) {
     modelMap: config.modelMap || {},
     debugMode: Boolean(config.debugMode),
     defaultProfile: config.defaultProfile || '',
+    stripClientTools: Boolean(config.stripClientTools),
+    filterHostedVcptools: config.filterHostedVcptools !== false,
   }
   modelMapText.value = formatModelMap(draft.value.modelMap)
 }
@@ -508,19 +531,34 @@ async function copyJsonPreview() {
 
 // ─── Profiles State ──────────────────────────────────────────────────────────
 
+type ProfileFormDraft = Omit<BridgeProfile, 'stripClientTools' | 'filterHostedVcptools'> & {
+  stripClientTools: BridgeTriState
+  filterHostedVcptools: BridgeTriState
+}
+
 const profiles = ref<BridgeProfile[]>([])
 const activeDefault = ref('')
 const selectedProfile = ref<BridgeProfile | null>(null)
-const profileDraft = ref<BridgeProfile>({ name: '', displayName: '', systemPrompt: '', hijackMode: 'off', modelOverride: '', description: '' })
+const profileDraft = ref<ProfileFormDraft>({ name: '', displayName: '', systemPrompt: '', hijackMode: 'off', modelOverride: '', stripClientTools: 'inherit', filterHostedVcptools: 'inherit', description: '' })
 const profilesLoading = ref(false)
 const profileSaving = ref(false)
 const showCreateDialog = ref(false)
 const newProfileName = ref('')
 const newProfileDisplayName = ref('')
 
+function normalizeProfileTriState(val: unknown): 'inherit' | 'true' | 'false' {
+  if (val === true || val === 'true') return 'true'
+  if (val === false || val === 'false') return 'false'
+  return 'inherit'
+}
+
 function selectProfile(p: BridgeProfile) {
   selectedProfile.value = p
-  profileDraft.value = { ...p }
+  profileDraft.value = {
+    ...p,
+    stripClientTools: normalizeProfileTriState(p.stripClientTools),
+    filterHostedVcptools: normalizeProfileTriState(p.filterHostedVcptools),
+  }
 }
 
 async function loadProfiles() {

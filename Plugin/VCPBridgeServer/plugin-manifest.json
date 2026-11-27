@@ -18,7 +18,9 @@
     "BRIDGE_UPSTREAM_TYPE": { "type": "string", "description": "上游 API 类型：chat / anthropic / gemini（默认 chat）" },
     "BRIDGE_MODEL": { "type": "string", "description": "默认模型名（下游未指定时使用）" },
     "BRIDGE_SYSTEM_PROMPT": { "type": "string", "description": "注入的 System Prompt（支持 .txt 文件名从插件目录加载）" },
-    "BRIDGE_HIJACK_MODE": { "type": "string", "description": "劫持模式：replace（完全替换）/ prepend（前置追加）/ append（后置追加）/ off（不劫持）" },
-    "BRIDGE_MODEL_MAP": { "type": "string", "description": "模型名映射，格式：alias1:target1,alias2:target2" }
+    "BRIDGE_HIJACK_MODE": { "type": "string", "description": "劫持模式：replace（完全替换）/ prepend（前置追加）/ append（后置追加）/ merge（合并置顶）/ off（不劫持）" },
+    "BRIDGE_MODEL_MAP": { "type": "string", "description": "模型名映射，格式：alias1:target1,alias2:target2" },
+    "BRIDGE_STRIP_CLIENT_TOOLS": { "type": "boolean", "description": "是否剥离下游客户端自带工具声明以强制交由主服 vcptools 托管（默认 false）" },
+    "BRIDGE_FILTER_HOSTED_VCPTOOLS": { "type": "boolean", "description": "托管模式下是否自动过滤仅面向 VChat 展示的 vcptools 流式帧（默认 true）" }
   }
 }

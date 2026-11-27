@@ -270,7 +270,8 @@ module.exports = function() {
 
     router.put('/bridge-config', async (req, res) => {
         try {
-            const nextConfig = normalizeBridgeConfig(req.body || {});
+            const currentConfig = readBridgeConfig();
+            const nextConfig = normalizeBridgeConfig({ ...currentConfig, ...(req.body || {}) });
             const saved = saveBridgeConfig(nextConfig);
             res.json({
                 success: true,
