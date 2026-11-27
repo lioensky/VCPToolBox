@@ -6,7 +6,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const chokidar = require('chokidar');
-const { CONFIG_PATH, PROFILES_DIR, migrateBridgeConfig, normalizeBridgeConfig, parseModelMap, profileExists, readProfile, listProfiles } = require('./bridgeConfig');
+const { CONFIG_PATH, PROFILES_DIR, migrateBridgeConfig, normalizeBridgeConfig, resolveTriState, parseModelMap, profileExists, readProfile, listProfiles } = require('./bridgeConfig');
 
 let server = null;
 let configWatcher = null;
@@ -78,6 +78,9 @@ function applyBridgeRuntimeConfig(bridgeConfig, hostConfig = {}, isInitial = fal
         hijackMode: normalized.hijackMode,
         modelMap: parseModelMap(normalized.modelMap),
         debugMode: normalized.debugMode,
+        defaultProfile: normalized.defaultProfile,
+        stripClientTools: normalized.stripClientTools,
+        filterHostedVcptools: normalized.filterHostedVcptools,
         basePath: hostConfig.PROJECT_BASE_PATH || __dirname,
         configPath: CONFIG_PATH
     };
@@ -194,6 +197,7 @@ function toOpenAiChatTool(tool) {
             function: {
                 name: tool.function.name,
                 ...(tool.function.description && { description: tool.function.description }),
+                ...(typeof tool.function.strict === 'boolean' && { strict: tool.function.strict }),
                 parameters: normalizeToolParameters(tool.function.parameters || tool.function.input_schema)
             }
         };
@@ -205,6 +209,7 @@ function toOpenAiChatTool(tool) {
             function: {
                 name: tool.name,
                 ...(tool.description && { description: tool.description }),
+                ...(typeof tool.strict === 'boolean' && { strict: tool.strict }),
                 parameters: normalizeToolParameters(tool.parameters || tool.input_schema || tool.schema)
             }
         };
@@ -280,21 +285,25 @@ function normalizeToolChoice(toolChoice, body) {
     return undefined;
 }
 
-function attachProtectedChatToolFields(targetBody, sourceBody) {
+function attachProtectedChatToolFields(targetBody, sourceBody, { stripClientTools = false } = {}) {
+    if (stripClientTools) return targetBody;
     const tools = extractProtectedTools(sourceBody);
     if (tools.length > 0) targetBody.tools = tools;
 
     const toolChoice = normalizeToolChoice(sourceBody?.tool_choice, sourceBody);
-    if (toolChoice !== undefined) targetBody.tool_choice = toolChoice;
+    if (toolChoice !== undefined && (tools.length > 0 || toolChoice === 'none')) {
+        targetBody.tool_choice = toolChoice;
+    }
 
-    if (typeof sourceBody?.parallel_tool_calls === 'boolean') {
+    if (typeof sourceBody?.parallel_tool_calls === 'boolean' && tools.length > 0) {
         targetBody.parallel_tool_calls = sourceBody.parallel_tool_calls;
     }
 
     return targetBody;
 }
 
-function attachProtectedAnthropicToolFields(targetBody, sourceBody) {
+function attachProtectedAnthropicToolFields(targetBody, sourceBody, { stripClientTools = false } = {}) {
+    if (stripClientTools) return targetBody;
     const tools = extractProtectedTools(sourceBody).map(tool => ({
         name: tool.function.name,
         ...(tool.function.description && { description: tool.function.description }),
@@ -302,12 +311,18 @@ function attachProtectedAnthropicToolFields(targetBody, sourceBody) {
     }));
 
     if (tools.length > 0) targetBody.tools = tools;
-    if (sourceBody?.tool_choice) targetBody.tool_choice = sourceBody.tool_choice;
+    const tcType = typeof sourceBody?.tool_choice === 'string'
+        ? sourceBody.tool_choice
+        : sourceBody?.tool_choice?.type;
+    if (sourceBody?.tool_choice && (tools.length > 0 || tcType === 'none')) {
+        targetBody.tool_choice = sourceBody.tool_choice;
+    }
 
     return targetBody;
 }
 
-function attachProtectedGeminiToolFields(targetBody, sourceBody) {
+function attachProtectedGeminiToolFields(targetBody, sourceBody, { stripClientTools = false } = {}) {
+    if (stripClientTools) return targetBody;
     const functionDeclarations = extractProtectedTools(sourceBody).map(tool => ({
         name: tool.function.name,
         ...(tool.function.description && { description: tool.function.description }),
@@ -318,7 +333,8 @@ function attachProtectedGeminiToolFields(targetBody, sourceBody) {
         targetBody.tools = [{ functionDeclarations }];
     }
 
-    if (sourceBody?.toolConfig) {
+    const mode = String(sourceBody?.toolConfig?.functionCallingConfig?.mode || '').toUpperCase();
+    if (sourceBody?.toolConfig && (functionDeclarations.length > 0 || mode === 'NONE')) {
         targetBody.toolConfig = sourceBody.toolConfig;
     }
 
@@ -448,27 +464,294 @@ async function* iterateUpstreamSseJson(readableStream) {
             if (json) yield json;
         }
     }
+
+    buffer += decoder.decode();
+    const trailing = buffer.trim();
+    if (trailing.startsWith('data:')) {
+        const data = trailing.slice(5).trim();
+        if (data && data !== '[DONE]') {
+            const json = safeJsonParse(data);
+            if (json) yield json;
+        }
+    }
+}
+
+function isHostedVcptoolsChunk(eventJson) {
+    const choices = eventJson?.choices;
+    if (!Array.isArray(choices) || choices.length === 0) return false;
+    let sawVcptools = false;
+    for (const choice of choices) {
+        if (!choice || choice.finish_reason != null) return false;
+        const delta = choice.delta || choice.message;
+        if (!delta || typeof delta !== 'object') return false;
+        if (typeof delta.content === 'string' && delta.content.length > 0) return false;
+        if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) return false;
+        if (typeof delta.reasoning === 'string' && delta.reasoning.length > 0) return false;
+        if (!Array.isArray(delta.tool_calls) || delta.tool_calls.length === 0) return false;
+        if (!delta.tool_calls.every(tc => tc?.function?.name === 'vcptools')) return false;
+        sawVcptools = true;
+    }
+    return sawVcptools;
+}
+
+async function pipeChatStreamFilteringHostedVcptools(res, readableStream) {
+    const decoder = new TextDecoder('utf-8');
+    const MAX_EVENT_BUFFER_BYTES = 8 * 1024 * 1024;
+    let buffer = '';
+    let eventLines = [];
+
+    const flushEventBlock = (includeTrailingBlank) => {
+        if (res.destroyed || res.writableEnded) {
+            eventLines = [];
+            return;
+        }
+        if (eventLines.length === 0) {
+            if (includeTrailingBlank) res.write('\n');
+            return;
+        }
+
+        const dataParts = [];
+        for (const l of eventLines) {
+            const trimmed = l.trim();
+            if (trimmed.startsWith('data:')) {
+                dataParts.push(trimmed.slice(5).trimStart());
+            }
+        }
+        const joinedData = dataParts.join('\n').trim();
+        if (joinedData && joinedData !== '[DONE]') {
+            const parsed = safeJsonParse(joinedData);
+            if (parsed && isHostedVcptoolsChunk(parsed)) {
+                eventLines = [];
+                if (parsed.usage && typeof parsed.usage === 'object') {
+                    const usageOnly = {
+                        ...parsed,
+                        choices: (parsed.choices || []).map(c => ({
+                            ...c,
+                            ...(c.delta ? { delta: {} } : {}),
+                            ...(c.message ? { message: { role: 'assistant', content: '' } } : {})
+                        }))
+                    };
+                    res.write(`data: ${JSON.stringify(usageOnly)}\n${includeTrailingBlank ? '\n' : ''}`);
+                }
+                return;
+            }
+        }
+
+        const out = eventLines.join('\n') + '\n' + (includeTrailingBlank ? '\n' : '');
+        eventLines = [];
+        res.write(out);
+    };
+
+    for await (const chunk of readableStream) {
+        if (res.destroyed || res.writableEnded) break;
+        buffer += decoder.decode(chunk, { stream: true });
+
+        if (buffer.length > MAX_EVENT_BUFFER_BYTES && buffer.indexOf('\n') === -1) {
+            if (!res.destroyed && !res.writableEnded) res.write(buffer);
+            buffer = '';
+            continue;
+        }
+
+        while (true) {
+            const idx = buffer.indexOf('\n');
+            if (idx === -1) break;
+            const line = buffer.slice(0, idx).replace(/\r$/, '');
+            buffer = buffer.slice(idx + 1);
+            if (line === '') {
+                flushEventBlock(true);
+            } else {
+                eventLines.push(line);
+                if (eventLines.length > 4096) flushEventBlock(false);
+            }
+        }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.length > 0) {
+        const tailLine = buffer.replace(/\r$/, '');
+        if (tailLine === '') {
+            flushEventBlock(true);
+        } else {
+            eventLines.push(tailLine);
+            flushEventBlock(false);
+        }
+    } else if (eventLines.length > 0) {
+        flushEventBlock(false);
+    }
+}
+
+function extractEncryptedReasoningFromMessage(message) {
+    if (!message || typeof message !== 'object') return '';
+    if (typeof message.encrypted_content === 'string' && message.encrypted_content) {
+        return message.encrypted_content;
+    }
+    if (Array.isArray(message.reasoning_details)) {
+        for (const entry of message.reasoning_details) {
+            if (entry?.type === 'reasoning.encrypted_content' && typeof entry.data === 'string' && entry.data) {
+                return entry.data;
+            }
+        }
+    }
+    return '';
 }
 
 function buildResponsesOutput(raw, apiType, fallbackModel) {
     const text = extractTextFromProtocolResponse(raw, apiType);
     const responsePayload = buildBaseResponsesEnvelope(raw?.model || fallbackModel);
     responsePayload.status = 'completed';
-    responsePayload.output[0].content[0].text = text;
-    responsePayload.output_text = text;
     responsePayload.usage = buildResponsesUsage(extractUsageFromProtocolResponse(raw, apiType));
+    responsePayload.output_text = text;
+
+    if (apiType !== 'chat') {
+        responsePayload.output[0].content[0].text = text;
+        return responsePayload;
+    }
+
+    const message = raw?.choices?.[0]?.message || {};
+    const reasoningText = typeof message.reasoning_content === 'string'
+        ? message.reasoning_content
+        : (typeof message.reasoning === 'string' ? message.reasoning : '');
+    const encryptedContent = extractEncryptedReasoningFromMessage(message);
+    const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+        ? message.tool_calls
+        : (message.function_call ? [{ id: message.function_call.id, function: message.function_call }] : []);
+    const output = [];
+
+    if (reasoningText || encryptedContent) {
+        output.push({
+            id: `rs_${Date.now()}_0`,
+            type: 'reasoning',
+            status: 'completed',
+            summary: reasoningText ? [{ type: 'summary_text', text: reasoningText }] : [],
+            ...(encryptedContent ? { encrypted_content: encryptedContent } : {})
+        });
+    }
+    if (text) {
+        output.push({
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text, annotations: [] }]
+        });
+    }
+    toolCalls.forEach((tc, index) => {
+        const fn = tc?.function || {};
+        const callId = tc?.id || `call_${Date.now()}_${index}`;
+        const rawArgs = fn.arguments ?? tc?.arguments ?? '';
+        output.push({
+            id: `fc_${callId}`,
+            type: 'function_call',
+            status: 'completed',
+            call_id: callId,
+            name: fn.name || tc?.name || '',
+            arguments: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs)
+        });
+    });
+    if (output.length === 0) {
+        output.push({
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '', annotations: [] }]
+        });
+    }
+    responsePayload.output = output;
     return responsePayload;
 }
 
-async function sendResponsesStreamFromProtocol(res, upstreamResponse, { model, apiType }) {
+async function sendResponsesStreamFromProtocol(res, upstreamResponse, { model, apiType, filterHostedVcptools = false }) {
     res.status(upstreamResponse.status);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
 
     const responsePayload = buildBaseResponsesEnvelope(model);
-    const itemId = responsePayload.output[0].id;
+    responsePayload.output = [];
+    const responseId = responsePayload.id;
     let finalUsage = null;
+    let textItem = null;
+    let reasoningItem = null;
+    let reasoningText = '';
+    let reasoningEncrypted = '';
+    const functionCalls = new Map();
+
+    const ensureTextItem = () => {
+        if (textItem) return textItem;
+        textItem = {
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '', annotations: [] }]
+        };
+        responsePayload.output.push(textItem);
+        const outputIndex = responsePayload.output.length - 1;
+        writeResponsesSseEvent(res, 'response.output_item.added', {
+            type: 'response.output_item.added',
+            output_index: outputIndex,
+            item: { id: textItem.id, type: 'message', role: 'assistant', content: [] }
+        });
+        writeResponsesSseEvent(res, 'response.content_part.added', {
+            type: 'response.content_part.added',
+            item_id: textItem.id,
+            output_index: outputIndex,
+            content_index: 0,
+            part: { type: 'output_text', text: '' }
+        });
+        return textItem;
+    };
+
+    const ensureReasoningItem = () => {
+        if (reasoningItem) return reasoningItem;
+        reasoningItem = {
+            id: `rs_${Date.now()}_${responsePayload.output.length}`,
+            type: 'reasoning',
+            status: 'in_progress',
+            summary: [{ type: 'summary_text', text: '' }]
+        };
+        responsePayload.output.push(reasoningItem);
+        const outputIndex = responsePayload.output.length - 1;
+        writeResponsesSseEvent(res, 'response.output_item.added', {
+            type: 'response.output_item.added',
+            output_index: outputIndex,
+            item: { ...reasoningItem, summary: [] }
+        });
+        writeResponsesSseEvent(res, 'response.reasoning_summary_part.added', {
+            type: 'response.reasoning_summary_part.added',
+            item_id: reasoningItem.id,
+            output_index: outputIndex,
+            summary_index: 0,
+            part: { type: 'summary_text', text: '' }
+        });
+        return reasoningItem;
+    };
+
+    const ensureFunctionCall = (index, callDelta) => {
+        let state = functionCalls.get(index);
+        const fn = callDelta?.function || {};
+        const callId = callDelta?.id || state?.callId || `call_${responseId}_${index}`;
+        if (!state) {
+            const item = {
+                id: `fc_${callId}`,
+                type: 'function_call',
+                status: 'in_progress',
+                call_id: callId,
+                name: fn.name || callDelta?.name || '',
+                arguments: ''
+            };
+            state = { index, item, callId, arguments: '' };
+            functionCalls.set(index, state);
+            responsePayload.output.push(item);
+            writeResponsesSseEvent(res, 'response.output_item.added', {
+                type: 'response.output_item.added',
+                output_index: responsePayload.output.length - 1,
+                item: { ...item }
+            });
+        }
+        if (fn.name || callDelta?.name) {
+            state.item.name = fn.name || callDelta.name;
+        }
+        return state;
+    };
 
     writeResponsesSseEvent(res, 'response.created', {
         type: 'response.created',
@@ -482,29 +765,82 @@ async function sendResponsesStreamFromProtocol(res, upstreamResponse, { model, a
         }
     });
 
-    writeResponsesSseEvent(res, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        output_index: 0,
-        item: { id: itemId, type: 'message', role: 'assistant', content: [] }
-    });
-
-    writeResponsesSseEvent(res, 'response.content_part.added', {
-        type: 'response.content_part.added',
-        item_id: itemId,
-        output_index: 0,
-        content_index: 0,
-        part: { type: 'output_text', text: '' }
-    });
-
     try {
         for await (const eventJson of iterateUpstreamSseJson(upstreamResponse.body)) {
+            if (eventJson?.error) {
+                const errMsg = typeof eventJson.error === 'string'
+                    ? eventJson.error
+                    : (eventJson.error.message || JSON.stringify(eventJson.error));
+                throw new Error(errMsg);
+            }
+
+            if (filterHostedVcptools && isHostedVcptoolsChunk(eventJson)) {
+                const u = extractStreamUsageByProtocol(eventJson, apiType);
+                if (u) finalUsage = u;
+                continue;
+            }
+
+            if (apiType === 'chat') {
+                const choice = eventJson?.choices?.[0];
+                const encChunk = extractEncryptedReasoningFromMessage(choice?.delta)
+                    || extractEncryptedReasoningFromMessage(choice?.message)
+                    || extractEncryptedReasoningFromMessage(eventJson);
+                if (encChunk && !reasoningEncrypted) {
+                    reasoningEncrypted = encChunk;
+                    ensureReasoningItem();
+                }
+
+                const rDelta = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+                if (typeof rDelta === 'string' && rDelta.length > 0) {
+                    const item = ensureReasoningItem();
+                    reasoningText += rDelta;
+                    item.summary[0].text = reasoningText;
+                    writeResponsesSseEvent(res, 'response.reasoning_summary_text.delta', {
+                        type: 'response.reasoning_summary_text.delta',
+                        item_id: item.id,
+                        output_index: responsePayload.output.indexOf(item),
+                        summary_index: 0,
+                        delta: rDelta
+                    });
+                }
+
+                const deltaTcList = choice?.delta?.tool_calls;
+                const msgTcList = !deltaTcList && Array.isArray(choice?.message?.tool_calls)
+                    ? choice.message.tool_calls
+                    : null;
+                const tcList = deltaTcList || msgTcList;
+                if (Array.isArray(tcList) && tcList.length > 0) {
+                    for (const [pos, tc] of tcList.entries()) {
+                        const index = Number.isInteger(tc?.index) ? tc.index : pos;
+                        const state = ensureFunctionCall(index, tc);
+                        const fn = tc?.function || {};
+                        const argDelta = typeof fn.arguments === 'string'
+                            ? fn.arguments
+                            : (typeof tc?.arguments === 'string' ? tc.arguments : '');
+                        if (argDelta) {
+                            if (msgTcList && state.arguments.length > 0) continue;
+                            state.arguments += argDelta;
+                            state.item.arguments = state.arguments;
+                            writeResponsesSseEvent(res, 'response.function_call_arguments.delta', {
+                                type: 'response.function_call_arguments.delta',
+                                item_id: state.item.id,
+                                output_index: responsePayload.output.indexOf(state.item),
+                                delta: argDelta
+                            });
+                        }
+                    }
+                }
+            }
+
             const delta = extractStreamDeltaByProtocol(eventJson, apiType);
             if (typeof delta === 'string' && delta.length > 0) {
+                const item = ensureTextItem();
                 responsePayload.output_text += delta;
+                item.content[0].text = responsePayload.output_text;
                 writeResponsesSseEvent(res, 'response.output_text.delta', {
                     type: 'response.output_text.delta',
-                    item_id: itemId,
-                    output_index: 0,
+                    item_id: item.id,
+                    output_index: responsePayload.output.indexOf(item),
                     content_index: 0,
                     delta
                 });
@@ -515,39 +851,78 @@ async function sendResponsesStreamFromProtocol(res, upstreamResponse, { model, a
             if (eventJson?.model) responsePayload.model = eventJson.model;
         }
 
+        if (responsePayload.output.length === 0) ensureTextItem();
+
+        for (const item of responsePayload.output) {
+            const outputIndex = responsePayload.output.indexOf(item);
+            if (item === reasoningItem) {
+                item.summary[0].text = reasoningText;
+                if (reasoningEncrypted) item.encrypted_content = reasoningEncrypted;
+                item.status = 'completed';
+                writeResponsesSseEvent(res, 'response.reasoning_summary_text.done', {
+                    type: 'response.reasoning_summary_text.done',
+                    item_id: item.id,
+                    output_index: outputIndex,
+                    summary_index: 0,
+                    text: reasoningText
+                });
+                writeResponsesSseEvent(res, 'response.reasoning_summary_part.done', {
+                    type: 'response.reasoning_summary_part.done',
+                    item_id: item.id,
+                    output_index: outputIndex,
+                    summary_index: 0,
+                    part: { type: 'summary_text', text: reasoningText }
+                });
+            } else if (item === textItem) {
+                item.content[0].text = responsePayload.output_text;
+                writeResponsesSseEvent(res, 'response.output_text.done', {
+                    type: 'response.output_text.done',
+                    item_id: item.id,
+                    output_index: outputIndex,
+                    content_index: 0,
+                    text: responsePayload.output_text
+                });
+                writeResponsesSseEvent(res, 'response.content_part.done', {
+                    type: 'response.content_part.done',
+                    item_id: item.id,
+                    output_index: outputIndex,
+                    content_index: 0,
+                    part: { type: 'output_text', text: responsePayload.output_text }
+                });
+            } else {
+                const state = Array.from(functionCalls.values()).find(c => c.item === item);
+                if (state) {
+                    state.item.arguments = state.arguments;
+                    state.item.status = 'completed';
+                    writeResponsesSseEvent(res, 'response.function_call_arguments.done', {
+                        type: 'response.function_call_arguments.done',
+                        item_id: state.item.id,
+                        output_index: outputIndex,
+                        arguments: state.arguments
+                    });
+                }
+            }
+            writeResponsesSseEvent(res, 'response.output_item.done', {
+                type: 'response.output_item.done',
+                output_index: outputIndex,
+                item
+            });
+        }
+
         responsePayload.status = 'completed';
-        responsePayload.output[0].content[0].text = responsePayload.output_text;
         if (finalUsage) responsePayload.usage = buildResponsesUsage(finalUsage);
-
-        writeResponsesSseEvent(res, 'response.output_text.done', {
-            type: 'response.output_text.done',
-            item_id: itemId,
-            output_index: 0,
-            content_index: 0,
-            text: responsePayload.output_text
-        });
-
-        writeResponsesSseEvent(res, 'response.content_part.done', {
-            type: 'response.content_part.done',
-            item_id: itemId,
-            output_index: 0,
-            content_index: 0,
-            part: { type: 'output_text', text: responsePayload.output_text }
-        });
-
-        writeResponsesSseEvent(res, 'response.output_item.done', {
-            type: 'response.output_item.done',
-            output_index: 0,
-            item: responsePayload.output[0]
-        });
 
         writeResponsesSseEvent(res, 'response.completed', {
             type: 'response.completed',
             response: responsePayload
         });
     } catch (error) {
+        if (textItem) textItem.content[0].text = responsePayload.output_text;
+        for (const state of functionCalls.values()) {
+            state.item.arguments = state.arguments;
+            state.item.status = 'incomplete';
+        }
         responsePayload.status = 'failed';
-        responsePayload.output[0].content[0].text = responsePayload.output_text;
         responsePayload.error = {
             code: 'vcp_bridge_stream_error',
             message: error.message || 'VCP bridge stream failed before completion.'
@@ -668,7 +1043,7 @@ function applySystemPromptHijackWithConfig(messages, systemPrompt, hijackMode) {
                 injected.content,
                 ...result
                     .filter(m => m.role === 'system')
-                    .map(m => m.content)
+                    .map(m => normalizeTextContent(m.content))
                     .filter(content => typeof content === 'string' && content.trim())
             ];
             const mergedSystem = { role: 'system', content: systemContents.join('\n\n') };
@@ -686,51 +1061,7 @@ function applySystemPromptHijackWithConfig(messages, systemPrompt, hijackMode) {
 // ============================================================
 
 function applySystemPromptHijack(messages) {
-    if (!runtimeConfig.systemPrompt || runtimeConfig.hijackMode === 'off') {
-        return messages;
-    }
-
-    const result = [...messages];
-    const injected = { role: 'system', content: runtimeConfig.systemPrompt };
-
-    switch (runtimeConfig.hijackMode) {
-        case 'replace':
-            // 移除所有 system 消息，替换为我们的
-            const nonSystem = result.filter(m => m.role !== 'system');
-            return [injected, ...nonSystem];
-
-        case 'prepend':
-            // 在第一条 system 消息之前插入
-            return [injected, ...result];
-
-        case 'append': {
-            // 在最后一条 system 消息之后插入
-            const lastSystemIdx = result.reduce((acc, m, i) => m.role === 'system' ? i : acc, -1);
-            if (lastSystemIdx >= 0) {
-                result.splice(lastSystemIdx + 1, 0, injected);
-            } else {
-                result.unshift(injected);
-            }
-            return result;
-        }
-
-        case 'merge': {
-            // 合并所有 system 消息为一条置顶 system；注入提示词优先，然后按原消息顺序拼接已有 system。
-            const systemContents = [
-                injected.content,
-                ...result
-                    .filter(m => m.role === 'system')
-                    .map(m => m.content)
-                    .filter(content => typeof content === 'string' && content.trim())
-            ];
-            const mergedSystem = { role: 'system', content: systemContents.join('\n\n') };
-            const nonSystem = result.filter(m => m.role !== 'system');
-            return [mergedSystem, ...nonSystem];
-        }
-
-        default:
-            return result;
-    }
+    return applySystemPromptHijackWithConfig(messages, runtimeConfig.systemPrompt, runtimeConfig.hijackMode);
 }
 
 // ============================================================
@@ -751,17 +1082,161 @@ function normalizeTextContent(content) {
     return '';
 }
 
-function extractFromResponsesInput(input) {
-    if (typeof input === 'string') return [{ role: 'user', content: input }];
-    if (!Array.isArray(input)) return [];
+function resolveImageUrlField(imageField, fallbackDetail) {
+    if (typeof imageField === 'string' && imageField.trim()) {
+        return { url: imageField.trim(), ...(fallbackDetail ? { detail: fallbackDetail } : {}) };
+    }
+    if (imageField && typeof imageField === 'object' && typeof imageField.url === 'string' && imageField.url.trim()) {
+        const detail = imageField.detail || fallbackDetail;
+        return { url: imageField.url.trim(), ...(detail ? { detail } : {}) };
+    }
+    return null;
+}
+
+function normalizeResponsesOutputValue(output) {
+    if (typeof output === 'string') return output;
+    if (!Array.isArray(output) || !output.some(part => part?.type === 'input_image' || part?.type === 'image_url')) {
+        return output === undefined ? '' : JSON.stringify(output);
+    }
+    const parts = [];
+    for (const part of output) {
+        if (part?.type === 'input_image' || part?.type === 'image_url') {
+            const img = resolveImageUrlField(part.image_url ?? part.url, part.detail);
+            if (img) parts.push({ type: 'image_url', image_url: img });
+            continue;
+        }
+        parts.push({
+            type: 'text',
+            text: (part?.type === 'input_text' || part?.type === 'text') && typeof part.text === 'string'
+                ? part.text
+                : JSON.stringify(part)
+        });
+    }
+    return parts;
+}
+
+function normalizeResponsesMessageContent(rawContent) {
+    if (typeof rawContent === 'string') return rawContent;
+    if (!Array.isArray(rawContent)) return '';
+    const hasImage = rawContent.some(part => part?.type === 'input_image' || part?.type === 'image_url');
+    if (!hasImage) return normalizeTextContent(rawContent);
+
+    const multimodal = [];
+    for (const part of rawContent) {
+        if (!part) continue;
+        if (typeof part === 'string') {
+            multimodal.push({ type: 'text', text: part });
+            continue;
+        }
+        if (part.type === 'input_image' || part.type === 'image_url') {
+            const img = resolveImageUrlField(part.image_url ?? part.url, part.detail);
+            if (img) multimodal.push({ type: 'image_url', image_url: img });
+            continue;
+        }
+        if ((part.type === 'input_text' || part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string') {
+            multimodal.push({ type: 'text', text: part.text });
+        }
+    }
+    return multimodal.length > 0 ? multimodal : '';
+}
+
+function extractFromResponsesInput(input, instructions) {
     const messages = [];
+    if (typeof instructions === 'string' && instructions.trim().length > 0) {
+        messages.push({ role: 'system', content: instructions });
+    }
+    if (typeof input === 'string') {
+        messages.push({ role: 'user', content: input });
+        return messages;
+    }
+    if (!Array.isArray(input)) return messages;
+
+    let pendingCalls = [];
+    let pendingReasoning = [];
+
+    const flushReasoning = () => {
+        if (!pendingReasoning.length) return;
+        const text = pendingReasoning
+            .map(item => (Array.isArray(item.summary) ? item.summary.map(s => s?.text || '').join('') : (item.text || '')))
+            .filter(Boolean)
+            .join('\n');
+        const encrypted = pendingReasoning
+            .map(item => item.encrypted_content)
+            .filter(enc => typeof enc === 'string' && enc.length > 0);
+        const msg = { role: 'assistant', content: null };
+        if (text) msg.reasoning_content = text;
+        if (encrypted.length > 0) {
+            msg.reasoning_details = encrypted.map(data => ({ type: 'reasoning.encrypted_content', data }));
+        }
+        messages.push(msg);
+        pendingReasoning = [];
+    };
+
+    const flushCalls = () => {
+        if (!pendingCalls.length) return;
+        const text = pendingReasoning
+            .map(item => (Array.isArray(item.summary) ? item.summary.map(s => s?.text || '').join('') : (item.text || '')))
+            .filter(Boolean)
+            .join('\n');
+        const encrypted = pendingReasoning
+            .map(item => item.encrypted_content)
+            .filter(enc => typeof enc === 'string' && enc.length > 0);
+        messages.push({
+            role: 'assistant',
+            content: null,
+            ...(text ? { reasoning_content: text } : {}),
+            ...(encrypted.length > 0
+                ? { reasoning_details: encrypted.map(data => ({ type: 'reasoning.encrypted_content', data })) }
+                : {}),
+            tool_calls: pendingCalls
+        });
+        pendingCalls = [];
+        pendingReasoning = [];
+    };
+
     for (const item of input) {
         if (!item || typeof item !== 'object') continue;
+        if (item.type === 'reasoning') {
+            pendingReasoning.push(item);
+            continue;
+        }
+        if (item.type === 'function_call') {
+            const callId = item.call_id || item.id || `call_${Date.now()}_${pendingCalls.length}`;
+            const rawArgs = item.arguments;
+            pendingCalls.push({
+                id: callId,
+                type: 'function',
+                function: {
+                    name: item.name || '',
+                    arguments: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs ?? '')
+                }
+            });
+            continue;
+        }
+        if (item.type === 'function_call_output') {
+            flushCalls();
+            flushReasoning();
+            const callId = item.call_id || item.id;
+            messages.push({
+                role: 'tool',
+                ...(callId ? { tool_call_id: callId } : {}),
+                content: normalizeResponsesOutputValue(item.output)
+            });
+            continue;
+        }
+        flushCalls();
+        flushReasoning();
         let role = item.role || (item.type === 'message' ? 'user' : null);
         if (role === 'developer') role = 'system';
-        const content = normalizeTextContent(item.content || item.output);
-        if (role && content) messages.push({ role, content });
+        const content = role === 'system'
+            ? normalizeTextContent(item.content || item.output)
+            : normalizeResponsesMessageContent(item.content || item.output);
+        const hasContent = typeof content === 'string' ? content.length > 0 : Array.isArray(content) && content.length > 0;
+        if (role && hasContent) messages.push({ role, content });
     }
+
+    flushCalls();
+    flushReasoning();
     return messages;
 }
 
@@ -806,51 +1281,191 @@ function extractFromGeminiBody(body) {
 // 上游请求构建（统一 messages → 目标协议格式）
 // ============================================================
 
-function buildUpstreamChatBody(messages, model, body) {
+function formatFlattenedToolCalls(calls) {
+    const labels = calls.map(tc => {
+        const name = tc?.function?.name || tc?.name || 'tool';
+        const args = tc?.function?.arguments ?? tc?.arguments ?? '';
+        const preview = typeof args === 'string' ? args : JSON.stringify(args);
+        return `${name}(${preview.slice(0, 200)})`;
+    });
+    return `[已执行工具调用: ${labels.join('; ')}]`;
+}
+
+function sanitizeMessagesForUpstream(messages, { stripClientTools = false, flattenToolMessages = false } = {}) {
+    if (!Array.isArray(messages)) return [];
+    const shouldFlatten = Boolean(stripClientTools || flattenToolMessages);
+    const sanitized = [];
+
+    const extractToolReplyUserContent = (rawContent, prefix) => {
+        if (Array.isArray(rawContent) && rawContent.some(p => p?.type === 'image_url')) {
+            const images = rawContent.filter(p => p?.type === 'image_url');
+            const text = normalizeTextContent(rawContent);
+            return [
+                { type: 'text', text: `${prefix}: ${text || '[含图片回执]'}` },
+                ...images
+            ];
+        }
+        const text = typeof rawContent === 'string' ? rawContent : normalizeTextContent(rawContent);
+        return `${prefix}: ${text || '[空输出]'}`;
+    };
+
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || typeof msg !== 'object') continue;
+
+        const hasToolCalls = msg.role === 'assistant' && (
+            (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) || Boolean(msg.function_call)
+        );
+
+        if (shouldFlatten) {
+            if (hasToolCalls) {
+                const calls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0
+                    ? msg.tool_calls
+                    : [{ function: msg.function_call }];
+                const text = typeof msg.content === 'string' ? msg.content : normalizeTextContent(msg.content);
+                const callNote = formatFlattenedToolCalls(calls);
+                const clone = { ...msg };
+                delete clone.tool_calls;
+                delete clone.function_call;
+                sanitized.push({
+                    ...clone,
+                    role: 'assistant',
+                    content: text ? `${text}\n${callNote}` : callNote
+                });
+                continue;
+            }
+            if (msg.role === 'tool' || msg.role === 'function') {
+                sanitized.push({
+                    role: 'user',
+                    content: extractToolReplyUserContent(msg.content, '[工具返回摘要]')
+                });
+                continue;
+            }
+            sanitized.push(msg);
+            continue;
+        }
+
+        if (hasToolCalls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+            const expectedIds = msg.tool_calls.map(tc => tc?.id).filter(id => typeof id === 'string' && id.length > 0);
+            const expectedSet = new Set(expectedIds);
+            if (expectedIds.length !== msg.tool_calls.length || expectedSet.size !== msg.tool_calls.length) {
+                const text = typeof msg.content === 'string' ? msg.content : normalizeTextContent(msg.content);
+                const callNote = formatFlattenedToolCalls(msg.tool_calls);
+                const clone = { ...msg };
+                delete clone.tool_calls;
+                delete clone.function_call;
+                sanitized.push({ ...clone, role: 'assistant', content: text ? `${text}\n${callNote}` : callNote });
+                continue;
+            }
+
+            const matchedTools = new Map();
+            const deferredOrphans = [];
+            let j = i + 1;
+            while (j < messages.length && messages[j]?.role === 'tool') {
+                const reply = messages[j];
+                if (reply.tool_call_id && expectedSet.has(reply.tool_call_id) && !matchedTools.has(reply.tool_call_id)) {
+                    matchedTools.set(reply.tool_call_id, reply);
+                } else {
+                    deferredOrphans.push({
+                        role: 'user',
+                        content: extractToolReplyUserContent(reply.content, '[孤立工具输出]')
+                    });
+                }
+                j++;
+            }
+
+            sanitized.push(msg);
+            for (const id of expectedIds) {
+                if (matchedTools.has(id)) {
+                    sanitized.push(matchedTools.get(id));
+                } else {
+                    sanitized.push({
+                        role: 'tool',
+                        tool_call_id: id,
+                        content: '[工具调用未返回结果（已被中断或省略）]'
+                    });
+                }
+            }
+            if (deferredOrphans.length > 0) sanitized.push(...deferredOrphans);
+            i = j - 1;
+            continue;
+        }
+
+        if (msg.role === 'tool' || msg.role === 'function') {
+            sanitized.push({
+                role: 'user',
+                content: extractToolReplyUserContent(msg.content, '[孤立工具输出]')
+            });
+            continue;
+        }
+
+        sanitized.push(msg);
+    }
+
+    return sanitized;
+}
+
+function buildUpstreamChatBody(messages, model, body, toolOptions) {
+    const resolvedMaxTokens = body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens;
     const result = {
         model: resolveModel(model),
         messages,
         stream: body.stream === true,
         ...(body.temperature !== undefined && { temperature: body.temperature }),
         ...(body.top_p !== undefined && { top_p: body.top_p }),
-        ...(body.max_tokens !== undefined && { max_tokens: body.max_tokens })
+        ...(resolvedMaxTokens !== undefined && { max_tokens: resolvedMaxTokens })
     };
-    return attachProtectedChatToolFields(result, body);
+    return attachProtectedChatToolFields(result, body, toolOptions);
 }
 
-function buildUpstreamAnthropicBody(messages, model, body) {
-    const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-    const nonSystem = messages.filter(m => m.role !== 'system').map(m => ({
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content
-    }));
+function buildUpstreamAnthropicBody(messages, model, body, toolOptions) {
+    const system = messages
+        .filter(m => m.role === 'system')
+        .map(m => normalizeTextContent(m.content))
+        .filter(Boolean)
+        .join('\n\n');
+    const nonSystem = messages
+        .filter(m => m.role !== 'system')
+        .map(m => {
+            const text = typeof m.content === 'string' ? m.content : normalizeTextContent(m.content);
+            return text ? { role: m.role === 'assistant' ? 'assistant' : 'user', content: text } : null;
+        })
+        .filter(Boolean);
     const result = {
         model: resolveModel(model),
         messages: nonSystem,
-        max_tokens: body.max_tokens || body.max_output_tokens || 4096,
+        max_tokens: body.max_tokens || body.max_completion_tokens || body.max_output_tokens || 4096,
         stream: body.stream === true
     };
     if (system) result.system = system;
     if (body.temperature !== undefined) result.temperature = body.temperature;
-    return attachProtectedAnthropicToolFields(result, body);
+    return attachProtectedAnthropicToolFields(result, body, toolOptions);
 }
 
-function buildUpstreamGeminiBody(messages, model, body) {
-    const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-    const contents = messages.filter(m => m.role !== 'system').map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }]
-    }));
+function buildUpstreamGeminiBody(messages, model, body, toolOptions) {
+    const system = messages
+        .filter(m => m.role === 'system')
+        .map(m => normalizeTextContent(m.content))
+        .filter(Boolean)
+        .join('\n\n');
+    const contents = messages
+        .filter(m => m.role !== 'system')
+        .map(m => {
+            const text = typeof m.content === 'string' ? m.content : normalizeTextContent(m.content);
+            return text ? { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text }] } : null;
+        })
+        .filter(Boolean);
     const result = { contents };
     if (system) result.systemInstruction = { parts: [{ text: system }] };
     const genConfig = {};
     if (body.temperature !== undefined) genConfig.temperature = body.temperature;
     if (body.top_p !== undefined) genConfig.topP = body.top_p;
-    if (body.max_tokens !== undefined || body.max_output_tokens !== undefined) {
-        genConfig.maxOutputTokens = body.max_output_tokens || body.max_tokens;
+    const resolvedMaxTokens = body.max_output_tokens ?? body.max_completion_tokens ?? body.max_tokens;
+    if (resolvedMaxTokens !== undefined) {
+        genConfig.maxOutputTokens = resolvedMaxTokens;
     }
     if (Object.keys(genConfig).length > 0) result.generationConfig = genConfig;
-    return attachProtectedGeminiToolFields(result, body);
+    return attachProtectedGeminiToolFields(result, body, toolOptions);
 }
 
 // ============================================================
@@ -909,18 +1524,33 @@ async function proxyRequest(req, res, { messages, model, body, downstreamFormat 
     const stream = body.stream === true;
     const endpoint = resolveUpstreamEndpoint(finalModel, stream);
 
-    // 3. 构建上游请求体
+    // 3. 构建上游请求体（支持 Header > Profile > Global 三级正交三态解析）
+    const profileStripResolved = resolveTriState(profileConfig?.stripClientTools, runtimeConfig.stripClientTools);
+    const stripClientTools = resolveTriState(req.headers['x-vcp-strip-tools'], profileStripResolved);
+
+    const profileFilterResolved = resolveTriState(profileConfig?.filterHostedVcptools, runtimeConfig.filterHostedVcptools);
+    const allowFilterHosted = resolveTriState(req.headers['x-vcp-filter-hosted-vcptools'], profileFilterResolved);
+
+    const sanitizedMessages = sanitizeMessagesForUpstream(hijackedMessages, {
+        stripClientTools,
+        flattenToolMessages: endpoint.type !== 'chat'
+    });
+    const toolOptions = { stripClientTools };
     let upstreamBody;
     switch (endpoint.type) {
         case 'anthropic':
-            upstreamBody = buildUpstreamAnthropicBody(hijackedMessages, finalModel, body);
+            upstreamBody = buildUpstreamAnthropicBody(sanitizedMessages, finalModel, body, toolOptions);
             break;
         case 'gemini':
-            upstreamBody = buildUpstreamGeminiBody(hijackedMessages, finalModel, body);
+            upstreamBody = buildUpstreamGeminiBody(sanitizedMessages, finalModel, body, toolOptions);
             break;
         default:
-            upstreamBody = buildUpstreamChatBody(hijackedMessages, finalModel, body);
+            upstreamBody = buildUpstreamChatBody(sanitizedMessages, finalModel, body, toolOptions);
     }
+
+    const filterHostedVcptools = allowFilterHosted
+        && endpoint.type === 'chat'
+        && (!Array.isArray(upstreamBody?.tools) || upstreamBody.tools.length === 0);
 
     // 4. 构建请求头
     const requestToken = extractBearerToken(req.headers.authorization);
@@ -935,69 +1565,110 @@ async function proxyRequest(req, res, { messages, model, body, downstreamFormat 
     if (req.headers['x-goog-api-key']) headers['x-goog-api-key'] = req.headers['x-goog-api-key'];
 
     if (runtimeConfig.debugMode) {
-        console.log(`[VCPBridgeServer] ${downstreamFormat} → ${endpoint.type} | ${endpoint.url} | hijack=${runtimeConfig.hijackMode}`);
+        console.log(`[VCPBridgeServer] ${downstreamFormat} → ${endpoint.type} | ${endpoint.url} | hijack=${runtimeConfig.hijackMode} | stripTools=${stripClientTools} | filterHosted=${filterHostedVcptools}`);
     }
 
-    // 5. 发送请求
+    // 5. 发送请求（绑定客户端断连级联取消，防孤儿上游长流）
+    const abortController = new AbortController();
+    const onDownstreamAbort = () => {
+        if (!res.writableEnded) abortController.abort();
+    };
+    req.once('aborted', onDownstreamAbort);
+    res.once('close', onDownstreamAbort);
+
     let upstreamResponse;
     try {
         upstreamResponse = await fetch(endpoint.url, {
             method: 'POST',
             headers,
-            body: JSON.stringify(upstreamBody)
+            body: JSON.stringify(upstreamBody),
+            signal: abortController.signal
         });
     } catch (err) {
+        req.off('aborted', onDownstreamAbort);
+        res.off('close', onDownstreamAbort);
+        if (err?.name === 'AbortError' || res.destroyed || res.writableEnded) {
+            if (!res.destroyed && !res.writableEnded) res.end();
+            return;
+        }
         return res.status(502).json({ error: { message: `Upstream fetch failed: ${err.message}`, type: 'upstream_error' } });
     }
 
-    // 6. Responses API 下游必须返回 Responses 格式，不能裸透传 chat/anthropic/gemini SSE。
-    if (downstreamFormat === 'responses') {
-        const fallbackModel = resolveModel(finalModel);
-        if (stream && upstreamResponse.body) {
-            return sendResponsesStreamFromProtocol(res, upstreamResponse, {
+    try {
+        // 6. Responses API 下游必须返回 Responses 格式；非 2xx 错误直透 JSON 错误响应，防止伪装成空 200 completed。
+        if (downstreamFormat === 'responses') {
+            if (!upstreamResponse.ok) {
+                const rawErr = await upstreamResponse.text();
+                const parsedErr = safeJsonParse(rawErr);
+                return res.status(upstreamResponse.status).type('application/json').send(parsedErr || rawErr);
+            }
+            const fallbackModel = resolveModel(finalModel);
+            if (stream && upstreamResponse.body) {
+                return await sendResponsesStreamFromProtocol(res, upstreamResponse, {
+                    model: fallbackModel,
+                    apiType: endpoint.type,
+                    filterHostedVcptools
+                });
+            }
+            return await sendResponsesJsonFromProtocol(res, upstreamResponse, {
                 model: fallbackModel,
                 apiType: endpoint.type
             });
         }
-        return sendResponsesJsonFromProtocol(res, upstreamResponse, {
-            model: fallbackModel,
-            apiType: endpoint.type
+
+        // 7. 其他协议透传响应（若由 6005 托管 vcptools，则剥离仅给 VChat 展示用的 vcptools delta 帧防误伤外部 IDE）
+        res.status(upstreamResponse.status);
+        upstreamResponse.headers.forEach((value, key) => {
+            const lower = key.toLowerCase();
+            if (lower !== 'content-encoding' && lower !== 'transfer-encoding' && lower !== 'content-length') {
+                res.setHeader(key, value);
+            }
         });
-    }
 
-    // 7. 其他协议暂时透传响应（保持原始格式，不做响应转换）
-    res.status(upstreamResponse.status);
-    upstreamResponse.headers.forEach((value, key) => {
-        const lower = key.toLowerCase();
-        if (lower !== 'content-encoding' && lower !== 'transfer-encoding' && lower !== 'content-length') {
-            res.setHeader(key, value);
+        if (!upstreamResponse.body) {
+            const text = await upstreamResponse.text();
+            return res.send(text);
         }
-    });
 
-    if (!upstreamResponse.body) {
-        const text = await upstreamResponse.text();
-        return res.send(text);
+        if (stream && filterHostedVcptools && downstreamFormat === 'chat') {
+            await pipeChatStreamFilteringHostedVcptools(res, upstreamResponse.body);
+        } else {
+            for await (const chunk of upstreamResponse.body) {
+                if (res.destroyed || res.writableEnded) break;
+                res.write(chunk);
+            }
+        }
+        if (!res.destroyed && !res.writableEnded) res.end();
+    } catch (err) {
+        if (err?.name !== 'AbortError' && !res.headersSent) {
+            return res.status(502).json({ error: { message: `Bridge stream failed: ${err.message}`, type: 'upstream_error' } });
+        }
+        if (!res.destroyed && !res.writableEnded) res.end();
+    } finally {
+        req.off('aborted', onDownstreamAbort);
+        res.off('close', onDownstreamAbort);
     }
-
-    for await (const chunk of upstreamResponse.body) {
-        res.write(chunk);
-    }
-    res.end();
 }
 
 // ============================================================
 // Express 路由
 // ============================================================
 
-function startServer() {
-    const app = express();
-    app.use(express.json({ limit: '10mb' }));
+function asyncRoute(handler) {
+    return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+}
 
+function createBridgeApp() {
+    const app = express();
+    app.use(express.json({ limit: '50mb' }));
     // 健康检查
     app.get('/health', (req, res) => {
         res.json({
             ok: true,
             hijackMode: runtimeConfig.hijackMode,
+            defaultProfile: runtimeConfig.defaultProfile || '',
+            stripClientTools: Boolean(runtimeConfig.stripClientTools),
+            filterHostedVcptools: runtimeConfig.filterHostedVcptools !== false,
             hasSystemPrompt: Boolean(runtimeConfig.systemPrompt),
             upstreamType: runtimeConfig.upstreamType,
             upstreamUrl: runtimeConfig.upstreamUrl,
@@ -1007,7 +1678,7 @@ function startServer() {
     });
 
     // 模型列表动态透传与探活（支持 OpenAI 根端点与 Profile 前缀端点，上游不可达时平滑回退本地配置）
-    app.get(['/v1/models', '/v1/:profile/models'], async (req, res, next) => {
+    app.get(['/v1/models', '/v1/:profile/models'], asyncRoute(async (req, res, next) => {
         const profile = req.params?.profile;
         if (profile && ['chat', 'responses', 'messages', 'beta'].includes(profile)) {
             return next();
@@ -1067,13 +1738,13 @@ function startServer() {
         }
 
         res.json({ object: 'list', data: buildFallbackList() });
-    });
+    }));
 
     // ─── Profile-prefixed routes ─────────────────────────────────────────
     // URL pattern: /v1/:profile/chat/completions, /v1/:profile/responses, etc.
     // These must be registered BEFORE the standard routes to take priority.
 
-    app.post('/v1/:profile/chat/completions', async (req, res, next) => {
+    app.post('/v1/:profile/chat/completions', asyncRoute(async (req, res, next) => {
         const profile = req.params.profile;
         if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
             return next();
@@ -1082,21 +1753,21 @@ function startServer() {
         const body = req.body || {};
         const messages = Array.isArray(body.messages) ? body.messages : [];
         await proxyRequest(req, res, { messages, model: body.model, body, downstreamFormat: 'chat' });
-    });
+    }));
 
-    app.post('/v1/:profile/responses', async (req, res, next) => {
+    app.post('/v1/:profile/responses', asyncRoute(async (req, res, next) => {
         const profile = req.params.profile;
         if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
             return next();
         }
         req.bridgeProfile = profile;
         const body = req.body || {};
-        const messages = extractFromResponsesInput(body.input);
+        const messages = extractFromResponsesInput(body.input, body.instructions);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
         await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses' });
-    });
+    }));
 
-    app.post('/v1/:profile/messages', async (req, res, next) => {
+    app.post('/v1/:profile/messages', asyncRoute(async (req, res, next) => {
         const profile = req.params.profile;
         if (['chat', 'responses', 'messages', 'beta'].includes(profile)) {
             return next();
@@ -1106,42 +1777,62 @@ function startServer() {
         const messages = extractFromAnthropicBody(body);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
         await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'anthropic' });
-    });
+    }));
 
     // ─── Standard routes (no profile prefix) ─────────────────────────────
 
     // OpenAI Chat Completions
-    app.post('/v1/chat/completions', async (req, res) => {
+    app.post('/v1/chat/completions', asyncRoute(async (req, res) => {
         const body = req.body || {};
         const messages = Array.isArray(body.messages) ? body.messages : [];
         await proxyRequest(req, res, { messages, model: body.model, body, downstreamFormat: 'chat' });
-    });
+    }));
 
     // OpenAI Responses API
-    app.post('/v1/responses', async (req, res) => {
+    app.post('/v1/responses', asyncRoute(async (req, res) => {
         const body = req.body || {};
-        const messages = extractFromResponsesInput(body.input);
+        const messages = extractFromResponsesInput(body.input, body.instructions);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
         await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses' });
-    });
+    }));
 
     // Anthropic Messages
-    app.post('/v1/messages', async (req, res) => {
+    app.post('/v1/messages', asyncRoute(async (req, res) => {
         const body = req.body || {};
         const messages = extractFromAnthropicBody(body);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
         await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'anthropic' });
-    });
+    }));
 
     // Gemini GenerateContent
-    app.post(/^\/v1beta\/models\/(.+):(generateContent|streamGenerateContent)$/, async (req, res) => {
+    app.post(/^\/v1beta\/models\/(.+):(generateContent|streamGenerateContent)$/, asyncRoute(async (req, res) => {
         const body = req.body || {};
         const messages = extractFromGeminiBody(body);
         const model = req.params[0] || runtimeConfig.defaultModel;
         const stream = req.params[1] === 'streamGenerateContent';
         await proxyRequest(req, res, { messages, model, body: { ...body, stream }, downstreamFormat: 'gemini' });
+    }));
+
+    app.use((err, req, res, next) => {
+        void next;
+        if (res.headersSent) {
+            if (!res.destroyed && !res.writableEnded) res.end();
+            return;
+        }
+        const isClientPayloadError = err?.type === 'entity.parse.failed' || err?.status === 400 || err?.status === 413;
+        res.status(err?.status || 500).json({
+            error: {
+                message: err?.message || 'Bridge internal error',
+                type: isClientPayloadError ? 'invalid_request_error' : 'bridge_error'
+            }
+        });
     });
 
+    return app;
+}
+
+function startServer() {
+    const app = createBridgeApp();
     // 启动监听
     server = app.listen(runtimeConfig.port, () => {
         console.log(`[VCPBridgeServer] Prompt hijack proxy listening on http://127.0.0.1:${runtimeConfig.port}`);
@@ -1156,4 +1847,23 @@ function startServer() {
 // 导出
 // ============================================================
 
-module.exports = { initialize, shutdown };
+module.exports = {
+    initialize,
+    shutdown,
+    createBridgeApp,
+    _test: {
+        applyBridgeRuntimeConfig,
+        resolveProfileForRequest,
+        attachProtectedChatToolFields,
+        attachProtectedAnthropicToolFields,
+        attachProtectedGeminiToolFields,
+        sanitizeMessagesForUpstream,
+        isHostedVcptoolsChunk,
+        pipeChatStreamFilteringHostedVcptools,
+        extractFromResponsesInput,
+        buildResponsesOutput,
+        sendResponsesStreamFromProtocol,
+        applySystemPromptHijackWithConfig,
+        applySystemPromptHijack
+    }
+};

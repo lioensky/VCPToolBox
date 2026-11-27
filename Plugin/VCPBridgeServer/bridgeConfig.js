@@ -18,7 +18,9 @@ const DEFAULT_BRIDGE_CONFIG = Object.freeze({
     hijackMode: 'off',
     modelMap: {},
     debugMode: false,
-    defaultProfile: ''
+    defaultProfile: '',
+    stripClientTools: false,
+    filterHostedVcptools: true
 });
 
 const DESCRIPTION = Object.freeze({
@@ -31,7 +33,9 @@ const DESCRIPTION = Object.freeze({
     hijackMode: '劫持模式（全局兜底）：off / replace / prepend / append / merge。当无 Profile 匹配时使用此值。',
     modelMap: '模型名映射对象，例如 {"gpt-4":"gemini-2.5-pro"}。',
     debugMode: '是否输出桥接代理调试日志。',
-    defaultProfile: '默认 Profile 名称。请求未指定 Profile 时自动使用此 Profile（留空则使用全局 systemPrompt/hijackMode）。'
+    defaultProfile: '默认 Profile 名称。请求未指定 Profile 时自动使用此 Profile（留空则使用全局 systemPrompt/hijackMode）。',
+    stripClientTools: '剥离下游客户端自带工具声明（tools/tool_choice/functions）并展平历史客户端工具块，配合主服 VCP_FC_DEBUG=true 强制交由后端 vcptools 托管。',
+    filterHostedVcptools: '当请求无客户端工具（由主服托管 vcptools）时，在 6003 流式出口剥离仅面向 VChat 渲染的 vcptools 展示帧，防止外部 IDE 误报未知本地工具。'
 });
 
 // ============================================================
@@ -62,6 +66,42 @@ function normalizeBoolean(value, defaultValue = false) {
         if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
     }
     return defaultValue;
+}
+
+function normalizeTriState(value, defaultValue = 'inherit') {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'number') return value !== 0 ? 'true' : 'false';
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === 'inherit' || normalized === 'default' || normalized === 'auto') return 'inherit';
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return 'true';
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return 'false';
+    }
+    return defaultValue;
+}
+
+function resolveTriState(overrideValue, fallbackBoolean = false) {
+    const tri = normalizeTriState(overrideValue, 'inherit');
+    if (tri === 'true') return true;
+    if (tri === 'false') return false;
+    return Boolean(fallbackBoolean);
+}
+
+function writeTextFileAtomically(filePath, content) {
+    const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    fs.writeFileSync(tmpPath, content, 'utf8');
+    try {
+        fs.renameSync(tmpPath, filePath);
+    } catch (err) {
+        if (err && (err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'EACCES')) {
+            fs.writeFileSync(filePath, content, 'utf8');
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup error */ }
+        } else {
+            try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup error */ }
+            throw err;
+        }
+    }
 }
 
 function normalizePort(value, defaultValue = DEFAULT_BRIDGE_CONFIG.port) {
@@ -136,7 +176,15 @@ function normalizeBridgeConfig(raw = {}, fallbackEnv = {}) {
         hijackMode: normalizeHijackMode(raw.hijackMode ?? raw.BRIDGE_HIJACK_MODE ?? fallbackEnv.BRIDGE_HIJACK_MODE),
         modelMap: parseModelMap(raw.modelMap ?? raw.BRIDGE_MODEL_MAP ?? fallbackEnv.BRIDGE_MODEL_MAP),
         debugMode: normalizeBoolean(raw.debugMode ?? raw.DebugMode ?? fallbackEnv.DebugMode, DEFAULT_BRIDGE_CONFIG.debugMode),
-        defaultProfile: String(raw.defaultProfile ?? '').trim()
+        defaultProfile: String(raw.defaultProfile ?? '').trim(),
+        stripClientTools: normalizeBoolean(
+            raw.stripClientTools ?? raw.BRIDGE_STRIP_CLIENT_TOOLS ?? fallbackEnv.BRIDGE_STRIP_CLIENT_TOOLS,
+            DEFAULT_BRIDGE_CONFIG.stripClientTools
+        ),
+        filterHostedVcptools: normalizeBoolean(
+            raw.filterHostedVcptools ?? raw.BRIDGE_FILTER_HOSTED_VCPTOOLS ?? fallbackEnv.BRIDGE_FILTER_HOSTED_VCPTOOLS,
+            DEFAULT_BRIDGE_CONFIG.filterHostedVcptools
+        )
     };
 }
 
@@ -150,13 +198,20 @@ function buildConfigFromEnv(env = {}) {
         BRIDGE_SYSTEM_PROMPT: env.BRIDGE_SYSTEM_PROMPT,
         BRIDGE_HIJACK_MODE: env.BRIDGE_HIJACK_MODE,
         BRIDGE_MODEL_MAP: env.BRIDGE_MODEL_MAP,
+        BRIDGE_STRIP_CLIENT_TOOLS: env.BRIDGE_STRIP_CLIENT_TOOLS,
+        BRIDGE_FILTER_HOSTED_VCPTOOLS: env.BRIDGE_FILTER_HOSTED_VCPTOOLS,
         DebugMode: env.DebugMode
     }, env);
 }
 
 function readJsonConfig() {
-    const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    return normalizeBridgeConfig(parsed);
+    try {
+        const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        return normalizeBridgeConfig(parsed);
+    } catch (error) {
+        console.error(`[VCPBridgeConfig] Failed to parse ${CONFIG_FILE_NAME} (${error.message}); falling back to in-memory defaults without overwriting file.`);
+        return normalizeBridgeConfig({});
+    }
 }
 
 function writeJsonConfig(config) {
@@ -164,7 +219,7 @@ function writeJsonConfig(config) {
         ...normalizeBridgeConfig(config),
         description: DESCRIPTION
     };
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    writeTextFileAtomically(CONFIG_PATH, `${JSON.stringify(payload, null, 2)}\n`);
     return payload;
 }
 
@@ -199,6 +254,8 @@ function toEnvCompatConfig(config) {
         BRIDGE_SYSTEM_PROMPT: normalized.systemPrompt,
         BRIDGE_HIJACK_MODE: normalized.hijackMode,
         BRIDGE_MODEL_MAP: formatModelMap(normalized.modelMap),
+        BRIDGE_STRIP_CLIENT_TOOLS: normalized.stripClientTools,
+        BRIDGE_FILTER_HOSTED_VCPTOOLS: normalized.filterHostedVcptools,
         DebugMode: normalized.debugMode
     };
 }
@@ -216,12 +273,6 @@ function ensureProfilesDir() {
     }
 }
 
-/**
- * 对 profile 数据进行归一化和验证
- * @param {string} name - Profile 文件名（不含扩展名）
- * @param {object} raw - 原始 profile 数据
- * @returns {object} 归一化后的 profile 对象
- */
 function normalizeProfile(name, raw = {}) {
     return {
         name: String(name || raw.name || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''),
@@ -229,6 +280,8 @@ function normalizeProfile(name, raw = {}) {
         systemPrompt: String(raw.systemPrompt || '').trim(),
         hijackMode: normalizeHijackMode(raw.hijackMode),
         modelOverride: String(raw.modelOverride || '').trim(),
+        stripClientTools: normalizeTriState(raw.stripClientTools, 'inherit'),
+        filterHostedVcptools: normalizeTriState(raw.filterHostedVcptools, 'inherit'),
         description: String(raw.description || '').trim()
     };
 }
@@ -251,7 +304,8 @@ function isValidProfileName(name) {
  */
 function profileExists(name) {
     if (!isValidProfileName(name)) return false;
-    return fs.existsSync(path.join(PROFILES_DIR, `${name}.json`));
+    const cleaned = name.trim().toLowerCase();
+    return fs.existsSync(path.join(PROFILES_DIR, `${cleaned}.json`));
 }
 
 /**
@@ -286,11 +340,12 @@ function listProfiles() {
  */
 function readProfile(name) {
     if (!isValidProfileName(name)) return null;
-    const filePath = path.join(PROFILES_DIR, `${name}.json`);
+    const cleaned = name.trim().toLowerCase();
+    const filePath = path.join(PROFILES_DIR, `${cleaned}.json`);
     if (!fs.existsSync(filePath)) return null;
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        return normalizeProfile(name, parsed);
+        return normalizeProfile(cleaned, parsed);
     } catch {
         return null;
     }
@@ -307,9 +362,18 @@ function saveProfile(name, data = {}) {
         throw new Error(`Invalid profile name: "${name}". Only lowercase letters, digits, hyphens and underscores allowed (1-64 chars).`);
     }
     ensureProfilesDir();
-    const normalized = normalizeProfile(name, data);
-    const filePath = path.join(PROFILES_DIR, `${name}.json`);
-    fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+    const cleaned = name.trim().toLowerCase();
+    const filePath = path.join(PROFILES_DIR, `${cleaned}.json`);
+    let existing = {};
+    if (fs.existsSync(filePath)) {
+        try {
+            existing = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {};
+        } catch {
+            existing = {};
+        }
+    }
+    const normalized = normalizeProfile(cleaned, { ...existing, ...(data || {}) });
+    writeTextFileAtomically(filePath, `${JSON.stringify(normalized, null, 2)}\n`);
     return normalized;
 }
 
@@ -320,7 +384,8 @@ function saveProfile(name, data = {}) {
  */
 function deleteProfile(name) {
     if (!isValidProfileName(name)) return false;
-    const filePath = path.join(PROFILES_DIR, `${name}.json`);
+    const cleaned = name.trim().toLowerCase();
+    const filePath = path.join(PROFILES_DIR, `${cleaned}.json`);
     if (!fs.existsSync(filePath)) return false;
     try {
         fs.unlinkSync(filePath);
@@ -342,7 +407,11 @@ module.exports = {
     DESCRIPTION,
 
     // 全局配置管理
+    normalizeBoolean,
+    normalizeTriState,
+    resolveTriState,
     normalizeBridgeConfig,
+    buildConfigFromEnv,
     migrateBridgeConfig,
     readBridgeConfig,
     saveBridgeConfig,
