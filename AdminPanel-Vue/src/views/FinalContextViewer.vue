@@ -168,7 +168,12 @@
               <span class="jump-speaker">{{ jumpSpeakerLabel(block) }}</span>
             </span>
             <span class="jump-source-line">
-              {{ jumpSourceLabel(block) }}
+              <span class="jump-tokens">{{ blockTokenLabel(block) }}</span>
+              <span class="jump-share">{{ blockPercentLabel(block) }}</span>
+              <span v-if="jumpSourceLabel(block)" class="jump-source">{{ jumpSourceLabel(block) }}</span>
+            </span>
+            <span class="jump-meter" aria-hidden="true">
+              <span :style="{ width: blockMeterWidth(block) }"></span>
             </span>
           </UiButton>
         </nav>
@@ -932,7 +937,7 @@ function jumpSourceLabel(block: FinalContextBlockSummary): string {
   const badge = getUserBlockBadge(block)
   if (badge) return '系统标记'
 
-  return '直接上下文'
+  return ''
 }
 
 function userBlockJumpClass(block: FinalContextBlockSummary): string | null {
@@ -1064,12 +1069,51 @@ function contextTokens(summary: { totalTokenCount?: number; upstreamUsage?: Fina
   return summary?.upstreamUsage?.promptTokens || summary?.totalTokenCount || 0
 }
 
+// 按占比折算到总 Token 数，跟顶部总数同一口径；各块相加与总数一致。
+function blockTokens(tokenCount: number | undefined): number {
+  const total = snapshot.value?.summary.totalTokenCount || 0
+  if (!total || !tokenCount) return 0
+  return Math.round((tokenCount / total) * contextTokens(snapshot.value?.summary))
+}
+
+const compactTokenFormat = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
+
+// 索引格子窄，数量用紧凑写法（1.2万），完整数字在悬浮提示和正文块头里。
+function blockTokenLabel(block: FinalContextBlockSummary): string {
+  const tokens = blockTokens(block.tokenCount)
+  const text = tokens >= 10000 ? compactTokenFormat.format(tokens) : formatNumber(tokens)
+  return `${text} tok`
+}
+
+function blockPercentLabel(block: FinalContextBlockSummary): string {
+  const total = snapshot.value?.summary.totalTokenCount || 0
+  if (!total || !block.tokenCount) return '0%'
+  const percent = (block.tokenCount / total) * 100
+  if (percent < 0.1) return '<0.1%'
+  return `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
+}
+
+const largestBlockTokenCount = computed(() => {
+  let max = 0
+  for (const block of blocks.value) {
+    if ((block.tokenCount || 0) > max) max = block.tokenCount || 0
+  }
+  return max
+})
+
+// 底部细条按「最大那块」归一，一眼看出谁最占地方。
+function blockMeterWidth(block: FinalContextBlockSummary): string {
+  const max = largestBlockTokenCount.value
+  if (!max || !block.tokenCount) return '0%'
+  return `${Math.max(2, (block.tokenCount / max) * 100).toFixed(1)}%`
+}
+
 function formatShare(tokenCount: number | undefined): string {
   const total = snapshot.value?.summary.totalTokenCount || 0
   if (!total || !tokenCount) return '0%'
   const percent = (tokenCount / total) * 100
   const share = `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`
-  const approx = Math.round((tokenCount / total) * contextTokens(snapshot.value?.summary))
+  const approx = blockTokens(tokenCount)
   return approx > 0 ? `${share}（约 ${formatNumber(approx)}）` : share
 }
 
@@ -1925,12 +1969,13 @@ onMounted(() => {
 }
 
 .jump-chip {
+  position: relative;
   box-sizing: border-box;
   width: var(--jump-chip-width);
   height: 58px;
   min-width: 0;
   justify-content: stretch;
-  padding: 0 var(--space-2);
+  padding: 0 var(--space-2) 4px;
   border-radius: var(--radius-md);
   border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
   overflow: hidden;
@@ -1978,9 +2023,63 @@ onMounted(() => {
 }
 
 .jump-source-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   color: var(--secondary-text);
   font-size: 0.84em;
   line-height: 18px;
+}
+
+.jump-tokens {
+  flex: 0 0 auto;
+  color: var(--primary-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.jump-share {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.jump-source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jump-meter {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  left: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--border-color) 55%, transparent);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.jump-chip.active .jump-source-line,
+.jump-chip.active .jump-tokens {
+  color: inherit;
+}
+
+.jump-chip.active .jump-share,
+.jump-chip.active .jump-source {
+  opacity: 0.85;
+}
+
+.jump-chip.active .jump-meter > span {
+  background: currentColor;
+}
+
+.jump-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--highlight-text) 70%, transparent);
 }
 
 .jump-chip.jump-has-onering-source,
