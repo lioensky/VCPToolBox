@@ -5,7 +5,7 @@
 - `POST /v1/chat/completions` 支持客户端提供 OpenAI `tools`、`tool_choice`，也可向支持它的上游传 `parallel_tool_calls`。它允许同一轮产生多个调用，不保证上游会发多个，也不规定执行并发度。
 - 原生旁路是客户端执行契约：调用定义由客户端提供，模型输出由 VCP 返回，客户端执行并提交结果。VCP 不会仅凭原生函数名派发同名插件。旧 VCP 文本工具仍沿用自身的执行和回执链。
 - 同轮返回已确认的原生调用时，不再执行该轮正文里的旧 VCP 工具块。未确认的原生碎片不会阻止现有畸形恢复或合格的 VCP 文本工具尾部接管。
-- 本接口没有自动注册 VCP 插件的能力；原生 JSON 参数中的 `ink`、`archery`、`timely_contact`、`JEV` 不具备 VCP 全局语义。`/v1/human/tool` 是另一个文本直调入口，不是原生 FC 回执端点。
+- 本接口没有自动注册 VCP 插件的能力；原生 JSON 参数中的 `ink`、`archery`、`timely_contact`、`JEV` 不具备 VCP 全局语义。[`/v1/human/tool`](API_ROUTES.md#35-人类直接调用工具) 是独立的工具直调入口，接受 VCP 文本块或单条 JSON 函数调用，不是原生 FC 回执端点。
 
 ## 第三方前端测试
 

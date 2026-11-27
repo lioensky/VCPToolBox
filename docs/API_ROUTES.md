@@ -262,9 +262,28 @@ Authorization: Bearer <serverKey>
 
 #### `POST /v1/human/tool`
 
-允许人类用户直接调用 VCP 工具。
+允许人类用户或外部 harness 直接调用已加载的 VCP 工具，无需 MCP 桥接、模型请求或启用 `VCP_FC_DEBUG`。两种输入都使用 `Authorization: Bearer <VCP 服务端 Key>`，沿用现有插件执行与人工审批流程。
 
-**请求体（纯文本）：**
+**请求体（`application/json`）：** 可直接提交 OpenAI Chat Completions 的一条 `tool_calls` 元素：
+
+```json
+{
+  "id": "call_123",
+  "type": "function",
+  "function": {
+    "name": "PluginName",
+    "arguments": "{\"param1\":\"value1\"}"
+  }
+}
+```
+
+也可提交只包含一条调用的 `tool_calls` 数组封装，或提交扁平形式 `{"name":"PluginName","arguments":{"param1":"value1"}}`（兼容 Responses 的 `type: "function_call"`）。`arguments` 接受 JSON 对象或编码为字符串的 JSON 对象，无参时传 `{}`。数字、布尔值、数组、嵌套对象等值保留原类型，不转成 VCP 文本。
+
+函数名使用已加载插件的精确名称；使用通用函数 `vcptools` 时，在参数中提供 `tool_name` 作为目标插件。`tool_name` 是路由字段，不传给插件；若同时提供具体函数名及不匹配的 `tool_name`，请求会被拒绝。此入口不解释对话循环控制字段，也不生成模型续轮回执。
+
+每个请求只执行一次工具调用，空批次、多项批次及非法调用格式返回 HTTP 400。调用 ID 不改变响应结构，也不提供幂等保证；harness 可自行用原始 ID 关联响应。
+
+**旧请求体（`text/plain`，仍支持）：**
 ```
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」PluginName「末」,
@@ -272,7 +291,7 @@ param1:「始」value1「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-**响应：**
+**响应（两种输入相同）：** 直接返回既有插件执行结果，不包装成 OpenAI 工具回执。以下为示例，实际字段由插件决定：
 ```json
 {
   "status": "success",

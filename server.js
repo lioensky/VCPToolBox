@@ -138,7 +138,7 @@ const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟（错误凭据触�
 const NO_CREDENTIAL_BLOCK_DURATION = 15 * 60 * 1000; // 封禁15分钟（无凭据DDoS触发）
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
-const ToolCallParser = require('./modules/vcpLoop/toolCallParser.js');
+const { normalizeHumanToolRequest } = require('./modules/humanToolRequest.js');
 
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
 
@@ -1338,28 +1338,14 @@ app.post('/v1/chatvcp/completions', async (req, res) => {
 const protocolBridge = require('./routes/protocolBridge');
 app.use(protocolBridge);
 
-// 新增：人类直接调用工具的端点
+// 人类或外部 harness 直接调用工具：兼容原有文本块及 JSON 函数调用。
 app.post('/v1/human/tool', async (req, res) => {
     try {
-        const requestBody = req.body;
-        if (typeof requestBody !== 'string' || !requestBody.trim()) {
-            return res.status(400).json({ error: 'Request body must be a non-empty plain text.' });
+        const { name: requestedToolName, args: parsedToolArgs, error } =
+            normalizeHumanToolRequest(req.body, req.is('application/json'));
+        if (error) {
+            return res.status(400).json({ error });
         }
-
-        const extractedToolBlock = ToolCallParser.extractNextToolBlock(requestBody);
-
-        if (!extractedToolBlock) {
-            return res.status(400).json({ error: 'Malformed request: Missing TOOL_REQUEST markers.' });
-        }
-
-        const parsedToolCall = ToolCallParser.parseBlock(extractedToolBlock.blockContent);
-
-        if (!parsedToolCall || !parsedToolCall.name) {
-            return res.status(400).json({ error: 'Malformed request: tool_name not found within the request block.' });
-        }
-
-        const requestedToolName = parsedToolCall.name;
-        const parsedToolArgs = parsedToolCall.args || {};
 
         if (DEBUG_MODE) {
             console.log(`[Human Tool Exec] Received tool call for: ${requestedToolName}`, parsedToolArgs);
