@@ -177,6 +177,12 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             if (!response.ok) {
                 if (response.status === 429) {
                     throwIfEmbeddingAborted();
+                    if (attempt === modelCandidates.length) {
+                        const rateLimitErr = new Error(`Rate limited (429) on model "${model}" (no remaining fallback candidates)`);
+                        rateLimitErr.status = 429;
+                        rateLimitErr.code = 'EMBEDDING_RATE_LIMITED';
+                        throw rateLimitErr;
+                    }
                     const waitTime = Math.min(5000 * attempt, 15000);
                     console.warn(`[Embedding] Batch ${batchNumber} model "${model}" rate limited (429). Switching fallback in ${waitTime / 1000}s...`);
                     await _sleepAbortable(waitTime, config?.signal, 'Embedding 429 backoff aborted');
@@ -303,6 +309,7 @@ async function getEmbeddingsBatch(texts, config) {
     // 2. 🌊 第二步：并发执行器
     const batchResults = new Array(batches.length); // 预分配结果数组，保证顺序
     let cursor = 0; // 当前处理到的批次索引
+    let rateLimited = false; // 任一批在耗尽备援后仍遇 429 时，停止继续派发未启动批次
 
     // 定义 Worker：只要队列里还有任务，就不断抢任务做
     const worker = async (workerId) => {
@@ -312,6 +319,7 @@ async function getEmbeddingsBatch(texts, config) {
                 abortErr.name = 'AbortError';
                 throw abortErr;
             }
+            if (rateLimited) break;
             // 🔒 获取任务索引 (原子操作模拟)
             const batchIndex = cursor++;
             if (batchIndex >= batches.length) break; // 没任务了，下班
@@ -349,6 +357,9 @@ async function getEmbeddingsBatch(texts, config) {
                     abortErr.name = 'AbortError';
                     throw abortErr;
                 }
+                if (e?.status === 429 || e?.code === 'EMBEDDING_RATE_LIMITED') {
+                    rateLimited = true;
+                }
                 // 🛡️ 不再让单个 batch 失败导致整个 Promise.all 崩溃
                 // 而是记录失败，对应位置将填 null
                 console.error(`[Embedding] ❌ Batch ${batchIndex + 1} failed permanently: ${e.message}`);
@@ -378,10 +389,11 @@ async function getEmbeddingsBatch(texts, config) {
     let successCount = 0;
     let failCount = 0;
 
-    for (const result of batchResults) {
+    for (let i = 0; i < batchResults.length; i++) {
+        const result = batchResults[i];
         if (!result || !result.vectors) {
-            // 整个 batch 失败，对应位置保持 null
-            if (result) failCount += result.originalIndices.length;
+            // 整个 batch 失败或因 429 熔断跳过，对应位置保持 null
+            failCount += result ? result.originalIndices.length : batches[i].originalIndices.length;
             continue;
         }
         result.originalIndices.forEach((origIdx, vecIdx) => {

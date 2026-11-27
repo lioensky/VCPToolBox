@@ -5,11 +5,40 @@ const path = require('path');
 const crypto = require('crypto');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils');
 
+const VECTOR_REPAIR_BASE_DELAY_MS = 5000;
+const VECTOR_REPAIR_MAX_DELAY_MS = 15 * 60 * 1000;
+const VECTOR_REPAIR_BACKOFF_FACTOR = 3;
+const VECTOR_REPAIR_JITTER_RATIO = 0.1;
+
+function computeVectorRepairDelayMs(streak, config = {}, randomFn = Math.random) {
+    const baseMs = Number.isFinite(Number(config?.vectorRepairBaseDelayMs)) && Number(config.vectorRepairBaseDelayMs) > 0
+        ? Math.floor(Number(config.vectorRepairBaseDelayMs))
+        : VECTOR_REPAIR_BASE_DELAY_MS;
+    const maxMs = Number.isFinite(Number(config?.vectorRepairMaxDelayMs)) && Number(config.vectorRepairMaxDelayMs) >= baseMs
+        ? Math.floor(Number(config.vectorRepairMaxDelayMs))
+        : VECTOR_REPAIR_MAX_DELAY_MS;
+    const factor = Number.isFinite(Number(config?.vectorRepairBackoffFactor)) && Number(config.vectorRepairBackoffFactor) >= 1
+        ? Number(config.vectorRepairBackoffFactor)
+        : VECTOR_REPAIR_BACKOFF_FACTOR;
+    const jitterRatio = Number.isFinite(Number(config?.vectorRepairJitterRatio)) && Number(config.vectorRepairJitterRatio) >= 0
+        ? Number(config.vectorRepairJitterRatio)
+        : VECTOR_REPAIR_JITTER_RATIO;
+
+    const exp = Math.max(0, (Number(streak) || 1) - 1);
+    const rawDelay = Math.min(maxMs, Math.round(baseMs * Math.pow(factor, exp)));
+    const minFloor = Math.max(0, Number(config?.sqliteBusyRetryDelayMs) || 0);
+    const bounded = Math.max(rawDelay, minFloor);
+    if (jitterRatio <= 0) return bounded;
+    const jitter = Math.round(bounded * jitterRatio * Math.max(0, Math.min(1, randomFn())));
+    return Math.min(maxMs, bounded + jitter);
+}
+
 // 实现函数以 KnowledgeBaseManager 作为 this 执行，使状态所有权保持唯一；
 // 本模块拥有摄取行为，Manager 仅保留兼容门面。
 const implementations = {
 _queueDelete(filePath) {
         if (this._shuttingDown) return;
+        this._vectorRepairFiles?.delete(filePath);
         this.pendingDeletes.add(filePath);
         if (this.pendingDeletes.size >= this.config.maxDeleteBatchSize) {
             this._flushDeleteBatch();
@@ -90,12 +119,34 @@ async _flushBatch() {
         if (this.indexRecoveryActive) {
             return;
         }
+        const now = Date.now();
+        const repairFiles = this._vectorRepairFiles instanceof Set
+            ? this._vectorRepairFiles
+            : (this._vectorRepairFiles = new Set());
+        const pendingList = Array.from(this.pendingFiles);
+        const freshQueue = pendingList.filter(f => !repairFiles.has(f));
+        const repairQueue = pendingList.filter(f => repairFiles.has(f));
+        const cooldownUntil = Number(this._vectorRepairCooldownUntil) || 0;
+        const inRepairCooldown = cooldownUntil > now;
+
+        if (freshQueue.length === 0 && inRepairCooldown) {
+            const remainingMs = Math.max(100, cooldownUntil - now);
+            if (!this.batchTimer) {
+                this.batchTimer = setTimeout(() => {
+                    this.batchTimer = null;
+                    this._flushBatch();
+                }, remainingMs);
+            }
+            return;
+        }
+
         this.isProcessing = true;
         this.touchActivity?.();
         let retryDelayMs = 0;
 
-        // 1. 📋 准备批次：先从队列中取出，但不立即永久删除
-        const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
+        // 1. 📋 准备批次：优先处理非修复队列的新文件；处于修复退避期内不捎带旧修复文件
+        const eligibleFiles = inRepairCooldown ? freshQueue : [...freshQueue, ...repairQueue];
+        const batchFiles = eligibleFiles.slice(0, this.config.maxBatchSize);
         const batchIdentity = {
             operationId: crypto.randomUUID(),
             batchId: crypto.randomUUID(),
@@ -125,6 +176,7 @@ async _flushBatch() {
                     if ((this.watcherPathGenerations.get(absolute) || 0)
                         !== (batchPathGenerations.get(absolute) || 0)) continue;
                     this.pendingFiles.delete(filePath);
+                    repairFiles.delete(filePath);
                     this.fileRetryCount.delete(filePath);
                     this.databaseCoordinator?.notifyIndexedFilePaths([filePath], error);
                 }
@@ -226,6 +278,10 @@ async _flushBatch() {
             if (unstableFiles.size > 0) {
                 retryDelayMs = Math.max(500, Number(this.config.batchWindow) || 0);
             }
+            if (this.pendingFiles.size === 0) {
+                this._vectorRepairStreak = 0;
+                this._vectorRepairCooldownUntil = 0;
+            }
             if (docsByDiary.size === 0) return;
 
             // 2. 收集文本并在 Rust 内部解析可复用向量来源。
@@ -321,24 +377,44 @@ async _flushBatch() {
                 this.touchActivity?.();
             }
 
+            const chunkSuccessCount = chunkVectors.filter(Boolean).length;
             let tagVectors = [];
             if (newTags.length > 0) {
-                const tagLimit = 100;
-                for (let i = 0; i < newTags.length; i += tagLimit) {
-                    const batch = newTags.slice(i, i + tagLimit);
-                    const batchVectors = await getEmbeddingsBatch(batch, embeddingConfig);
-                    if (!Array.isArray(batchVectors) || batchVectors.length !== batch.length) {
-                        const error = new Error(
-                            `Embedding Tag response length mismatch: expected ${batch.length}, ` +
-                            `got ${Array.isArray(batchVectors) ? batchVectors.length : 'non-array'}`
-                        );
-                        error.code = 'EMBEDDING_RESPONSE_MISMATCH';
-                        throw error;
+                if (allChunksWithMeta.length > 0 && chunkSuccessCount === 0) {
+                    console.warn(
+                        `[KnowledgeBase] ⏸️ Skipping ${newTags.length} tag embedding(s) in this pass ` +
+                        `because all ${allChunksWithMeta.length} chunk embedding(s) failed.`
+                    );
+                    tagVectors = new Array(newTags.length).fill(null);
+                } else {
+                    const tagLimit = 100;
+                    for (let i = 0; i < newTags.length; i += tagLimit) {
+                        const batch = newTags.slice(i, i + tagLimit);
+                        const batchVectors = await getEmbeddingsBatch(batch, embeddingConfig);
+                        if (!Array.isArray(batchVectors) || batchVectors.length !== batch.length) {
+                            const error = new Error(
+                                `Embedding Tag response length mismatch: expected ${batch.length}, ` +
+                                `got ${Array.isArray(batchVectors) ? batchVectors.length : 'non-array'}`
+                            );
+                            error.code = 'EMBEDDING_RESPONSE_MISMATCH';
+                            throw error;
+                        }
+                        // null 仅表示对应位置失败；数量不匹配必须拒绝整个批次。
+                        tagVectors.push(...batchVectors);
+                        if (batchVectors.every(v => !v) && i + tagLimit < newTags.length) {
+                            const remainingTags = newTags.length - tagVectors.length;
+                            console.warn(
+                                `[KnowledgeBase] ⏸️ Stopping remaining ${remainingTags} tag embedding(s) ` +
+                                'in this pass after complete tag batch failure.'
+                            );
+                            while (tagVectors.length < newTags.length) {
+                                tagVectors.push(null);
+                            }
+                            break;
+                        }
                     }
-                    // null 仅表示对应位置失败；数量不匹配必须拒绝整个批次。
-                    tagVectors.push(...batchVectors);
+                    this.touchActivity?.();
                 }
-                this.touchActivity?.();
             }
 
             const missingChunkEmbeddingIndexes = new Set(
@@ -582,6 +658,7 @@ async _flushBatch() {
                 const relativePath = path.relative(this.config.rootPath, f).replace(/\\/g, '/');
                 if (retryablePaths.has(relativePath)) return;
                 if (incompleteFiles.has(relativePath)) {
+                    repairFiles.add(f);
                     console.warn(
                         `[KnowledgeBase] ⚠️ File "${relativePath}" committed with ` +
                         'missing embeddings; retaining it for the next repair pass.'
@@ -589,21 +666,33 @@ async _flushBatch() {
                     return;
                 }
                 this.pendingFiles.delete(f);
+                repairFiles.delete(f);
                 this._migrationEmbeddingFallbacks?.delete(relativePath);
                 this.fileRetryCount.delete(f); // 清空重试计数
                 this.databaseCoordinator?.notifyIndexedFilePaths([f]);
             });
 
             if (incompleteFiles.size > 0) {
-                retryDelayMs = Math.max(
-                    retryDelayMs,
-                    this.config.sqliteBusyRetryDelayMs,
-                    1000
+                const embeddingAttempts = allChunksWithMeta.length + newTags.length;
+                const embeddingSuccesses = chunkSuccessCount + tagVectors.filter(Boolean).length;
+                if (embeddingSuccesses > 0) {
+                    this._vectorRepairStreak = 0;
+                } else if (embeddingAttempts > 0 || incompleteFiles.size > 0) {
+                    this._vectorRepairStreak = (Number(this._vectorRepairStreak) || 0) + 1;
+                }
+                const repairDelayMs = computeVectorRepairDelayMs(
+                    this._vectorRepairStreak,
+                    this.config
                 );
+                this._vectorRepairCooldownUntil = Date.now() + repairDelayMs;
+                retryDelayMs = Math.max(retryDelayMs, repairDelayMs);
                 console.warn(
                     `[KnowledgeBase] 🛠️ ${incompleteFiles.size} file(s) remain queued ` +
-                    `for vector repair; retrying in ${retryDelayMs}ms.`
+                    `for vector repair (streak=${this._vectorRepairStreak}); retrying in ${retryDelayMs}ms.`
                 );
+            } else if (repairFiles.size === 0 || this.pendingFiles.size === 0) {
+                this._vectorRepairStreak = 0;
+                this._vectorRepairCooldownUntil = 0;
             }
 
             for (const dName of receipt.affectedDiaries || []) {
@@ -654,13 +743,22 @@ async _flushBatch() {
             } else if (/KNOWLEDGE_STORE_(?:SOURCE_SNAPSHOT_CHANGED|MODEL_CHANGED_DURING_EMBEDDING|FILE_VERSION_CONFLICT|BATCH_EXPIRED)/.test(String(e?.message))) {
                 retryDelayMs = Math.max(1000, this.config.sqliteBusyRetryDelayMs);
             } else if (e?.code === 'EMBEDDING_RESPONSE_MISMATCH') {
-                // 响应数量错位无法建立稳定 descriptor 映射，整批保留。
+                // 响应数量错位无法建立稳定 descriptor 映射，整批保留并按向量修复退避策略重试。
+                batchFiles.forEach(f => {
+                    if (this.pendingFiles.has(f)) repairFiles.add(f);
+                });
+                this._vectorRepairStreak = (Number(this._vectorRepairStreak) || 0) + 1;
+                const mismatchDelayMs = computeVectorRepairDelayMs(
+                    this._vectorRepairStreak,
+                    this.config
+                );
+                this._vectorRepairCooldownUntil = Date.now() + mismatchDelayMs;
                 retryDelayMs = Math.max(
                     this.config.sqliteBusyRetryDelayMs,
-                    1000
+                    mismatchDelayMs
                 );
                 console.warn(
-                    `[KnowledgeBase] ⚠️ Embedding response shape mismatch; ` +
+                    `[KnowledgeBase] ⚠️ Embedding response shape mismatch (streak=${this._vectorRepairStreak}); ` +
                     `${batchFiles.length} file(s) remain queued and will retry ` +
                     `in ${retryDelayMs}ms.`
                 );
@@ -685,7 +783,11 @@ async _flushBatch() {
             this.isProcessing = false;
             if (!this._shuttingDown && !this.databaseCorruptionDetected && this.pendingFiles.size > 0) {
                 if (retryDelayMs > 0) {
-                    setTimeout(() => this._flushBatch(), retryDelayMs);
+                    if (this.batchTimer) clearTimeout(this.batchTimer);
+                    this.batchTimer = setTimeout(() => {
+                        this.batchTimer = null;
+                        this._flushBatch();
+                    }, retryDelayMs);
                 } else {
                     setImmediate(() => this._flushBatch());
                 }
@@ -820,4 +922,5 @@ class IngestionPipeline {
     }
 }
 
+IngestionPipeline.computeVectorRepairDelayMs = computeVectorRepairDelayMs;
 module.exports = IngestionPipeline;
