@@ -1179,67 +1179,176 @@ class RAGDiaryPlugin {
     _extractContextDiaryPrefixes(messages) {
         const prefixes = new Set();
         const PREFIX_LEN = 80;
+        let protocolResilience = null;
+        try {
+            protocolResilience = require('../../modules/vcpProtocolResilience');
+        } catch (_) {
+            protocolResilience = null;
+        }
+        const resilienceEnabled = !!(protocolResilience && protocolResilience.ENABLED);
+
+        if (!resilienceEnabled) {
+            for (const msg of messages) {
+                if (msg.role !== 'assistant') continue;
+
+                const content = this._extractTextFromContent(msg.content);
+
+                if (!content.includes('TOOL_REQUEST')) continue;
+
+                // 匹配普通和 ESCAPE 形式的工具调用块。
+                // ESCAPE 形式常见于工具调用 Content 内可能包含「始」/「末」时，
+                // 例如：Content:「始ESCAPE」...「末」。
+                const blockRegex = /(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi;
+                let blockMatch;
+                while ((blockMatch = blockRegex.exec(content)) !== null) {
+                    const block = blockMatch[1] ?? blockMatch[2];
+
+                    // 这里只做最小识别：
+                    // 1. 已经位于 TOOL_REQUEST 块内；
+                    // 2. 块内包含 tool_name 与 DailyNote；
+                    // 3. 直接定位 Content 的前 80 个字符。
+                    // 不再解析 command，也不要求字段前必须有逗号或换行。
+                    const lowerBlock = block.toLowerCase();
+                    if (!lowerBlock.includes('tool_name')) continue;
+                    if (!lowerBlock.includes('dailynote')) continue;
+
+                    const extractContent = () => {
+                        const markers = [
+                            ['Content:「始ESCAPE」', '「末ESCAPE」'],
+                            ['Content:「始」', '「末」'],
+                            ['content:「始ESCAPE」', '「末ESCAPE」'],
+                            ['content:「始」', '「末」']
+                        ];
+
+                        for (const [opening, closing] of markers) {
+                            const start = block.indexOf(opening);
+                            if (start === -1) continue;
+
+                            const valueStart = start + opening.length;
+                            const valueEnd = block.indexOf(closing, valueStart);
+                            if (valueEnd === -1) continue;
+
+                            return block.substring(valueStart, valueEnd).trim();
+                        }
+
+                        // 字段名大小写兼容，但仍保持简单的直接定位逻辑。
+                        const contentLabelMatch = block.match(/content\s*:/i);
+                        if (!contentLabelMatch) return '';
+
+                        const tail = block.substring(contentLabelMatch.index + contentLabelMatch[0].length);
+                        const escapedOpening = tail.indexOf('「始ESCAPE」');
+                        if (escapedOpening !== -1) {
+                            const valueStart = escapedOpening + '「始ESCAPE」'.length;
+                            const valueEnd = tail.indexOf('「末ESCAPE」', valueStart);
+                            return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                        }
+
+                        const normalOpening = tail.indexOf('「始」');
+                        if (normalOpening !== -1) {
+                            const valueStart = normalOpening + '「始」'.length;
+                            const valueEnd = tail.indexOf('「末」', valueStart);
+                            return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                        }
+
+                        return '';
+                    };
+
+                    const diaryContent = extractContent();
+                    if (diaryContent) {
+                        const prefix = diaryContent.substring(0, PREFIX_LEN).trim();
+                        if (prefix.length > 0) {
+                            prefixes.add(prefix);
+                        }
+                    }
+                }
+            }
+
+            if (prefixes.size > 0) {
+                console.log(`[RAGDiaryPlugin] 🧹 Context Dedup: 从上下文提取了 ${prefixes.size} 条日记写入前缀索引`);
+            }
+            return prefixes;
+        }
 
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
 
-            const content = this._extractTextFromContent(msg.content);
+            let content = this._extractTextFromContent(msg.content);
+            content = protocolResilience.stripResilienceMarkers(content);
 
-            if (!content.includes('TOOL_REQUEST')) continue;
+            if (!/TOOL_REQUEST/i.test(content)) continue;
 
             // 匹配普通和 ESCAPE 形式的工具调用块。
             // ESCAPE 形式常见于工具调用 Content 内可能包含「始」/「末」时，
             // 例如：Content:「始ESCAPE」...「末」。
-            const blockRegex = /(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi;
-            let blockMatch;
-            while ((blockMatch = blockRegex.exec(content)) !== null) {
-                const block = blockMatch[1] ?? blockMatch[2];
+            const openRe = /<{2,4}\[?(?:TOOL_REQUEST_ESCAPE|TOOL_REQUEST)\]?>{2,4}/gi;
+            let scanCursor = 0;
+            while (scanCursor < content.length) {
+                openRe.lastIndex = scanCursor;
+                const openM = openRe.exec(content);
+                if (!openM) break;
+                let scan = openM.index + openM[0].length;
+                let closeM = null;
+                let jumpedNext = -1;
+                const nextOpenRe = /<{2,4}\[?(?:TOOL_REQUEST_ESCAPE|TOOL_REQUEST)\]?>{2,4}/gi;
+                while (scan < content.length) {
+                    const escOpenRe = /[「{]始(?:ESCAPE|escape)[」}]/gi;
+                    const endRe = /<{2,4}\[?(?:END_TOOL_REQUEST_ESCAPE|END_TOOL_REQUEST)\]?>{2,4}/gi;
+                    escOpenRe.lastIndex = scan;
+                    endRe.lastIndex = scan;
+                    nextOpenRe.lastIndex = scan;
+                    const escM = escOpenRe.exec(content);
+                    const endCand = endRe.exec(content);
+                    const nextOpenM = nextOpenRe.exec(content);
+                    if (escM && (!endCand || escM.index < endCand.index) && (!nextOpenM || escM.index < nextOpenM.index)) {
+                        const escCloseRe = /[「{]末(?:ESCAPE|escape)[」}]/gi;
+                        escCloseRe.lastIndex = escM.index + escM[0].length;
+                        const escCloseM = escCloseRe.exec(content);
+                        if (!escCloseM) break;
+                        scan = escCloseM.index + escCloseM[0].length;
+                        continue;
+                    }
+                    if (nextOpenM && (!endCand || nextOpenM.index < endCand.index)) {
+                        jumpedNext = nextOpenM.index;
+                        break;
+                    }
+                    if (!endCand) break;
+                    closeM = endCand;
+                    break;
+                }
+                if (!closeM) {
+                    scanCursor = jumpedNext !== -1 ? jumpedNext : (openM.index + openM[0].length);
+                    continue;
+                }
+                const block = content.slice(openM.index + openM[0].length, closeM.index);
+                scanCursor = closeM.index + closeM[0].length;
 
                 // 这里只做最小识别：
                 // 1. 已经位于 TOOL_REQUEST 块内；
                 // 2. 块内包含 tool_name 与 DailyNote；
                 // 3. 直接定位 Content 的前 80 个字符。
-                // 不再解析 command，也不要求字段前必须有逗号或换行。
                 const lowerBlock = block.toLowerCase();
                 if (!lowerBlock.includes('tool_name')) continue;
                 if (!lowerBlock.includes('dailynote')) continue;
 
                 const extractContent = () => {
-                    const markers = [
-                        ['Content:「始ESCAPE」', '「末ESCAPE」'],
-                        ['Content:「始」', '「末」'],
-                        ['content:「始ESCAPE」', '「末ESCAPE」'],
-                        ['content:「始」', '「末」']
-                    ];
-
-                    for (const [opening, closing] of markers) {
-                        const start = block.indexOf(opening);
-                        if (start === -1) continue;
-
-                        const valueStart = start + opening.length;
-                        const valueEnd = block.indexOf(closing, valueStart);
-                        if (valueEnd === -1) continue;
-
-                        return block.substring(valueStart, valueEnd).trim();
-                    }
-
-                    // 字段名大小写兼容，但仍保持简单的直接定位逻辑。
-                    const contentLabelMatch = block.match(/content\s*:/i);
+                    const contentLabelMatch = block.match(/content\s*[:：]/i);
                     if (!contentLabelMatch) return '';
 
                     const tail = block.substring(contentLabelMatch.index + contentLabelMatch[0].length);
-                    const escapedOpening = tail.indexOf('「始ESCAPE」');
-                    if (escapedOpening !== -1) {
-                        const valueStart = escapedOpening + '「始ESCAPE」'.length;
-                        const valueEnd = tail.indexOf('「末ESCAPE」', valueStart);
-                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    const escOpenM = tail.match(/^\s*([「{])始(?:ESCAPE|escape)([」}])/i);
+                    if (escOpenM) {
+                        const valueStart = escOpenM[0].length;
+                        const closeRe = /[「{]末(?:ESCAPE|escape)[」}]/i;
+                        const closeHit = closeRe.exec(tail.slice(valueStart));
+                        return closeHit ? tail.slice(valueStart, valueStart + closeHit.index).trim() : '';
                     }
 
-                    const normalOpening = tail.indexOf('「始」');
-                    if (normalOpening !== -1) {
-                        const valueStart = normalOpening + '「始」'.length;
-                        const valueEnd = tail.indexOf('「末」', valueStart);
-                        return valueEnd === -1 ? '' : tail.substring(valueStart, valueEnd).trim();
+                    const normOpenM = tail.match(/^\s*[「{]始[」}]/);
+                    if (normOpenM) {
+                        const valueStart = normOpenM[0].length;
+                        const closeRe = /[「{]末[」}]/;
+                        const closeHit = closeRe.exec(tail.slice(valueStart));
+                        return closeHit ? tail.slice(valueStart, valueStart + closeHit.index).trim() : '';
                     }
 
                     return '';
@@ -3147,7 +3256,8 @@ class RAGDiaryPlugin {
                 .replace(/[A-Za-z0-9+/]{300,}={0,2}/g, '[Long Data Omitted]');
         }
 
-        const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolContentForVector));
+        const { stripResilienceMarkers } = require('../../modules/vcpProtocolResilience');
+        const sanitizedToolContent = this._stripEmoji(this._stripHtml(stripResilienceMarkers(toolContentForVector)));
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([

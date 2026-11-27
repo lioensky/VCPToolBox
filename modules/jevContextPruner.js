@@ -34,6 +34,13 @@ const {
     probabilityOf
 } = require('./jevScorer');
 
+let protocolResilience = null;
+try {
+    protocolResilience = require('./vcpProtocolResilience');
+} catch (_) {
+    protocolResilience = null;
+}
+
 const DEFAULTS = Object.freeze({
     enabled: false,
     chunkSize: 24,
@@ -123,10 +130,27 @@ async function scoreMessages(p = {}) {
     const results = await Promise.all(chunks.map(async (chunk, chunkNo) => {
         const state = {
             current_request: goal || '(未提供)',
-            messages: chunk.map((msgIndex, i) => ({
-                role: String(messages[msgIndex] && messages[msgIndex].role || 'unknown'),
-                text: truncate(extractText(messages[msgIndex] && messages[msgIndex].content), cfg.maxMessageChars)
-            }))
+            messages: chunk.map((msgIndex) => {
+                const rawMsg = messages[msgIndex];
+                const role = String(rawMsg && rawMsg.role || 'unknown');
+                let rawText = extractText(rawMsg && rawMsg.content);
+                if (role === 'assistant' && rawText && protocolResilience && protocolResilience.ENABLED) {
+                    try {
+                        if (typeof protocolResilience.stripResilienceMarkers === 'function') {
+                            rawText = protocolResilience.stripResilienceMarkers(rawText);
+                        }
+                        if (typeof protocolResilience.stripThoughtChainsSafe === 'function') {
+                            rawText = protocolResilience.stripThoughtChainsSafe(rawText, { trim: false });
+                        }
+                    } catch (_) {
+                        // 兜底保留原文本
+                    }
+                }
+                return {
+                    role,
+                    text: truncate(rawText, cfg.maxMessageChars)
+                };
+            })
         };
         const questions = {};
         chunk.forEach((msgIndex, i) => {

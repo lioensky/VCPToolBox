@@ -222,13 +222,45 @@ class TDBPlaceholderProcessor {
             return processor.normalizeBM25QueryInput(text);
         }
 
-        return String(text || '')
+        let cleaned = String(text || '');
+        let resilienceOn = false;
+        try {
+            const pr = require('../../modules/vcpProtocolResilience');
+            resilienceOn = !!(pr && pr.ENABLED);
+            if (resilienceOn) {
+                if (typeof pr.stripResilienceMarkers === 'function') {
+                    cleaned = pr.stripResilienceMarkers(cleaned);
+                }
+                if (typeof pr.stripThoughtChainsSafe === 'function') {
+                    cleaned = pr.stripThoughtChainsSafe(cleaned, { trim: false });
+                }
+            }
+        } catch (e) {}
+        if (!resilienceOn) {
+            return cleaned
+                .replace(/\{\{.*?\}\}/gs, ' ')
+                .replace(/\[\[.*?\]\]/gs, ' ')
+                .replace(/<<.*?>>/gs, ' ')
+                .replace(/《《.*?》》/gs, ' ')
+                .replace(/<<<\[TOOL_REQUEST\]>>>[\s\S]*?<<<\[END_TOOL_REQUEST\]>>>/g, ' ')
+                .replace(/「始」[\s\S]*?「末」/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+        try {
+            const DirectDiaryTextProcessor = require('./DirectDiaryTextProcessor.js');
+            if (typeof DirectDiaryTextProcessor?.stripClosedToolRequestBlocksLinear === 'function') {
+                cleaned = DirectDiaryTextProcessor.stripClosedToolRequestBlocksLinear(cleaned);
+            }
+            if (typeof DirectDiaryTextProcessor?.stripPairedDelimitersLinear === 'function') {
+                cleaned = DirectDiaryTextProcessor.stripPairedDelimitersLinear(cleaned);
+            }
+        } catch (e) {}
+        return cleaned
             .replace(/\{\{.*?\}\}/gs, ' ')
             .replace(/\[\[.*?\]\]/gs, ' ')
             .replace(/<<.*?>>/gs, ' ')
             .replace(/《《.*?》》/gs, ' ')
-            .replace(/<<<\[TOOL_REQUEST\]>>>[\s\S]*?<<<\[END_TOOL_REQUEST\]>>>/g, ' ')
-            .replace(/「始」[\s\S]*?「末」/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
     }

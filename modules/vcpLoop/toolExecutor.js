@@ -8,6 +8,7 @@ const { findLastRealUserMessage } = require('../messageProcessor');
 const toolCallRecordStore = require('../toolCallRecordStore');
 const jevRiverReranker = require('../jevRiverReranker'); // river semantic:N 的级联第二阶段
 const jevToolCallExp = require('../jevToolCallExp');
+const protocolResilience = require('../vcpProtocolResilience');
 const { NATIVE_CALL_ID } = require('../nativeToolLoop');
 
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
@@ -214,8 +215,14 @@ class ToolExecutor {
    * @returns {Promise<{success: boolean, content: Array, contentForAI?: Array, error?: string, raw?: any}>}
    */
   async execute(toolCall, clientIp, contextMessages = []) {
-    const { name, args, river, vref, archeryNoReply } = toolCall;
-    if (toolCall[JEV_PLANNING_ERROR]) {
+    // === 协议自愈前置拦截：协议格式错误绝不进入插件真实执行 ===
+    if (toolCall?.isProtocolError || toolCall?.isProtocolGuidance) {
+      return protocolResilience.createGuidanceResult(toolCall);
+    }
+
+    const { name, river, vref, archeryNoReply } = toolCall || {};
+    const args = (toolCall && toolCall.args && typeof toolCall.args === 'object') ? toolCall.args : {};
+    if (toolCall?.[JEV_PLANNING_ERROR]) {
       return this._createErrorResult(name, toolCall[JEV_PLANNING_ERROR]);
     }
     if (jevToolCallExp.isVirtualToolName(name)) {
@@ -351,7 +358,7 @@ class ToolExecutor {
         args.river_context = textOnly.slice(-n);
       }
     }
-    if (this.debugMode && args.river_context) {
+    if (this.debugMode && args?.river_context) {
       console.log(`[ToolExecutor] river_context injected: ${args.river_context.length} messages`);
     }
 
@@ -419,7 +426,7 @@ class ToolExecutor {
 
     // 执行插件
     try {
-      if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
+      if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args || {}).join(', ')}`);
       const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post', {
         archeryNoReply: !!archeryNoReply,
         toolCallRecordHandle: recordHandle
@@ -448,8 +455,9 @@ class ToolExecutor {
    * 批量执行工具调用
    */
   async executeAll(toolCalls, clientIp, contextMessages = []) {
+    const safeCalls = Array.isArray(toolCalls) ? toolCalls : [];
     return Promise.all(
-      toolCalls.map(tc => this.execute(tc, clientIp, contextMessages))
+      safeCalls.map(tc => this.execute(tc, clientIp, contextMessages))
     );
   }
 

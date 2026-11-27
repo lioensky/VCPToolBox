@@ -72,6 +72,8 @@ class ContextVectorManager {
 
     _normalize(text) {
         if (!text) return '';
+        const { stripResilienceMarkers } = require('../../modules/vcpProtocolResilience');
+        text = stripResilienceMarkers(text);
         // 复用插件的清理逻辑
         let cleaned = this.plugin._stripHtml(text);
         cleaned = this.plugin._stripEmoji(cleaned);

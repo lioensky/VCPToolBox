@@ -19,6 +19,12 @@ function hash(value) {
 }
 
 const TimelinePlaceholderProcessor = require('../RAGDiaryPlugin/TimelinePlaceholderProcessor');
+let protocolResilience = null;
+try {
+    protocolResilience = require('../../modules/vcpProtocolResilience');
+} catch (_) {
+    protocolResilience = null;
+}
 const PLACEHOLDER_REGEX = /\[\[VCPTimeLine(Summary|Recall)?::([^:\]\r\n]+?)(?::([^:\]\r\n]+?))?(?::([^:\]\r\n]+?))?\]\]/g;
 const HEADER_REGEX = /^\[?\s*(\d{4})[.-](\d{1,2})[.-](\d{1,2})(?:\.\d+)?\s*\]?\s*-\s*(.+?)\s*$/;
 const MONTH_FILE_REGEX = /^(\d{4})-(\d{2})\.md$/i;
@@ -702,6 +708,13 @@ class VCPTimeLine {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         let stage = 'response_headers';
+        const resilienceEnabled = !!(protocolResilience && protocolResilience.ENABLED);
+        const rawSysPrompt = String(systemPrompt || '');
+        const effectiveSystemPrompt = resilienceEnabled
+            ? (rawSysPrompt.includes('[[VCPToolUse=Forbidden]]')
+                ? rawSysPrompt
+                : `[[VCPToolUse=Forbidden]]\n${rawSysPrompt}`)
+            : systemPrompt;
         try {
             const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
                 method: 'POST',
@@ -712,7 +725,7 @@ class VCPTimeLine {
                     stream: false,
                     max_tokens: maxTokens,
                     messages: [
-                        { role: 'system', content: systemPrompt },
+                        { role: 'system', content: effectiveSystemPrompt },
                         { role: 'user', content: userPrompt }
                     ]
                 })
@@ -721,7 +734,17 @@ class VCPTimeLine {
             const text = await response.text();
             if (!response.ok) throw new Error(`模型返回 ${response.status}: ${text.slice(0, 500)}`);
             const payload = JSON.parse(text);
-            const output = payload?.choices?.[0]?.message?.content;
+            let output = payload?.choices?.[0]?.message?.content;
+            if (typeof output === 'string' && output.trim()
+                && resilienceEnabled
+                && protocolResilience
+                && typeof protocolResilience.stripResilienceMarkers === 'function') {
+                try {
+                    output = protocolResilience.stripResilienceMarkers(output);
+                } catch (_) {
+                    // 兜底保留原输出
+                }
+            }
             if (typeof output !== 'string' || !output.trim()) throw new Error('模型未返回有效内容');
             return output.trim();
         } catch (error) {

@@ -160,23 +160,82 @@ function stripEmoji(text) {
 }
 
 /** 移除工具调用技术标记，保留语义内容。 */
-function stripToolMarkers(text) {
+function stripToolMarkers(text, options = {}) {
     if (!text || typeof text !== 'string') return text;
 
-    if (!text.includes('<<<') && !/[「」『』]/.test(text)) {
+    let resilienceOn = options.resilienceEnabled;
+    if (resilienceOn === undefined) {
+        try {
+            const { isResilienceEnabled } = require('../../modules/vcpProtocolResilience');
+            resilienceOn = typeof isResilienceEnabled === 'function' && isResilienceEnabled();
+        } catch (e) {
+            resilienceOn = false;
+        }
+    }
+
+    if (!resilienceOn) {
+        if (!text.includes('<<<') && !/[「」『』]/.test(text)) {
+            return text
+                .replace(/[ \t]+/g, ' ')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        }
+        const origBlacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
+        const origBlacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
+        const origProcessed = text.replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi, (match, escapedBlock, normalBlock) => {
+            const block = escapedBlock ?? normalBlock;
+            const results = [];
+            const regex = /(\w+):\s*(?:[「『]始ESCAPE[」』]([\s\S]*?)[「『]末ESCAPE[」』]|[「『]始[」』]([\s\S]*?)[「『]末[」』])/gi;
+            let m;
+            while ((m = regex.exec(block)) !== null) {
+                const key = m[1].toLowerCase();
+                const rawVal = m[2] ?? m[3] ?? '';
+                const val = rawVal.trim();
+                const lowerVal = val.toLowerCase();
+                if (origBlacklistedKeys.includes(key)) continue;
+                if (origBlacklistedValues.some(bv => lowerVal.includes(bv))) continue;
+                if (val.length > 1) results.push(val);
+            }
+            if (results.length === 0) {
+                return block.split('\n')
+                    .map(line => {
+                        const cleanLine = line
+                            .replace(/\w+:\s*(?:[「『]始ESCAPE[」』]|[「『]始[」』])/gi, '')
+                            .replace(/(?:[「『]末ESCAPE[」』]|[「『]末[」』])/gi, '')
+                            .trim();
+                        const lower = cleanLine.toLowerCase();
+                        if (origBlacklistedValues.some(bv => lower.includes(bv))) return '';
+                        return cleanLine;
+                    })
+                    .filter(Boolean)
+                    .join('\n');
+            }
+            return results.join('\n');
+        });
+        return origProcessed
+            .replace(/<<<\[?(?:TOOL_REQUEST|TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
+            .replace(/<<<\[?(?:END_TOOL_REQUEST|END_TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
+            .replace(/[「」『』]始(?:ESCAPE)?[「」『』]/gi, '')
+            .replace(/[「」『』]末(?:ESCAPE)?[「」『』]/gi, '')
+            .replace(/[「」『』]/g, '')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    if (!text.includes('<<') && !/[「」『』{}]/.test(text)) {
         return text
             .replace(/[ \t]+/g, ' ')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
     }
 
-    const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
+    const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid', 'valet'];
     const blacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
 
-    let processed = text.replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>)/gi, (match, escapedBlock, normalBlock) => {
-        const block = escapedBlock ?? normalBlock;
+    const stripSingleBlock = (block) => {
         const results = [];
-        const regex = /(\w+):\s*(?:[「『]始ESCAPE[」』]([\s\S]*?)[「『]末ESCAPE[」』]|[「『]始[」』]([\s\S]*?)[「『]末[」』])/gi;
+        const regex = /(\w+)\s*[:：]\s*(?:[「『{]始ESCAPE[」』}]([\s\S]*?)[「『{]末ESCAPE[」』}]|[「『{]始[」』}]([\s\S]*?)[「『{]末[」』}])/gi;
         let m;
 
         while ((m = regex.exec(block)) !== null) {
@@ -194,8 +253,8 @@ function stripToolMarkers(text) {
             return block.split('\n')
                 .map(line => {
                     const cleanLine = line
-                        .replace(/\w+:\s*(?:[「『]始ESCAPE[」』]|[「『]始[」』])/gi, '')
-                        .replace(/(?:[「『]末ESCAPE[」』]|[「『]末[」』])/gi, '')
+                        .replace(/\w+\s*[:：]\s*(?:[「『{]始(?:ESCAPE)?[」』}])/gi, '')
+                        .replace(/(?:[「『{]末(?:ESCAPE)?[」』}])/gi, '')
                         .trim();
                     const lower = cleanLine.toLowerCase();
                     if (blacklistedValues.some(bv => lower.includes(bv))) return '';
@@ -205,13 +264,56 @@ function stripToolMarkers(text) {
                 .join('\n');
         }
         return results.join('\n');
-    });
+    };
+
+    // 转义感知扫描，避免 ESCAPE 字段内嵌闭标早断，并支持 2~4 尖括号模糊外框
+    let processed = '';
+    let cursor = 0;
+    const openBlockRe = /<{2,4}\[?(?:TOOL_REQUEST_ESCAPE|TOOL_REQUEST)\]?>{2,4}/gi;
+    while (cursor < text.length) {
+        openBlockRe.lastIndex = cursor;
+        const openM = openBlockRe.exec(text);
+        if (!openM) {
+            processed += text.slice(cursor);
+            break;
+        }
+        processed += text.slice(cursor, openM.index);
+        let scan = openM.index + openM[0].length;
+        let closeMatch = null;
+        while (scan < text.length) {
+            const escOpenRe = /[「『{]始(?:ESCAPE|escape)[」』}]/gi;
+            const endBlockRe = /<{2,4}\[?(?:END_TOOL_REQUEST_ESCAPE|END_TOOL_REQUEST)\]?>{2,4}/gi;
+            escOpenRe.lastIndex = scan;
+            endBlockRe.lastIndex = scan;
+            const escM = escOpenRe.exec(text);
+            const endM = endBlockRe.exec(text);
+            if (!endM) break;
+            if (escM && escM.index < endM.index) {
+                const escCloseRe = /[「『{]末(?:ESCAPE|escape)[」』}]/gi;
+                escCloseRe.lastIndex = escM.index + escM[0].length;
+                const escCloseM = escCloseRe.exec(text);
+                if (!escCloseM) break;
+                scan = escCloseM.index + escCloseM[0].length;
+                continue;
+            }
+            closeMatch = endM;
+            break;
+        }
+        if (!closeMatch) {
+            processed += openM[0];
+            cursor = openM.index + openM[0].length;
+            continue;
+        }
+        const innerBlock = text.slice(openM.index + openM[0].length, closeMatch.index);
+        processed += stripSingleBlock(innerBlock);
+        cursor = closeMatch.index + closeMatch[0].length;
+    }
 
     return processed
-        .replace(/<<<\[?(?:TOOL_REQUEST|TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
-        .replace(/<<<\[?(?:END_TOOL_REQUEST|END_TOOL_REQUEST_ESCAPE)\]?>>>/gi, '')
-        .replace(/[「」『』]始(?:ESCAPE)?[「」『』]/gi, '')
-        .replace(/[「」『』]末(?:ESCAPE)?[「」『』]/gi, '')
+        .replace(/<{2,4}\[?(?:TOOL_REQUEST|TOOL_REQUEST_ESCAPE)\]?>{2,4}/gi, '')
+        .replace(/<{2,4}\[?(?:END_TOOL_REQUEST|END_TOOL_REQUEST_ESCAPE)\]?>{2,4}/gi, '')
+        .replace(/[「」『』{]始(?:ESCAPE)?[「」『』}]/gi, '')
+        .replace(/[「」『』{]末(?:ESCAPE)?[「」『』}]/gi, '')
         .replace(/[「」『』]/g, '')
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n')
@@ -247,7 +349,10 @@ function stripClawMailInjectedPrompt(text) {
 function sanitizeForEmbedding(content, role) {
     if (!content || typeof content !== 'string') return '';
 
-    const cacheKey = `${role || ''}::${content}`;
+    const { stripResilienceMarkers, stripThoughtChainsSafe, isResilienceEnabled } = require('../../modules/vcpProtocolResilience');
+    const resilienceOn = typeof isResilienceEnabled === 'function' && isResilienceEnabled();
+    const resilienceFlag = resilienceOn ? '1' : '0';
+    const cacheKey = `${role || ''}::r${resilienceFlag}::${content}`;
     const cached = getLruCache(sanitizeEmbeddingCache, cacheKey);
     if (cached !== undefined) return cached;
 
@@ -258,10 +363,18 @@ function sanitizeForEmbedding(content, role) {
     } else if (role === 'assistant') {
         // V4.3: 不剔除 @tag，将其视为正常上下文语义的一部分。
     }
+    if (resilienceOn) {
+        processed = stripResilienceMarkers(processed);
+        if (typeof stripThoughtChainsSafe === 'function') {
+            try {
+                processed = stripThoughtChainsSafe(processed, { trim: false });
+            } catch (e) {}
+        }
+    }
 
     processed = stripHtml(processed);
     processed = stripEmoji(processed);
-    processed = stripToolMarkers(processed);
+    processed = stripToolMarkers(processed, { resilienceEnabled: resilienceOn });
     processed = processed.replace(/<\|([^|]+)\|>/g, '$1');
 
     const finalResult = processed.trim();

@@ -1,3 +1,55 @@
+
+let protocolResilience = null;
+try {
+    protocolResilience = require('../../modules/vcpProtocolResilience');
+} catch (e) {}
+
+function stripResilienceMarkersIfPresent(text) {
+    if (typeof text !== 'string') return text;
+    if (protocolResilience && typeof protocolResilience.stripResilienceMarkers === 'function') {
+        return protocolResilience.stripResilienceMarkers(text);
+    }
+    return text;
+}
+
+let thinkingMaskHelper = null;
+try {
+    thinkingMaskHelper = require('../../modules/vcpProtocolResilience/thinkingMask');
+} catch (e) {}
+
+function maskProtectedRegionsForThinking(text) {
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.maskProtectedRegionsForThinking === 'function') {
+        return thinkingMaskHelper.maskProtectedRegionsForThinking(text);
+    }
+    if (typeof text !== 'string') return { text, masks: [] };
+    const masks = [];
+    const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const pushMask = (chunk) => {
+        const token = `__VCP_MASK_${nonce}_${masks.length}__`;
+        masks.push({ token, content: chunk });
+        return token;
+    };
+    let masked = text.replace(/(^|\n)([ \t]{0,3})(`{3,}|~{3,})[^\n]*\r?\n(?:[\s\S]*?\r?\n)?[ \t]{0,3}\3+[ \t]*(?=\r?\n|$)/g, (match, prefix) => {
+        return prefix + pushMask(match.slice(prefix.length));
+    });
+    masked = masked.replace(/<<<DailyNoteStart>>>(?:(?!<<<DailyNoteStart>>>)[\s\S])*?<<<DailyNoteEnd>>>/g, pushMask);
+    masked = masked.replace(/(?:「始|\{始)(?:ESCAPE|escape)(?:」|\})[\s\S]*?(?:「末|\{末)(?:ESCAPE|escape)(?:」|\})/gi, pushMask);
+    return { text: masked, masks };
+}
+
+function unmaskProtectedRegionsForThinking(text, masks) {
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.unmaskProtectedRegionsForThinking === 'function') {
+        return thinkingMaskHelper.unmaskProtectedRegionsForThinking(text, masks);
+    }
+    if (!masks || !masks.length) return text;
+    let result = text;
+    for (let i = masks.length - 1; i >= 0; i--) {
+        const { token, content } = masks[i];
+        result = result.split(token).join(content);
+    }
+    return result;
+}
+
 // AgentAssistant.js (Service Module)
 const fs = require('fs');
 const path = require('path');
@@ -23,6 +75,7 @@ let DEBUG_MODE;
 let VCP_API_TARGET_URL;
 let REASONING_TO_CONTENT_ENABLED;
 let REASONING_TO_CONTENT_TAG;
+let RAW_REASONING_TO_CONTENT_TAG = '';
 let REASONING_TO_CONTENT_MODELS;
 
 // --- Task Delegation Config Variables ---
@@ -56,6 +109,7 @@ function initialize(config, dependencies) {
     VCP_SERVER_ACCESS_KEY = config.Key;
     DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
     REASONING_TO_CONTENT_ENABLED = String(config.ReasoningToContentEnabled || 'false').toLowerCase() === 'true';
+    RAW_REASONING_TO_CONTENT_TAG = String(config.ReasoningToContentTag ?? process.env.REASONING_TO_CONTENT_TAG ?? '').trim().toLowerCase();
     REASONING_TO_CONTENT_TAG = normalizeReasoningTag(config.ReasoningToContentTag);
     REASONING_TO_CONTENT_MODELS = normalizeReasoningModelFilters(config.ReasoningToContentModel);
     // 使用 127.0.0.1 避开某些系统上 localhost 解析到 IPv6 (::1) 导致的延迟
@@ -81,6 +135,7 @@ function initialize(config, dependencies) {
 
     if (cleanupInterval) clearInterval(cleanupInterval);
     cleanupInterval = setInterval(periodicCleanup, 60 * 60 * 1000);
+    if (cleanupInterval && typeof cleanupInterval.unref === 'function') cleanupInterval.unref();
 
     console.log('[AgentAssistant Service] Initialized successfully.');
 }
@@ -316,43 +371,74 @@ function awardAgentPoints(agentBaseName, agentName, points, reason) {
 function removeVCPThinkingChain(text, modelName = '') {
     if (typeof text !== 'string') return text;
 
-    let result = text;
-    const startMarker = '[--- VCP元思考链:';
-    const endMarker = '[--- 元思考链结束 ---]';
-
-    // 循环移除所有思维链（可能存在多个）
-    while (true) {
-        const startIndex = result.indexOf(startMarker);
-        if (startIndex === -1) break;
-
-        const endIndex = result.indexOf(endMarker, startIndex);
-        if (endIndex === -1) {
-            // 找不到结束标记时，移除从开始标记到末尾的内容
-            result = result.substring(0, startIndex).trimEnd();
-            break;
+    if (!(protocolResilience && protocolResilience.ENABLED)) {
+        let result = text;
+        const startMarker = '[--- VCP元思考链:';
+        const endMarker = '[--- 元思考链结束 ---]';
+        while (true) {
+            const startIndex = result.indexOf(startMarker);
+            if (startIndex === -1) break;
+            const endIndex = result.indexOf(endMarker, startIndex);
+            if (endIndex === -1) {
+                result = result.substring(0, startIndex).trimEnd();
+                break;
+            }
+            result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
         }
-
-        // 移除从开始标记到结束标记（包括结束标记）的内容
-        result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
+        if (shouldConvertReasoningForModel(
+            modelName,
+            REASONING_TO_CONTENT_ENABLED,
+            REASONING_TO_CONTENT_MODELS
+        )) {
+            const tagName = String(REASONING_TO_CONTENT_TAG || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (tagName) {
+                const completeBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>\\s*`, 'gi');
+                const danglingBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*$`, 'gi');
+                result = result
+                    .replace(completeBlockPattern, '')
+                    .replace(danglingBlockPattern, '');
+            }
+        }
+        return result.replace(/\n{3,}/g, '\n\n').trim();
     }
 
+    let extraTag = '';
     if (shouldConvertReasoningForModel(
         modelName,
         REASONING_TO_CONTENT_ENABLED,
         REASONING_TO_CONTENT_MODELS
     )) {
-        const tagName = REASONING_TO_CONTENT_TAG;
-        const completeBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>\\s*`, 'gi');
-        const danglingBlockPattern = new RegExp(`<${tagName}>[\\s\\S]*$`, 'gi');
-        result = result
-            .replace(completeBlockPattern, '')
-            .replace(danglingBlockPattern, '');
+        extraTag = RAW_REASONING_TO_CONTENT_TAG || REASONING_TO_CONTENT_TAG || String(process.env.REASONING_TO_CONTENT_TAG || '').trim().toLowerCase() || 'think';
     }
 
-    // 清理多余的连续空白行
-    result = result.replace(/\n{3,}/g, '\n\n').trim();
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.stripThoughtChainsSafe === 'function') {
+        return thinkingMaskHelper.stripThoughtChainsSafe(text, { reasoningTag: extraTag, trim: true });
+    }
 
-    return result;
+    const { text: masked, masks } = maskProtectedRegionsForThinking(text);
+    const THOUGHT_CHAIN_REGEX = /^[ \t]*\[--- VCP元思考链(?:(?!---\]).)*?---\](?:[ \t]*\r?\n[\s\S]*?^[ \t]*|[^\r\n]*?)\[--- 元思考链结束 ---\](?:[ \t]*\r?\n|[ \t]*)/gm;
+    const CONVENTIONAL_THOUGHT_REGEX = /^[ \t]*<(think(?:ing)?|thought(?:s)?|antthinking)(?=[ \t\r\n>])[^>]*>[ \t]*\r?\n[\s\S]*?^[ \t]*<\/\1[ \t]*>(?:[ \t]*\r?\n|[ \t]*)/gim;
+    let cleaned = masked.replace(THOUGHT_CHAIN_REGEX, '').replace(CONVENTIONAL_THOUGHT_REGEX, '');
+    const danglingConventional = /(?:^|\r?\n)[ \t]*<(think(?:ing)?|thought(?:s)?|antthinking)(?=[ \t\r\n>])[^>]*>[ \t]*(?:\r?\n|$)(?![\s\S]*?<\/\1[ \t]*>)[\s\S]*$/i;
+    const danglingVCP = /(?:^|\r?\n)[ \t]*\[--- VCP元思考链(?:(?:(?!---\]).)*?---\][ \t]*(?:\r?\n|$)|(?![^\r\n]*---\])[^\r\n]*(?:\r?\n|$))(?![\s\S]*?\[--- 元思考链结束 ---\])[\s\S]*$/;
+    cleaned = cleaned.replace(danglingVCP, '').replace(danglingConventional, '');
+
+    if (extraTag) {
+        const normTag = String(extraTag).trim();
+        if (normTag) {
+            const safeTag = normTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const leadingInlineRe = new RegExp(`^[ \\t]*<${safeTag}(?=[ \\t\\r\\n>])[^>]*>[\\s\\S]*?<\\/${safeTag}[ \\t]*>[ \\t]*(?:\\r?\\n)?`, 'i');
+            cleaned = cleaned.replace(leadingInlineRe, '');
+            if (!['think', 'thinking', 'thought', 'thoughts', 'antthinking'].includes(normTag.toLowerCase())) {
+                const completeBlockPattern = new RegExp(`^[ \\t]*<${safeTag}(?=[ \\t\\r\\n>])[^>]*>[ \\t]*\\r?\\n[\\s\\S]*?^[ \\t]*<\\/${safeTag}[ \\t]*>(?:[ \\t]*\\r?\\n|[ \\t]*)`, 'gim');
+                const danglingBlockPattern = new RegExp(`(?:^|\\r?\\n)[ \\t]*<${safeTag}(?=[ \\t\\r\\n>])[^>]*>[ \\t]*(?:\\r?\\n|$)(?![\\s\\S]*?<\\/${safeTag}[ \\t]*>)[\\s\\S]*$`, 'i');
+                cleaned = cleaned.replace(completeBlockPattern, '').replace(danglingBlockPattern, '');
+            }
+        }
+    }
+
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    return unmaskProtectedRegionsForThinking(cleaned, masks);
 }
 
 async function replacePlaceholdersInUserPrompt(text, agentConfig) {
@@ -901,16 +987,20 @@ async function processToolCall(args) {
         // 移除 VCP 思维链及主总线为当前模型转入正文的推理标签，避免污染 AA 历史。
         const responseModel = responseFromVCP.data?.model || agentConfig.id;
         const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent, responseModel);
-        const safeAssistantResponseForReturn = String(cleanedAssistantResponse || '').trim() || '[AgentAssistant] 目标 Agent 返回了空文本回复。';
+
+        // 外吐净文防泄漏：对父 Agent 返回、前端预览广播与外部日志，必须彻底剥净纠偏标记与坏块残骸
+        const sanitizedResponseForExternal = stripResilienceMarkersIfPresent(cleanedAssistantResponse);
+        const safeAssistantResponseForReturn = String(sanitizedResponseForExternal || '').trim() || '[AgentAssistant] 目标 Agent 返回了空文本回复。';
+        const safeHistoryAssistantContent = String(cleanedAssistantResponse || '').trim() ? cleanedAssistantResponse : safeAssistantResponseForReturn;
 
         if (useContext) {
-            // 存储到历史记录时使用清理后的内容
-            updateAgentSessionHistory(agent_name, { role: 'user', content: sanitizeTextForLog(processedUserPrompt) }, { role: 'assistant', content: safeAssistantResponseForReturn }, userSessionId);
+            // 存储到内部历史记录时保留自愈纠偏凭条（以便下一轮对话触发 $ToolProtocolHistoryCleanse 转化为常驻药丸），同时防止纯空串破坏下游 API
+            updateAgentSessionHistory(agent_name, { role: 'user', content: sanitizeTextForLog(processedUserPrompt) }, { role: 'assistant', content: safeHistoryAssistantContent }, userSessionId);
         } else if (DEBUG_MODE) {
             console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context update.`);
         }
 
-        // VCP Info Broadcast - 使用清理后的内容
+        // VCP Info Broadcast - 使用剥净后的外吐内容
         const broadcastData = {
             type: 'AGENT_PRIVATE_CHAT_PREVIEW',
             agentName: agent_name,
@@ -1057,11 +1147,12 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
 
             const responseModel = responseFromVCP.data?.model || agentConfig.id;
             const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent, responseModel);
+            const sanitizedDelegationResponse = stripResilienceMarkersIfPresent(cleanedAssistantResponse);
             state = assertDelegationNotCancelled(delegationId);
-            state.lastResponsePreview = truncateText(cleanedAssistantResponse);
+            state.lastResponsePreview = truncateText(sanitizedDelegationResponse);
             state.updatedAt = Date.now();
             activeDelegations.set(delegationId, state);
-            const flowlock = parseFlowlockDirectives(cleanedAssistantResponse);
+            const flowlock = parseFlowlockDirectives(sanitizedDelegationResponse);
             if (flowlock.isFlowlockProtocol) {
                 if (state.flowlockProtocolMode !== 'flowlock') {
                     // 从兼容模式首次切换到严格 Flowlock 模式时，不继承旧模式的隐式活动状态。
@@ -1077,7 +1168,7 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
             // 终止控制优先级由解析器统一保证：Complete > Fail > Stop。
             if (flowlock.action === 'complete') {
                 completionStatus = 'Succeed';
-                finalReport = flowlock.report || cleanedAssistantResponse;
+                finalReport = stripResilienceMarkersIfPresent(flowlock.report || cleanedAssistantResponse);
                 state.flowlockActive = false;
                 state.status = 'completed';
                 state.completionStatus = completionStatus;
@@ -1087,7 +1178,7 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
                 break;
             } else if (flowlock.action === 'fail') {
                 completionStatus = 'Failed';
-                finalReport = `【Agent主动放弃任务】\n${flowlock.report || cleanedAssistantResponse}`;
+                finalReport = `【Agent主动放弃任务】\n${stripResilienceMarkersIfPresent(flowlock.report || cleanedAssistantResponse)}`;
                 state.flowlockActive = false;
                 state.status = 'failed';
                 state.completionStatus = completionStatus;
@@ -1097,7 +1188,7 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
                 break;
             } else if (flowlock.action === 'stop') {
                 completionStatus = 'Stopped';
-                finalReport = `【Agent主动停止心流锁】\n${flowlock.report || 'Agent 已主动退出自主心跳模式，任务未宣告完成或失败。'}`;
+                finalReport = `【Agent主动停止心流锁】\n${stripResilienceMarkersIfPresent(flowlock.report || 'Agent 已主动退出自主心跳模式，任务未宣告完成或失败。')}`;
                 state.flowlockActive = false;
                 state.status = 'stopped';
                 state.completionStatus = completionStatus;
@@ -1114,7 +1205,7 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
             // 一旦使用 Flowlock 协议，必须先 Start；仅输出 Prompt/Heartbeat 不会隐式启动。
             if (state.flowlockProtocolMode === 'flowlock' && !state.flowlockActive) {
                 completionStatus = 'Stopped';
-                finalReport = `【心流锁未启动】\n${flowlock.report || 'Agent 未输出 [[Flowlock::Start]]，因此没有进入自主心跳模式。'}`;
+                finalReport = `【心流锁未启动】\n${stripResilienceMarkersIfPresent(flowlock.report || 'Agent 未输出 [[Flowlock::Start]]，因此没有进入自主心跳模式。')}`;
                 state.status = 'stopped';
                 state.completionStatus = completionStatus;
                 state.finalReportPreview = truncateText(finalReport);
@@ -1123,7 +1214,8 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
                 break;
             }
 
-            messagesForVCP.push({ role: 'assistant', content: cleanedAssistantResponse });
+            const safeDelegationHistoryContent = buildDelegationHistoryContent(cleanedAssistantResponse);
+            messagesForVCP.push({ role: 'assistant', content: safeDelegationHistoryContent });
 
             const requestedDelaySeconds = flowlock.nextHeartbeatSeconds || DEFAULT_HEARTBEAT_DELAY_SECONDS;
             const elapsed = Date.now() - state.startTime;
@@ -1267,6 +1359,13 @@ async function sendDelegationCallback(delegationId, status, report, agentName) {
     }
 }
 
+function buildDelegationHistoryContent(cleanedAssistantResponse) {
+    if (protocolResilience && protocolResilience.ENABLED) {
+        return String(cleanedAssistantResponse || '').trim() || '[AgentAssistant] 目标 Agent 本轮未输出有效正文。';
+    }
+    return cleanedAssistantResponse;
+}
+
 module.exports = {
     initialize,
     shutdown,
@@ -1274,5 +1373,8 @@ module.exports = {
     reloadConfig: loadAgentsFromLocalConfig,
     listDelegations,
     getDelegationDetail,
-    cancelDelegation
+    cancelDelegation,
+    _removeVCPThinkingChain: removeVCPThinkingChain,
+    _maskProtectedRegionsForThinking: maskProtectedRegionsForThinking,
+    _buildDelegationHistoryContent: buildDelegationHistoryContent
 };

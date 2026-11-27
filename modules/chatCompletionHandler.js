@@ -4,6 +4,7 @@ const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const contextBudget = require('./contextBudget.js');
 const roleDivider = require('./roleDivider.js');
+const protocolResilience = require('./vcpProtocolResilience');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
 const { withNativeToolDebug } = require('./nativeToolDebug.js');
 
@@ -14,6 +15,7 @@ const http = require('http');
 const https = require('https');
 const finalContextStore = require('./finalContextStore.js');
 const { withStreamUsage } = require('./streamUsageOption.js');
+let _hasWarnedPipelineOrderConflict = false;
 
 // 多模态配置真相源（JSON 优先 + 热更新），用于在请求时动态拉取 MultiModalForceTranslateModels
 let multiModalConfigStore = null;
@@ -278,8 +280,8 @@ function messagesContainBase64Media(messages) {
 function copyArrayMetadata(source, target) {
   if (!Array.isArray(source) || !Array.isArray(target)) return target;
 
-  for (const key of Object.getOwnPropertyNames(source)) {
-    if (/^(?:length|\d+)$/.test(key)) continue;
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key === 'string' && /^(?:length|\d+)$/.test(key)) continue;
     const descriptor = Object.getOwnPropertyDescriptor(source, key);
     if (!descriptor) continue;
     try {
@@ -1163,12 +1165,59 @@ class ChatCompletionHandler {
       // VCPTavern 已在变量展开前执行；其余真实预处理器与静态占位符注入
       // 严格遵循 preprocessor_order.json，确保动态插件文本不能污染前置捕获指令。
       const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
+      const TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE = '$ToolProtocolHistoryCleanse';
       const selectedMediaProcessor = pluginManager.messagePreprocessors.has('MultiModalProcessor')
         ? 'MultiModalProcessor'
         : 'ImageProcessor';
-      const orderedPipeline = Array.isArray(pluginManager.preprocessorOrder)
+      const rawPipeline = Array.isArray(pluginManager.preprocessorOrder)
         ? pluginManager.preprocessorOrder
         : Array.from(pluginManager.messagePreprocessors.keys());
+      let orderedPipeline = [...rawPipeline];
+      if (protocolResilience.ENABLED) {
+        if (!orderedPipeline.includes(TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE)) {
+          const oneRingIdx = orderedPipeline.indexOf('OneRing');
+          if (oneRingIdx !== -1) {
+            orderedPipeline.splice(oneRingIdx + 1, 0, TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+          } else {
+            const foldingIdx = orderedPipeline.indexOf('ContextFoldingV2');
+            if (foldingIdx !== -1) {
+              orderedPipeline.splice(foldingIdx, 0, TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+            } else {
+              orderedPipeline.push(TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+            }
+          }
+        }
+
+        // 确保严格位于 OneRing 之后、ContextFoldingV2 之前（双向错位自愈加固）
+        const oneRingIdx = orderedPipeline.indexOf('OneRing');
+        const foldingIdx = orderedPipeline.indexOf('ContextFoldingV2');
+        const cleanseIdx = orderedPipeline.indexOf(TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+
+        if (oneRingIdx !== -1 && foldingIdx !== -1 && foldingIdx < oneRingIdx && !_hasWarnedPipelineOrderConflict) {
+          _hasWarnedPipelineOrderConflict = true;
+          console.warn('[Server] Warning: preprocessor_order.json places ContextFoldingV2 before OneRing; OneRing should run before $ToolProtocolHistoryCleanse and ContextFoldingV2.');
+        }
+
+        if (cleanseIdx !== -1) {
+          let isMisplaced = false;
+          if (oneRingIdx !== -1 && cleanseIdx < oneRingIdx) isMisplaced = true;
+          if (foldingIdx !== -1 && cleanseIdx > foldingIdx) isMisplaced = true;
+          if (isMisplaced) {
+            orderedPipeline.splice(cleanseIdx, 1);
+            const newOneRingIdx = orderedPipeline.indexOf('OneRing');
+            if (newOneRingIdx !== -1) {
+              orderedPipeline.splice(newOneRingIdx + 1, 0, TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+            } else {
+              const newFoldingIdx = orderedPipeline.indexOf('ContextFoldingV2');
+              if (newFoldingIdx !== -1) {
+                orderedPipeline.splice(newFoldingIdx, 0, TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+              } else {
+                orderedPipeline.push(TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE);
+              }
+            }
+          }
+        }
+      }
 
       for (const name of orderedPipeline) {
         throwIfRequestAborted();
@@ -1186,6 +1235,26 @@ class ChatCompletionHandler {
           continue;
         }
 
+        if (name === TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE) {
+          if (!protocolResilience.ENABLED) continue;
+          if (!enableRoleDivider || roleDividerSwitches?.user === false || roleDividerScanSwitches?.assistant === false) {
+            if (DEBUG_MODE) console.log('[Server] Skipping $ToolProtocolHistoryCleanse due to disabled RoleDivider switches.');
+            continue;
+          }
+          if (DEBUG_MODE) console.log('[Server] Executing $ToolProtocolHistoryCleanse.');
+          try {
+            const prev = processedMessages;
+            processedMessages = protocolResilience.cleanseHistory(processedMessages, {
+              pluginManager,
+              agentManager: this.config?.agentManager || pluginManager?.agentManager || require('./agentManager')
+            });
+            copyArrayMetadata(prev, processedMessages);
+          } catch (cleanseErr) {
+            console.error('[Server] $ToolProtocolHistoryCleanse failed:', cleanseErr);
+          }
+          continue;
+        }
+
         if (name === 'ImageProcessor' || name === 'MultiModalProcessor') {
           if (!shouldProcessMedia || name !== selectedMediaProcessor) continue;
         }
@@ -1194,11 +1263,13 @@ class ChatCompletionHandler {
 
         if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
         try {
+          const prevPreprocessorMessages = processedMessages;
           processedMessages = await pluginManager.executeMessagePreprocessor(
             name,
             processedMessages,
             requestPreprocessorConfig
           );
+          copyArrayMetadata(prevPreprocessorMessages, processedMessages);
         } catch (pluginError) {
           if (pluginError?.name === 'AbortError' || abortController.signal.aborted) {
             throwIfRequestAborted();
@@ -1520,7 +1591,8 @@ class ChatCompletionHandler {
         shouldProcessMedia,
         shouldProcessMediaPlus,
         isTextOnlyForceTranslateModel,
-        requestPreprocessorConfig
+        requestPreprocessorConfig,
+        agentManager: this.config?.agentManager || pluginManager?.agentManager || require('./agentManager')
       };
 
       const outcome = isUpstreamStreaming

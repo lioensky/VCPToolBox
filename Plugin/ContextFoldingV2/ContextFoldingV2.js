@@ -8,6 +8,7 @@ const dotenv = require('dotenv');
 const chokidar = require('chokidar');
 const { findLastRealUserMessage } = require('../../modules/messageProcessor.js');
 const { projectContextEmbeddingInput } = require('../../modules/contextEmbeddingInput');
+const protocolResilience = require('../../modules/vcpProtocolResilience');
 
 const FOLDING_PREFIX = '[VCP上下文语义折叠-本层摘要:';
 // 使用 [\s\S]+? 而非 .+? 以兼容模型输出多行摘要的情况
@@ -16,7 +17,8 @@ const FOLDING_REGEX = /\[VCP上下文语义折叠-本层摘要:([\s\S]+?)\]/;
 const ACTIVATION_PLACEHOLDER = '{{ContextFoldingV2}}';
 const ACTIVATION_PLACEHOLDER_BRACKET = '[[ContextFoldingV2]]';
 
-const ONERING_TAIL_REGEX = /\s*\[OneRing通知:[\s\S]*?\]\s*$/g;
+const ORIG_ONERING_TAIL_REGEX = /\s*\[OneRing通知:[\s\S]*?\]\s*$/g;
+const ONERING_TAIL_REGEX = /(?:\s*\[OneRing通知:[^\]]*?\]\s*)+$/;
 const VCP_RAG_BLOCK_REGEX = /<!--\s*VCP_RAG_BLOCK_START\b[\s\S]*?<!--\s*VCP_RAG_BLOCK_END\s*-->/gi;
 
 class ContextFoldingV2 {
@@ -200,6 +202,12 @@ class ContextFoldingV2 {
 
             // 将占位符从 system 消息中移除（它只是开关，不应出现在最终输出中）
             const newMessages = JSON.parse(JSON.stringify(messages));
+            protocolResilience.copyArrayMetadata(messages, newMessages);
+            for (let i = 0; i < messages.length; i++) {
+                if (Array.isArray(messages[i]?.content) && Array.isArray(newMessages[i]?.content)) {
+                    protocolResilience.copyArrayMetadata(messages[i].content, newMessages[i].content);
+                }
+            }
             if (activationIndex >= 0 && matchedPlaceholder) {
                 this._setContent(
                     newMessages[activationIndex],
@@ -236,6 +244,12 @@ class ContextFoldingV2 {
 
                 // 跳过已折叠的内容
                 if (content.startsWith(FOLDING_PREFIX)) continue;
+
+                // 提前执行残缺药丸检测：残缺药丸直接跳过折叠与异步摘要，零成本避免无意义的 Embedding 向量接口与相似度计算
+                const pillCheck = protocolResilience.extractTopLevelPillEnvelope(msg.content);
+                if (pillCheck.shouldSkipFolding === true) {
+                    continue;
+                }
 
                 // 净化并计算哈希
                 // OneRing 会在消息尾部追加 [OneRing通知:...] 来源标记；折叠查询/哈希/向量化时必须先剥离，
@@ -281,7 +295,11 @@ class ContextFoldingV2 {
 
                 if (summaryStatus === 'ready' && storeEntry.summary) {
                     // 摘要已就绪 → 执行折叠替换
-                    this._setContent(msg, storeEntry.summary);
+                    if (pillCheck.hasPill === true) {
+                        msg.content = protocolResilience.foldWithPillIfPresent(msg.content, storeEntry.summary);
+                    } else {
+                        this._setContent(msg, storeEntry.summary);
+                    }
                     foldedFloors.push(candidate.depth);
                 } else if (summaryStatus === 'none' || (summaryStatus === 'failed' && retryCount < this.maxRetries)) {
                     // 需要生成摘要 → 异步触发（不阻塞）
@@ -530,6 +548,10 @@ class ContextFoldingV2 {
      * 返回 { summary, retryable429 }，其中 summary 为完整格式摘要文本
      */
     async _generateSummary(text) {
+        if (typeof text === 'string' && protocolResilience && protocolResilience.ENABLED) {
+            text = protocolResilience.stripResilienceMarkers(text);
+            text = this._sanitizeOneRingMarkers(text);
+        }
         const apiUrl = process.env.API_URL;
         const apiKey = process.env.API_Key;
 
@@ -690,7 +712,12 @@ class ContextFoldingV2 {
      */
     _sanitizeOneRingMarkers(text) {
         if (typeof text !== 'string') return text;
-        return text.replace(ONERING_TAIL_REGEX, '').trim();
+        if (!(protocolResilience && protocolResilience.ENABLED)) {
+            return text.replace(ORIG_ONERING_TAIL_REGEX, '').trim();
+        }
+        let cleaned = protocolResilience.stripResilienceMarkers(text);
+        cleaned = cleaned.replace(ONERING_TAIL_REGEX, '').trim();
+        return protocolResilience.stripResilienceMarkers(cleaned);
     }
 
     /**
@@ -732,15 +759,27 @@ class ContextFoldingV2 {
 
             if (textIndices.length > 0) {
                 const firstIndex = textIndices[0];
-                msg.content = msg.content
+                let inheritedCacheControl = null;
+                for (const idx of textIndices) {
+                    if (msg.content[idx]?.cache_control && !inheritedCacheControl) {
+                        inheritedCacheControl = msg.content[idx].cache_control;
+                    }
+                }
+                const newContent = msg.content
                     .map((part, index) => {
                         if (!textIndices.includes(index)) return part;
                         if (index === firstIndex) {
-                            return { ...part, text: newText };
+                            const updated = { ...part, text: newText };
+                            if (!updated.cache_control && inheritedCacheControl) {
+                                updated.cache_control = inheritedCacheControl;
+                            }
+                            return updated;
                         }
                         return null;
                     })
                     .filter(Boolean);
+                protocolResilience.copyArrayMetadata(msg.content, newContent);
+                msg.content = newContent;
             } else {
                 msg.content.unshift({ type: 'text', text: newText });
             }

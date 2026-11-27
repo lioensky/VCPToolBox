@@ -547,16 +547,114 @@ class DirectDiaryTextProcessor {
             .filter(word => !blacklist.has(word));
     }
 
+    static stripClosedToolRequestBlocksLinear(text) {
+        const str = String(text || '');
+        if (!/TOOL_REQUEST/i.test(str)) return str;
+
+        let resilienceOn = false;
+        try {
+            const pr = require('../../modules/vcpProtocolResilience');
+            resilienceOn = !!(pr && pr.ENABLED);
+        } catch (e) {}
+
+        if (!resilienceOn) {
+            return str.replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST\]?>>>)/gi, ' ');
+        }
+
+        const { findClosedToolBlockRanges } = require('../../modules/vcpProtocolResilience/thinkingMask');
+        const ranges = findClosedToolBlockRanges(str, { fuzzyToolMatching: true });
+        if (!ranges || ranges.length === 0) return str;
+
+        let out = '';
+        let cursor = 0;
+        for (const r of ranges) {
+            if (r.start < cursor) continue;
+            out += str.slice(cursor, r.start) + ' ';
+            cursor = r.end;
+        }
+        out += str.slice(cursor);
+        return out;
+    }
+
     sanitizeUserInputForBM25(text) {
-        return String(text || '')
+        let cleaned = String(text || '');
+        let resilienceOn = false;
+        try {
+            const pr = require('../../modules/vcpProtocolResilience');
+            resilienceOn = !!(pr && pr.ENABLED);
+            if (resilienceOn) {
+                if (typeof pr.stripResilienceMarkers === 'function') {
+                    cleaned = pr.stripResilienceMarkers(cleaned);
+                }
+                if (typeof pr.stripThoughtChainsSafe === 'function') {
+                    cleaned = pr.stripThoughtChainsSafe(cleaned, { trim: false });
+                }
+            }
+        } catch (e) {}
+        if (!resilienceOn) {
+            return cleaned
+                .replace(/\{\{.*?\}\}/gs, ' ')
+                .replace(/\[\[.*?\]\]/gs, ' ')
+                .replace(/<<.*?>>/gs, ' ')
+                .replace(/《《.*?》》/gs, ' ')
+                .replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST\]?>>>)/gi, ' ')
+                .replace(/(?:「始ESCAPE」[\s\S]*?「末ESCAPE」|「始」[\s\S]*?「末」)/gi, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+        cleaned = DirectDiaryTextProcessor.stripClosedToolRequestBlocksLinear(cleaned);
+        cleaned = DirectDiaryTextProcessor.stripPairedDelimitersLinear(cleaned);
+        return cleaned
             .replace(/\{\{.*?\}\}/gs, ' ')
             .replace(/\[\[.*?\]\]/gs, ' ')
             .replace(/<<.*?>>/gs, ' ')
             .replace(/《《.*?》》/gs, ' ')
-            .replace(/(?:<<<\[?TOOL_REQUEST_ESCAPE\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST_ESCAPE\]?>>>|<<<\[?TOOL_REQUEST\]?>>>[\s\S]*?<<<\[?END_TOOL_REQUEST\]?>>>)/gi, ' ')
-            .replace(/(?:「始ESCAPE」[\s\S]*?「末ESCAPE」|「始」[\s\S]*?「末」)/gi, ' ')
             .replace(/\s+/g, ' ')
             .trim();
+    }
+
+    static stripPairedDelimitersLinear(text) {
+        const str = String(text || '');
+        if (!/[「『{]末/i.test(str)) return str;
+
+        const openRe = /[「『{]始(?:(?:ESCAPE|escape)[」』}]|[」』}])/gi;
+        const escCloseRe = /[「『{]末(?:ESCAPE|escape)[」』}]/gi;
+        const normCloseRe = /[「『{]末[」』}]/g;
+
+        let out = '';
+        let outCursor = 0;
+        let cursor = 0;
+        let noMoreEscClose = false;
+        let noMoreNormClose = false;
+
+        while (cursor < str.length) {
+            if (noMoreEscClose && noMoreNormClose) break;
+            openRe.lastIndex = cursor;
+            const m = openRe.exec(str);
+            if (!m) break;
+
+            const isEsc = /始(?:ESCAPE|escape)/i.test(m[0]);
+            if ((isEsc && noMoreEscClose) || (!isEsc && noMoreNormClose)) {
+                cursor = m.index + m[0].length;
+                continue;
+            }
+
+            const closeRe = isEsc ? escCloseRe : normCloseRe;
+            closeRe.lastIndex = m.index + m[0].length;
+            const cm = closeRe.exec(str);
+            if (!cm) {
+                if (isEsc) noMoreEscClose = true;
+                else noMoreNormClose = true;
+                cursor = m.index + m[0].length;
+                continue;
+            }
+
+            out += str.slice(outCursor, m.index) + ' ';
+            outCursor = cm.index + cm[0].length;
+            cursor = outCursor;
+        }
+        out += str.slice(outCursor);
+        return out;
     }
 
     normalizeBM25QueryInput(text) {

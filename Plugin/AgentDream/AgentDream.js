@@ -29,6 +29,15 @@ let DREAM_CONFIG = {
     agentList: []
 };
 
+let protocolResilience = null;
+let thinkingMaskHelper = null;
+try {
+    protocolResilience = require('../../modules/vcpProtocolResilience');
+    thinkingMaskHelper = require('../../modules/vcpProtocolResilience/thinkingMask');
+} catch (e) {
+    // 允许解耦降级
+}
+
 const DREAM_AGENTS = {};
 let knowledgeBaseManager = null;
 let pushVcpInfo = () => { };
@@ -299,29 +308,39 @@ async function triggerDream(agentName) {
             console.log(`[AgentDream] 🧠 Filtered out ${message.reasoning_content.length} chars of thinking chain for ${agentName}`);
         }
 
-        // 移除 VCP 思维链标记（兜底，以防某些模型用标记格式）
+        // 移除 VCP 思维链标记（兜底，带掩码保护）
         const cleanedNarrative = _removeVCPThinkingChain(dreamNarrative);
 
-        // 更新梦上下文
+        // 外吐净文防泄漏：仅协议自愈开启时剥除自愈错误块与凭条并防空串
+        const resilienceOn = !!(protocolResilience && protocolResilience.ENABLED);
+        const rawPublicNarrative = resilienceOn && typeof protocolResilience.stripResilienceMarkers === 'function'
+            ? protocolResilience.stripResilienceMarkers(cleanedNarrative)
+            : cleanedNarrative;
+        const publicNarrative = resilienceOn
+            ? (String(rawPublicNarrative || '').trim() || '[AgentDream] 本轮梦境未产出有效文本。')
+            : rawPublicNarrative;
+        const safeDreamHistoryContent = String(cleanedNarrative || '').trim() ? cleanedNarrative : publicNarrative;
+
+        // 更新梦上下文（保留纠偏凭条，以便下一轮梦境生成触发自愈转化为常驻药丸，同时防空串）
         _updateDreamContext(agentName, dreamSessionId,
             { role: 'user', content: dreamPrompt },
-            { role: 'assistant', content: cleanedNarrative }
+            { role: 'assistant', content: safeDreamHistoryContent }
         );
 
-        // 广播: 梦叙述产出
+        // 广播: 梦叙述产出（使用剥净后的文本）
         _broadcastDream('AGENT_DREAM_NARRATIVE', agentName, dreamId, {
-            message: cleanedNarrative,
-            narrative: cleanedNarrative
+            message: publicNarrative,
+            narrative: publicNarrative
         });
 
-        console.log(`[AgentDream] 🌙 Dream narrative received for ${agentName} (${cleanedNarrative.length} chars)`);
+        console.log(`[AgentDream] 🌙 Dream narrative received for ${agentName} (${publicNarrative.length} chars)`);
 
-        // 持久化梦记录 JSON（包含完整梦叙事、记忆树）
+        // 持久化梦记录 JSON（使用剥净后的文本）
         const dreamSessionLog = {
             dreamId: dreamId,
             agentName: agentName,
             timestamp: new Date().toISOString(),
-            dreamNarrative: cleanedNarrative,
+            dreamNarrative: publicNarrative,
             dreamTree: dreamTree,
             operations: [] // 后续 processToolCall 会追加
         };
@@ -338,9 +357,9 @@ async function triggerDream(agentName) {
             status: 'success',
             dreamId: dreamId,
             agentName: agentName,
-            narrative: cleanedNarrative,
+            narrative: publicNarrative,
             dreamLogFile: sessionLogFileName,
-            result: { content: [{ type: 'text', text: cleanedNarrative }] }
+            result: { content: [{ type: 'text', text: publicNarrative }] }
         };
 
     } catch (error) {
@@ -688,23 +707,69 @@ function _isContextExpired(timestamp) {
 /**
  * 移除 VCP 思维链内容
  */
+function maskProtectedRegionsForDreamThinking(text) {
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.maskProtectedRegionsForThinking === 'function') {
+        return thinkingMaskHelper.maskProtectedRegionsForThinking(text);
+    }
+    if (typeof text !== 'string') return { text, masks: [] };
+    const masks = [];
+    const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const pushMask = (chunk) => {
+        const token = `__VCP_MASK_${nonce}_${masks.length}__`;
+        masks.push({ token, content: chunk });
+        return token;
+    };
+    let masked = text.replace(/(^|\n)([ \t]{0,3})(`{3,}|~{3,})[^\n]*\r?\n(?:[\s\S]*?\r?\n)?[ \t]{0,3}\3+[ \t]*(?=\r?\n|$)/g, (match, prefix) => {
+        return prefix + pushMask(match.slice(prefix.length));
+    });
+    masked = masked.replace(/<<<DailyNoteStart>>>(?:(?!<<<DailyNoteStart>>>)[\s\S])*?<<<DailyNoteEnd>>>/g, pushMask);
+    masked = masked.replace(/(?:「始|\{始)(?:ESCAPE|escape)(?:」|\})[\s\S]*?(?:「末|\{末)(?:ESCAPE|escape)(?:」|\})/gi, pushMask);
+    return { text: masked, masks };
+}
+
+function unmaskProtectedRegionsForDreamThinking(text, masks) {
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.unmaskProtectedRegionsForThinking === 'function') {
+        return thinkingMaskHelper.unmaskProtectedRegionsForThinking(text, masks);
+    }
+    if (!masks || !masks.length) return text;
+    let result = text;
+    for (let i = masks.length - 1; i >= 0; i--) {
+        const { token, content } = masks[i];
+        result = result.split(token).join(content);
+    }
+    return result;
+}
+
 function _removeVCPThinkingChain(text) {
     if (typeof text !== 'string') return text;
-    let result = text;
-    const startMarker = '[--- VCP元思考链:';
-    const endMarker = '[--- 元思考链结束 ---]';
-
-    while (true) {
-        const startIndex = result.indexOf(startMarker);
-        if (startIndex === -1) break;
-        const endIndex = result.indexOf(endMarker, startIndex);
-        if (endIndex === -1) {
-            result = result.substring(0, startIndex).trimEnd();
-            break;
+    if (!(protocolResilience && protocolResilience.ENABLED)) {
+        let result = text;
+        const startMarker = '[--- VCP元思考链:';
+        const endMarker = '[--- 元思考链结束 ---]';
+        while (true) {
+            const startIndex = result.indexOf(startMarker);
+            if (startIndex === -1) break;
+            const endIndex = result.indexOf(endMarker, startIndex);
+            if (endIndex === -1) {
+                result = result.substring(0, startIndex).trimEnd();
+                break;
+            }
+            result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
         }
-        result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
+        return result.replace(/\n{3,}/g, '\n\n').trim();
     }
-    return result.replace(/\n{3,}/g, '\n\n').trim();
+    if (thinkingMaskHelper && typeof thinkingMaskHelper.stripThoughtChainsSafe === 'function') {
+        return thinkingMaskHelper.stripThoughtChainsSafe(text, { trim: true });
+    }
+    const { text: masked, masks } = maskProtectedRegionsForDreamThinking(text);
+    const THOUGHT_CHAIN_REGEX = /^[ \t]*\[--- VCP元思考链(?:(?!---\]).)*?---\](?:[ \t]*\r?\n[\s\S]*?^[ \t]*|[^\r\n]*?)\[--- 元思考链结束 ---\](?:[ \t]*\r?\n|[ \t]*)/gm;
+    const CONVENTIONAL_THOUGHT_REGEX = /^[ \t]*<(think(?:ing)?|thought(?:s)?|antthinking)(?=[ \t\r\n>])[^>]*>[ \t]*\r?\n[\s\S]*?^[ \t]*<\/\1[ \t]*>(?:[ \t]*\r?\n|[ \t]*)/gim;
+    let cleaned = masked.replace(THOUGHT_CHAIN_REGEX, '').replace(CONVENTIONAL_THOUGHT_REGEX, '');
+    const danglingConventional = /(?:^|\r?\n)[ \t]*<(think(?:ing)?|thought(?:s)?|antthinking)(?=[ \t\r\n>])[^>]*>[ \t]*(?:\r?\n|$)(?![\s\S]*?<\/\1[ \t]*>)[\s\S]*$/i;
+    const danglingVCP = /(?:^|\r?\n)[ \t]*\[--- VCP元思考链(?:(?:(?!---\]).)*?---\][ \t]*(?:\r?\n|$)|(?![^\r\n]*---\])[^\r\n]*(?:\r?\n|$))(?![\s\S]*?\[--- 元思考链结束 ---\])[\s\S]*$/;
+    cleaned = cleaned.replace(danglingVCP, '').replace(danglingConventional, '');
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    return unmaskProtectedRegionsForDreamThinking(cleaned, masks);
 }
 
 /**
@@ -1086,5 +1151,7 @@ module.exports = {
     rejectDreamOperation: async (logFileName, operationId) => {
         // 预留接口 - 二期实现
         return { status: 'not_implemented', message: '梦操作拒绝功能将在二期面板中实现。' };
-    }
+    },
+    _removeVCPThinkingChain,
+    _maskProtectedRegionsForThinking: maskProtectedRegionsForDreamThinking
 };

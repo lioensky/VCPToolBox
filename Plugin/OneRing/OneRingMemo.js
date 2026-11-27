@@ -3,6 +3,12 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('./OneRingDB.js');
+let protocolResilience = null;
+try {
+    protocolResilience = require('../../modules/vcpProtocolResilience');
+} catch (_) {
+    protocolResilience = null;
+}
 
 const MEMO_TRIGGER_REGEX = /\[\[OneRingMemo::([^:\]\r\n]+?)\]\]/g;
 const DEFAULT_CONFIG = Object.freeze({
@@ -239,9 +245,47 @@ function selectSourceMessages(agentName, memoConfig) {
 
 function formatTimelineRows(rows, agentName) {
     return rows.map(row => {
+        let content = row.content || '';
+        // 铁律 1：仅对 assistant 发言且协议自愈开启时执行清洗（绝不篡改用户发言，关闭态 100% 旁路）
+        if (row.role === 'assistant' && protocolResilience && protocolResilience.ENABLED && typeof protocolResilience.stripResilienceMarkers === 'function') {
+            // 1. 净化带回执/药丸的历史消息，并安全剥离思考链正文
+            content = protocolResilience.stripResilienceMarkers(content);
+            if (typeof protocolResilience.stripThoughtChainsSafe === 'function') {
+                content = protocolResilience.stripThoughtChainsSafe(content, { trim: false });
+            }
+            // 2. 净化第 T 轮刚入库尚无凭条的初稿 (OneRing 原文)
+            if (typeof protocolResilience.extractHistoricalErrorBlocks === 'function') {
+                // 铁律 2：显式声明 includeClosedBlockCandidates: false，严禁抽取合法闭合工具块
+                const errorSpans = protocolResilience.extractHistoricalErrorBlocks(content, { includeClosedBlockCandidates: false });
+                if (errorSpans && errorSpans.size > 0) {
+                    const safeSpans = [];
+                    for (const [key, spanList] of errorSpans.entries()) {
+                        const spans = Array.isArray(spanList) ? spanList : [spanList];
+                        for (const span of spans) {
+                            // 铁律 3：严禁误删 IV-4、V-TIER2 散文长文及任何闭合候选
+                            if (span.subType === 'IV-4' || span.subType === 'V-TIER2' || span.isClosedCandidate) continue;
+                            safeSpans.push(span);
+                        }
+                    }
+                    if (safeSpans.length > 0) {
+                        // 铁律 4：优先使用 applyEdits 合并重叠区间，杜绝坐标漂移
+                        if (typeof protocolResilience.applyEdits === 'function') {
+                            const edits = safeSpans.map(s => ({ start: s.start, end: s.end, replacement: '' }));
+                            content = protocolResilience.applyEdits(content, edits);
+                        } else {
+                            safeSpans.sort((a, b) => b.start - a.start);
+                            for (const span of safeSpans) {
+                                content = content.slice(0, span.start) + content.slice(span.end);
+                            }
+                        }
+                        content = protocolResilience.stripResilienceMarkers(content);
+                    }
+                }
+            }
+        }
         const sender = row.senderName || (row.role === 'assistant' ? agentName : '用户');
         const source = row.frontendSource ? ` @${row.frontendSource}` : '';
-        return `[${row.timestamp}] [${row.role}] [来自${sender}${source}的发言]\n${row.content}`;
+        return `[${row.timestamp}] [${row.role}] [来自${sender}${source}的发言]\n${content}`;
     }).join('\n\n');
 }
 
@@ -282,6 +326,14 @@ async function callSummaryModel(model, systemPrompt, input, memoConfig) {
     if (!key) throw new Error('服务器 Key 未配置，无法调用本机摘要模型');
     if (!model) throw new Error('OneRingMemo 摘要模型未配置');
 
+    const resilienceEnabled = !!(protocolResilience && protocolResilience.ENABLED);
+    const rawSysPrompt = String(systemPrompt || '');
+    const safeSystemPrompt = resilienceEnabled
+        ? (rawSysPrompt.includes('[[VCPToolUse=Forbidden]]')
+            ? rawSysPrompt
+            : `[[VCPToolUse=Forbidden]]\n${rawSysPrompt}`)
+        : systemPrompt;
+
     const { default: fetch } = await import('node-fetch');
     const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
         method: 'POST',
@@ -294,7 +346,7 @@ async function callSummaryModel(model, systemPrompt, input, memoConfig) {
             stream: false,
             max_tokens: memoConfig.maxOutputTokens,
             messages: [
-                { role: 'system', content: systemPrompt },
+                { role: 'system', content: safeSystemPrompt },
                 { role: 'user', content: input }
             ]
         })
@@ -302,7 +354,15 @@ async function callSummaryModel(model, systemPrompt, input, memoConfig) {
     const text = await response.text();
     if (!response.ok) throw new Error(`摘要模型返回 ${response.status}: ${text.slice(0, 500)}`);
     const payload = JSON.parse(text);
-    const output = payload?.choices?.[0]?.message?.content;
+    let output = payload?.choices?.[0]?.message?.content;
+    if (typeof output !== 'string' || !output.trim()) throw new Error('摘要模型未返回有效文本');
+    if (resilienceEnabled && protocolResilience && typeof protocolResilience.stripResilienceMarkers === 'function') {
+        try {
+            output = protocolResilience.stripResilienceMarkers(output);
+        } catch (_) {
+            // 兜底保留原输出
+        }
+    }
     if (typeof output !== 'string' || !output.trim()) throw new Error('摘要模型未返回有效文本');
     return output.trim();
 }
@@ -479,5 +539,7 @@ module.exports = {
     startGeneration,
     getGenerationStatus,
     isGenerating,
-    scheduleAutoGenerate
+    scheduleAutoGenerate,
+    formatTimelineRows,
+    _callSummaryModel: callSummaryModel
 };

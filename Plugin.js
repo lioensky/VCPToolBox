@@ -20,17 +20,25 @@ const {
     createDefaultExecutionBridgeRegistry
 } = require('./modules/pluginBridgeRegistry');
 const jevThirdPartyRegistry = require('./modules/jevThirdPartyRegistry');
+const protocolResilience = require('./modules/vcpProtocolResilience');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
 const STATIC_PLACEHOLDER_INJECTION_STAGE = '$StaticPlaceholderInjection';
+const TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE = '$ToolProtocolHistoryCleanse';
 const PREPROCESSOR_VIRTUAL_STAGES = Object.freeze({
     [STATIC_PLACEHOLDER_INJECTION_STAGE]: {
         name: STATIC_PLACEHOLDER_INJECTION_STAGE,
         kind: 'stage',
         displayName: '静态/混合插件占位符注入',
         description: '在此位置注入静态、混合及分布式插件上报的系统提示词占位符内容。可拖动以隔离动态网页文本与前置捕获指令。'
+    },
+    [TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE]: {
+        name: TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE,
+        kind: 'stage',
+        displayName: 'VCP工具协议轮间历史清洗与药丸装载',
+        description: '在 OneRing 账本校验后、上下文语义折叠前，清洗历史轮次协议错块并挂载全局唯一常驻药丸。'
     }
 });
 const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
@@ -958,38 +966,7 @@ class PluginManager extends EventEmitter {
             }
 
             // 3. 确定预处理器与虚拟管线阶段的加载顺序
-            const availablePlugins = new Set(discoveredPreprocessors.keys());
-            const availableStages = new Set(Object.keys(PREPROCESSOR_VIRTUAL_STAGES));
-            let finalOrder = [];
-            let savedOrderHasVirtualStage = false;
-            try {
-                const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
-                const savedOrder = JSON.parse(orderContent);
-                if (Array.isArray(savedOrder)) {
-                    savedOrder.forEach(pluginName => {
-                        if (availablePlugins.has(pluginName)) {
-                            finalOrder.push(pluginName);
-                            availablePlugins.delete(pluginName);
-                        } else if (availableStages.has(pluginName)) {
-                            finalOrder.push(pluginName);
-                            availableStages.delete(pluginName);
-                            savedOrderHasVirtualStage = true;
-                        }
-                    });
-                }
-            } catch (error) {
-                if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
-            }
-
-            // 旧版顺序文件没有虚拟阶段时，将其置于最前，严格保持“变量展开后、
-            // 所有消息预处理器前注入静态占位符”的历史行为。
-            if (!savedOrderHasVirtualStage) {
-                finalOrder.unshift(...Array.from(availableStages));
-                availableStages.clear();
-            }
-
-            finalOrder.push(...Array.from(availablePlugins).sort());
-            finalOrder.push(...Array.from(availableStages));
+            const finalOrder = await this._resolvePreprocessorOrder(discoveredPreprocessors);
 
             // 4. 注册真实预处理器；虚拟阶段仅存在于 preprocessorOrder 中，
             // 由主消息管线识别执行，不注册为伪插件模块。
@@ -2560,9 +2537,55 @@ class PluginManager extends EventEmitter {
         return this.setLocalPluginEnabled(pluginName, false);
     }
 
+    async _resolvePreprocessorOrder(discoveredPreprocessors, orderFilePath = PREPROCESSOR_ORDER_FILE) {
+        const resilienceEnabled = !!(protocolResilience && protocolResilience.ENABLED);
+        const availablePlugins = new Set(discoveredPreprocessors.keys());
+        const availableStages = new Set(
+            Object.keys(PREPROCESSOR_VIRTUAL_STAGES).filter(
+                stageName => stageName !== TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE || resilienceEnabled
+            )
+        );
+        const finalOrder = [];
+        let savedOrderHasVirtualStage = false;
+        try {
+            const orderContent = await fs.readFile(orderFilePath, 'utf-8');
+            const savedOrder = JSON.parse(orderContent);
+            if (Array.isArray(savedOrder)) {
+                savedOrder.forEach(pluginName => {
+                    if (availablePlugins.has(pluginName)) {
+                        finalOrder.push(pluginName);
+                        availablePlugins.delete(pluginName);
+                    } else if (availableStages.has(pluginName)) {
+                        finalOrder.push(pluginName);
+                        availableStages.delete(pluginName);
+                        savedOrderHasVirtualStage = true;
+                    } else if (pluginName === TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE) {
+                        // 关闭态下宽容忽略用户文件中预置的 $ToolProtocolHistoryCleanse，不写入 finalOrder 也不报错
+                    }
+                });
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${orderFilePath}:`, error);
+        }
+
+        // 旧版顺序文件没有虚拟阶段时，将其置于最前，严格保持“变量展开后、
+        // 所有消息预处理器前注入静态占位符”的历史行为。
+        if (!savedOrderHasVirtualStage) {
+            finalOrder.unshift(...Array.from(availableStages));
+            availableStages.clear();
+        }
+
+        finalOrder.push(...Array.from(availablePlugins).sort());
+        finalOrder.push(...Array.from(availableStages));
+        return finalOrder;
+    }
+
     getPreprocessorOrder() {
-        // 返回所有已发现、已排序的真实预处理器和虚拟管线阶段。
-        return this.preprocessorOrder.map(name => {
+        // 返回所有已发现、已排序的真实预处理器和虚拟管线阶段（关闭态不暴露 $ToolProtocolHistoryCleanse）。
+        const resilienceEnabled = !!(protocolResilience && protocolResilience.ENABLED);
+        return this.preprocessorOrder
+            .filter(name => resilienceEnabled || name !== TOOL_PROTOCOL_HISTORY_CLEANSE_STAGE)
+            .map(name => {
             const virtualStage = PREPROCESSOR_VIRTUAL_STAGES[name];
             if (virtualStage) {
                 return { ...virtualStage };

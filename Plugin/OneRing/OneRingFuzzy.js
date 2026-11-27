@@ -4,6 +4,18 @@
 // 设计为可独立升级：未来可替换为向量相似度或更复杂的 diff 算法，只要保持导出接口不变。
 
 const crypto = require('crypto');
+let protocolResilience = null;
+let thinkingMask = null;
+try {
+    protocolResilience = require('../../modules/vcpProtocolResilience');
+} catch (_) {
+    protocolResilience = null;
+}
+try {
+    thinkingMask = require('../../modules/vcpProtocolResilience/thinkingMask');
+} catch (_) {
+    thinkingMask = null;
+}
 
 // 需要在比对前剥离的标记（尾部 OneRing 标记、系统通知栏）
 // 群聊头 [xxx的发言]: 是真实上下文正文的一部分，必须参与 DB/snapshot/exact hash，不能在 normalize 中剥离。
@@ -29,6 +41,154 @@ function stripVcpMultimodalInfoForHash(text) {
     return text.replace(VCP_MULTIMODAL_INFO_REGEX, '');
 }
 
+const VCP_INJECTED_ROLE_DIVIDE_MARKER_REGEX = /<<<\[VCP_TOOL_BATCH_START:|\[\[VCP调用结果信息汇总:|\[\[VCP协议纠偏指导:|\[本轮工具调用摘要:\]|[【\[［]\s*VCP(?:\s*工具调用)?\s*协议规范\s*[】\]］]/i;
+
+function findClosedVcpInfoRangesForHash(text) {
+    const INFO_START = '[[VCP调用结果信息汇总:';
+    const INFO_END = 'VCP调用结果结束]]';
+    const ranges = [];
+    if (typeof text !== 'string' || !text.includes(INFO_START)) return ranges;
+
+    const isLineStartOrIndent = (str, idx) => {
+        if (idx === 0) return true;
+        const prev = str[idx - 1];
+        if (prev === '\n' || prev === '\r') return true;
+        let lineStart = idx;
+        while (lineStart > 0 && str[lineStart - 1] !== '\n' && str[lineStart - 1] !== '\r') {
+            lineStart--;
+        }
+        return /^[ \t]+$/.test(str.slice(lineStart, idx));
+    };
+
+    const findNextValidStart = (str, fromIdx) => {
+        let idx = fromIdx;
+        while (idx < str.length) {
+            const pos = str.indexOf(INFO_START, idx);
+            if (pos === -1) return -1;
+            if (isLineStartOrIndent(str, pos)) return pos;
+            idx = pos + INFO_START.length;
+        }
+        return -1;
+    };
+
+    const findNextValidEnd = (str, fromIdx) => {
+        let idx = fromIdx;
+        while (idx < str.length) {
+            const pos = str.indexOf(INFO_END, idx);
+            if (pos === -1) return -1;
+            if (isLineStartOrIndent(str, pos)) return pos;
+            idx = pos + INFO_END.length;
+        }
+        return -1;
+    };
+
+    let scan = 0;
+    while (scan < text.length) {
+        const s = findNextValidStart(text, scan);
+        if (s === -1) break;
+        let depth = 1;
+        let cur = s + INFO_START.length;
+        while (depth > 0 && cur < text.length) {
+            const nextOpen = findNextValidStart(text, cur);
+            const nextClose = findNextValidEnd(text, cur);
+            if (nextClose === -1) break;
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+                depth++;
+                cur = nextOpen + INFO_START.length;
+            } else {
+                depth--;
+                cur = nextClose + INFO_END.length;
+            }
+        }
+        if (depth === 0) {
+            ranges.push({ start: s, end: cur });
+            scan = cur;
+        } else {
+            scan = s + INFO_START.length;
+        }
+    }
+    return ranges;
+}
+
+/**
+ * 仅在归一化/哈希比对时剥离服务端注入的 ROLE_DIVIDE_USER 工具批次/纠偏回执/常驻药丸外壳。
+ * 跳过内部闭合 [[VCP调用结果信息汇总:...VCP调用结果结束]] 中的字面结束符，
+ * 且仅当外壳内真实包含服务端注入特征时才剥离，普通用户散文讨论原样保留。
+ */
+function stripVcpRoleDivideToolBatchForHash(text) {
+    if (typeof text !== 'string') return '';
+    const START_TAG = '<<<[ROLE_DIVIDE_USER]>>>';
+    const END_TAG = '<<<[END_ROLE_DIVIDE_USER]>>>';
+    if (!text.includes(START_TAG)) return text;
+
+    const infoRanges = findClosedVcpInfoRangesForHash(text);
+    const findEnclosingInfo = (idx) => infoRanges.find(r => idx >= r.start && idx < r.end) || null;
+
+    let out = '';
+    let lastEmit = 0;
+    let cursor = 0;
+
+    while (cursor < text.length) {
+        const s = text.indexOf(START_TAG, cursor);
+        if (s === -1) break;
+        const enclosingStart = findEnclosingInfo(s);
+        if (enclosingStart) {
+            cursor = enclosingStart.end;
+            continue;
+        }
+
+        let e = s + START_TAG.length;
+        let foundEnd = -1;
+        while (e < text.length) {
+            const candidate = text.indexOf(END_TAG, e);
+            if (candidate === -1) break;
+            const enclosingEnd = findEnclosingInfo(candidate);
+            if (enclosingEnd) {
+                e = enclosingEnd.end;
+            } else {
+                foundEnd = candidate + END_TAG.length;
+                break;
+            }
+        }
+
+        if (foundEnd === -1) {
+            cursor = s + START_TAG.length;
+            continue;
+        }
+
+        // 若当前 START_TAG 与 foundEnd 之间存在另一个非 VCP_INFO 内的 START_TAG，说明 s 是未闭合散文字面量
+        let innerPos = s + START_TAG.length;
+        const innerEndLimit = foundEnd - END_TAG.length;
+        let nextInnerStart = -1;
+        while (innerPos < innerEndLimit) {
+            const candidateStart = text.indexOf(START_TAG, innerPos);
+            if (candidateStart === -1 || candidateStart >= innerEndLimit) break;
+            const enclosingInner = findEnclosingInfo(candidateStart);
+            if (enclosingInner) {
+                innerPos = enclosingInner.end;
+                continue;
+            }
+            nextInnerStart = candidateStart;
+            break;
+        }
+        if (nextInnerStart !== -1) {
+            cursor = nextInnerStart;
+            continue;
+        }
+
+        const body = text.slice(s + START_TAG.length, foundEnd - END_TAG.length);
+        if (VCP_INJECTED_ROLE_DIVIDE_MARKER_REGEX.test(body)) {
+            out += text.slice(lastEmit, s);
+            lastEmit = foundEnd;
+        }
+        cursor = foundEnd;
+    }
+
+    if (lastEmit === 0) return text;
+    out += text.slice(lastEmit);
+    return out;
+}
+
 /**
  * 归一化：只剥离 OneRing/服务端临时标记，保留真实上下文内容用于比对。
  * 群聊头 [xxx的发言]: 是 AI 实际看到的正文，也是区分说话者的关键信息，不能剥离。
@@ -39,6 +199,12 @@ function normalize(text) {
     let t = text;
     t = t.replace(SYSTEM_NOTICE_REGEX, '');
     t = stripVcpMultimodalInfoForHash(t);
+    if (protocolResilience && protocolResilience.ENABLED) {
+        t = stripVcpRoleDivideToolBatchForHash(t);
+        if (thinkingMask && typeof thinkingMask.stripThoughtChainsSafe === 'function') {
+            t = thinkingMask.stripThoughtChainsSafe(t, { trim: false });
+        }
+    }
     t = t.replace(ONERING_TAIL_REGEX, '');
     // 折叠多余空白
     t = t.replace(/\s+/g, ' ').trim();
@@ -233,6 +399,7 @@ module.exports = {
     normalizedHash,
     normalizedHashFromKey,
     stripVcpMultimodalInfoForHash,
+    stripVcpRoleDivideToolBatchForHash,
     similarity,
     extractText,
     diffContext,
