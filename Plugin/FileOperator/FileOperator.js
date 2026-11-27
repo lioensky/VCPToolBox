@@ -289,17 +289,28 @@ function applyDiffLogic(originalContent, diffContent) {
   return modifiedContent;
 }
 
+function unwrapLocalFileUrl(inputPath) {
+  if (!inputPath || typeof inputPath !== 'string') {
+    return inputPath;
+  }
+  const trimmed = inputPath.trim();
+  if (!/^file:\/\//i.test(trimmed)) {
+    return inputPath;
+  }
+  const url = new URL(trimmed);
+  if (url.hostname || url.search || url.hash) {
+    throw new Error('FileOperator expects a local file URL without host, query, or fragment');
+  }
+  return fileURLToPath(url);
+}
+
 function resolveAndNormalizePath(inputPath) {
   if (!inputPath || typeof inputPath !== 'string') {
     return inputPath; // Return as-is if invalid input
   }
 
-  const originalPath = inputPath.trim();
-
-  // 1. Sanitize each component of the path to remove leading/trailing spaces.
-  const parts = originalPath.split(/[/\\]+/);
-  const trimmedParts = parts.map(part => part.trim());
-  const sanitizedPath = path.join(...trimmedParts);
+  const unwrappedPath = unwrapLocalFileUrl(inputPath);
+  const originalPath = unwrappedPath.trim();
 
   // 1. Handle absolute paths (e.g., C:\foo on Windows, /foo on Linux)
   if (path.isAbsolute(originalPath)) {
@@ -320,27 +331,21 @@ function resolveAndNormalizePath(inputPath) {
     return path.resolve(__dirname, relativePath);
   }
 
-  // 2. Handle absolute paths. Check originalPath as sanitizing might alter it.
-  if (path.isAbsolute(originalPath)) {
-    // On Windows, path.join(['', 'foo']) becomes '\\foo'.
-    // path.resolve correctly handles this, ensuring a drive letter.
-    return path.resolve(sanitizedPath);
-  }
-
-  // 3. Handle all relative paths.
+  // 4. Sanitize each component of relative paths and resolve.
+  const parts = originalPath.split(/[/\\]+/);
+  const trimmedParts = parts.map(part => part.trim());
+  const sanitizedPath = path.join(...trimmedParts);
   const normalized = path.normalize(sanitizedPath);
 
-  // Check if the path starts with './' or '../' in an OS-agnostic way.
-  const startsWithDot = normalized.startsWith(`.${path.sep}`);
-  const startsWithDotDot = normalized.startsWith(`..${path.sep}`);
+  const startsWithDot = normalized === '.' || normalized.startsWith(`.${path.sep}`);
+  const startsWithDotDot = normalized === '..' || normalized.startsWith(`..${path.sep}`);
 
   if (!startsWithDot && !startsWithDotDot) {
     // Treat plain relative paths like "foo/bar" as BASE_PATH relative.
     return path.resolve(BASE_PATH, normalized);
-  } else {
-    // Path is like './foo' or '../foo', so it's explicitly relative to this script's directory.
-    return path.resolve(__dirname, normalized);
   }
+  // Path is like './foo' or '../foo', so it's explicitly relative to this script's directory.
+  return path.resolve(__dirname, normalized);
 }
 
 function parseLineSelection(lines) {
@@ -513,12 +518,6 @@ async function webReadFile(fileUrl, options = {}) {
 
 async function readFile(filePath, encoding = 'utf8', lines) {
   try {
-    // FileFetcher delivers a local file URL, while fs.stat expects a native path.
-    if (typeof filePath === 'string' && /^file:\/\//i.test(filePath.trim())) {
-      const url = new URL(filePath.trim());
-      if (url.hostname || url.search || url.hash) throw new Error('ReadFile expects a local file URL without query or fragment');
-      filePath = fileURLToPath(url);
-    }
     filePath = resolveAndNormalizePath(filePath);
     const lineSelection = parseLineSelection(lines);
     debugLog('Reading file', { filePath, encoding, lines });

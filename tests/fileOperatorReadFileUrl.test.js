@@ -15,20 +15,32 @@ test('ReadFile consumes FileFetcher URLs and native paths through plugin stdio',
   fs.writeFileSync(image, bytes);
   fs.writeFileSync(note, 'native-path-ok');
   const url = pathToFileURL(image).href;
+  const copied = path.join(dir, 'copied-note.txt');
+  const noteUrl = pathToFileURL(note).href;
+  const copiedUrl = pathToFileURL(copied).href;
   const requests = [
     { command: 'ReadFile', filePath: url },
     { command1: 'ReadFile', filePath1: url, command2: 'ReadFile', filePath2: note },
-    { command: 'ReadFile', filePath: url + '#ignored' }
+    { command: 'FileInfo', filePath: url },
+    { command: 'CopyFile', sourcePath: noteUrl, destinationPath: copiedUrl },
+    { command: 'ApplyDiff', filePath: copiedUrl, target: 'native-path-ok', replace: 'file-url-diff-ok' },
+    { command: 'ReadFile', filePath: url + '#ignored' },
+    { command: 'FileInfo', filePath: 'file://remote-host/share/note.txt' }
   ];
   const output = execFileSync(process.execPath, [path.resolve(__dirname, '../Plugin/FileOperator/FileOperator.js')], {
     encoding: 'utf8', input: requests.map(r => JSON.stringify(r)).join('\n')+'\n', timeout: 15000,
     env: { ...process.env, ALLOWED_DIRECTORIES: dir, DEBUG_MODE: 'false' }
   });
-  const [single, batch, invalid] = output.trim().split(/\r?\n/).map(s => JSON.parse(s));
+  const [single, batch, info, copyRes, diffRes, invalidHash, invalidHost] = output.trim().split(/\r?\n/).map(s => JSON.parse(s));
   for (const result of [single, batch]) {
     assert.equal(result.status, 'success', JSON.stringify(result));
     assert.ok(JSON.stringify(result.result.content).includes('data:image/jpeg;base64,' + bytes.toString('base64')));
   }
   assert.ok(JSON.stringify(batch.result.content).includes('native-path-ok'));
-  assert.equal(invalid.status, 'error');
+  assert.equal(info.status, 'success', JSON.stringify(info));
+  assert.equal(copyRes.status, 'success', JSON.stringify(copyRes));
+  assert.equal(diffRes.status, 'success', JSON.stringify(diffRes));
+  assert.equal(fs.readFileSync(copied, 'utf8'), 'file-url-diff-ok');
+  assert.equal(invalidHash.status, 'error');
+  assert.equal(invalidHost.status, 'error');
 });

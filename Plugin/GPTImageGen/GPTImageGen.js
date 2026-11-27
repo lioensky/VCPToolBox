@@ -18,7 +18,7 @@ import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { URL } from 'url';
+import { URL, fileURLToPath } from 'url';
 
 // ============================================================
 // 环境变量读取
@@ -512,20 +512,14 @@ async function processImageInput(imageInput) {
         return `data:${mime};base64,${base64}`;
     }
 
-    // 本地文件路径
+    // 本地文件路径或经 FileFetcherServer 预拉取的本地 file:// URL
     let filePath = input;
-    if (input.startsWith('file://')) {
-        // 只去掉 file://，保留路径开头的 /（file:///app/x → /app/x）。
-        // 若去掉整个 file:///，Linux 绝对路径会变成相对路径，再被拼一次项目根目录。
-        filePath = decodeURIComponent(input.slice('file://'.length));
-        if (/^\/[A-Za-z]:[\\/]/.test(filePath)) filePath = filePath.slice(1); // file:///D:/x → D:/x
-    }
-
-    // Windows 盘符路径（如 D:\xxx\a.jpg）在非 Windows 服务器上不可能读到，
-    // 多半是 agent 把用户电脑上的附件路径直接传了进来。主程序只会预拉取 file:// 开头的参数。
-    if (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(filePath)) {
-        const fixed = 'file:///' + filePath.replace(/\\/g, '/');
-        throw new Error(`图片路径 ${filePath} 是用户电脑上的路径，服务器读不到。请改写成 ${fixed} 重新调用，VCP 会自动从用户电脑拉取该图片。`);
+    if (/^file:\/\//i.test(input)) {
+        const parsedUrl = new URL(input);
+        if (parsedUrl.hostname || parsedUrl.search || parsedUrl.hash) {
+            throw new Error(`无效的本地图片 file:// URL（不得包含远程主机名、查询参数或片段）: ${input}`);
+        }
+        filePath = fileURLToPath(parsedUrl);
     }
 
     // 相对路径转绝对路径

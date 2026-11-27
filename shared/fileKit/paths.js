@@ -3,6 +3,22 @@
 // FileOperator 与 ProjectForge 共用，保证两边的路径语义一致。
 
 const path = require('path');
+const { fileURLToPath } = require('node:url');
+
+/**
+ * 若输入为合法本地 file:// URL（无远程 host、无 query、无 fragment），解包为原生文件系统路径；
+ * 非 file:// 字符串原样返回。
+ */
+function unwrapLocalFileUrl(inputPath) {
+    if (!inputPath || typeof inputPath !== 'string') return inputPath;
+    const trimmed = inputPath.trim();
+    if (!/^file:\/\//i.test(trimmed)) return inputPath;
+    const parsed = new URL(trimmed);
+    if (parsed.hostname || parsed.search || parsed.hash) {
+        throw new Error('Local file URL must not contain host, query, or fragment');
+    }
+    return fileURLToPath(parsed);
+}
 
 /**
  * 判断 targetPath 是否位于 parentDir 之内（含其本身）。
@@ -28,7 +44,7 @@ function isPathInside(targetPath, parentDir) {
 function resolveAndNormalizePath(inputPath, options = {}) {
     if (!inputPath || typeof inputPath !== 'string') return inputPath;
     const { basePath = process.cwd(), relativeRoot = basePath, virtualRoot = relativeRoot } = options;
-    const original = inputPath.trim();
+    const original = unwrapLocalFileUrl(inputPath).trim();
 
     if (path.isAbsolute(original)) return path.resolve(original);
 
@@ -83,6 +99,7 @@ function toPosixRelative(fromDir, targetPath) {
 
 module.exports = {
     isPathInside,
+    unwrapLocalFileUrl,
     resolveAndNormalizePath,
     createPathGuard,
     toPosixRelative,
