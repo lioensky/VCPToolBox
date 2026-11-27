@@ -101,7 +101,7 @@ quality:「始」high「末」
 - `image`（必需）：原始图片来源（**单张≤4MB**），支持：
   - HTTP/HTTPS URL
   - base64 data URI（`data:image/png;base64,...`）
-  - 用户电脑上的图片：写成 `file:///D:/xxx/a.jpg`，VCP 主程序会自动从用户电脑拉取（不要直接写 `D:\xxx` 盘符路径）
+  - 聊天附件或本地图片 `file://` URL（如聊天消息附带的 `file://` 附件地址，VCP 主程序会自动预拉取）
   - 本地文件路径（相对于项目根目录，如 `image/gptimagegen/xxx.png`）
   - 图片数组（可同时传入多张，最多 16 张）
 - `size`（可选）：输出尺寸

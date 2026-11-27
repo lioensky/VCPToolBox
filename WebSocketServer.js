@@ -1055,14 +1055,8 @@ function findServerByIp(ip) {
         }
         return matchedServerId;
     }
-    if (byReported.length > 1) {
-        // 多台在线节点自报了相同的公网/局域网 IP（如同宿舍/同办公室共用 NAT），不能盲猜第一台
-        return null;
-    }
-    // 经隧道/反代连接时请求来源是 127.0.0.1 等地址，节点不会自报它（reportIPAddress 跳过 internal）。
-    // 退一步比对节点 WebSocket 连接的真实来源 IP；仅在恰好一个已连接节点匹配时采用，避免拉错电脑。
-    const byConnection = findServersByConnectionIp(ip);
-    if (byConnection.length === 1) return byConnection[0];
+    // 多台在线节点自报同一公网/局域网 IP，或请求经隧道/反代（如 127.0.0.1）未命中自报地址时，
+    // 绝不将传输跳连接 IP 直接视作机器身份，统一返回 null 交由超栈层对 SHA-256 附件做零信任验真。
     return null;
 }
 

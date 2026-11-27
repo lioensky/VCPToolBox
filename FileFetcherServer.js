@@ -198,9 +198,10 @@ async function fetchFile(fileUrl, requestIp) {
     }
 
     const remotePromise = (async () => {
-        // 先按唯一匹配找（自报 IP 唯一或隧道连接 IP 唯一）。
-        // 找不到唯一节点时（多节点共用同一隧道或同一公网 NAT），仅对 VCPChat 附件（64位内容 sha256）
-        // 依次询问候选节点并强制校验内容哈希；非附件绝不跨多节点试探，杜绝拉错别台电脑的同名文件。
+        // 1) 自报真实 IP 唯一锁定的节点允许直接拉取；
+        // 2) 未能唯一锁定时（如经 FRP/SSH 隧道、反代 127.0.0.1 或多机共享公网 NAT），不信任连接跳 IP 代表身份，
+        //    一律仅对 VCPChat 内容寻址附件（64位内容 sha256）询问同源候选节点并强制校验内容哈希；
+        //    非附件普通路径绝不跨机盲拉，杜绝多用户反代/隧道下的跨机文件越权读取。
         const primary = webSocketServer.findServerByIp(requestIp);
         let candidates = primary ? [primary] : [];
         if (!primary && attachHash) {
@@ -220,7 +221,6 @@ async function fetchFile(fileUrl, requestIp) {
         if (candidates.length === 0) {
             throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
         }
-
         const errors = [];
         for (const serverId of candidates) {
             console.log(`[FileFetcherServer] 确定文件来源服务器为: ${serverId} (IP: ${requestIp})。正在请求文件...`);

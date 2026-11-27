@@ -123,10 +123,11 @@ test('1. extractAttachmentSha256 handles malformed percent in parent dirs, encod
     assert.equal(extractAttachmentSha256(undefined), null);
 });
 
-test('2. single tunnel node resolves via loopback normalization and percent-containing URLs do not throw URIError', async (t) => {
+test('2. single tunnel node enforces zero-trust SHA-256 verification on tunnel IPs and percent-containing URLs do not throw URIError', async (t) => {
     const { connectNode } = await startTunnelHarness(t);
     const percentPayload = Buffer.from('PERCENT-REPORT-BYTES');
-    const tunnelPayload = Buffer.from('SINGLE-TUNNEL-IMAGE');
+    const tunnelAttachPayload = Buffer.from('SINGLE-TUNNEL-VERIFIED-ATTACHMENT');
+    const tunnelAttachSha = crypto.createHash('sha256').update(tunnelAttachPayload).digest('hex');
 
     const node = await connectNode({
         host: '[::1]',
@@ -136,29 +137,40 @@ test('2. single tunnel node resolves via loopback normalization and percent-cont
             if (fileUrl.includes('100%_report.png')) {
                 return { status: 'success', fileData: percentPayload.toString('base64'), mimeType: 'image/png' };
             }
-            if (fileUrl.includes('single_tunnel_img.png')) {
-                return { status: 'success', fileData: tunnelPayload.toString('base64'), mimeType: 'image/png' };
+            if (fileUrl.includes(tunnelAttachSha)) {
+                return { status: 'success', fileData: tunnelAttachPayload.toString('base64'), mimeType: 'image/png' };
             }
             return { status: 'error', error: 'ENOENT' };
         }
     });
 
-    // 单节点唯一自报 IP 命中时返回默认 serverName（兼容 server.js:637 POST 日志静默）
+    // 2a. 自报真实 IP 唯一命中时返回默认 serverName（兼容 server.js:637 POST 日志静默）
     assert.equal(webSocketServer.findServerByIp('192.168.1.99'), 'VCPChat-Desktop-Client-Distributed-Server');
 
-    // ::1 <-> 127.0.0.1 <-> ::ffff:127.0.0.1 隧道连接回退对称互认
-    assert.equal(webSocketServer.findServerByIp('127.0.0.1'), node.serverId);
-    assert.equal(webSocketServer.findServerByIp('::ffff:127.0.0.1'), node.serverId);
-    assert.equal(webSocketServer.findServerByIp('::1'), node.serverId);
+    // 2b. 零信任身份边界：隧道回环连接 IP 绝不直接充当机器身份，仅通过 findServersByConnectionIp 暴露给 SHA-256 验真通道
+    assert.equal(webSocketServer.findServerByIp('127.0.0.1'), null);
+    assert.equal(webSocketServer.findServerByIp('::ffff:127.0.0.1'), null);
+    assert.equal(webSocketServer.findServerByIp('::1'), null);
+    assert.deepEqual(webSocketServer.findServersByConnectionIp('127.0.0.1'), [node.serverId]);
+    assert.deepEqual(webSocketServer.findServersByConnectionIp('::ffff:127.0.0.1'), [node.serverId]);
 
-    // 含未转义 '%' 的本地文件路径不得触发 URIError
+    // 2c. 自报 IP 直连下含未转义 '%' 的本地文件路径不得触发 URIError
     const pctResult = await fileFetcherServer.fetchFile('file:///D:/reports/100%_report.png', '192.168.1.99');
     assert.deepEqual(pctResult.buffer, percentPayload);
 
-    // 隧道回退拉取并写入 .file_cache
-    const cachedUrl = await fileFetcherServer.resolveFileUrl('file:///D:/Desktop/single_tunnel_img.png', '127.0.0.1');
+    // 2d. 单节点隧道下：64-hex SHA-256 附件自动走候选询盘 + 哈希校验落入 .file_cache
+    const tunnelAttachUrl = `file:///D:/VCPChat/attachments/${tunnelAttachSha}.png`;
+    const cachedUrl = await fileFetcherServer.resolveFileUrl(tunnelAttachUrl, '127.0.0.1');
     assert.ok(cachedUrl.includes('.file_cache'));
-    assert.deepEqual(fs.readFileSync(fileURLToPath(cachedUrl)), tunnelPayload);
+    assert.deepEqual(fs.readFileSync(fileURLToPath(cachedUrl)), tunnelAttachPayload);
+
+    // 2e. 单节点隧道下：非附件普通路径严格拒绝跨机盲拉（0 次远程请求），防止无转发头反代下越权读服主本机文件
+    const seenBefore = node.seenUrls.length;
+    await assert.rejects(
+        () => fileFetcherServer.fetchFile('file:///D:/Desktop/arbitrary_private_file.png', '127.0.0.1'),
+        /未找到任何已知的分布式服务器/
+    );
+    assert.equal(node.seenUrls.length, seenBefore);
 });
 
 test('3. multi-node shared tunnel verifies SHA-256 across nodes, prefers newest connection, and refuses non-attachment paths', async (t) => {
