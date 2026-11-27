@@ -548,10 +548,13 @@ async function extractArchiveSafely(archiveFormat, archiveFilePath, extractDir) 
     });
 }
 
-async function rebuildEmojiGeneratedLists() {
-    await fs.mkdir(EMOJI_LISTS_DIR, { recursive: true });
+async function rebuildEmojiGeneratedLists({
+    imageRootDir = IMAGE_ROOT_DIR,
+    listsDir = EMOJI_LISTS_DIR,
+} = {}) {
+    await fs.mkdir(listsDir, { recursive: true });
 
-    const sourceEntries = await fs.readdir(IMAGE_ROOT_DIR, { withFileTypes: true });
+    const sourceEntries = await fs.readdir(imageRootDir, { withFileTypes: true });
     const emojiDirs = sourceEntries
         .filter((entry) => entry.isDirectory() && shouldTreatAsEmojiPack(entry.name))
         .map((entry) => entry.name)
@@ -562,7 +565,7 @@ async function rebuildEmojiGeneratedLists() {
     let unchangedCount = 0;
 
     for (const packName of emojiDirs) {
-        const packDirPath = path.join(IMAGE_ROOT_DIR, packName);
+        const packDirPath = path.join(imageRootDir, packName);
         const packEntries = await fs.readdir(packDirPath, { withFileTypes: true });
         const imageFiles = packEntries
             .filter((entry) => entry.isFile())
@@ -570,8 +573,8 @@ async function rebuildEmojiGeneratedLists() {
             .filter((fileName) => ALLOWED_IMAGE_EXTENSIONS.has(path.extname(fileName).toLowerCase()))
             .sort(compareText);
 
-        const targetFilePath = path.join(EMOJI_LISTS_DIR, `${packName}.txt`);
-        await assertSafePath(EMOJI_LISTS_DIR, targetFilePath);
+        const targetFilePath = path.join(listsDir, `${packName}.txt`);
+        await assertSafePath(listsDir, targetFilePath);
         const didWrite = await writeTextFileIfChanged(
             targetFilePath,
             imageFiles.join('|')
@@ -591,10 +594,27 @@ async function rebuildEmojiGeneratedLists() {
         });
     }
 
+    // 目录被删除后，旧的列表文件不会随重建消失，会让 /emojis/list 继续吐出
+    // 已经不存在的表情（前端兜底后表现为裂图）。这里按目录真相清理孤儿列表。
+    const validPackNames = new Set(emojiDirs);
+    const removed = [];
+    for (const file of await fs.readdir(listsDir)) {
+        if (!file.toLowerCase().endsWith('.txt')) continue;
+        const packName = path.basename(file, path.extname(file));
+        if (validPackNames.has(packName)) continue;
+
+        const staleFilePath = path.join(listsDir, file);
+        await assertSafePath(listsDir, staleFilePath);
+        await fs.unlink(staleFilePath);
+        removed.push(packName);
+    }
+
     return {
         generatedCount: packs.length,
         updatedCount,
         unchangedCount,
+        removedCount: removed.length,
+        removed,
         packs,
     };
 }
@@ -1675,3 +1695,6 @@ module.exports = function(options) {
 
     return router;
 };
+
+// 供测试直接驱动列表重建，避免为了验证孤儿清理去启动整个 admin 服务。
+module.exports.rebuildEmojiGeneratedLists = rebuildEmojiGeneratedLists;
