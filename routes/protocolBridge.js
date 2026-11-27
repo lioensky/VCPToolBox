@@ -22,7 +22,7 @@ const recentResponsesRequests = new Map();
 /**
  * 将多模态 content 数组归一化为纯文本字符串
  */
-function normalizeTextContent(content) {
+function normalizeTextContent(content, geminiParts = false) {
     if (typeof content === 'string') {
         return content;
     }
@@ -31,6 +31,7 @@ function normalizeTextContent(content) {
         return content
             .map(item => {
                 if (typeof item === 'string') return item;
+                if (geminiParts && item?.type === undefined && item?.thought !== true && typeof item?.text === 'string') return item.text;
                 if (item && typeof item === 'object') {
                     if (item.type === 'text' && typeof item.text === 'string') return item.text;
                     if (item.type === 'input_text' && typeof item.text === 'string') return item.text;
@@ -615,7 +616,7 @@ function extractMessagesFromGeminiBody(body) {
     if (Array.isArray(body.contents)) {
         for (const content of body.contents) {
             const role = content.role === 'model' ? 'assistant' : normalizeMessageRole(content.role || 'user');
-            const text = normalizeTextContent(content.parts);
+            const text = normalizeTextContent(content.parts, true);
             if (role && text) {
                 messages.push({ role, content: text });
             }
