@@ -1000,26 +1000,87 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
     });
 }
 
-function findServerByIp(ip) {
-   for (const [serverId, ipInfo] of distributedServerIPs.entries()) {
-       if (ipInfo.publicIP === ip || (ipInfo.localIPs && ipInfo.localIPs.includes(ip))) {
-           return ipInfo.serverName || serverId;
-       }
-   }
-   // 经隧道/反代连接时请求来源是 127.0.0.1 等地址，节点不会自报它（reportIPAddress 跳过 internal）。
-   // 退一步比对节点 WebSocket 连接的真实来源 IP；仅在恰好一个已连接节点匹配时采用，避免拉错电脑。
-   const byConnection = findServersByConnectionIp(ip);
-   if (byConnection.length === 1) return byConnection[0];
-   return null;
+function normalizeIpForLookup(ip) {
+    if (typeof ip !== 'string') return ip;
+    const trimmed = ip.trim();
+    const v4 = trimmed.startsWith('::ffff:') ? trimmed.slice(7) : trimmed;
+    return v4 === '::1' ? '127.0.0.1' : v4;
 }
 
-// 按节点 WebSocket 连接的真实来源 IP 找已连接的节点（经隧道/反代时可能有多个节点共用同一来源 IP）
+// 按节点 report_ip 自报的 publicIP / localIPs 查找所有当前处于 OPEN 状态的节点 serverId（最新连接排最前）
+function findServersByReportedIp(ip) {
+    const normalizedIp = normalizeIpForLookup(ip);
+    if (!normalizedIp) return [];
+    const list = [];
+    for (const [serverId, ipInfo] of distributedServerIPs.entries()) {
+        const serverEntry = distributedServers.get(serverId);
+        if (!serverEntry || !serverEntry.ws || serverEntry.ws.readyState !== WebSocket.OPEN) {
+            continue;
+        }
+        const publicMatched = ipInfo.publicIP && (
+            ipInfo.publicIP === ip ||
+            normalizeIpForLookup(ipInfo.publicIP) === normalizedIp
+        );
+        const localMatched = Array.isArray(ipInfo.localIPs) && ipInfo.localIPs.some(
+            candidate => candidate === ip || normalizeIpForLookup(candidate) === normalizedIp
+        );
+        if (publicMatched || localMatched) {
+            list.push(serverId);
+        }
+    }
+    return list.reverse();
+}
+
+function hasDuplicateOpenServerName(targetName) {
+    if (!targetName) return false;
+    let count = 0;
+    for (const [, info] of distributedServers.entries()) {
+        if (info.ws && info.ws.readyState === WebSocket.OPEN && info.serverName === targetName) {
+            count++;
+            if (count > 1) return true;
+        }
+    }
+    return false;
+}
+
+function findServerByIp(ip) {
+    const byReported = findServersByReportedIp(ip);
+    if (byReported.length === 1) {
+        const matchedServerId = byReported[0];
+        const ipInfo = distributedServerIPs.get(matchedServerId) || {};
+        const candidateName = ipInfo.serverName || distributedServers.get(matchedServerId)?.serverName;
+        // 若存在多台在线客户端共用同一默认 serverName，返回唯一 serverId 以防 executeDistributedTool 按名错打到第一台节点
+        if (candidateName && !hasDuplicateOpenServerName(candidateName)) {
+            return candidateName;
+        }
+        return matchedServerId;
+    }
+    if (byReported.length > 1) {
+        // 多台在线节点自报了相同的公网/局域网 IP（如同宿舍/同办公室共用 NAT），不能盲猜第一台
+        return null;
+    }
+    // 经隧道/反代连接时请求来源是 127.0.0.1 等地址，节点不会自报它（reportIPAddress 跳过 internal）。
+    // 退一步比对节点 WebSocket 连接的真实来源 IP；仅在恰好一个已连接节点匹配时采用，避免拉错电脑。
+    const byConnection = findServersByConnectionIp(ip);
+    if (byConnection.length === 1) return byConnection[0];
+    return null;
+}
+
+// 按节点 WebSocket 连接的真实来源 IP 找已连接的节点（最近连接排最前，减少重连半开旧连接带来的超时等待）
 function findServersByConnectionIp(ip) {
+    const normalizedIp = normalizeIpForLookup(ip);
+    if (!normalizedIp) return [];
     const list = [];
     for (const [serverId, info] of distributedServers.entries()) {
-        if (info.ws && info.ws.readyState === WebSocket.OPEN && info.ws.clientIp === ip) list.push(serverId);
+        if (
+            info.ws &&
+            info.ws.readyState === WebSocket.OPEN &&
+            normalizeIpForLookup(info.ws.clientIp) === normalizedIp
+        ) {
+            list.push(serverId);
+        }
     }
-    return list;
+    return list.reverse();
 }
 
 function getDistributedServerSnapshot() {
@@ -1106,6 +1167,7 @@ module.exports = {
     executeDistributedTool,
     handleDistributedServerMessage,
     findServerByIp,
+    findServersByReportedIp,
     findServersByConnectionIp,
     getDistributedServerSnapshot,
     formatDistributedServerListForPrompt,
