@@ -2,33 +2,73 @@
 
 const NATIVE_CALL_ID = Symbol('vcpNativeCallId');
 
-/** Assemble the first candidate's calls from the already bounded SSE buffer. */
+const { randomUUID } = require('node:crypto');
+const record = value => value != null && typeof value === 'object' && !Array.isArray(value);
+function entriesOf(payload) {
+    if (payload?.tool_calls != null && payload.function_call != null) return [{ error: 'mixed_envelopes' }];
+    if (payload?.function_call != null) return [{ index: 0, function: payload.function_call }];
+    const value = payload?.tool_calls;
+    return value == null ? [] : Array.isArray(value) ? value : [value];
+}
 function collectStreamToolCalls(frames) {
-    const calls = new Map();
+    const slots = new Map(), detached = [];
     for (const frame of frames) {
-        const choice = JSON.parse(frame.slice(6).trim()).choices.find(item => (item.index ?? 0) === 0);
-        const payload = choice?.message ?? choice?.delta;
-        if (payload?.function_call || (payload?.tool_calls != null && !Array.isArray(payload.tool_calls))) return null;
-        for (const [position, part] of (payload?.tool_calls ?? []).entries()) {
-            if (!part || typeof part !== 'object' || Array.isArray(part)) return null;
-            const index = part.index ?? (choice.message ? position : -1);
-            if (!Number.isSafeInteger(index) || index < 0) return null;
-            const call = calls.get(index) ?? { id: '', type: '', function: { name: '', arguments: '' } };
-            for (const key of ['id', 'type']) {
-                if (part[key] === undefined) continue;
-                if (typeof part[key] !== 'string' || (call[key] && call[key] !== part[key])) return null;
-                call[key] = part[key];
+        const choice = JSON.parse(frame.slice(6).trim()).choices.find(c => (c.index ?? 0) === 0);
+        for (const [position, part] of entriesOf(choice?.message ?? choice?.delta).entries()) {
+            const index = part?.index ?? (choice?.message ? position : undefined);
+            if (!Number.isSafeInteger(index) || index < 0) {
+                detached.push({ error: part?.error || 'unbound_index' }); continue;
+            }
+            const slot = slots.get(index) ?? { function: {} };
+            slots.set(index, slot);
+            const fn = part?.function ?? part?.functionCall;
+            if (!record(part) || (fn !== undefined && !record(fn))) { slot.error = 'invalid_fragment'; continue; }
+            for (const key of ['type', 'id']) if (part[key] != null) {
+                if (slot[key] !== undefined && slot[key] !== part[key]) slot.error = 'fragment_conflict';
+                slot[key] = part[key];
             }
             for (const key of ['name', 'arguments']) {
-                const value = part.function?.[key];
+                const value = key === 'arguments' ? fn?.arguments ?? fn?.args : fn?.name;
                 if (value === undefined) continue;
-                if (typeof value !== 'string') return null;
-                call.function[key] += value;
+                const old = slot.function[key];
+                if (typeof value === 'string' && (old === undefined || typeof old === 'string')) slot.function[key] = (old ?? '') + value;
+                else if (key === 'arguments' && old === undefined && record(value)) slot.function[key] = value;
+                else slot.error = 'fragment_conflict';
             }
-            calls.set(index, call);
         }
     }
-    return [...calls].sort(([a], [b]) => a - b).map(([, call]) => call);
+    return [...slots].sort(([a],[b]) => a-b).map(([,v]) => v).concat(detached);
+}
+function admitNativeCalls(input, knownTool = () => false) {
+    const calls = [], normalized = [], rejected = [], used = new Set();
+    const reserved = new Set(input.map(p => p?.id));
+    for (const [i,p] of input.entries()) {
+        const reject = reason => rejected.push(`${i}:${reason}`);
+        if (!record(p) || p.error || (p.type != null && p.type !== 'function')) { reject(typeof p?.error === 'string' && ['fragment_conflict','unbound_index','mixed_envelopes','invalid_fragment'].includes(p.error) ? p.error : 'invalid_call'); continue; }
+        const fn = p.function ?? p.functionCall;
+        const raw = fn?.arguments ?? fn?.args;
+        let args;
+        try { args = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { reject('invalid_json'); continue; }
+        if (!record(args)) { reject('expected_object'); continue; }
+        let wire = typeof raw === 'string' ? raw : JSON.stringify(args);
+        if (fn.name !== 'vcptools') {
+            if (typeof fn.name !== 'string' || !knownTool(fn.name) || (args.tool_name !== undefined && args.tool_name !== fn.name) || Object.keys(args).some(k => k.toLowerCase() === 'jev')) { reject('unknown_or_conflicting_name'); continue; }
+            wire = JSON.stringify({ ...args, tool_name: fn.name });
+        }
+        let id = p.id;
+        if (typeof id !== 'string' || !id.trim() || used.has(id)) do { id = `call_${randomUUID()}`; } while (reserved.has(id) || used.has(id));
+        const call = { ...(p.extra_content ? { extra_content: p.extra_content } : {}), id, type:'function', function:{ name:'vcptools', arguments:wire } };
+        const item = normalizeNativeVcpCalls([call]);
+        if (!item) { reject('invalid_target'); continue; }
+        used.add(id); calls.push(call); normalized.push(item[0]);
+    }
+    return { calls, normalized, rejected };
+}
+function rejectionNotice(batch, body) {
+    if (!batch.rejected.length && batch.calls.length) return '';
+    const reasons = batch.rejected.slice(0, 12).join(', ') || 'empty_batch';
+    console.warn('[NativeFC]', { requestId: body.requestId ?? body.messageId, model: body.model, accepted:batch.calls.length, rejected:batch.rejected.length, reasons });
+    return `\n[VCP 原生 FC：可执行 ${batch.calls.length} 项；未执行项（序号从 0 起）：${reasons}]\n`;
 }
 
 function normalizeNativeVcpCalls(calls) {
@@ -96,4 +136,4 @@ function buildNativeToolMessages(calls, groups) {
     });
 }
 
-module.exports = { NATIVE_CALL_ID, collectStreamToolCalls, normalizeNativeVcpCalls, buildNativeToolMessages };
+module.exports = { NATIVE_CALL_ID, entriesOf, admitNativeCalls, rejectionNotice, collectStreamToolCalls, normalizeNativeVcpCalls, buildNativeToolMessages };

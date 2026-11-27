@@ -33,7 +33,7 @@ for (const [native, archery, forward = false] of [[false, false], [false, true],
             }];
             const executed = [];
             const nativeResponse = () => ({ ok: true, body: Readable.from([
-                `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: nativeBatch }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
+                `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [...nativeBatch, { index: 9, id: 'bad', function: { name: 'vcptools', arguments: '{' } }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`,
             ]) });
             const ctx = {
                 originalBody: { model: 'test', messages: [], requestId: 'r' },

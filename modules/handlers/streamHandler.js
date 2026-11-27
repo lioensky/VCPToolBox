@@ -5,7 +5,7 @@ const contextBudget = require('../contextBudget.js');
 const finalContextStore = require('../finalContextStore.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream, buildToolPayloadMessage } = require('../toolResultBatch.js');
-const { NATIVE_CALL_ID, collectStreamToolCalls, normalizeNativeVcpCalls, buildNativeToolMessages } = require('../nativeToolLoop');
+const { NATIVE_CALL_ID, collectStreamToolCalls, admitNativeCalls, rejectionNotice, buildNativeToolMessages } = require('../nativeToolLoop');
 
 const {
   extractReasoningText,
@@ -263,6 +263,7 @@ class StreamHandler {
           const delta = choice?.delta;
           const msg = choice?.message;
           if (
+            (this.context.ownsNativeVcpTools && [delta, msg].some(p => p?.tool_calls != null && !Array.isArray(p.tool_calls))) ||
             (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) ||
             delta?.function_call ||
             (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) ||
@@ -413,11 +414,13 @@ class StreamHandler {
               abortController?.signal.aborted || !aiResponse.ok || res.writableEnded || res.destroyed ||
               !(['tool_calls', 'function_call', 'stop'].includes(finishReason) || (!finishReason && sawDone))) return;
           if (this.context.ownsNativeVcpTools) {
-            const calls = collectStreamToolCalls(nativeToolFrames);
-            const normalized = normalizeNativeVcpCalls(calls);
-            if (!normalized) {
-              invalidOwnedNativeTurn = true;
-              invalidPayload = true;
+            const batch = admitNativeCalls(collectStreamToolCalls(nativeToolFrames), name => !!pluginManager?.getPlugin?.(name));
+            const { calls, normalized } = batch;
+            const notice = rejectionNotice(batch, originalBody);
+            if (notice) res.write(`data: ${JSON.stringify({ object:'chat.completion.chunk', model:originalBody.model, choices:[{ index:0, delta:{content:notice}, finish_reason:null }] })}\n\n`);
+            if (!calls.length) {
+              invalidOwnedNativeTurn = !ToolCallParser.endsWithCompleteToolRequest?.(collectedContentThisTurn);
+              invalidPayload = invalidOwnedNativeTurn;
               return;
             }
             ownedNativeTurn = { calls, normalized };

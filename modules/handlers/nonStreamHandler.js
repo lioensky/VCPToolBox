@@ -4,7 +4,7 @@ const contextBudget = require('../contextBudget.js');
 const finalContextStore = require('../finalContextStore.js');
 const roleDivider = require('../roleDivider.js');
 const { formatToolResultBatch, projectToolBatchForUpstream, buildToolPayloadMessage } = require('../toolResultBatch.js');
-const { NATIVE_CALL_ID, normalizeNativeVcpCalls, buildNativeToolMessages } = require('../nativeToolLoop');
+const { NATIVE_CALL_ID, entriesOf, admitNativeCalls, rejectionNotice, buildNativeToolMessages } = require('../nativeToolLoop');
 
 const {
   buildClientVisibleContent,
@@ -63,7 +63,7 @@ function parseNonStreamResponse(rawResponseText) {
 
 function hasNativeToolCallPayload(message) {
   return (
-    (Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) ||
+    (message?.tool_calls != null && (Array.isArray(message.tool_calls) ? message.tool_calls.length > 0 : typeof message.tool_calls === 'object')) ||
     Boolean(message?.function_call && typeof message.function_call === 'object')
   );
 }
@@ -389,10 +389,13 @@ class NonStreamHandler {
           completed = true;
           break;
         }
-        nativeCalls = nativeMessage.tool_calls;
-        ownedCalls = !vcpToolUseForbidden && !nativeMessage.function_call && normalizeNativeVcpCalls(nativeCalls);
-        if (!ownedCalls) {
-          conversationHistoryForClient.push('\n[VCP 原生工具调用格式无效，本批未执行。]\n');
+        const batch = admitNativeCalls(entriesOf(nativeMessage), name => !!pluginManager?.getPlugin?.(name));
+        const notice = rejectionNotice(batch, originalBody);
+        if (notice) conversationHistoryForClient.push(notice);
+        if (!vcpToolUseForbidden && batch.calls.length) {
+          nativeCalls = batch.calls;
+          ownedCalls = batch.normalized;
+        } else if (vcpToolUseForbidden || !ToolCallParser.endsWithCompleteToolRequest?.(currentAIContentForLoop)) {
           completed = false;
           break;
         }
