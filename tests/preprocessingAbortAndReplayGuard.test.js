@@ -333,19 +333,7 @@ test('getEmbeddingsBatch harvests in-flight batch via onBatchComplete while halt
 });
 
 test('RAGDiaryPlugin.getSingleEmbeddingCached isolates concurrent callers on abort and harvests completed vector into cache', async () => {
-    const ragSource = fs.readFileSync(
-        path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'RAGDiaryPlugin.js'),
-        'utf8'
-    );
-    const fnStart = ragSource.indexOf('async getSingleEmbeddingCached(');
-    const fnEnd = ragSource.indexOf('\n    _rememberEmbeddingText(', fnStart);
-    assert.ok(fnStart >= 0 && fnEnd > fnStart, 'getSingleEmbeddingCached slice boundary not found');
-
-    const { projectContextEmbeddingInput } = require('../modules/contextEmbeddingInput');
-    const methodHolder = vm.runInNewContext(
-        `({ ${ragSource.slice(fnStart, fnEnd)} })`,
-        { console: { log() {} }, Error, projectContextEmbeddingInput }
-    );
+    const ragSingleton = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js');
 
     const store = new Map();
     const remembered = [];
@@ -354,7 +342,7 @@ test('RAGDiaryPlugin.getSingleEmbeddingCached isolates concurrent callers on abo
     let apiCalls = 0;
     let passedOptions = null;
 
-    const plugin = Object.assign(Object.create(methodHolder), {
+    const plugin = Object.assign(new ragSingleton.constructor(), {
         pendingEmbeddingRequests: new Map(),
         cacheManager: {
             generateKey: ({ text }) => `emb:${text}`,
