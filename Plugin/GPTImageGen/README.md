@@ -43,7 +43,7 @@ cp config.env.example config.env
 | `OPENAI_API_KEY`          | ✅    | —                        | OpenAI 兼容 API 密钥                                         |
 | `OPENAI_BASE_URL`         | ✅    | `https://api.openai.com` | API 基础地址（官方或反代）                                   |
 | `GPT_IMAGE_MODEL`         | ❌    | `gpt-image-2`            | 模型名称，支持版本快照如 `gpt-image-2-2026-04-21`            |
-| `DEFAULT_SIZE`            | ❌    | `1024x1024`              | 默认尺寸（WIDTHxHEIGHT），支持纯数字简写如 `1024`            |
+| `DEFAULT_SIZE`            | ❌    | `1024x1024`              | 默认尺寸（WIDTHxHEIGHT），支持纯数字简写如 `1024`；填 `auto` 时改图按原图比例自动定尺寸 |
 | `DEFAULT_QUALITY`         | ❌    | `auto`                   | 默认质量：`low`（快速低成本）/ `medium` / `high`（精细高成本）/ `auto` |
 | `DEFAULT_RESPONSE_FORMAT` | ❌    | `b64_json`               | 返回格式：`b64_json`（推荐，无过期）/ `url`（60分钟内有效）  |
 | `DEFAULT_BACKGROUND`      | ❌    | `auto`                   | 默认背景：`opaque` / `auto`（见下方注意事项）                |
@@ -101,6 +101,7 @@ quality:「始」high「末」
 - `image`（必需）：原始图片来源（**单张≤4MB**），支持：
   - HTTP/HTTPS URL
   - base64 data URI（`data:image/png;base64,...`）
+  - 用户电脑上的图片：写成 `file:///D:/xxx/a.jpg`，VCP 主程序会自动从用户电脑拉取（不要直接写 `D:\xxx` 盘符路径）
   - 本地文件路径（相对于项目根目录，如 `image/gptimagegen/xxx.png`）
   - 图片数组（可同时传入多张，最多 16 张）
 - `size`（可选）：输出尺寸

@@ -12,6 +12,7 @@
  * @version 1.1.0
  */
 
+import { HttpsProxyAgent } from 'https-proxy-agent'; // 下载外部图片可走 HTTP_PROXY
 import http from 'http';
 import https from 'https';
 import fs from 'fs';
@@ -32,6 +33,17 @@ const DEFAULT_RESPONSE_FORMAT = process.env.DEFAULT_RESPONSE_FORMAT || 'url';
 const DEFAULT_BACKGROUND = process.env.DEFAULT_BACKGROUND || 'auto';
 const DEBUG = process.env.DebugMode === 'true';
 
+// 下载外部图片的代理：上游返回图片链接（如 imgen.x.ai）而服务器直连不通时使用；本机/内网地址不走代理
+const DOWNLOAD_PROXY = (process.env.HTTP_PROXY || '').trim();
+let downloadProxyAgent = null;
+function getDownloadAgent(hostname) {
+    if (!DOWNLOAD_PROXY || /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$)/.test(hostname)) return undefined;
+    if (!downloadProxyAgent) {
+        downloadProxyAgent = new HttpsProxyAgent(DOWNLOAD_PROXY);
+    }
+    return downloadProxyAgent;
+}
+
 // Chat Completions 模式：某些兼容渠道不支持 /v1/images/generations，
 // 而是通过 /v1/chat/completions + 内置 image_generation tool 来生成图片
 const USE_CHAT_COMPLETIONS_MODE = process.env.USE_CHAT_COMPLETIONS_MODE === 'true';
@@ -48,6 +60,9 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || process.cwd();
 const SERVER_PORT = process.env.SERVER_PORT || '5000';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || 'http://localhost';
+// 与 ZImageTurboGen / AgnesGen 一致：USE_PUBLIC_URL=true 时返回 VarHttpsUrl 公网地址（不带端口）
+const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true' || process.env.USE_PUBLIC_URL === '1';
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || VAR_HTTP_URL;
 
 // ============================================================
 // 工具函数
@@ -88,6 +103,28 @@ function isValidSize(size) {
     const height = parseInt(match[2], 10);
     // gpt-image-2 规则：最长边不超过 3840，最短边至少 256
     return width >= 256 && height >= 256 && Math.max(width, height) <= 3840;
+}
+
+/**
+ * size=auto：按第一张原图的宽高比自动定尺寸，改图时保持原构图。
+ * 长边固定 1536，短边取 16 的倍数（≥256），宽高比限制在 3:1 以内；读不出尺寸时回落 1024x1024。
+ * @param {string} dataURI - 已处理成 data URI 的原图
+ * @returns {Promise<string>} WIDTHxHEIGHT
+ */
+async function sizeFromImage(dataURI) {
+    try {
+        const { default: sharp } = await import('sharp');
+        const buffer = Buffer.from(dataURI.slice(dataURI.indexOf(',') + 1), 'base64');
+        const { width, height } = await sharp(buffer).metadata();
+        if (!width || !height) throw new Error('无法读取图片尺寸');
+        const ratio = Math.min(Math.max(width / height, 1 / 3), 3);
+        const long = 1536;
+        const short = Math.max(256, Math.round(long / Math.max(ratio, 1 / ratio) / 16) * 16);
+        return ratio >= 1 ? `${long}x${short}` : `${short}x${long}`;
+    } catch (e) {
+        debugLog('size=auto 读取原图尺寸失败，回落 1024x1024:', e.message);
+        return '1024x1024';
+    }
 }
 
 /**
@@ -344,7 +381,8 @@ function downloadImage(url) {
             port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
             path: parsedUrl.pathname + parsedUrl.search,
             method: 'GET',
-            timeout: 60000
+            timeout: 60000,
+            agent: getDownloadAgent(parsedUrl.hostname)
         };
 
         const req = transport.request(reqOptions, (res) => {
@@ -476,8 +514,18 @@ async function processImageInput(imageInput) {
 
     // 本地文件路径
     let filePath = input;
-    if (input.startsWith('file:///')) {
-        filePath = input.replace('file:///', '');
+    if (input.startsWith('file://')) {
+        // 只去掉 file://，保留路径开头的 /（file:///app/x → /app/x）。
+        // 若去掉整个 file:///，Linux 绝对路径会变成相对路径，再被拼一次项目根目录。
+        filePath = decodeURIComponent(input.slice('file://'.length));
+        if (/^\/[A-Za-z]:[\\/]/.test(filePath)) filePath = filePath.slice(1); // file:///D:/x → D:/x
+    }
+
+    // Windows 盘符路径（如 D:\xxx\a.jpg）在非 Windows 服务器上不可能读到，
+    // 多半是 agent 把用户电脑上的附件路径直接传了进来。主程序只会预拉取 file:// 开头的参数。
+    if (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(filePath)) {
+        const fixed = 'file:///' + filePath.replace(/\\/g, '/');
+        throw new Error(`图片路径 ${filePath} 是用户电脑上的路径，服务器读不到。请改写成 ${fixed} 重新调用，VCP 会自动从用户电脑拉取该图片。`);
     }
 
     // 相对路径转绝对路径
@@ -1090,7 +1138,9 @@ function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
     // 构建可访问的 HTTP URL
     const relativeServerPath = `gptimagegen/${fileName}`;
     const serverPath = `image/gptimagegen/${fileName}`;
-    const accessibleUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`;
+    const accessibleUrl = USE_PUBLIC_URL
+        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`
+        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`;
 
     return {
         localPath,
@@ -1292,10 +1342,11 @@ async function main() {
             size = `${size}x${size}`;
             debugLog(`Size auto-corrected to square: ${size}`);
         }
-        if (!isValidSize(size)) {
+        const autoSize = String(size).toLowerCase() === 'auto';
+        if (!autoSize && !isValidSize(size)) {
             return outputAndExit({
                 status: 'error',
-                error: `GPTImageGen: 无效的 size 参数 "${size}"。格式为 WIDTHxHEIGHT，最长边 ≤ 3840，最短边 ≥ 256。常用尺寸: 1024x1024, 1536x1024, 1024x1536, 2048x2048, 3840x2160`
+                error: `GPTImageGen: 无效的 size 参数 "${size}"。格式为 WIDTHxHEIGHT，最长边 ≤ 3840，最短边 ≥ 256，或填 auto（改图时按原图比例）。常用尺寸: 1024x1024, 1536x1024, 1024x1536, 2048x2048, 3840x2160`
             });
         }
 
@@ -1330,6 +1381,10 @@ async function main() {
                 imageDataURIs.push(dataURI);
             }
 
+            if (autoSize) {
+                size = await sizeFromImage(imageDataURIs[0]);
+                debugLog('size=auto ->', size);
+            }
             debugLog('Edit mode: processed', imageDataURIs.length, 'input image(s)');
             debugLog('Parsed params:', { prompt: prompt.substring(0, 100), size, quality, imageCount: imageDataURIs.length });
 
@@ -1348,6 +1403,7 @@ async function main() {
                 });
             }
 
+            if (autoSize) size = '1024x1024'; // 文生图没有原图可参考
             debugLog('Generate mode');
             debugLog('Parsed params:', { prompt: prompt.substring(0, 100), size, quality, background, n, response_format });
 
