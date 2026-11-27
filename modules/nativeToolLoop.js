@@ -55,12 +55,18 @@ function normalizeNativeVcpCalls(calls) {
             delete args[key];
         }
         if (args.valet && !args.maid) args.maid = args.valet;
+        if (typeof args.tool_password === 'number' && Number.isFinite(args.tool_password)) {
+            args.tool_password = String(args.tool_password);
+        }
         const archeryMode = typeof archery === 'string' ? archery.trim() : archery;
+        const normalizedVref = typeof vref === 'number'
+            ? (Number.isFinite(vref) && vref > 0 ? String(Math.floor(vref)) : null)
+            : (typeof vref === 'string' ? (vref.trim() || null) : null);
         normalized.push({
             name, args, archery: archeryMode === true || archeryMode === 'true' || archeryMode === 'no_reply',
             archeryNoReply: archeryMode === 'no_reply', markHistory: typeof ink === 'string' && ink.trim() === 'mark_history',
             river: typeof river === 'string' ? river.trim() : null,
-            vref: typeof vref === 'string' ? vref.trim() : null,
+            vref: normalizedVref,
             [NATIVE_CALL_ID]: call.id
         });
     }

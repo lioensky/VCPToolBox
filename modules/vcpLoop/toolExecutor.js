@@ -714,7 +714,10 @@ class ToolExecutor {
 
   async _verifyAuth(args) {
     const realCode = await this.getRealAuthCode(this.debugMode);
-    const provided = args.tool_password;
+    const rawProvided = args.tool_password;
+    const provided = typeof rawProvided === 'number' && Number.isFinite(rawProvided)
+      ? String(rawProvided)
+      : rawProvided;
     delete args.tool_password;
 
     if (!realCode || provided !== realCode) {
