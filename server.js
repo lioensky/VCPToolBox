@@ -919,6 +919,7 @@ app.use('/AdminPanel', (req, res) => {
 // The scoped read credential terminates at this route; leave the global API guard unchanged.
 require('./routes/memorySearch').mountMemorySearch(app, {
     grants: process.env.MEMORY_READ_GRANTS,
+    ranking: process.env.MEMORY_SEARCH_RANKING,
     serverKey,
     getBridge: () => pluginManager.messagePreprocessors.get('RAGDiaryPlugin')?.getContextBridge()
 });

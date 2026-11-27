@@ -52,7 +52,7 @@ test('ContextBridge retrieveDiary uses native RiverMemo with an explicit diary s
             
         });
 
-        assert.equal(bridge.version, '1.3');
+        assert.equal(bridge.version, '1.4');
         assert.equal(searchCalls, 0, 'native success must not execute the JS search fallback');
         assert(nativeCall, 'native RiverMemo must be invoked');
         assert.equal(nativeCall.query.text, '回忆八月发生的事情');
