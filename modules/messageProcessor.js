@@ -457,23 +457,60 @@ function resolveStaticFoldFull(foldObj) {
         .join('\n\n---\n\n');
 }
 
+function appendDynamicFoldHiddenHint(content, hiddenBlocksCount) {
+    if (hiddenBlocksCount > 0 && content) {
+        return `${content}\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
+    }
+    return content;
+}
+
+function buildDynamicFoldFallback(foldObj, normalizedBlocks) {
+    const nonEmptyBlocks = normalizedBlocks.filter(block => Boolean(block.content));
+    if (nonEmptyBlocks.length === 0) {
+        return { content: '', hiddenCount: 0 };
+    }
+
+    const minThreshold = nonEmptyBlocks.reduce((min, block) => Math.min(min, block.threshold), Infinity);
+    if (foldObj.dynamic_fold_strategy === 'toolbox_block_similarity') {
+        // 块级策略兜底：按原顺序保留全部最低阈值/常驻块（threshold <= max(0, minThreshold)），
+        // 避免同阈值区块被倒序覆盖或漏掉文件开头的 0.0 常驻说明。
+        const fallbackCutoff = Math.max(0, minThreshold);
+        const fallbackBlocks = nonEmptyBlocks.filter(block => block.threshold <= fallbackCutoff);
+        return {
+            content: fallbackBlocks.map(block => block.content).join('\n\n---\n\n'),
+            hiddenCount: nonEmptyBlocks.length - fallbackBlocks.length
+        };
+    }
+
+    // 分级单块策略兜底：按阈值升序且同阈值保持原序，优先取首个最低阈值块。
+    const sortedAsc = [...nonEmptyBlocks].sort((a, b) => {
+        if (a.threshold !== b.threshold) return a.threshold - b.threshold;
+        return a._originalIndex - b._originalIndex;
+    });
+    return {
+        content: sortedAsc[0]?.content || '',
+        hiddenCount: 0
+    };
+}
+
 // 🌟 新增：动态折叠协议处理器
 async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
     if (!foldObj || !foldObj.vcp_dynamic_fold || !Array.isArray(foldObj.fold_blocks) || foldObj.fold_blocks.length === 0) {
         return `[无效的动态折叠数据结构: ${placeholderKey}]`;
     }
 
-    const blocks = foldObj.fold_blocks
-        .filter(block => block && typeof block.content === 'string');
-    const blocksByThreshold = [...blocks].sort((a, b) => (b.threshold || 0) - (a.threshold || 0));
-    const fallbackBlock = [...blocksByThreshold].reverse().find(block => block.content)
-        || { threshold: 0.0, content: '' };
+    const blocks = getNormalizedFoldBlocks(foldObj);
+    const blocksByThreshold = [...blocks].sort((a, b) => {
+        if (b.threshold !== a.threshold) return b.threshold - a.threshold;
+        return a._originalIndex - b._originalIndex;
+    });
+    const fallback = buildDynamicFoldFallback(foldObj, blocks);
 
     try {
-        const ragPlugin = context.pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
+        const ragPlugin = context?.pluginManager?.messagePreprocessors?.get('RAGDiaryPlugin');
         if (!ragPlugin || typeof ragPlugin.getSingleEmbeddingCached !== 'function') {
-            if (context.DEBUG_MODE) console.log(`[DynamicFold] RAGDiaryPlugin 不可用，返回基础内容 (${placeholderKey})`);
-            return fallbackBlock.content;
+            if (context?.DEBUG_MODE) console.log(`[DynamicFold] RAGDiaryPlugin 不可用，返回基础内容 (${placeholderKey})`);
+            return appendDynamicFoldHiddenHint(fallback.content, fallback.hiddenCount);
         }
 
         const contextMessages = context.messages || [];
@@ -494,7 +531,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
         if (!userContent) {
             if (context.DEBUG_MODE) console.log(`[DynamicFold] 未找到 User 文本消息，返回基础内容 (${placeholderKey})`);
-            return fallbackBlock.content;
+            return appendDynamicFoldHiddenHint(fallback.content, fallback.hiddenCount);
         }
 
         if (typeof ragPlugin.sanitizeForEmbedding === 'function') {
@@ -570,7 +607,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         const userVector = ragPlugin._getWeightedAverageVector([uVec, aVec], mainWeights);
         if (!userVector) {
             if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取用户上下文向量失败，返回基础内容 (${placeholderKey})`);
-            return fallbackBlock.content;
+            return appendDynamicFoldHiddenHint(fallback.content, fallback.hiddenCount);
         }
 
         const vectorCache = new Map();
@@ -637,7 +674,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                     return block.content;
                 }
             }
-            return fallbackBlock.content;
+            return fallback.content;
         }
 
         const getThreshold = (block) => Number.isFinite(Number(block.threshold)) ? Number(block.threshold) : 0;
@@ -753,21 +790,18 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
         let combinedContent = keptContents.filter(Boolean).join('\n\n---\n\n');
         if (!combinedContent) {
-            combinedContent = fallbackBlock.content;
+            combinedContent = fallback.content;
+            hiddenBlocksCount = fallback.hiddenCount;
         }
 
-        if (hiddenBlocksCount > 0) {
-            combinedContent += `\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
-        }
-
-        return combinedContent;
+        return appendDynamicFoldHiddenHint(combinedContent, hiddenBlocksCount);
     } catch (e) {
         if (e?.name === 'AbortError' || context?.signal?.aborted) {
             throwIfContextAborted(context);
             throw e;
         }
         console.error(`[DynamicFold] 处理动态折叠时发生异常 (${placeholderKey}):`, e.message);
-        return fallbackBlock.content;
+        return appendDynamicFoldHiddenHint(fallback.content, fallback.hiddenCount);
     }
 }
 
@@ -1273,5 +1307,8 @@ module.exports = {
     isBetaSystemUserText,
     isMetaThinkingV3Message,
     stripSystemNotificationBlocks,
-    findLastRealUserMessage
+    findLastRealUserMessage,
+    resolveDynamicFoldProtocol,
+    resolveStaticFoldLite,
+    resolveStaticFoldFull
 };
