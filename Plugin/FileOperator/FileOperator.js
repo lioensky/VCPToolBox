@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const { fileURLToPath } = require('node:url');
 const glob = require('glob');
 const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -512,6 +513,12 @@ async function webReadFile(fileUrl, options = {}) {
 
 async function readFile(filePath, encoding = 'utf8', lines) {
   try {
+    // FileFetcher delivers a local file URL, while fs.stat expects a native path.
+    if (typeof filePath === 'string' && /^file:\/\//i.test(filePath.trim())) {
+      const url = new URL(filePath.trim());
+      if (url.hostname || url.search || url.hash) throw new Error('ReadFile expects a local file URL without query or fragment');
+      filePath = fileURLToPath(url);
+    }
     filePath = resolveAndNormalizePath(filePath);
     const lineSelection = parseLineSelection(lines);
     debugLog('Reading file', { filePath, encoding, lines });
