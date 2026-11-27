@@ -1006,7 +1006,20 @@ function findServerByIp(ip) {
            return ipInfo.serverName || serverId;
        }
    }
+   // 经隧道/反代连接时请求来源是 127.0.0.1 等地址，节点不会自报它（reportIPAddress 跳过 internal）。
+   // 退一步比对节点 WebSocket 连接的真实来源 IP；仅在恰好一个已连接节点匹配时采用，避免拉错电脑。
+   const byConnection = findServersByConnectionIp(ip);
+   if (byConnection.length === 1) return byConnection[0];
    return null;
+}
+
+// 按节点 WebSocket 连接的真实来源 IP 找已连接的节点（经隧道/反代时可能有多个节点共用同一来源 IP）
+function findServersByConnectionIp(ip) {
+    const list = [];
+    for (const [serverId, info] of distributedServers.entries()) {
+        if (info.ws && info.ws.readyState === WebSocket.OPEN && info.ws.clientIp === ip) list.push(serverId);
+    }
+    return list;
 }
 
 function getDistributedServerSnapshot() {
@@ -1093,6 +1106,7 @@ module.exports = {
     executeDistributedTool,
     handleDistributedServerMessage,
     findServerByIp,
+    findServersByConnectionIp,
     getDistributedServerSnapshot,
     formatDistributedServerListForPrompt,
     shutdown,

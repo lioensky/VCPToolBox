@@ -106,20 +106,34 @@ async function fetchFile(fileUrl, requestIp) {
         throw new Error('FileFetcherServer 尚未初始化。');
     }
 
-    const serverId = webSocketServer.findServerByIp(requestIp);
-    if (!serverId) {
+    // 先按节点自报 IP 找。找不到时（经隧道/反代接入，请求和节点连接的来源都是 127.0.0.1 等地址），
+    // 如果要的是 VCPChat 附件（文件名 = 内容 sha256），就依次问同一来源 IP 的各节点，并校验内容哈希，
+    // 保证拿到的正是这张图；非附件文件不做多节点尝试，避免拿到别人电脑上同路径的其他文件。
+    const primary = webSocketServer.findServerByIp(requestIp);
+    const attachMatch = path.basename(decodeURIComponent(fileUrl)).match(/^([0-9a-f]{64})\.[A-Za-z0-9]+$/);
+    const attachHash = attachMatch ? attachMatch[1] : null;
+    let candidates = primary ? [primary] : [];
+    if (!primary && attachHash && typeof webSocketServer.findServersByConnectionIp === 'function') {
+        candidates = webSocketServer.findServersByConnectionIp(requestIp);
+    }
+    if (candidates.length === 0) {
         throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
     }
 
-    console.log(`[FileFetcherServer] 确定文件来源服务器为: ${serverId} (IP: ${requestIp})。正在请求文件...`);
-
-    try {
-        // 关键：将原始的、未经修改的 fileUrl 作为参数传递给远程工具。
-        const result = await webSocketServer.executeDistributedTool(serverId, 'internal_request_file', { fileUrl: fileUrl }, 60000);
-
-        if (result && result.status === 'success' && result.fileData) {
-            console.log(`[FileFetcherServer] 成功从服务器 ${serverId} 获取到文件 ${fileUrl} 的 Base64 数据。`);
+    const errors = [];
+    for (const serverId of candidates) {
+        console.log(`[FileFetcherServer] 确定文件来源服务器为: ${serverId} (IP: ${requestIp})。正在请求文件...`);
+        try {
+            // 关键：将原始的、未经修改的 fileUrl 作为参数传递给远程工具。
+            const result = await webSocketServer.executeDistributedTool(serverId, 'internal_request_file', { fileUrl: fileUrl }, 60000);
+            if (!(result && result.status === 'success' && result.fileData)) {
+                throw new Error(result ? result.error : '未知错误');
+            }
             const buffer = Buffer.from(result.fileData, 'base64');
+            if (attachHash && crypto.createHash('sha256').update(buffer).digest('hex') !== attachHash) {
+                throw new Error('内容哈希与附件文件名不符');
+            }
+            console.log(`[FileFetcherServer] 成功从服务器 ${serverId} 获取到文件 ${fileUrl} 的 Base64 数据。`);
 
             // 将获取的文件写入本地缓存
             try {
@@ -131,17 +145,16 @@ async function fetchFile(fileUrl, requestIp) {
 
             const mimeType = result.mimeType || mime.lookup(originalExtension) || 'application/octet-stream';
             return { buffer, mimeType };
-        } else {
-            const errorMsg = result ? result.error : '未知错误';
-            throw new Error(`从服务器 ${serverId} 获取文件失败: ${errorMsg}`);
+        } catch (e) {
+            errors.push(`${serverId}: ${e.message}`);
         }
-    } catch (e) {
-        failedFetchCache.set(fileUrl, {
-            timestamp: Date.now(),
-            error: e.message
-        });
-        throw new Error(`通过 WebSocket 从服务器 ${serverId} 请求文件时发生错误: ${e.message}`);
     }
+    const errorMsg = errors.join('；');
+    failedFetchCache.set(fileUrl, {
+        timestamp: Date.now(),
+        error: errorMsg
+    });
+    throw new Error(`通过 WebSocket 请求文件失败: ${errorMsg}`);
 }
 /**
  * 解析并确保文件存在于本地。
