@@ -12,8 +12,16 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
-const VAR_HTTPS_URL = process.env.VarHttpsUrl;
-const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true' || process.env.USE_PUBLIC_URL === '1';
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 const HTTP_PROXY = process.env.HTTP_PROXY || process.env.http_proxy || process.env.HTTPS_PROXY || process.env.https_proxy;
 
 const API_ENDPOINT = process.env.AGNES_API_ENDPOINT || 'https://apihub.agnes-ai.com/v1/images/generations';
@@ -287,9 +295,7 @@ async function imageResultToBuffer(imageData) {
 
 function buildAccessibleImageUrl(fileName) {
     const relativePathForUrl = path.join('agnesgen', fileName).replace(/\\/g, '/');
-    return USE_PUBLIC_URL && VAR_HTTPS_URL
-        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`
-        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    return `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 }
 
 // --- Core Request ---
@@ -300,8 +306,8 @@ async function processApiRequest(rawArgs) {
     if (!API_KEY) {
         throw new Error("AgnesGen Plugin Error: AGNES_API_KEY environment variable is required.");
     }
-    if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
-        throw new Error("AgnesGen Plugin Error: Missing one or more required environment variables (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl).");
+    if (!PROJECT_BASE_PATH || !IMAGESERVER_IMAGE_KEY || !buildServerBaseUrl()) {
+        throw new Error("AgnesGen Plugin Error: Missing one or more required environment variables (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl/VarHttpsUrl).");
     }
     if (!isValidArgs(args)) {
         throw new Error(`AgnesGen Plugin Error: Invalid arguments provided: ${JSON.stringify(rawArgs)}.`);

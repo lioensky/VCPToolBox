@@ -61,8 +61,16 @@ const SERVER_PORT = process.env.SERVER_PORT || '5000';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || 'http://localhost';
 // 与 ZImageTurboGen / AgnesGen 一致：USE_PUBLIC_URL=true 时返回 VarHttpsUrl 公网地址（不带端口）
-const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true' || process.env.USE_PUBLIC_URL === '1';
-const VAR_HTTPS_URL = process.env.VarHttpsUrl || VAR_HTTP_URL;
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return SERVER_PORT ? `${localBase}:${SERVER_PORT}` : localBase;
+}
 
 // ============================================================
 // 工具函数
@@ -1124,9 +1132,7 @@ function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
     // 构建可访问的 HTTP URL
     const relativeServerPath = `gptimagegen/${fileName}`;
     const serverPath = `image/gptimagegen/${fileName}`;
-    const accessibleUrl = USE_PUBLIC_URL
-        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`
-        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`;
+    const accessibleUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPath}`;
 
     return {
         localPath,

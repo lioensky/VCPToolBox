@@ -50,7 +50,7 @@ const IMAGESERVER_FILE_KEY = process.env.IMAGESERVER_FILE_KEY || '';
 const VAR_HTTP_URL         = process.env.VarHttpUrl           || 'http://localhost';
 const VAR_HTTPS_URL        = process.env.VarHttpsUrl          || '';
 // 决定返回的链接用"对外地址"还是"内网地址"，统一在主 config.env 里设置。
-const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
 
 // ============================================================
 // 工具函数
@@ -71,9 +71,10 @@ function outputAndExit(result) {
  * @param {string} relPath 形如 "agnesvideogen/xxx.mp4"
  */
 function buildFilesUrl(relPath) {
-    return (USE_PUBLIC_URL && VAR_HTTPS_URL)
-        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_FILE_KEY}/files/${relPath}`
-        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_FILE_KEY}/files/${relPath}`;
+    const base = USE_PUBLIC_URL
+        ? String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '')
+        : `${String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '')}:${SERVER_PORT}`;
+    return `${base}/pw=${IMAGESERVER_FILE_KEY}/files/${relPath}`;
 }
 
 /**
