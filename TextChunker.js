@@ -3,10 +3,11 @@ require('dotenv').config({ path: './config.env' });
 const { get_encoding } = require("@dqbd/tiktoken");
 const encoding = get_encoding("cl100k_base");
 
-// 从 config.env 文件读取最大 token 数，并应用85%的安全边界
-const embeddingMaxToken = parseInt(process.env.WhitelistEmbeddingModelMaxToken, 10) || 8000;
-const safeMaxTokens = Math.floor(embeddingMaxToken * 0.85);
-const defaultOverlapTokens = Math.floor(safeMaxTokens * 0.1);
+const {
+    modelMaxTokens: embeddingMaxToken,
+    chunkMaxTokens: safeMaxTokens,
+    chunkOverlapTokens: defaultOverlapTokens
+} = require('./modules/embeddingTokenBudget');
 
 // v4.5: 全链路 Token 计数 LRU 缓存与安全带水位线常量
 const TOKEN_CACHE_MAX_SIZE = 4096;

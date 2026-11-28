@@ -10,6 +10,8 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 // 单轮请求拥有共享观测；异步读出只借用句柄，不得提前释放。
 const memoObservationScope = new AsyncLocalStorage();
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
+const { chunkText, getTokenCount } = require('./TextChunker');
+const { chunkMaxTokens, chunkOverlapTokens, inputMaxTokens } = require('./modules/embeddingTokenBudget');
 const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 const TagMemoEngine = require('./TagMemoEngine');
 const TagMemoV10Engine = require('./TagMemoV10Engine');
@@ -1213,18 +1215,6 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
             throw error;
         }
 
-        const embeddingMaxToken = Math.max(
-            1,
-            Math.floor(Number(process.env.WhitelistEmbeddingModelMaxToken) || 8000)
-        );
-        const maxTokens = Math.max(
-            1,
-            Math.floor(embeddingMaxToken * 0.85)
-        );
-        const overlapTokens = Math.min(
-            Math.max(0, Math.floor(maxTokens * 0.1)),
-            Math.max(0, maxTokens - 1)
-        );
         const raw = await this.nativeKnowledgeRuntime.prepareText(
             JSON.stringify({
                 text: typeof text === 'string' ? text : '',
@@ -1235,8 +1225,8 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                     ? [...this.config.tagBlacklist]
                     : [],
                 maxTags: this.config.maxTagsPerFile,
-                maxTokens,
-                overlapTokens
+                maxTokens: chunkMaxTokens,
+                overlapTokens: chunkOverlapTokens
             })
         );
         const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -1249,7 +1239,10 @@ this.tagMemoV10Engine = new TagMemoV10Engine(
                 ? result.tags.map(String).filter(Boolean)
                 : [],
             chunks: Array.isArray(result.chunks)
-                ? result.chunks.map(String).filter(Boolean)
+                ? result.chunks.map(String).filter(Boolean).flatMap(chunk =>
+                    // 旧原生模块的重叠、清洗后的再分词等都可能抬高最终计数。
+                    getTokenCount(chunk) > inputMaxTokens ? chunkText(chunk) : [chunk]
+                )
                 : [],
             tokenCount: Math.max(0, Math.floor(Number(result.tokenCount) || 0)),
             rulesVersion: String(result.rulesVersion || '')

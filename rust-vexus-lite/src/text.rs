@@ -263,9 +263,10 @@ pub fn chunk_text(text: &str, config: &ChunkConfig) -> Vec<String> {
             chunks.push(current.trim().to_string());
             let mut overlap_text = String::new();
             let mut overlap_count = 0usize;
+            let overlap_budget = overlap.min(config.max_tokens - sentence_tokens);
             for previous in sentences[..sentence_index].iter().rev() {
                 let previous_tokens = token_count(previous);
-                if overlap_count + previous_tokens > overlap {
+                if overlap_count + previous_tokens > overlap_budget {
                     break;
                 }
                 overlap_text.insert_str(0, previous);
@@ -480,6 +481,20 @@ mod tests {
         });
         assert!(!chunks.is_empty());
         assert!(chunks.iter().all(|chunk| !chunk.contains('\u{FFFD}')));
+    }
+
+    #[test]
+    fn sentence_overlap_only_uses_the_next_chunks_remaining_budget() {
+        let config = ChunkConfig { max_tokens: 20, overlap_tokens: 4 };
+        let prefix = "测试。测试。";
+        let full = format!("{}。", "你".repeat(19));
+        let chunks = chunk_text(&format!("{prefix}{full}"), &config);
+        assert_eq!(chunks, vec![prefix.to_string(), full]);
+
+        let almost_full = format!("{}。", "你".repeat(17));
+        let chunks = chunk_text(&format!("{prefix}{almost_full}"), &config);
+        assert_eq!(chunks, vec![prefix.to_string(), format!("测试。{almost_full}")]);
+        assert!(chunks.iter().all(|chunk| token_count(chunk) <= config.max_tokens));
     }
 
     #[test]

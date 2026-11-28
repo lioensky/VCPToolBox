@@ -5,8 +5,7 @@ const { getTokenCount, encoding: sharedEncoding } = require("./TextChunker.js");
 const encoding = sharedEncoding || require("@dqbd/tiktoken").get_encoding("cl100k_base");
 
 // 配置
-const embeddingMaxToken = parseInt(process.env.WhitelistEmbeddingModelMaxToken, 10) || 8000;
-const safeMaxTokens = Math.floor(embeddingMaxToken * 0.85);
+const { inputMaxTokens, batchTargetTokens } = require('./modules/embeddingTokenBudget');
 const MAX_BATCH_ITEMS = parseInt(process.env.EMBEDDING_MAX_BATCH_ITEMS, 10) || 32; // Embedding 单批最大条数，可通过 env 控制
 const DEFAULT_CONCURRENCY = parseInt(process.env.TAG_VECTORIZE_CONCURRENCY) || 5; // 🌟 读取并发配置
 const DEFAULT_INFLIGHT_TIMEOUT_MS = parseInt(process.env.EMBEDDING_INFLIGHT_TIMEOUT_MS, 10) || 30000;
@@ -277,13 +276,13 @@ async function getEmbeddingsBatch(texts, config) {
         const textTokens = typeof getTokenCount === 'function'
             ? getTokenCount(text)
             : encoding.encode(text).length;
-        if (textTokens > safeMaxTokens) {
-            console.warn(`[Embedding] ⚠️ Text at index ${i} exceeds token limit (${textTokens} > ${safeMaxTokens}), skipping.`);
+        if (textTokens > inputMaxTokens) {
+            console.warn(`[Embedding] ⚠️ Text at index ${i} exceeds token limit (${textTokens} > ${inputMaxTokens}), skipping.`);
             oversizeIndices.add(i);
             continue; // Skip oversize，但记录位置
         }
 
-        const isTokenFull = currentBatchTexts.length > 0 && (currentBatchTokens + textTokens > safeMaxTokens);
+        const isTokenFull = currentBatchTexts.length > 0 && (currentBatchTokens + textTokens > batchTargetTokens);
         const isItemFull = currentBatchTexts.length >= MAX_BATCH_ITEMS;
 
         if (isTokenFull || isItemFull) {
