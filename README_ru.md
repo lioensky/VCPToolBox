@@ -6,7 +6,7 @@
 
 VCP развивается каждый день: четыре основных репозитория обновляются согласованно. На официальном сайте собраны их [журналы изменений](https://www.vcptoolbox.com/?page=changelog) и доступна [техническая документация](https://www.vcptoolbox.com/?page=learn-vcp) всего проекта.
 
-[简体中文](README.md) | [English](README_en.md) | [日本語](README_ja.md)
+[简体中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [Türkçe](README_tr.md)
 
 ---
 

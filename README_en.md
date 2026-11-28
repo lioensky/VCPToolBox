@@ -6,7 +6,7 @@
 
 VCP evolves daily across four core repositories. The official website brings their [changelogs](https://www.vcptoolbox.com/?page=changelog) together and provides a single entry point to the [technical documentation](https://www.vcptoolbox.com/?page=learn-vcp) for the entire project.
 
-[简体中文](README.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
+[简体中文](README.md) | [日本語](README_ja.md) | [Русский](README_ru.md) | [Türkçe](README_tr.md)
 
 ---
 

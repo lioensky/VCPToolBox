@@ -6,7 +6,7 @@
 
 VCP は 4 つの中核リポジトリが連携しながら、日々進化しています。公式サイトでは各リポジトリの[更新履歴](https://www.vcptoolbox.com/?page=changelog)をまとめて確認でき、VCP プロジェクト全体の[技術ドキュメント](https://www.vcptoolbox.com/?page=learn-vcp)にも一か所からアクセスできます。
 
-[简体中文](README.md) | [English](README_en.md) | [Русский](README_ru.md)
+[简体中文](README.md) | [English](README_en.md) | [Русский](README_ru.md) | [Türkçe](README_tr.md)
 
 ---
 
