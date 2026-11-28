@@ -76,24 +76,12 @@ function extractAttachmentSha256(fileUrl) {
 }
 
 /**
- * 计算本地缓存文件路径。
- * - 内容寻址附件（文件名即 SHA-256 且入库强校验哈希）跨节点内容恒等，按 fileUrl 寻址；
- * - 非附件普通路径按归一化 requestIp + fileUrl 隔离，防止不同机器同路径文件跨租户缓存串台。
+ * 计算统一的平台无关本地缓存路径（回归纯粹的 sha256(fileUrl) 寻址）。
  * @param {string} fileUrl
- * @param {string} requestIp
- * @param {string|null} [precomputedAttachHash]
- * @returns {{ cacheKey: string, originalExtension: string, cachedFilePath: string, attachHash: string|null }}
+ * @returns {{ cacheKey: string, originalExtension: string, cachedFilePath: string }}
  */
-function getCachedFileInfo(fileUrl, requestIp, precomputedAttachHash) {
-    const attachHash = precomputedAttachHash !== undefined
-        ? precomputedAttachHash
-        : extractAttachmentSha256(fileUrl);
-    const normalizedIp = normalizeRequestIp(requestIp);
-    const cacheKeySeed = attachHash
-        ? fileUrl
-        : `${normalizedIp || 'noip'}::${fileUrl}`;
-    const cacheKey = crypto.createHash('sha256').update(cacheKeySeed).digest('hex');
-
+function getCachedFileInfo(fileUrl) {
+    const cacheKey = crypto.createHash('sha256').update(fileUrl).digest('hex');
     let originalExtension = '';
     try {
         const pathname = new URL(fileUrl).pathname.replace(/\\/g, '/');
@@ -105,7 +93,7 @@ function getCachedFileInfo(fileUrl, requestIp, precomputedAttachHash) {
         console.warn(`[FileFetcherServer] 无法从URL解析路径名以获取扩展名: ${fileUrl}`);
     }
     const cachedFilePath = path.join(CACHE_DIR, cacheKey + originalExtension);
-    return { cacheKey, originalExtension, cachedFilePath, attachHash };
+    return { cacheKey, originalExtension, cachedFilePath };
 }
 
 /**
@@ -143,7 +131,7 @@ async function fetchFile(fileUrl, requestIp) {
 
     const normalizedIpKey = normalizeRequestIp(requestIp) || 'noip';
     const requestScopedKey = `${normalizedIpKey}::${fileUrl}`;
-    const { originalExtension, cachedFilePath, attachHash } = getCachedFileInfo(fileUrl, requestIp);
+    const { originalExtension, cachedFilePath } = getCachedFileInfo(fileUrl);
 
     // 1. 优先尝试从本地缓存读取（已落盘缓存直接 O(1) 返回，不受 5s 防循环定时器误伤）
     try {
@@ -198,25 +186,27 @@ async function fetchFile(fileUrl, requestIp) {
     }
 
     const remotePromise = (async () => {
-        // 1) 自报真实 IP 唯一锁定的节点允许直接拉取；
-        // 2) 未能唯一锁定时（如经 FRP/SSH 隧道、反代 127.0.0.1 或多机共享公网 NAT），不信任连接跳 IP 代表身份，
-        //    一律仅对 VCPChat 内容寻址附件（64位内容 sha256）询问同源候选节点并强制校验内容哈希；
-        //    非附件普通路径绝不跨机盲拉，杜绝多用户反代/隧道下的跨机文件越权读取。
+        // 1) 单节点直连或单节点隧道：findServerByIp 直接唯一锁定来源节点，任意文件零门槛直通拉取；
+        // 2) 仅当多台节点共用同一隧道或同一公网 NAT 无法凭 IP 唯一区分时，对 64 位 SHA-256 附件按内容哈希消歧。
         const primary = webSocketServer.findServerByIp(requestIp);
+        let attachHash = null;
         let candidates = primary ? [primary] : [];
-        if (!primary && attachHash) {
-            const candidateSet = new Set();
-            if (typeof webSocketServer.findServersByReportedIp === 'function') {
-                for (const id of webSocketServer.findServersByReportedIp(requestIp)) {
-                    candidateSet.add(id);
+        if (!primary) {
+            attachHash = extractAttachmentSha256(fileUrl);
+            if (attachHash) {
+                const candidateSet = new Set();
+                if (typeof webSocketServer.findServersByReportedIp === 'function') {
+                    for (const id of webSocketServer.findServersByReportedIp(requestIp)) {
+                        candidateSet.add(id);
+                    }
                 }
-            }
-            if (typeof webSocketServer.findServersByConnectionIp === 'function') {
-                for (const id of webSocketServer.findServersByConnectionIp(requestIp)) {
-                    candidateSet.add(id);
+                if (typeof webSocketServer.findServersByConnectionIp === 'function') {
+                    for (const id of webSocketServer.findServersByConnectionIp(requestIp)) {
+                        candidateSet.add(id);
+                    }
                 }
+                candidates = Array.from(candidateSet);
             }
-            candidates = Array.from(candidateSet);
         }
         if (candidates.length === 0) {
             throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
@@ -280,44 +270,36 @@ async function resolveFileUrl(fileUrl, requestIp) {
         return fileUrl; // 非 file 协议原样返回
     }
 
-    let filePath;
+    // 1. 尝试在主服本机直接解析并访问：
+    // 若跨操作系统格式不兼容（如 Windows 主服收到 Mac/Linux/Android 节点的 file:///Users/... 抛 ERR_INVALID_FILE_URL_PATH）
+    // 或本机不存在该文件（ENOENT），均正常进入下方的超栈缓存与跨节点拉取流程，不得提前短路放弃。
+    let localProbeLabel = fileUrl;
     try {
-        filePath = fileURLToPath(fileUrl);
-    } catch (e) {
-        console.warn(`[FileFetcherServer] Invalid local file URL: ${fileUrl}`);
-        return fileUrl;
+        const localPath = fileURLToPath(fileUrl);
+        localProbeLabel = localPath;
+        await fs.access(localPath);
+        return fileUrl; // 本机存在，直接返回给插件读取
+    } catch {
+        // 本机不可直接解析或文件不存在，继续走超栈缓存与远程拉取
     }
 
+    // 2. 先检查本地 .file_cache 是否已有原子落盘的缓存副本
+    const { cachedFilePath } = getCachedFileInfo(fileUrl);
     try {
-        // 尝试判断此文件的实体是否存在于这个本地文件系统上
-        await fs.access(filePath);
-        return fileUrl; // 本地存在，直接返回给插件读取
+        await fs.access(cachedFilePath);
+        const cachedUrl = require('url').pathToFileURL(cachedFilePath).href;
+        console.log(`[FileFetcherServer] File already exists in local cache, bypassing remote fetch: ${cachedUrl}`);
+        return cachedUrl;
     } catch {
-        // 本地不存在，说明是跨服务器调用的文件，触发拉取机制！
-        const { cachedFilePath } = getCachedFileInfo(fileUrl, requestIp);
+        console.log(`[FileFetcherServer] ${localProbeLabel} not found locally or in cache, initiating pre-fetch...`);
         try {
-            await fs.access(cachedFilePath);
-            // 缓存文件已存在（由于采用原子 rename，可见即完整）！直接返回指向缓存的 file URL
+            await fetchFile(fileUrl, requestIp);
             const cachedUrl = require('url').pathToFileURL(cachedFilePath).href;
-            console.log(`[FileFetcherServer] File already exists in local cache, bypassing remote fetch: ${cachedUrl}`);
+            console.log(`[FileFetcherServer] Pre-fetched file wrapped to local cache url: ${cachedUrl}`);
             return cachedUrl;
-        } catch {
-            console.log(`[FileFetcherServer] ${filePath} not found locally or in cache, initiating pre-fetch...`);
-
-            try {
-                // 调用 fetchFile 将文件写到 CACHE_DIR
-                await fetchFile(fileUrl, requestIp);
-
-                // 构造指向此缓存文件的 file URL
-                const cachedUrl = require('url').pathToFileURL(cachedFilePath).href;
-                console.log(`[FileFetcherServer] Pre-fetched file wrapped to local cache url: ${cachedUrl}`);
-                return cachedUrl;
-
-            } catch (fetchError) {
-                console.warn(`[FileFetcherServer] Pre-fetch failed for ${fileUrl}, falling back to original URL: ${fetchError.message}`);
-                // 获取失败不再抛出错误，而是原样返回原始 URL，让插件/工具自行处理
-                return fileUrl;
-            }
+        } catch (fetchError) {
+            console.warn(`[FileFetcherServer] Pre-fetch failed for ${fileUrl}, falling back to original URL: ${fetchError.message}`);
+            return fileUrl;
         }
     }
 }

@@ -44,3 +44,35 @@ test('ReadFile consumes FileFetcher URLs and native paths through plugin stdio',
   assert.equal(invalidHash.status, 'error');
   assert.equal(invalidHost.status, 'error');
 });
+
+test('MoveFile gracefully falls back to copy+unlink when fs.rename fails with EXDEV across mount points', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-move-exdev-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const src = path.join(dir, 'source.bin');
+  const dst = path.join(dir, 'dest.bin');
+  const payload = Buffer.from('EXDEV-CROSS-MOUNT-PAYLOAD');
+  fs.writeFileSync(src, payload);
+
+  const preload = path.join(dir, 'mock-exdev.cjs');
+  fs.writeFileSync(preload, [
+    "const fsPromises = require('fs').promises;",
+    "const origRename = fsPromises.rename.bind(fsPromises);",
+    "fsPromises.rename = async () => { const e = new Error('EXDEV: cross-device link not permitted'); e.code = 'EXDEV'; throw e; };"
+  ].join('\n'));
+
+  const output = execFileSync(
+    process.execPath,
+    ['--require', preload, path.resolve(__dirname, '../Plugin/FileOperator/FileOperator.js')],
+    {
+      encoding: 'utf8',
+      input: JSON.stringify({ command: 'MoveFile', sourcePath: pathToFileURL(src).href, destinationPath: dst }) + '\n',
+      timeout: 15000,
+      env: { ...process.env, ALLOWED_DIRECTORIES: dir, DEBUG_MODE: 'false' }
+    }
+  );
+
+  const parsed = JSON.parse(output.trim());
+  assert.equal(parsed.status, 'success', JSON.stringify(parsed));
+  assert.deepEqual(fs.readFileSync(dst), payload);
+  assert.equal(fs.existsSync(src), false);
+});

@@ -1055,8 +1055,15 @@ function findServerByIp(ip) {
         }
         return matchedServerId;
     }
-    // 多台在线节点自报同一公网/局域网 IP，或请求经隧道/反代（如 127.0.0.1）未命中自报地址时，
-    // 绝不将传输跳连接 IP 直接视作机器身份，统一返回 null 交由超栈层对 SHA-256 附件做零信任验真。
+    if (byReported.length > 1) {
+        return null;
+    }
+    // 经 FRP/SSH 隧道或本地反代接入时请求来源为 127.0.0.1 等地址（reportIPAddress 跳过 internal）；
+    // 退一步比对节点 WebSocket 连接来源 IP，在唯一在线节点匹配时直接采用，使跨设备任意文件操作畅通无阻。
+    const byConnection = findServersByConnectionIp(ip);
+    if (byConnection.length === 1) {
+        return byConnection[0];
+    }
     return null;
 }
 
