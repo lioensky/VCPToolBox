@@ -3,6 +3,7 @@ const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
 const contextBudget = require('./contextBudget.js');
+const { isAgentDelegation, delegationLimit } = require('./agentDelegationBudget.js');
 const roleDivider = require('./roleDivider.js');
 const { projectToolBatchForUpstream } = require('./toolResultBatch.js');
 const { withNativeToolDebug } = require('./nativeToolDebug.js');
@@ -932,12 +933,13 @@ class ChatCompletionHandler {
     // 1. 拦截 contextTokenLimit 参数：它是 VCP 自己的预算参数，不发给上游。
     //    裁剪和预算检查都放在所有展开完成之后（见下方「出站前预算」），
     //    因为展开前的消息体积和真正发给模型的体积可以差出很多。
-    const contextTokenLimit = originalBody.contextTokenLimit;
+    const agentDelegation = isAgentDelegation(req);
+    const contextTokenLimit = agentDelegation ? delegationLimit(originalBody.contextTokenLimit) : originalBody.contextTokenLimit;
     if (contextTokenLimit !== undefined) {
       if (DEBUG_MODE) console.log(`[ContextControl] 检测到 contextTokenLimit: ${contextTokenLimit}`);
       delete originalBody.contextTokenLimit;
     }
-    const inboundBudgetEstimate = contextBudget.guardMode() !== 'off' && contextBudget.effectiveLimit(contextTokenLimit)
+    const inboundBudgetEstimate = (agentDelegation || contextBudget.guardMode() !== 'off') && contextBudget.effectiveLimit(contextTokenLimit)
       ? contextBudget.estimateBodyTokens(originalBody)
       : 0;
 
@@ -1274,10 +1276,12 @@ class ChatCompletionHandler {
       // 预算 = 请求里的 contextTokenLimit 与服务端硬上限取小；非法值（负数、非数字）视为没有。
       const budgetGuard = contextBudget.createBudgetGuard({
         limit: contextTokenLimit,
+        mode: agentDelegation ? 'enforce' : undefined,
         model: originalBody.model,
         requestId: req.body.requestId || req.body.messageId || null
       });
-      const pruningEnabled = contextManager.isPruningEnabled();
+      // Delegation already trimmed whole heartbeats; generic pruning could drop the original user task.
+      const pruningEnabled = !agentDelegation && contextManager.isPruningEnabled();
       if (budgetGuard.enforcing && Array.isArray(processedMessages)) {
         // 第一步（仅 enforce）：超预算时先把历史里较早的工具结果压成摘要（当前轮不动）。它们通常占了
         // 绝大部分体积，压掉之后多数请求就不需要删消息、也不需要拒绝了。
@@ -1517,6 +1521,7 @@ class ChatCompletionHandler {
         semanticModelFallbackCandidates,
         oneRingResponseMeta,
         budgetGuard,
+        agentDelegation,
         shouldProcessMedia,
         shouldProcessMediaPlus,
         isTextOnlyForceTranslateModel,

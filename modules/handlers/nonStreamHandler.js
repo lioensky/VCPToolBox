@@ -191,6 +191,7 @@ class NonStreamHandler {
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
       budgetGuard,
+      agentDelegation,
       timelineTrace,
       vcpToolUseForbidden,
       apiConnectionTimeoutMs,
@@ -298,6 +299,7 @@ class NonStreamHandler {
      * 工具循环每次再发上游之前的预算检查。超预算时先压缩本轮之前的工具结果，
      * 仍然超则返回说明文字（调用方把它交给客户端并退出循环）；可以发送时返回 null。
      */
+    let delegationBudgetStop = null;
     const checkLoopBudget = (messages) => {
       if (!budgetGuard?.active) return null;
       const build = () => projectToolBatchForUpstream({ ...originalBody, messages, stream: false });
@@ -318,7 +320,9 @@ class NonStreamHandler {
       }
       if (check.over && budgetGuard.enforcing) {
         console.warn(`[ContextBudget] 工具循环已停止: estimated=${check.estimated} limit=${check.limit}`);
-        return `\n\n> [!WARNING]\n> ${contextBudget.exceededMessage(check, 'tool_loop', budgetGuard.breakdown(body))}\n`;
+        const breakdown = budgetGuard.breakdown(body);
+        if (agentDelegation) delegationBudgetStop = { stage: 'tool_loop', estimated: check.estimated, limit: check.limit, breakdown };
+        return `\n\n> [!WARNING]\n> ${contextBudget.exceededMessage(check, 'tool_loop', breakdown)}\n`;
       }
       budgetGuard.noteRequest(body);
       return null;
@@ -708,6 +712,11 @@ class NonStreamHandler {
       finalJsonResponse = {
         choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient }, finish_reason: recursionDepth >= maxRecursion ? 'length' : 'stop' }]
       };
+    }
+
+    if (delegationBudgetStop) {
+      finalJsonResponse.vcp_incomplete = true;
+      finalJsonResponse.vcp_context_budget = delegationBudgetStop;
     }
 
     if (writeChatLog) writeChatLog(originalBody, chatLogs);

@@ -4,6 +4,7 @@ const path = require('path');
 const dotenv = require('dotenv');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const { delegationHeaders, delegationLimit, fitDelegationWindow, delegationBudgetReport } = require('../../modules/agentDelegationBudget.js');
 const {
     normalizeReasoningTag,
     normalizeReasoningModelFilters,
@@ -795,7 +796,7 @@ async function processToolCall(args) {
 
         // Launch the background task un-awaited
         executeDelegation(delegationId, agentConfig, promptWithRiverAttachment, promptTextForStorage, delegationSenderName, temporaryToolsSystemPrompt).catch(async err => {
-            console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err);
+            console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err?.message);
             const state = activeDelegations.get(delegationId);
             const status = err.code === 'DELEGATION_CANCELLED' ? 'Cancelled' : 'Failed';
             if (state) {
@@ -1016,10 +1017,11 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
             : `${agentConfig.systemPrompt}\n\n${delegationPrompt}`;
 
         // 我们使用独立的历史记录
-        let messagesForVCP = [
+        const messagesForVCP = [
             { role: 'system', content: injectedSystemPrompt },
             { role: 'user', content: userTaskPromptContent }
         ];
+        const contextTokenLimit = delegationLimit();
 
         let state = activeDelegations.get(delegationId);
 
@@ -1037,18 +1039,32 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
 
             if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Round ${state.currentRound + 1}/${DELEGATION_MAX_ROUNDS} for ${delegationId}`);
 
+            const budget = fitDelegationWindow(messagesForVCP, contextTokenLimit);
+            if (budget.over) {
+                finalReport = delegationBudgetReport({ ...budget, stage: 'delegation_window' }, '原始任务和最近一轮无法完整保留，未发送请求。');
+                break;
+            }
+
             const payloadForVCP = {
                 model: agentConfig.id,
                 messages: messagesForVCP,
+                contextTokenLimit,
                 max_tokens: agentConfig.maxOutputTokens,
                 temperature: agentConfig.temperature,
                 stream: false
             };
 
             const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
-                headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
+                headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json', ...delegationHeaders() },
+                proxy: false,
+                maxRedirects: 0,
                 timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || DEFAULT_PLUGIN_COMMUNICATION_TIMEOUT_MS)
             });
+            const budgetReport = delegationBudgetReport(responseFromVCP.data?.vcp_context_budget);
+            if (budgetReport) {
+                finalReport = budgetReport;
+                break;
+            }
 
             const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
             if (typeof assistantResponseContent !== 'string') {
@@ -1164,7 +1180,10 @@ async function executeDelegation(delegationId, agentConfig, taskPromptContent, t
             completionStatus = 'Cancelled';
             finalReport = `委托任务已取消。原因: ${err.message}`;
         } else {
-            throw err;
+            const response = err?.response?.data;
+            const budgetReport = delegationBudgetReport(response?.vcp_context_budget, response?.error?.message);
+            if (!budgetReport) throw err;
+            finalReport = budgetReport;
         }
     } finally {
         activeSessionLocks.delete(lockKey);

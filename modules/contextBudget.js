@@ -75,7 +75,7 @@ function guardMode() {
 function normalizeLimit(value) {
     if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null;
     const limit = Number(value);
-    return Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
+    return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : null;
 }
 
 /** 服务端硬上限（ContextBudgetHardCap）。没配或配得不合法就是没有。 */
@@ -463,8 +463,7 @@ function estimateBreakdown(body) {
  *   noteUsage(usage)    上游返回用量后校准（本请求后续轮次立即生效，并更新该模型的长期比例）
  *   check(body)         → { estimated, limit, over, mode }
  */
-function createBudgetGuard({ limit, model, requestId } = {}) {
-    const mode = guardMode();
+function createBudgetGuard({ limit, model, requestId, mode = guardMode() } = {}) {
     const normalizedLimit = effectiveLimit(limit);
     const active = mode !== 'off' && normalizedLimit !== null;
     let ratio = modelRatio(model);
