@@ -25,7 +25,7 @@ import { URL, fileURLToPath } from 'url';
 // ============================================================
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '');
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').trim();
 const GPT_IMAGE_MODEL = process.env.GPT_IMAGE_MODEL || 'gpt-image-2';
 const DEFAULT_SIZE = process.env.DEFAULT_SIZE || '1024x1024';
 const DEFAULT_QUALITY = process.env.DEFAULT_QUALITY || 'auto';
@@ -653,19 +653,12 @@ function parseApiResponse(response) {
     }
 }
 
-function buildImageGenerationUrls() {
-    const normalizedBase = OPENAI_BASE_URL.replace(/\/+$/, '');
-    const urls = [];
-
-    // 标准 OpenAI 兼容写法
-    urls.push(`${normalizedBase}/v1/images/generations`);
-
-    // 某些兼容渠道直接把文生图挂在 /v1/images
-    if (!/\/v1\/images$/i.test(normalizedBase)) {
-        urls.push(`${normalizedBase}/v1/images`);
-    }
-
-    return [...new Set(urls)];
+function buildApiUrl(endpoint) {
+    const url = new URL(OPENAI_BASE_URL);
+    const basePath = url.pathname.replace(/\/+$/, '');
+    const versionedPath = /\/v1$/i.test(basePath) ? basePath : `${basePath}/v1`;
+    url.pathname = `${versionedPath}/${endpoint}`;
+    return url.toString();
 }
 
 /**
@@ -689,8 +682,7 @@ function shouldFallbackToChatCompletions(error) {
  * @returns {Promise<object>} 标准化的图像 API 响应体（与 images/generations 格式一致）
  */
 async function callImageAPIViaChatCompletions(params) {
-    const normalizedBase = OPENAI_BASE_URL.replace(/\/+$/, '');
-    const apiUrl = `${normalizedBase}/v1/chat/completions`;
+    const apiUrl = buildApiUrl('chat/completions');
 
     debugLog('Chat Completions mode: using', apiUrl);
 
@@ -916,7 +908,7 @@ async function callImageAPI(params) {
         return await callImageAPIViaChatCompletions(params);
     }
 
-    const apiUrls = buildImageGenerationUrls();
+    const apiUrls = ['images/generations', 'images'].map(buildApiUrl);
 
     const requestBody = {
         model: GPT_IMAGE_MODEL,
@@ -1052,7 +1044,7 @@ function parseDataURI(dataURI) {
  * @returns {Promise<object>} API 响应体
  */
 async function callEditAPI(params) {
-    const apiUrl = `${OPENAI_BASE_URL}/v1/images/edits`;
+    const apiUrl = buildApiUrl('images/edits');
     const boundary = `----VCPBoundary${crypto.randomUUID().replace(/-/g, '')}`;
 
     debugLog('Edit API Request URL:', apiUrl);
