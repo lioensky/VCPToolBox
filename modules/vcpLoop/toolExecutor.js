@@ -596,10 +596,28 @@ class ToolExecutor {
       }
     }
 
+    let contentForAI;
+    const errorResult = parsedPayload?.result;
+    if (errorResult && typeof errorResult === 'object') {
+      const richContent = Array.isArray(errorResult) ? errorResult : (errorResult.data?.content || errorResult.content);
+      if (Array.isArray(richContent) && richContent.length > 0) {
+        contentForAI = richContent;
+      } else {
+        contentForAI = [{ type: 'text', text: JSON.stringify(errorResult, null, 2) }];
+      }
+      const feedbackNote = typeof parsedPayload?.__vcpApprovalFeedback === 'string'
+        ? parsedPayload.__vcpApprovalFeedback.trim()
+        : '';
+      if (feedbackNote && !contentForAI.some(part => part?.type === 'text' && typeof part.text === 'string' && part.text.includes(feedbackNote))) {
+        contentForAI = [{ type: 'text', text: `【用户审核留言：已允许工具 "${toolName}" 调用】\n${feedbackNote}` }, ...contentForAI];
+      }
+    }
+
     return {
       success: false,
       error: message,
       content: [{ type: 'text', text: `[错误] ${displayText}` }],
+      ...(contentForAI ? { contentForAI } : {}),
       ...(parsedPayload ? { raw: parsedPayload } : {})
     };
   }
