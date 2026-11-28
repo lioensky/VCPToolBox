@@ -41,7 +41,7 @@ cp config.env.example config.env
 | 变量                      | 必需 | 默认值                   | 说明                                                         |
 | ------------------------- | ---- | ------------------------ | ------------------------------------------------------------ |
 | `OPENAI_API_KEY`          | ✅    | —                        | OpenAI 兼容 API 密钥                                         |
-| `OPENAI_BASE_URL`         | ✅    | `https://api.openai.com` | API 基础地址（官方或反代）                                   |
+| `OPENAI_BASE_URL`         | ❌    | `https://api.openai.com` | API 基础地址（官方或反代，可带 `/v1` 后缀）                                   |
 | `GPT_IMAGE_MODEL`         | ❌    | `gpt-image-2`            | 模型名称，支持版本快照如 `gpt-image-2-2026-04-21`            |
 | `DEFAULT_SIZE`            | ❌    | `1024x1024`              | 默认尺寸（WIDTHxHEIGHT），支持纯数字简写如 `1024`；填 `auto` 时改图按原图比例自动定尺寸 |
 | `DEFAULT_QUALITY`         | ❌    | `auto`                   | 默认质量：`low`（快速低成本）/ `medium` / `high`（精细高成本）/ `auto` |
