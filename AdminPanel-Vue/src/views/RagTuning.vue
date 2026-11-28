@@ -145,7 +145,7 @@
               <div class="tag-consistency-card">
                 <div class="tag-consistency-card__copy">
                   <strong>按当前规则核对旧 Tag 库</strong>
-                  <p>预检读取文件与数据库并保存临时确认计划，不请求向量、不修改 Tag 事实。确认后只向量化差分 Tag，并自动排队重训练。</p>
+                  <p>扫描文件与数据库，列出待修复差分。确认后补齐 Tag 向量并提交修复；累计变化达到阈值时自动更新训练结果。</p>
                 </div>
 
                 <div
@@ -169,6 +169,14 @@
                 >
                   {{ isTagConsistencyScanning ? "扫描任务运行中" : "扫描 Tag 一致性" }}
                 </UiButton>
+
+                <p
+                  v-if="tagConsistencyMessage"
+                  class="tag-consistency-feedback"
+                  :class="{ 'tag-consistency-feedback--error': tagConsistencyMessageType === 'error' }"
+                  role="status"
+                  aria-live="polite"
+                >{{ tagConsistencyMessage }}</p>
 
                 <template v-if="tagConsistencyPreview">
                   <div class="tag-consistency-stats">
@@ -245,8 +253,7 @@
                 <div v-if="tagMemoAssetsStale" class="tag-consistency-warning" role="alert">
                   <span class="material-symbols-outlined">warning</span>
                   <p>
-                    Tag 真相层已更新，RiverAGS 派生资产尚待确认发布。
-                    自动重训练排队结果见上方提示；若排队失败，可在下方手动重试。排队不代表训练完成，请查看主服务日志。
+                    Tag 已更新，训练结果待更新。累计变化达到阈值时会自动刷新，也可在下方手动启动全量重训练并查看进度。
                   </p>
                 </div>
               </div>
@@ -898,6 +905,7 @@ import {
   type ParamGroup,
   type TagConsistencyPreview,
   type TagConsistencyPreviewTask,
+  type TagConsistencyApplyResult,
   type ParamValue,
   type RagParamTheme,
   type RagParams,
@@ -1064,6 +1072,8 @@ async function refreshTrainingStatus(): Promise<void> {
 const isTagConsistencyScanning = ref(false);
 const isTagConsistencyApplying = ref(false);
 const tagConsistencyPreview = ref<TagConsistencyPreview | null>(null);
+const tagConsistencyMessage = ref("");
+const tagConsistencyMessageType = ref<StatusType>("info");
 const tagMemoAssetsStale = ref(false);
 let tagConsistencyPollTimer: number | null = null;
 let tagConsistencyStatusRequestPending = false;
@@ -1812,8 +1822,40 @@ function scheduleTagConsistencyPolling(): void {
 }
 
 function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
+  if (task.application?.status === "running") {
+    isTagConsistencyScanning.value = false;
+    isTagConsistencyApplying.value = true;
+    tagConsistencyPreview.value = task.preview;
+    tagConsistencyMessage.value = "正在补齐 Tag 向量并应用差分，可离开本页后再查看结果。";
+    tagConsistencyMessageType.value = "info";
+    scheduleTagConsistencyPolling();
+    return;
+  }
+
+  isTagConsistencyApplying.value = false;
+  if (task.application?.status === "completed" && task.application.result) {
+    clearTagConsistencyPolling();
+    isTagConsistencyScanning.value = false;
+    acceptTagConsistencyResult(task.application.result);
+    return;
+  }
+
+  if (task.application?.status === "failed") {
+    clearTagConsistencyPolling();
+    isTagConsistencyScanning.value = false;
+    const canRetry = task.application.error?.retryable && task.preview;
+    tagConsistencyPreview.value = canRetry ? task.preview : null;
+    tagConsistencyMessage.value = `Tag 差分修复失败：${task.application.error?.message || "未知错误"}`
+      + (canRetry ? "" : "。请重新扫描后再确认。");
+    tagConsistencyMessageType.value = "error";
+    return;
+  }
+
   if (task.status === "running") {
     isTagConsistencyScanning.value = true;
+    tagConsistencyPreview.value = null;
+    tagConsistencyMessage.value = "正在后台扫描 Tag 一致性…";
+    tagConsistencyMessageType.value = "info";
     scheduleTagConsistencyPolling();
     return;
   }
@@ -1828,6 +1870,8 @@ function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
       ? `Tag 预检完成：需新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。请核对后确认执行。`
       : "Tag 预检完成：当前数据库与最新清洗、屏蔽规则一致。";
     statusType.value = task.preview.requiresConfirmation ? "info" : "success";
+    tagConsistencyMessage.value = statusMessage.value;
+    tagConsistencyMessageType.value = statusType.value;
     return;
   }
 
@@ -1835,6 +1879,8 @@ function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
     tagConsistencyPreview.value = null;
     statusMessage.value = `Tag 一致性预检失败：${task.error?.message || "未知错误"}`;
     statusType.value = "error";
+    tagConsistencyMessage.value = statusMessage.value;
+    tagConsistencyMessageType.value = "error";
     showMessage(statusMessage.value, "error");
     return;
   }
@@ -1843,10 +1889,32 @@ function acceptTagConsistencyTask(task: TagConsistencyPreviewTask): void {
     tagConsistencyPreview.value = null;
     statusMessage.value = "上次 Tag 一致性预检快照已过期，请重新扫描。";
     statusType.value = "info";
+    tagConsistencyMessage.value = statusMessage.value;
+    tagConsistencyMessageType.value = "info";
+    return;
   }
+  tagConsistencyPreview.value = null;
 }
 
-async function refreshTagConsistencyTask(): Promise<void> {
+function acceptTagConsistencyResult(result: TagConsistencyApplyResult): void {
+  tagMemoAssetsStale.value = result.waveAssetsStale;
+  tagConsistencyPreview.value = null;
+  const summary = result.summary;
+  const training = result.training;
+  tagConsistencyMessage.value =
+    `修复已完成：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量。`
+    + (result.indexReady === true ? "Tag 索引已就绪。" : "Tag 索引正在恢复，请查看主服务日志。")
+    + (training?.error
+      ? `训练排队失败，可在下方重试：${training.error}`
+      : training?.queued
+        ? "训练更新已排队，可在下方查看进度。"
+        : "累计 Tag 变化达到阈值时将自动更新训练结果，也可在下方手动启动。");
+  tagConsistencyMessageType.value = result.indexReady === true && !training?.error ? "success" : "info";
+  statusMessage.value = tagConsistencyMessage.value;
+  statusType.value = tagConsistencyMessageType.value;
+}
+
+async function refreshTagConsistencyTask(applicationOnly = false): Promise<void> {
   if (tagConsistencyStatusRequestPending) {
     return;
   }
@@ -1858,11 +1926,11 @@ async function refreshTagConsistencyTask(): Promise<void> {
       loadingKey: "rag-tuning.tag-consistency.status",
       suppressErrorMessage: true,
     });
-    if (response.task) {
+    if (response.task && (!applicationOnly || response.task.application)) {
       acceptTagConsistencyTask(response.task);
     }
   } catch (error: unknown) {
-    if (isTagConsistencyScanning.value) {
+    if (isTagConsistencyScanning.value || isTagConsistencyApplying.value) {
       scheduleTagConsistencyPolling();
     }
     console.warn("Failed to restore Tag consistency preview task:", error);
@@ -1879,6 +1947,8 @@ async function previewTagConsistency(): Promise<void> {
   clearTagConsistencyPolling();
   isTagConsistencyScanning.value = true;
   tagConsistencyPreview.value = null;
+  tagConsistencyMessage.value = "正在后台扫描 Tag 一致性…";
+  tagConsistencyMessageType.value = "info";
 
   try {
     const response = await ragApi.previewTagConsistency({
@@ -1895,6 +1965,8 @@ async function previewTagConsistency(): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : String(error);
     statusMessage.value = `Tag 一致性预检启动失败：${errorMessage}`;
     statusType.value = "error";
+    tagConsistencyMessage.value = statusMessage.value;
+    tagConsistencyMessageType.value = "error";
     showMessage(statusMessage.value, "error");
   }
 }
@@ -1911,36 +1983,35 @@ async function applyTagConsistency(): Promise<void> {
   }
 
   isTagConsistencyApplying.value = true;
+  tagConsistencyMessage.value = "正在补齐 Tag 向量并应用差分，可离开本页后再查看结果。";
+  tagConsistencyMessageType.value = "info";
 
   try {
     const response = await ragApi.applyTagConsistency(preview.token, {
+      showLoader: false,
       loadingKey: "rag-tuning.tag-consistency.apply",
+      suppressErrorMessage: true,
     });
     if (!response.result?.applied) {
       throw new Error(response.error || "主服务未确认 Tag 差分修复成功");
     }
 
-    const summary = response.result.summary;
-    tagMemoAssetsStale.value = response.result.waveAssetsStale;
-    tagConsistencyPreview.value = null;
-    const indexReady = response.result.indexReady === true;
-    const trainingQueued = response.result.training?.queued === true;
-    statusMessage.value =
-      `Tag 事实已提交：新增或补齐 ${summary.vectorsToCreate} 个向量，移除 ${summary.vectorsToRemove} 个向量；`
-      + (indexReady ? "全局 Tag 索引差分已就绪；" : "全局 Tag 索引尚未就绪，请检查主服务恢复日志；")
-      + (trainingQueued
-        ? "RiverAGS全量重训练已自动排队，完成情况请查看主服务日志。"
-        : `RiverAGS重训练未确认排队，请手动重试。${response.result.training?.error || ""}`);
-    statusType.value = indexReady && trainingQueued ? "success" : "info";
+    isTagConsistencyApplying.value = false;
+    clearTagConsistencyPolling();
+    acceptTagConsistencyResult(response.result);
     showMessage(statusMessage.value, statusType.value);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    isTagConsistencyApplying.value = false;
     tagConsistencyPreview.value = null;
     statusMessage.value = `Tag 差分修复失败：${errorMessage}。请重新扫描后再确认。`;
     statusType.value = "error";
-    showMessage(statusMessage.value, "error");
-  } finally {
-    isTagConsistencyApplying.value = false;
+    tagConsistencyMessage.value = statusMessage.value;
+    tagConsistencyMessageType.value = "error";
+    await refreshTagConsistencyTask(true);
+    if (!isTagConsistencyApplying.value) {
+      showMessage(tagConsistencyMessage.value, tagConsistencyMessageType.value);
+    }
   }
 }
 
@@ -3468,6 +3539,17 @@ onBeforeUnmount(() => {
 .tag-consistency-card__copy {
   display: grid;
   gap: var(--space-2);
+}
+
+.tag-consistency-feedback {
+  margin: 0;
+  color: var(--primary-text);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.tag-consistency-feedback--error {
+  color: var(--danger-color);
 }
 
 .tag-consistency-card__copy p,

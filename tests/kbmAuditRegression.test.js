@@ -206,6 +206,118 @@ test('tag consistency checks refresh threshold only after successful commit', as
     assert.equal(result.training.queued, true);
 });
 
+for (const manualRetry of [false, true]) {
+    test(`Tag repair retries only missing vectors and restores application state (manual=${manualRetry})`, async () => {
+        const requests = [];
+        let recover = !manualRetry;
+        let committed = 0;
+        const plan = {
+            token: 'retry', digest: 'digest', createdAt: Date.now(),
+            expiresAt: Date.now() + 60000, modelSig: 'test', dimension: 2,
+            files: [], vectorizeNames: ['good', 'missing'], orphanTags: [], summary: {}
+        };
+        const owner = {
+            dbPath: 'unused', config: { modelSig: 'test', dimension: 2 },
+            nativeKnowledgeRuntime: {
+                async commitTagConsistency(dbPath, json, vectors) {
+                    committed++;
+                    assert.deepEqual(JSON.parse(json).vectorizeNames, ['good', 'missing']);
+                    assert.deepEqual([...vectors], [1, 0, 0, 1]);
+                    return { factsCommitted: true, indexReady: true };
+                }
+            }
+        };
+        const service = new TagConsistencyService(owner);
+        service.snapshots.set(plan.token, { token: plan.token, expiresAt: plan.expiresAt, plan });
+        service.latestPreviewTask = {
+            taskId: 'preview', status: 'completed', preview: { token: plan.token, expiresAt: plan.expiresAt },
+            startedAt: Date.now(), finishedAt: Date.now(), error: null
+        };
+        embed = async names => {
+            requests.push([...names]);
+            assert.equal(service.getPreviewTaskStatus().application.status, 'running');
+            return names.map(name => name === 'good' ? [1, 0]
+                : recover && requests.length > 1 ? [0, 1] : null);
+        };
+        if (manualRetry) {
+            await assert.rejects(service.applyPreview(plan.token), { code: 'TAG_CONSISTENCY_EMBEDDING_FAILED' });
+            assert.equal(committed, 0);
+            const failed = service.getPreviewTaskStatus();
+            assert.equal(failed.application.status, 'failed');
+            assert.equal(failed.application.error.retryable, true);
+            assert.equal(failed.preview.token, plan.token);
+            recover = true;
+        }
+        await service.applyPreview(plan.token);
+        assert.deepEqual(requests, manualRetry
+            ? [['good', 'missing'], ['missing'], ['missing']]
+            : [['good', 'missing'], ['missing']]);
+        assert.equal(committed, 1);
+        const completed = service.getPreviewTaskStatus();
+        assert.equal(completed.application.status, 'completed');
+        assert.equal(completed.application.result.applied, true);
+        assert.equal(completed.preview, null);
+        await service.drain();
+    });
+}
+
+for (const mode of ['unchanged', 'new-difference', 'continuous-writes']) {
+    test(`Tag repair refreshes stale native plans without repeating embeddings (${mode})`, async () => {
+        const now = Date.now();
+        const base = {
+            token: 'original', digest: 'digest', createdAt: now, expiresAt: now + 60000,
+            modelSig: 'test', dimension: 2, files: [], vectorizeNames: ['keep'], orphanTags: [], summary: {}
+        };
+        const cancelled = [];
+        let commits = 0;
+        let prepares = 0;
+        let embeddings = 0;
+        const owner = {
+            config: { modelSig: 'test', dimension: 2 }, dbPath: 'unused',
+            nativeKnowledgeRuntime: {
+                async cancelPreparedPlan(token) { cancelled.push(token); },
+                async commitTagConsistency(db, json, vectors) {
+                    commits++;
+                    if (commits === 1 || mode === 'continuous-writes') {
+                        throw Object.assign(new Error('KNOWLEDGE_STORE_PLAN_STALE'), { code: 'GenericFailure' });
+                    }
+                    assert.equal(JSON.parse(json).token, 'refreshed-1');
+                    assert.deepEqual([...vectors], [1, 0]);
+                    return { factsCommitted: true, indexReady: true };
+                }
+            }
+        };
+        const service = new TagConsistencyService(owner);
+        service._buildPlan = async () => ({
+            ...base, token: `refreshed-${++prepares}`,
+            vectorizeNames: mode === 'new-difference' ? ['keep', 'new'] : ['keep']
+        });
+        embed = async names => { embeddings++; return names.map(() => [1, 0]); };
+        service.snapshots.set(base.token, { token: base.token, expiresAt: base.expiresAt, plan: base });
+        service.latestPreviewTask = {
+            status: 'completed', preview: { token: base.token, expiresAt: base.expiresAt }
+        };
+        if (mode === 'unchanged') {
+            assert.equal((await service.applyPreview(base.token)).applied, true);
+            assert.equal(service.getPreviewTaskStatus().application.status, 'completed');
+            assert.equal(commits, 2);
+        } else {
+            await assert.rejects(service.applyPreview(base.token), {
+                code: mode === 'new-difference' ? 'TAG_CONSISTENCY_REVIEW_REQUIRED'
+                    : 'TAG_CONSISTENCY_CONCURRENT_UPDATE'
+            });
+            const failed = service.getPreviewTaskStatus();
+            assert.equal(failed.application.status, 'failed');
+            assert.equal(failed.application.error.retryable, true);
+            assert.equal(failed.preview.token, `refreshed-${prepares}`);
+            assert.equal(commits, mode === 'new-difference' ? 1 : 3);
+        }
+        assert.equal(embeddings, 1);
+        assert.equal(cancelled[0], base.token);
+        await service.drain();
+    });
+}
+
 test('Memo unavailability degrades to scoped KNN but unrelated errors remain visible', async () => {
     const kb = require('../KnowledgeBaseManager');
     const execute = Object.getPrototypeOf(kb).executeNativeRiverQuery;

@@ -256,7 +256,8 @@ class TagConsistencyService {
             startedAt: task.startedAt,
             finishedAt: task.finishedAt,
             preview,
-            error: task.error
+            error: task.error,
+            application: task.application || null
         };
     }
 
@@ -356,26 +357,33 @@ class TagConsistencyService {
         );
     }
 
-    async _vectorize(names) {
-        if (names.length === 0) return new Map();
+    async _vectorize(names, result = new Map()) {
+        if (names.length === 0) return result;
         const embeddingConfig = {
             apiKey: this.owner.config.apiKey,
             apiUrl: this.owner.config.apiUrl,
             model: this.owner.config.model
         };
-        const vectors = await getEmbeddingsBatch(names, embeddingConfig);
-        const result = new Map();
-        names.forEach((name, index) => {
-            const raw = vectors[index];
-            if (!raw || raw.length !== this.owner.config.dimension) {
-                throw this._createError(
-                    `Tag「${name}」向量化失败或维度不匹配，未应用任何修改`,
-                    'TAG_CONSISTENCY_EMBEDDING_FAILED',
-                    502
-                );
-            }
-            result.set(name, raw instanceof Float32Array ? raw : new Float32Array(raw));
-        });
+        // 保留当前快照已成功的结果；自动补试一次，手动重试也只请求缺失项。
+        let pending = names.filter(name => !result.has(name));
+        for (let attempt = 0; attempt < 2 && pending.length > 0; attempt++) {
+            const vectors = await getEmbeddingsBatch(pending, embeddingConfig);
+            pending.forEach((name, index) => {
+                const raw = vectors[index];
+                if (!raw || raw.length !== this.owner.config.dimension) return;
+                const vector = raw instanceof Float32Array ? raw : new Float32Array(raw);
+                if (vector.every(Number.isFinite)) result.set(name, vector);
+            });
+            pending = names.filter(name => !result.has(name));
+        }
+        if (pending.length > 0) {
+            throw this._createError(
+                `Tag 向量化尚有 ${pending.length} 项失败，已暂存 ${result.size} 项成功结果。` +
+                '本次差分尚未提交；请检查向量服务后重试，快照有效期内仅补齐失败项。',
+                'TAG_CONSISTENCY_EMBEDDING_FAILED',
+                502
+            );
+        }
         return result;
     }
 
@@ -401,6 +409,38 @@ class TagConsistencyService {
         ].filter(Boolean));
     }
 
+    _isWithinConfirmedChanges(confirmed, next) {
+        const vectors = new Set(confirmed.vectorizeNames);
+        const orphans = new Set(confirmed.orphanTags.map(tag => `${tag.id}:${tag.name}`));
+        if (next.vectorizeNames.some(name => !vectors.has(name))
+            || next.orphanTags.some(tag => !orphans.has(`${tag.id}:${tag.name}`))) return false;
+        const files = new Map(confirmed.files.map(file => [file.fileId, file]));
+        return next.files.every(file => {
+            if (!file.added.length && !file.removed.length && !file.positionUpdates.length) return true;
+            const old = files.get(file.fileId);
+            if (!old || old.path !== file.path || old.status !== file.status
+                || old.sourcePath !== file.sourcePath || old.sourceHash !== file.sourceHash
+                || JSON.stringify(old.expectedTags) !== JSON.stringify(file.expectedTags)) return false;
+            return file.added.every(name => old.added.includes(name))
+                && file.removed.every(name => old.removed.includes(name))
+                && file.positionUpdates.every(update => old.positionUpdates.some(previous =>
+                    previous.name === update.name && previous.from === update.from && previous.to === update.to));
+        });
+    }
+
+    async _refreshApplySnapshot(snapshot, task) {
+        const plan = await this._buildPlan();
+        const next = {
+            token: plan.token, createdAt: plan.createdAt, expiresAt: plan.expiresAt,
+            plan, rulesSignature: snapshot.rulesSignature, vectors: snapshot.vectors
+        };
+        await this.owner.nativeKnowledgeRuntime.cancelPreparedPlan(snapshot.token);
+        this.snapshots.delete(snapshot.token);
+        this.snapshots.set(next.token, next);
+        if (task) task.preview = this._toPublicSnapshot(next);
+        return next;
+    }
+
     async _applyPreview(token) {
         if (this.running || this.latestPreviewTask?.status === 'running') {
             throw this._createError(
@@ -410,7 +450,7 @@ class TagConsistencyService {
             );
         }
         this._cleanupSnapshots();
-        const snapshot = this.snapshots.get(String(token || ''));
+        let snapshot = this.snapshots.get(String(token || ''));
         if (!snapshot) {
             throw this._createError(
                 '预检快照不存在或已过期，请重新扫描',
@@ -429,81 +469,113 @@ class TagConsistencyService {
             );
         }
         this.running = true;
+        const task = this.latestPreviewTask?.preview?.token === snapshot.token
+            ? this.latestPreviewTask : null;
+        const application = {
+            status: 'running', startedAt: Date.now(), finishedAt: null,
+            error: null, result: null
+        };
+        if (task) task.application = application;
         try {
-            // Rust 已保存权威计划，提交时校验事实代际和源文件哈希。
-            // 确认阶段不再扫描全库或分配新的 prepared token。
-            const verifiedPlan = snapshot.plan;
-            if (verifiedPlan.dimension !== this.owner.config.dimension
-                || verifiedPlan.modelSig !== this.owner.config.modelSig
-                || (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature())) {
-                throw this._createError(
-                    '向量模型配置已变化，请重新扫描',
-                    'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
-                );
-            }
-
-            const vectorMap = await this._vectorize(verifiedPlan.vectorizeNames);
-            const tagVectors = new Float32Array(
-                verifiedPlan.vectorizeNames.length * this.owner.config.dimension
-            );
-            verifiedPlan.vectorizeNames.forEach((name, index) => {
-                const vector = vectorMap.get(name);
-                if (!vector || vector.length !== this.owner.config.dimension) {
+            // 正常提交使用原计划；并发写入使其失效时重新核对，沿用已确认的修复范围。
+            const confirmedPlan = snapshot.plan;
+            let verifiedPlan;
+            let receipt;
+            for (let refreshes = 0; ; refreshes++) {
+                verifiedPlan = snapshot.plan;
+                if (verifiedPlan.dimension !== this.owner.config.dimension
+                    || verifiedPlan.modelSig !== this.owner.config.modelSig
+                    || (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature())) {
                     throw this._createError(
-                        `Tag「${name}」向量化结果无效，未应用任何修改`,
-                        'TAG_CONSISTENCY_INVALID_VECTOR',
-                        409
+                        '向量模型配置已变化，请重新扫描',
+                        'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
                     );
                 }
-                tagVectors.set(vector, index * this.owner.config.dimension);
-            });
 
-            const nativePlan = {
-                token: snapshot.plan.token,
-                digest: snapshot.plan.digest,
-                createdAt: snapshot.plan.createdAt,
-                expiresAt: snapshot.plan.expiresAt,
-                modelSig: snapshot.plan.modelSig,
-                dimension: snapshot.plan.dimension,
-                files: snapshot.plan.files.map(file => ({
-                    fileId: Number(file.fileId),
-                    sourcePath: file.sourcePath ?? null,
-                    sourceHash: file.sourceHash ?? null,
-                    expectedTags: Array.isArray(file.expectedTags)
-                        ? file.expectedTags.map(String)
-                        : []
-                })),
-                vectorizeNames: verifiedPlan.vectorizeNames.map(String),
-                orphanTags: verifiedPlan.orphanTags.map(tag => ({
-                    id: Number(tag.id)
-                }))
-            };
-            if (this.owner._shuttingDown) {
-                throw this._createError(
-                    'KnowledgeBase 正在关闭，未提交维护计划', 'KNOWLEDGE_STORE_CLOSED', 503
+                snapshot.vectors ||= new Map();
+                const vectorMap = await this._vectorize(verifiedPlan.vectorizeNames, snapshot.vectors);
+                const tagVectors = new Float32Array(
+                    verifiedPlan.vectorizeNames.length * this.owner.config.dimension
                 );
-            }
-            if (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature()) {
-                throw this._createError(
-                    '规则或模型配置在向量化期间发生变化，请重新扫描',
-                    'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
-                );
-            }
-            const rawReceipt =
-                await this.owner.nativeKnowledgeRuntime.commitTagConsistency(
-                    this.owner.dbPath,
-                    JSON.stringify(nativePlan),
-                    tagVectors
-                );
-            const receipt = typeof rawReceipt === 'string'
-                ? JSON.parse(rawReceipt)
-                : rawReceipt;
-            if (!receipt || receipt.factsCommitted !== true) {
-                throw this._createError(
-                    'Rust Tag 一致性提交返回无效事实回执',
-                    'TAG_CONSISTENCY_COMMIT_INVALID_RECEIPT',
-                    500
-                );
+                verifiedPlan.vectorizeNames.forEach((name, index) => {
+                    const vector = vectorMap.get(name);
+                    if (!vector || vector.length !== this.owner.config.dimension) {
+                        throw this._createError(
+                            `Tag「${name}」向量化结果无效，未应用任何修改`,
+                            'TAG_CONSISTENCY_INVALID_VECTOR',
+                            409
+                        );
+                    }
+                    tagVectors.set(vector, index * this.owner.config.dimension);
+                });
+
+                const nativePlan = {
+                    token: snapshot.plan.token,
+                    digest: snapshot.plan.digest,
+                    createdAt: snapshot.plan.createdAt,
+                    expiresAt: snapshot.plan.expiresAt,
+                    modelSig: snapshot.plan.modelSig,
+                    dimension: snapshot.plan.dimension,
+                    files: snapshot.plan.files.map(file => ({
+                        fileId: Number(file.fileId),
+                        sourcePath: file.sourcePath ?? null,
+                        sourceHash: file.sourceHash ?? null,
+                        expectedTags: Array.isArray(file.expectedTags)
+                            ? file.expectedTags.map(String)
+                            : []
+                    })),
+                    vectorizeNames: verifiedPlan.vectorizeNames.map(String),
+                    orphanTags: verifiedPlan.orphanTags.map(tag => ({
+                        id: Number(tag.id)
+                    }))
+                };
+                if (this.owner._shuttingDown) {
+                    throw this._createError(
+                        'KnowledgeBase 正在关闭，未提交维护计划', 'KNOWLEDGE_STORE_CLOSED', 503
+                    );
+                }
+                if (snapshot.rulesSignature && snapshot.rulesSignature !== this._rulesSignature()) {
+                    throw this._createError(
+                        '规则或模型配置在向量化期间发生变化，请重新扫描',
+                        'TAG_CONSISTENCY_SNAPSHOT_STALE', 409
+                    );
+                }
+                let rawReceipt;
+                try {
+                    rawReceipt = await this.owner.nativeKnowledgeRuntime.commitTagConsistency(
+                        this.owner.dbPath,
+                        JSON.stringify(nativePlan),
+                        tagVectors
+                    );
+                } catch (error) {
+                    if (!/^KNOWLEDGE_STORE_(PLAN_STALE|SOURCE_CHANGED)(?::|$)/.test(error.message || '')) throw error;
+                    if (refreshes >= 2) {
+                        throw this._createError(
+                            '日记库持续更新，修复计划暂未提交。已保留成功向量，请稍后重试。',
+                            'TAG_CONSISTENCY_CONCURRENT_UPDATE', 409
+                        );
+                    }
+                    snapshot = await this._refreshApplySnapshot(snapshot, task);
+                    if (!this._isWithinConfirmedChanges(confirmedPlan, snapshot.plan)) {
+                        throw this._createError(
+                            '日记库已更新，修复差分发生变化。已刷新下方预览并保留成功向量，请核对后再次确认。',
+                            'TAG_CONSISTENCY_REVIEW_REQUIRED', 409
+                        );
+                    }
+                    console.log('[KnowledgeBase] Tag consistency plan refreshed after concurrent update; reusing prepared vectors.');
+                    continue;
+                }
+                receipt = typeof rawReceipt === 'string'
+                    ? JSON.parse(rawReceipt)
+                    : rawReceipt;
+                if (!receipt || receipt.factsCommitted !== true) {
+                    throw this._createError(
+                        'Rust Tag 一致性提交返回无效事实回执',
+                        'TAG_CONSISTENCY_COMMIT_INVALID_RECEIPT',
+                        500
+                    );
+                }
+                break;
             }
 
             this.owner._scheduleIndexSave?.('global_tags');
@@ -529,11 +601,9 @@ class TagConsistencyService {
                 training = { queued: false, error: String(error.message || error) };
             }
             this.snapshots.delete(snapshot.token);
-            if (this.latestPreviewTask?.preview?.token === snapshot.token) {
-                this.latestPreviewTask = null;
-            }
+            if (task) task.preview = null;
 
-            return {
+            const result = {
                 applied: true,
                 factsCommitted: true,
                 indexReady: receipt.indexReady === true,
@@ -550,6 +620,21 @@ class TagConsistencyService {
                 recommendedAction: 'automatic-threshold-refresh',
                 message: 'Tag 事实与活动索引差分均由 Rust 完成；持久化基线将由 Rust 索引生命周期管理器发布。'
             };
+            application.status = 'completed';
+            application.finishedAt = Date.now();
+            application.result = result;
+            return result;
+        } catch (error) {
+            application.status = 'failed';
+            application.finishedAt = Date.now();
+            application.error = {
+                code: error.code || 'TAG_CONSISTENCY_APPLY_FAILED',
+                message: error.message || 'Tag 差分修复失败',
+                retryable: ['TAG_CONSISTENCY_EMBEDDING_FAILED',
+                    'TAG_CONSISTENCY_REVIEW_REQUIRED', 'TAG_CONSISTENCY_CONCURRENT_UPDATE'].includes(error.code)
+            };
+            console.error('[KnowledgeBase] Tag consistency apply failed:', error.message || error);
+            throw error;
         } finally {
             this.running = false;
         }
