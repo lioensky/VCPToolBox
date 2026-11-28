@@ -18,6 +18,16 @@ const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const IMAGESERVER_FILE_KEY = process.env.IMAGESERVER_FILE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 // Config for 'create' command
 const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt";
@@ -516,8 +526,9 @@ function sanitizeServerFilename(name) {
 }
 
 async function processLocalFiles(content) {
-    if (!projectBasePath || !SERVER_PORT || !VAR_HTTP_URL) {
-        debugLog('processLocalFiles: 缺少必要的环境变量（PROJECT_BASE_PATH/SERVER_PORT/VarHttpUrl），跳过转换。');
+    const serverBaseUrl = buildServerBaseUrl();
+    if (!projectBasePath || !serverBaseUrl) {
+        debugLog('processLocalFiles: 缺少必要的环境变量（PROJECT_BASE_PATH/SERVER_PORT/VarHttpUrl/VarHttpsUrl），跳过转换。');
         return content;
     }
 
@@ -546,7 +557,7 @@ async function processLocalFiles(content) {
                 await fs.mkdir(destDir, { recursive: true });
                 await fs.writeFile(path.join(destDir, generatedFileName), buffer);
 
-                const serverUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/dailynote/${generatedFileName}`;
+                const serverUrl = `${serverBaseUrl}/pw=${IMAGESERVER_IMAGE_KEY}/images/dailynote/${generatedFileName}`;
                 result = result.replace(fullMatch, `![${altText}](${serverUrl})`);
                 debugLog(`processLocalFiles: 图片已转换 ${fileUrl} -> ${serverUrl}`);
             } catch (e) {
@@ -584,7 +595,7 @@ async function processLocalFiles(content) {
                 await fs.mkdir(destDir, { recursive: true });
                 await fs.writeFile(path.join(destDir, generatedFileName), buffer);
 
-                const serverUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_FILE_KEY}/files/dailynote/${generatedFileName}`;
+                const serverUrl = `${serverBaseUrl}/pw=${IMAGESERVER_FILE_KEY}/files/dailynote/${generatedFileName}`;
                 result = result.replace(fullMatch, `[${linkText}](${serverUrl})`);
                 debugLog(`processLocalFiles: 文件已转换 ${fileUrl} -> ${serverUrl}`);
             } catch (e) {

@@ -349,7 +349,14 @@ async function formatMeetingResult(meeting, summary_only = false) {
             result += `${meeting.summary}\n\n`;
         }
     }
-    const imageUrlBase = `${serverConfig.VarHttpUrl}:${serverConfig.PORT}`;
+    const usePublicUrl = ['true', '1'].includes(
+        String(pluginConfig.USE_PUBLIC_URL ?? serverConfig.USE_PUBLIC_URL ?? process.env.USE_PUBLIC_URL ?? 'false').trim().toLowerCase()
+    );
+    const httpsBase = String(pluginConfig.VarHttpsUrl || serverConfig.VarHttpsUrl || process.env.VarHttpsUrl || '').trim().replace(/\/+$/, '');
+    const httpBase = String(pluginConfig.VarHttpUrl || serverConfig.VarHttpUrl || process.env.VarHttpUrl || '').trim().replace(/\/+$/, '');
+    const imageUrlBase = usePublicUrl
+        ? (httpsBase || httpBase)
+        : (serverConfig.PORT ? `${httpBase}:${serverConfig.PORT}` : httpBase);
     const imageName = meeting.resolved ? 'MagiResolved.gif' : 'MagiUnresolved.gif';
     const password = serverConfig.File_Key ? `/pw=${serverConfig.File_Key}` : '';
     const imageUrl = `${imageUrlBase}${password}/images/magi/${imageName}`;

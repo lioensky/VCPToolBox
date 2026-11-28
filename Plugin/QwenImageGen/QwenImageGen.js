@@ -12,6 +12,16 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 const API_CONFIG = {
     BASE_URL: 'https://api.siliconflow.cn/v1',
@@ -86,7 +96,8 @@ async function getImageData(imageUrl, imageBase64) {
 }
 
 async function processApiRequest(args) {
-    if (!SILICONFLOW_API_KEY || !PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
+    const serverBaseUrl = buildServerBaseUrl();
+    if (!SILICONFLOW_API_KEY || !PROJECT_BASE_PATH || !IMAGESERVER_IMAGE_KEY || !serverBaseUrl) {
         throw new Error("QwenImageGen Plugin Error: Missing one or more required environment variables.");
     }
     if (!isValidArgs(args)) {
@@ -143,7 +154,7 @@ async function processApiRequest(args) {
     await fs.writeFile(localImagePath, imageBuffer);
 
     const relativePathForUrl = path.join('qwenimagegen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    const accessibleImageUrl = `${serverBaseUrl}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
     
     const base64Image = imageBuffer.toString('base64');
     const imageMimeType = `image/${imageExtension}`;

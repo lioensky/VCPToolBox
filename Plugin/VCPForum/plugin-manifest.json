@@ -14,6 +14,13 @@
     "protocol": "stdio",
     "timeout": 15000
   },
+  "configSchema": {
+    "USE_PUBLIC_URL": {
+      "type": "string",
+      "description": "（可选）是否使用公网地址返回图片/文件 URL：true=使用 VarHttpsUrl（不带端口，适用于反代），false=使用 VarHttpUrl:端口（局域网），默认 false",
+      "default": "false"
+    }
+  },
   "capabilities": {
     "invocationCommands": [
       {

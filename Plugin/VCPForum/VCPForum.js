@@ -9,6 +9,16 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 /**
  * Sanitizes a string to be safe for use in a filename.
@@ -80,7 +90,7 @@ async function publishForumImage(fileUrl, imageBase64 = null) {
     await fs.writeFile(localImageServerPath, imageBuffer);
 
     const relativeServerPathForUrl = path.posix.join('forum', generatedFileName);
-    return `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    return `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 }
 
 /**
@@ -92,7 +102,7 @@ async function publishForumImage(fileUrl, imageBase64 = null) {
  * @returns {Promise<string>} Content with local image URLs replaced by HTTP URLs.
  */
 async function processLocalImages(content, args = {}) {
-    if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
+    if (!PROJECT_BASE_PATH || !IMAGESERVER_IMAGE_KEY || !buildServerBaseUrl()) {
         return content;
     }
 

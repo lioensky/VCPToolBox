@@ -1379,16 +1379,25 @@ function getOutputEnvironment() {
     const fileKey = process.env.IMAGESERVER_FILE_KEY ||
         process.env.File_Key ||
         hostPluginManager?.getResolvedPluginConfigValue?.('ImageServer', 'File_Key');
-    const httpBase = process.env.VarHttpUrl || 'http://localhost';
+    const httpBase = String(pluginConfig.VarHttpUrl || process.env.VarHttpUrl || 'http://localhost').trim().replace(/\/+$/, '');
+    const httpsBase = String(pluginConfig.VarHttpsUrl || process.env.VarHttpsUrl || '').trim().replace(/\/+$/, '');
+    const usePublicUrl = ['true', '1'].includes(String(pluginConfig.USE_PUBLIC_URL ?? process.env.USE_PUBLIC_URL ?? 'false').trim().toLowerCase());
 
-    if (!serverPort) throw new Error('缺少 SERVER_PORT/PORT，无法构造媒体 URL。');
+    if (!usePublicUrl && !serverPort) throw new Error('缺少 SERVER_PORT/PORT，无法构造媒体 URL。');
+
+    const urlBase = usePublicUrl
+        ? (httpsBase || httpBase)
+        : `${httpBase}:${serverPort}`;
 
     return {
         projectBasePath,
         serverPort,
         imageKey,
         fileKey,
-        httpBase: httpBase.replace(/\/+$/, '')
+        httpBase,
+        httpsBase,
+        usePublicUrl,
+        urlBase
     };
 }
 
@@ -1414,7 +1423,7 @@ async function saveArtifact(buffer, request) {
     await fs.writeFile(outputPath, buffer);
 
     const relativeUrlPath = `${OUTPUT_SUBDIR}/${encodeURIComponent(fileName)}`;
-    const mediaUrl = `${env.httpBase}:${env.serverPort}/pw=${serviceKey}/${serviceRoute}/${relativeUrlPath}`;
+    const mediaUrl = `${env.urlBase}/pw=${serviceKey}/${serviceRoute}/${relativeUrlPath}`;
 
     return {
         fileName,

@@ -18,7 +18,8 @@
     "URLFETCH_MAX_TABS": { "type": "number", "default": 5 },
     "URLFETCH_MAX_QUEUE": { "type": "number", "default": 100 },
     "URLFETCH_QUEUE_TIMEOUT_MS": { "type": "number", "default": 90000 },
-    "URLFETCH_BROWSER_IDLE_MS": { "type": "number", "default": 30000 }
+    "URLFETCH_BROWSER_IDLE_MS": { "type": "number", "default": 30000 },
+    "USE_PUBLIC_URL": { "type": "string", "default": "false", "description": "（可选）是否使用公网地址返回图片/文件 URL：true=使用 VarHttpsUrl（不带端口，适用于反代），false=使用 VarHttpUrl:端口（局域网），默认 false" }
   },
   "capabilities": {
     "invocationCommands": [

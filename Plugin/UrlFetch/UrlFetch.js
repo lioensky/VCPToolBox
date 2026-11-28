@@ -36,7 +36,7 @@ const MIME_MAP = {
 };
 
 // --- Configuration (from environment variables set by Plugin.js) ---
-let PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VAR_HTTP_URL, JINA_API_KEY;
+let PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VAR_HTTP_URL, VAR_HTTPS_URL, USE_PUBLIC_URL, JINA_API_KEY;
 let JINA_READER_TIMEOUT_MS, DIRECT_FETCH_TIMEOUT_MS, DIRECT_FETCH_MAX_BYTES, PDF_FETCH_MAX_BYTES;
 let KNOWLEDGE_BASE_DIR, URLFETCH_PERSISTENT_PROFILE, URLFETCH_PROFILE_DIR, URLFETCH_PROFILE_MODE;
 let URLFETCH_BROWSER_FIRST, URLFETCH_HEADLESS, URLFETCH_BROWSER_BACKEND, URLFETCH_USE_MANAGED_CHROME;
@@ -47,6 +47,8 @@ function configure(config = {}) {
     SERVER_PORT = env.SERVER_PORT || env.PORT;
     IMAGESERVER_IMAGE_KEY = env.IMAGESERVER_IMAGE_KEY;
     VAR_HTTP_URL = env.VarHttpUrl;
+    VAR_HTTPS_URL = env.VarHttpsUrl || env.VAR_HTTPS_URL || '';
+    USE_PUBLIC_URL = ['true', '1'].includes(String(env.USE_PUBLIC_URL ?? 'false').trim().toLowerCase());
     JINA_API_KEY = env.JINA_API_KEY;
     JINA_READER_TIMEOUT_MS = Number(env.JINA_READER_TIMEOUT_MS || 20000);
     DIRECT_FETCH_TIMEOUT_MS = Number(env.DIRECT_FETCH_TIMEOUT_MS || 12000);
@@ -840,7 +842,10 @@ async function captureAndFormatScreenshot(page, url, options = {}) {
     await fs.writeFile(localImageServerPath, imageBuffer);
 
     const relativeServerPathForUrl = path.join('urlfetch', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    const serverBaseUrl = USE_PUBLIC_URL
+        ? String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '')
+        : `${String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '')}:${SERVER_PORT}`;
+    const accessibleImageUrl = `${serverBaseUrl}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 
     const safeBuffer = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer);
     const base64Image = safeBuffer.toString('base64');
@@ -1089,8 +1094,11 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
         if (mode === 'snapshot' || mode === 'screenshot') {
             // Check for essential environment variables for saving image
-            if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
-                throw new Error("UrlFetch Plugin Snapshot Error: Required environment variables for saving image are not set (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl).");
+            const hasServerBase = USE_PUBLIC_URL
+                ? Boolean(String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim())
+                : Boolean(SERVER_PORT && VAR_HTTP_URL);
+            if (!PROJECT_BASE_PATH || !IMAGESERVER_IMAGE_KEY || !hasServerBase) {
+                throw new Error("UrlFetch Plugin Snapshot Error: Required environment variables for saving image are not set (PROJECT_BASE_PATH, SERVER_PORT, IMAGESERVER_IMAGE_KEY, VarHttpUrl/VarHttpsUrl).");
             }
 
             // 网页快照模式：直接捕获视口，无需 autoScroll 循环拖延

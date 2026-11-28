@@ -6,6 +6,8 @@ const path = require('path');
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 // Get config variables passed by PluginManager
 const httpUrl = process.env.VarHttpUrl;
+const httpsUrl = process.env.VarHttpsUrl || '';
+const usePublicUrl = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
 const fileKey = process.env.File_Key;
 const port = process.env.PORT;
 
@@ -176,9 +178,12 @@ async function main() {
     let finalOutput = '';
     if (contentGenerated) {
         let usageExample = '';
-        if (httpUrl && port && fileKey) {
+        const serverBaseUrl = usePublicUrl
+            ? String(httpsUrl || httpUrl || '').trim().replace(/\/+$/, '')
+            : (httpUrl && port ? `${String(httpUrl).trim().replace(/\/+$/, '')}:${port}` : '');
+        if (serverBaseUrl && fileKey) {
             const exampleFileName = "doubaogen/example.png"; // Use a more predictable example
-            usageExample = `\n\n# 如何使用这些文件:\n# 你可以通过拼接URL来访问这些文件，格式如下：\n# ${httpUrl}:${port}/pw=${fileKey}/files/[文件路径]\n# 例如，访问'${exampleFileName}'的URL是：\n# ${httpUrl}:${port}/pw=${fileKey}/files/${exampleFileName}`;
+            usageExample = `\n\n# 如何使用这些文件:\n# 你可以通过拼接URL来访问这些文件，格式如下：\n# ${serverBaseUrl}/pw=${fileKey}/files/[文件路径]\n# 例如，访问'${exampleFileName}'的URL是：\n# ${serverBaseUrl}/pw=${fileKey}/files/${exampleFileName}`;
         } else {
             usageExample = `\n\n# 使用说明: (部分环境变量缺失，无法生成完整URL示例)`;
         }
