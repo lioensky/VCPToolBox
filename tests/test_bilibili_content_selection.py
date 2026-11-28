@@ -19,7 +19,7 @@ BVID = 'BV1pGnn67EC2'
 
 
 def response(payload):
-    result = Mock()
+    result = Mock(status_code=200, headers={'Content-Type': 'application/json'})
     result.json.return_value = payload
     return result
 

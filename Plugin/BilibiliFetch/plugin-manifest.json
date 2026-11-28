@@ -3,7 +3,7 @@
   "name": "BilibiliFetch",
   "displayName": "Bilibili 内容获取插件",
   "version": "2.1.0",
-  "description": "Bilibili 视频内容获取插件。支持视频信息抓取（字幕/弹幕/评论/高能进度条/快照截图/HD高清抽帧）、关键词搜索（视频/UP主）、UP主投稿列表获取。支持长链接、b23.tv短链接和多P分P视频。",
+  "description": "Bilibili 视频内容获取插件。支持视频信息抓取（字幕/弹幕/评论/高能进度条/快照截图/HD高清抽帧）、关键词搜索（视频/UP主）、UP主投稿列表获取。支持 BV 号、旧式 av 号、长链接、b23.tv 短链接和多 P 视频。",
   "author": "Bocchi777",
   "pluginType": "synchronous",
   "entryPoint": {

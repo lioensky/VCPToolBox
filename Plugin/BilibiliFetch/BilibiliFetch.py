@@ -297,6 +297,139 @@ def extract_bvid_and_page(video_input: str) -> 'tuple[str | None, int]':
     return bvid, page
 
 
+def resolve_video_input(video_input: str, headers: dict | None = None) -> tuple[str, int]:
+    """Normalize BV and legacy av inputs to a canonical BV URL and page."""
+    bvid, page = extract_bvid_and_page(video_input)
+    if bvid:
+        suffix = f"?p={page}" if page > 1 else ""
+        return f"{BILIBILI_VIDEO_BASE_URL}{bvid}/{suffix}", page
+
+    aid_match = re.search(r'(?:^|[/=])av(\d+)(?=$|[/?&#])', video_input, re.IGNORECASE)
+    if not aid_match and re.fullmatch(r'\d+', video_input.strip()):
+        aid_match = re.fullmatch(r'(\d+)', video_input.strip())
+    if not aid_match:
+        raise ValueError(f"无法从输入提取有效的 B站 视频/链接（BV号或av号）: {video_input}")
+
+    aid = aid_match.group(1)
+    page_match = re.search(r'[?&]p=(\d+)', video_input)
+    page = int(page_match.group(1)) if page_match else 1
+    request_headers = headers or {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.bilibili.com/',
+        'Accept': 'application/json, text/plain, */*',
+    }
+    try:
+        response = requests.get(VIEW_API_URL, params={'aid': aid}, headers=request_headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        raise VideoInfoError(f"根据 av{aid} 查询视频信息失败: {exc}") from exc
+    except ValueError as exc:
+        raise VideoInfoError(f"根据 av{aid} 查询视频信息时，B站返回了无效响应") from exc
+
+    if not isinstance(data, dict):
+        raise VideoInfoError(f"根据 av{aid} 查询视频信息时，B站返回了无效响应")
+    metadata = data.get('data')
+    bvid = metadata.get('bvid') if isinstance(metadata, dict) else None
+    if data.get('code') != 0 or not isinstance(bvid, str) or not re.fullmatch(r'BV[0-9a-z]+', bvid, re.IGNORECASE):
+        raise VideoInfoError(
+            f"B站无法解析 av{aid}（API错误码: {data.get('code')}, "
+            f"信息: {data.get('message', '未知错误')}）"
+        )
+    logging.info(f"Resolved AID {aid} to BVID {bvid}, page: {page}")
+    suffix = f"?p={page}" if page > 1 else ""
+    return f"{BILIBILI_VIDEO_BASE_URL}{bvid}/{suffix}", page
+
+
+class VideoInfoError(RuntimeError):
+    """Both metadata endpoints failed to provide a usable CID."""
+
+
+def request_video_api(url: str, bvid: str, headers: dict) -> dict:
+    """Retain actionable API failures without exposing cookies or response bodies."""
+    try:
+        response = requests.get(url, params={'bvid': bvid}, headers=headers, timeout=10)
+    except requests.Timeout as exc:
+        raise VideoInfoError("请求超时（10秒）") from exc
+    except requests.exceptions.ProxyError as exc:
+        raise VideoInfoError("代理连接失败，请检查代理服务") from exc
+    except requests.exceptions.SSLError as exc:
+        raise VideoInfoError("TLS连接失败，请检查证书与网络") from exc
+    except requests.ConnectionError as exc:
+        raise VideoInfoError("网络连接失败，请检查网络与域名解析") from exc
+    except requests.RequestException as exc:
+        raise VideoInfoError(f"请求失败（{type(exc).__name__}）") from exc
+
+    if response.status_code != 200:
+        hint = "，请求被拒绝或限流，可稍后重试并检查网络出口" if response.status_code in (403, 412, 429) else ""
+        raise VideoInfoError(f"HTTP {response.status_code}{hint}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        content_type = response.headers.get('Content-Type', '未知')
+        raise VideoInfoError(f"HTTP 200，响应为无效JSON（Content-Type: {content_type}）") from exc
+    if not isinstance(payload, dict):
+        raise VideoInfoError("HTTP 200，JSON响应结构异常（预期为对象）")
+    if payload.get('code') != 0:
+        message = str(payload.get('message', '未知错误')).replace('\r', ' ').replace('\n', ' ')[:160]
+        raise VideoInfoError(f"HTTP 200，B站API code={payload.get('code')}，message={message}")
+    return payload
+
+
+def valid_video_id(value) -> str | None:
+    text = str(value)
+    return text if text.isascii() and text.isdigit() and text.strip('0') else None
+
+
+def fetch_video_info(bvid: str, page: int, headers: dict) -> dict:
+    """Try pagelist after any View failure, preserving both causes on failure."""
+    info = {'aid': None, 'cid': None, 'title': None, 'author': None}
+    failures = []
+    try:
+        payload = request_video_api(VIEW_API_URL, bvid, headers)
+        data = payload.get('data')
+        if not isinstance(data, dict):
+            raise VideoInfoError("响应data缺失或结构异常")
+        info['aid'] = valid_video_id(data.get('aid'))
+        info['title'] = data.get('title')
+        owner = data.get('owner')
+        info['author'] = owner.get('name') if isinstance(owner, dict) else None
+        # The top-level CID belongs to P1; select the requested page explicitly.
+        if page > 1:
+            pages = data.get('pages')
+            if isinstance(pages, list) and pages:
+                index = page - 1 if page <= len(pages) else 0
+                if isinstance(pages[index], dict):
+                    info['cid'] = valid_video_id(pages[index].get('cid'))
+        else:
+            info['cid'] = valid_video_id(data.get('cid'))
+        if not info['cid']:
+            raise VideoInfoError(f"响应缺少有效CID（P{page}）")
+        logging.info(f"Found AID: {info['aid']}, CID: {info['cid']} via View API")
+        return info
+    except VideoInfoError as exc:
+        failures.append(f"view: {exc}")
+        logging.warning(f"View API failed: {exc}; attempting pagelist for CID")
+
+    try:
+        payload = request_video_api(PAGELIST_API_URL, bvid, headers)
+        pages = payload.get('data')
+        if not isinstance(pages, list) or not pages:
+            raise VideoInfoError("响应分P列表为空或结构异常")
+        index = page - 1 if 0 < page <= len(pages) else 0
+        selected = pages[index]
+        info['cid'] = valid_video_id(selected.get('cid')) if isinstance(selected, dict) else None
+        if not info['cid']:
+            raise VideoInfoError(f"响应缺少有效CID（P{page}）")
+        logging.info(f"Found CID via pagelist fallback: {info['cid']} (page {page})")
+        return info
+    except VideoInfoError as exc:
+        failures.append(f"pagelist: {exc}")
+
+    raise VideoInfoError(f"无法获取视频CID（{bvid}，P{page}）。" + "；".join(failures))
+
+
 def get_cid_for_page(bvid: str, page: int, headers: dict) -> str | None:
     """Fetches CID for a specific page of a multi-part video via pagelist API."""
     try:
@@ -822,10 +955,9 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     # 1. Resolve short URL
     resolved_url = resolve_short_url(video_input)
     
-    # 2. Extract BVID
-    bvid, page = extract_bvid_and_page(resolved_url)
-    if not bvid:
-        raise ValueError(f"无法从输入提取有效的 B站 视频/链接（BV号）: {video_input}")
+    # 2. Normalize legacy av identifiers before using the existing BV-based pipeline.
+    resolved_url, page = resolve_video_input(resolved_url)
+    bvid, _ = extract_bvid_and_page(resolved_url)
     logging.info(f"Extracted BVID: {bvid}, Page: {page}")
 
     user_cookie = build_bilibili_cookie()
@@ -837,45 +969,9 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         headers['Cookie'] = user_cookie
 
     # 3. Get Video Info (AID, CID, Title, Author)
-    aid, cid = None, None
-    video_title, video_author = None, None
-    try:
-        # We can use the view API to get both IDs and metadata
-        view_resp = requests.get("https://api.bilibili.com/x/web-interface/view", params={'bvid': bvid}, headers=headers, timeout=10)
-        view_data = view_resp.json()
-        if view_data.get('code') == 0:
-            data = view_data.get('data', {})
-            aid = str(data.get('aid'))
-            cid = str(data.get('cid'))
-            video_title = data.get('title')
-            video_author = data.get('owner', {}).get('name')
-            logging.info(f"Found AID: {aid}, CID: {cid}, Title: {video_title}, Author: {video_author} via View API")
-            # Override CID for multi-part videos
-            if page > 1:
-                page_cid = get_cid_for_page(bvid, page, headers)
-                if page_cid:
-                    cid = page_cid
-                    logging.info(f"Overrode CID to {cid} for page {page}")
-        else:
-            # Fallback to pagelist for CID if view API fails
-            logging.warning(f"View API failed (code {view_data.get('code')}), attempting pagelist for CID")
-            page_resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
-            page_data = page_resp.json()
-            if page_data.get('code') == 0 and page_data.get('data'):
-                idx = page - 1 if page > 0 else 0
-                if idx < len(page_data['data']):
-                    cid = str(page_data['data'][idx]['cid'])
-                else:
-                    cid = str(page_data['data'][0]['cid'])
-                logging.info(f"Found CID via pagelist fallback: {cid} (page {page})")
-    except Exception as e:
-        logging.error(f"Error getting video info: {e}")
-
-    if not cid:
-        err_msg = "无法获取视频的 CID 标识符。可能是视频已被删除、链接有误，或遭到B站风控阻断。"
-        if 'view_data' in locals() and view_data.get('code') != 0:
-            err_msg += f" B站API错误码: {view_data.get('code')}, 信息: {view_data.get('message')}"
-        raise ValueError(err_msg)
+    video_info = fetch_video_info(bvid, page, headers)
+    aid, cid = video_info['aid'], video_info['cid']
+    video_title, video_author = video_info['title'], video_info['author']
 
     # 4. Concurrent fetching
     results = {}
@@ -1414,6 +1510,8 @@ if __name__ == "__main__":
 
     except (json.JSONDecodeError, ValueError) as e:
         output = {"status": "error", "error": f"Input Error: {e}"}
+    except VideoInfoError as e:
+        output = {"status": "error", "error": str(e)}
     except Exception as e:
         logging.exception("An unexpected error occurred during plugin execution.")
         output = {"status": "error", "error": f"An unexpected error occurred: {e}"}
