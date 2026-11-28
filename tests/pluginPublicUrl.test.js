@@ -1,9 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -24,19 +25,63 @@ const TARGET_PLUGINS = [
     { name: 'ComfyUIGen', files: ['ComfyUIGen.js'], manifest: 'plugin-manifest.json.block' },
     { name: 'FileListGenerator', files: ['file-list-generator.js'], manifest: 'plugin-manifest.json.block' },
     { name: 'ZImageGen2', files: ['ZImageGen.mjs'], manifest: 'plugin-manifest.json.block' },
+    { name: 'AgnesGen', files: ['AgnesGen.mjs'], manifest: 'plugin-manifest.json' },
+    { name: 'AgnesVideoGen', files: ['AgnesVideoGen.mjs'], manifest: 'plugin-manifest.json' },
+    { name: 'ZImageTurboGen', files: ['ZImageTurboGen.mjs'], manifest: 'plugin-manifest.json' },
+    { name: 'GPTImageGen', files: ['GPTImageGen.js'], manifest: 'plugin-manifest.json' },
+    { name: 'NanoBananaGen2', files: ['NanoBananaGen.mjs'], manifest: 'plugin-manifest.json' },
 ];
 
-test('all 16 built-in plugins declare USE_PUBLIC_URL in manifest and avoid unconditional :PORT/pw= hardcoding', () => {
+function resolveManifestPath(pluginDir, preferred) {
+    for (const candidate of [preferred, 'plugin-manifest.json', 'plugin-manifest.json.block']) {
+        if (!candidate) continue;
+        const full = path.join(pluginDir, candidate);
+        if (fs.existsSync(full)) return full;
+    }
+    throw new Error(`No plugin manifest found in ${pluginDir}`);
+}
+
+function resolvePythonBin() {
+    const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+    for (const cmd of candidates) {
+        try {
+            execFileSync(cmd, ['--version'], { stdio: 'ignore' });
+            return cmd;
+        } catch (_) {
+            // try next
+        }
+    }
+    return null;
+}
+
+function runStdioPlugin(scriptPath, args, env) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [scriptPath], { env: { ...process.env, ...env } });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+        child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+        child.on('error', reject);
+        child.on('close', code => {
+            if (code !== 0) return reject(new Error(stderr || stdout || `Exited with ${code}`));
+            try { resolve(JSON.parse(stdout)); } catch (err) { reject(err); }
+        });
+        child.stdin.end(JSON.stringify(args));
+    });
+}
+
+test('all 21 built-in plugins declare USE_PUBLIC_URL in manifest and normalize base URLs without raw :PORT/pw= or VAR_HTTPS_URL/pw=', () => {
     const hardcodedPortPwPattern = /:\$\{[^}]*(?:PORT|port)[^}]*\}\/pw=|:\{server_port\}\/pw=/;
+    const rawHttpsSlashPattern = /\$\{\s*VAR_HTTPS_URL\s*\}\/(?:pw=|images\/|files\/)/;
 
     for (const plugin of TARGET_PLUGINS) {
         const pluginDir = path.join(REPO_ROOT, 'Plugin', plugin.name);
-        const manifestPath = path.join(pluginDir, plugin.manifest);
+        const manifestPath = resolveManifestPath(pluginDir, plugin.manifest);
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
 
         assert.ok(
             manifest.configSchema && Object.prototype.hasOwnProperty.call(manifest.configSchema, 'USE_PUBLIC_URL'),
-            `${plugin.name}/${plugin.manifest} must declare USE_PUBLIC_URL in configSchema`
+            `${plugin.name}/${path.basename(manifestPath)} must declare USE_PUBLIC_URL in configSchema`
         );
 
         for (const relFile of plugin.files) {
@@ -48,6 +93,11 @@ test('all 16 built-in plugins declare USE_PUBLIC_URL in manifest and avoid uncon
             assert.ok(
                 content.includes('VarHttpsUrl'),
                 `${plugin.name}/${relFile} must support VarHttpsUrl`
+            );
+            assert.doesNotMatch(
+                content,
+                rawHttpsSlashPattern,
+                `${plugin.name}/${relFile} must strip trailing slashes on VAR_HTTPS_URL before appending /pw=`
             );
 
             // Allow BilibiliFetch.py's else-branch fallback (`return f"{base_url}:{server_port}/pw=..."`)
@@ -107,19 +157,16 @@ test('ToolCallRecordQuery formatter respects USE_PUBLIC_URL=false (default) and 
             ]
         });
 
-        // 1. Default (USE_PUBLIC_URL unset / false): local URL with port
         delete process.env.USE_PUBLIC_URL;
         const localReport = formatQueryReport(makePayload(), {}, { migrateMultimodal: true });
         assert.match(localReport.markdown, /http:\/\/localhost:6005\/pw=demo-key\/images\/tool-call-records\//);
 
-        // 2. USE_PUBLIC_URL=true: VarHttpsUrl without port and without double slash
         process.env.USE_PUBLIC_URL = 'true';
         const publicReport = formatQueryReport(makePayload(), {}, { migrateMultimodal: true });
         assert.match(publicReport.markdown, /https:\/\/example\.com\/pw=demo-key\/images\/tool-call-records\//);
         assert.doesNotMatch(publicReport.markdown, /example\.com:6005/);
         assert.doesNotMatch(publicReport.markdown, /example\.com\/\/pw=/);
 
-        // 3. USE_PUBLIC_URL=true with empty VarHttpsUrl: falls back to VarHttpUrl without port
         process.env.VarHttpsUrl = '';
         const fallbackReport = formatQueryReport(makePayload(), {}, { migrateMultimodal: true });
         assert.match(fallbackReport.markdown, /http:\/\/localhost\/pw=demo-key\/images\/tool-call-records\//);
@@ -131,6 +178,88 @@ test('ToolCallRecordQuery formatter respects USE_PUBLIC_URL=false (default) and 
             else process.env[k] = v;
         }
     }
+});
+
+test('GPTImageGen and NanoBananaGen2 normalize trailing slashes and fall back cleanly under USE_PUBLIC_URL', async t => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-public-url-legacy-'));
+    t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+    const png1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP9sAAAAASUVORK5CYII=';
+    const server = http.createServer((req, res) => {
+        req.resume();
+        res.setHeader('Content-Type', 'application/json');
+        if (req.url.includes('/chat/completions')) {
+            res.end(JSON.stringify({
+                choices: [{ message: { content: `![img](data:image/png;base64,${png1x1})` } }]
+            }));
+            return;
+        }
+        res.end(JSON.stringify({ data: [{ b64_json: png1x1 }] }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const apiOrigin = `http://127.0.0.1:${server.address().port}`;
+
+    const gptScript = path.join(REPO_ROOT, 'Plugin', 'GPTImageGen', 'GPTImageGen.js');
+    const nanoScript = path.join(REPO_ROOT, 'Plugin', 'NanoBananaGen2', 'NanoBananaGen.mjs');
+
+    // 1. GPTImageGen: trailing slash stripped + fallback to portless VarHttpUrl
+    const gptPublic = await runStdioPlugin(gptScript, { prompt: 'test' }, {
+        PROJECT_BASE_PATH: tmpDir,
+        OPENAI_API_KEY: 'k',
+        OPENAI_BASE_URL: apiOrigin,
+        VarHttpUrl: 'http://localhost/',
+        VarHttpsUrl: 'https://img.example.com///',
+        SERVER_PORT: '6005',
+        IMAGESERVER_IMAGE_KEY: 'img-key',
+        USE_PUBLIC_URL: 'true',
+    });
+    const gptPublicStr = JSON.stringify(gptPublic);
+    assert.match(gptPublicStr, /https:\/\/img\.example\.com\/pw=img-key\/images\/gptimagegen\//);
+    assert.doesNotMatch(gptPublicStr, /img\.example\.com\/\/pw=/);
+
+    const gptLocal = await runStdioPlugin(gptScript, { prompt: 'test' }, {
+        PROJECT_BASE_PATH: tmpDir,
+        OPENAI_API_KEY: 'k',
+        OPENAI_BASE_URL: apiOrigin,
+        VarHttpUrl: 'http://localhost/',
+        VarHttpsUrl: 'https://img.example.com/',
+        SERVER_PORT: '6005',
+        IMAGESERVER_IMAGE_KEY: 'img-key',
+        USE_PUBLIC_URL: 'false',
+    });
+    assert.match(JSON.stringify(gptLocal), /http:\/\/localhost:6005\/pw=img-key\/images\/gptimagegen\//);
+
+    // 2. NanoBananaGen2: reads VarHttpsUrl when USE_PUBLIC_URL=true/1 and falls back to VarHttpUrl when empty
+    const nanoPublic = await runStdioPlugin.call(null, nanoScript, { command: 'generate', prompt: 'test' }, {
+        PROJECT_BASE_PATH: tmpDir,
+        API_URL: `${apiOrigin}/v1`,
+        API_KEY: 'k',
+        NANO_BANANA_MODEL: 'demo-model',
+        MULTI_CHANNEL: 'false',
+        VarHttpUrl: 'http://localhost/',
+        VarHttpsUrl: 'https://banana.example.com/',
+        SERVER_PORT: '6005',
+        IMAGESERVER_IMAGE_KEY: 'img-key',
+        USE_PUBLIC_URL: '1',
+    });
+    const nanoPublicStr = JSON.stringify(nanoPublic);
+    assert.match(nanoPublicStr, /https:\/\/banana\.example\.com\/pw=img-key\/images\/nanobananagen\//);
+    assert.doesNotMatch(nanoPublicStr, /banana\.example\.com\/\/pw=/);
+
+    const nanoFallback = await runStdioPlugin.call(null, nanoScript, { command: 'generate', prompt: 'test' }, {
+        PROJECT_BASE_PATH: tmpDir,
+        API_URL: `${apiOrigin}/v1`,
+        API_KEY: 'k',
+        NANO_BANANA_MODEL: 'demo-model',
+        MULTI_CHANNEL: 'false',
+        VarHttpUrl: 'http://localhost/',
+        VarHttpsUrl: '',
+        SERVER_PORT: '6005',
+        IMAGESERVER_IMAGE_KEY: 'img-key',
+        USE_PUBLIC_URL: 'true',
+    });
+    assert.match(JSON.stringify(nanoFallback), /http:\/\/localhost\/pw=img-key\/images\/nanobananagen\//);
 });
 
 test('FileListGenerator respects USE_PUBLIC_URL=false (default) and USE_PUBLIC_URL=true', () => {
@@ -165,7 +294,12 @@ test('FileListGenerator respects USE_PUBLIC_URL=false (default) and USE_PUBLIC_U
     }
 });
 
-test('BilibiliFetch get_accessible_url respects USE_PUBLIC_URL=false (default) and USE_PUBLIC_URL=true', () => {
+test('BilibiliFetch get_accessible_url respects USE_PUBLIC_URL=false (default) and USE_PUBLIC_URL=true', (t) => {
+    const pyBin = resolvePythonBin();
+    if (!pyBin) {
+        t.skip('Python interpreter not available');
+        return;
+    }
     const pyScript = `
 import os, sys, tempfile
 sys.path.insert(0, os.path.join(${JSON.stringify(REPO_ROOT)}, "Plugin", "BilibiliFetch"))
@@ -200,6 +334,6 @@ with tempfile.TemporaryDirectory() as td:
     assert u_fallback == "http://localhost/pw=imgkey/images/bili/snap.jpg", u_fallback
 print("BILIBILI_PUBLIC_URL_OK")
 `;
-    const out = execFileSync('python3', ['-c', pyScript], { encoding: 'utf8' });
+    const out = execFileSync(pyBin, ['-c', pyScript], { encoding: 'utf8' });
     assert.match(out, /BILIBILI_PUBLIC_URL_OK/);
 });

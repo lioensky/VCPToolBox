@@ -21,6 +21,7 @@ const {
     SERVER_PORT,
     IMAGESERVER_IMAGE_KEY,
     VAR_HTTP_URL,
+    VAR_HTTPS_URL,
     USE_PUBLIC_URL
 } = (() => {
     // ─── 渠道解析 ───
@@ -67,7 +68,7 @@ const {
     const distServers = (process.env.DIST_IMAGE_SERVERS || '').split(',').map(s => s.trim()).filter(Boolean);
 
     // ─── 解析 USE_PUBLIC_URL 环境变量 ───
-    const usePublicUrl = (process.env.USE_PUBLIC_URL || 'false').toLowerCase() === 'true';
+    const usePublicUrl = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
 
     return {
         CHANNELS: channels,
@@ -78,6 +79,7 @@ const {
         SERVER_PORT: process.env.SERVER_PORT,
         IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY || process.env.Image_Key || process.env.IMAGE_KEY || process.env.ImageServerKey || '',
         VAR_HTTP_URL: process.env.VarHttpUrl,
+        VAR_HTTPS_URL: process.env.VarHttpsUrl || '',
         USE_PUBLIC_URL: usePublicUrl
     };
 })();
@@ -344,8 +346,8 @@ async function processApiResponseAndSaveImage(message, originalArgs, showBase64)
     // ─── 动态决定输出的 URL 格式 ───
     let accessibleImageUrl;
     const base = USE_PUBLIC_URL
-        ? String(VAR_HTTP_URL).replace(/\/+$/, '')
-        : `${String(VAR_HTTP_URL).replace(/\/+$/, '')}:${SERVER_PORT}`;
+        ? String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '')
+        : `${String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '')}:${SERVER_PORT}`;
     accessibleImageUrl = `${base}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
     const modelResponseText = cleanTextContent || "图片已成功处理！";
