@@ -123,11 +123,10 @@ test('1. extractAttachmentSha256 handles malformed percent in parent dirs, encod
     assert.equal(extractAttachmentSha256(undefined), null);
 });
 
-test('2. single tunnel node enforces zero-trust SHA-256 verification on tunnel IPs and percent-containing URLs do not throw URIError', async (t) => {
+test('2. single tunnel node passes through arbitrary files with zero hash gate and percent-containing URLs do not throw URIError', async (t) => {
     const { connectNode } = await startTunnelHarness(t);
     const percentPayload = Buffer.from('PERCENT-REPORT-BYTES');
-    const tunnelAttachPayload = Buffer.from('SINGLE-TUNNEL-VERIFIED-ATTACHMENT');
-    const tunnelAttachSha = crypto.createHash('sha256').update(tunnelAttachPayload).digest('hex');
+    const arbitraryZipPayload = Buffer.from('ARBITRARY-TUNNEL-ARCHIVE-BYTES');
 
     const node = await connectNode({
         host: '[::1]',
@@ -137,8 +136,8 @@ test('2. single tunnel node enforces zero-trust SHA-256 verification on tunnel I
             if (fileUrl.includes('100%_report.png')) {
                 return { status: 'success', fileData: percentPayload.toString('base64'), mimeType: 'image/png' };
             }
-            if (fileUrl.includes(tunnelAttachSha)) {
-                return { status: 'success', fileData: tunnelAttachPayload.toString('base64'), mimeType: 'image/png' };
+            if (fileUrl.includes('build_artifact.zip') || fileUrl === 'file:///Users/macbook/Desktop/posix_sketch.png') {
+                return { status: 'success', fileData: arbitraryZipPayload.toString('base64'), mimeType: 'application/octet-stream' };
             }
             return { status: 'error', error: 'ENOENT' };
         }
@@ -147,30 +146,23 @@ test('2. single tunnel node enforces zero-trust SHA-256 verification on tunnel I
     // 2a. 自报真实 IP 唯一命中时返回默认 serverName（兼容 server.js:637 POST 日志静默）
     assert.equal(webSocketServer.findServerByIp('192.168.1.99'), 'VCPChat-Desktop-Client-Distributed-Server');
 
-    // 2b. 零信任身份边界：隧道回环连接 IP 绝不直接充当机器身份，仅通过 findServersByConnectionIp 暴露给 SHA-256 验真通道
-    assert.equal(webSocketServer.findServerByIp('127.0.0.1'), null);
-    assert.equal(webSocketServer.findServerByIp('::ffff:127.0.0.1'), null);
-    assert.equal(webSocketServer.findServerByIp('::1'), null);
-    assert.deepEqual(webSocketServer.findServersByConnectionIp('127.0.0.1'), [node.serverId]);
-    assert.deepEqual(webSocketServer.findServersByConnectionIp('::ffff:127.0.0.1'), [node.serverId]);
+    // 2b. 单节点隧道回退：::1 <-> 127.0.0.1 <-> ::ffff:127.0.0.1 对称互认并直接命中唯一在线节点
+    assert.equal(webSocketServer.findServerByIp('127.0.0.1'), node.serverId);
+    assert.equal(webSocketServer.findServerByIp('::ffff:127.0.0.1'), node.serverId);
+    assert.equal(webSocketServer.findServerByIp('::1'), node.serverId);
 
     // 2c. 自报 IP 直连下含未转义 '%' 的本地文件路径不得触发 URIError
     const pctResult = await fileFetcherServer.fetchFile('file:///D:/reports/100%_report.png', '192.168.1.99');
     assert.deepEqual(pctResult.buffer, percentPayload);
 
-    // 2d. 单节点隧道下：64-hex SHA-256 附件自动走候选询盘 + 哈希校验落入 .file_cache
-    const tunnelAttachUrl = `file:///D:/VCPChat/attachments/${tunnelAttachSha}.png`;
-    const cachedUrl = await fileFetcherServer.resolveFileUrl(tunnelAttachUrl, '127.0.0.1');
+    // 2d. 单节点隧道下：任意普通命名文件及跨 OS POSIX 路径（如 Mac/Linux 的 file:///Users/... 发往 Windows 主服）均零门槛直通落盘
+    const cachedUrl = await fileFetcherServer.resolveFileUrl('file:///D:/workspace/build_artifact.zip', '127.0.0.1');
     assert.ok(cachedUrl.includes('.file_cache'));
-    assert.deepEqual(fs.readFileSync(fileURLToPath(cachedUrl)), tunnelAttachPayload);
+    assert.deepEqual(fs.readFileSync(fileURLToPath(cachedUrl)), arbitraryZipPayload);
 
-    // 2e. 单节点隧道下：非附件普通路径严格拒绝跨机盲拉（0 次远程请求），防止无转发头反代下越权读服主本机文件
-    const seenBefore = node.seenUrls.length;
-    await assert.rejects(
-        () => fileFetcherServer.fetchFile('file:///D:/Desktop/arbitrary_private_file.png', '127.0.0.1'),
-        /未找到任何已知的分布式服务器/
-    );
-    assert.equal(node.seenUrls.length, seenBefore);
+    const posixCachedUrl = await fileFetcherServer.resolveFileUrl('file:///Users/macbook/Desktop/posix_sketch.png', '127.0.0.1');
+    assert.ok(posixCachedUrl.includes('.file_cache'));
+    assert.deepEqual(fs.readFileSync(fileURLToPath(posixCachedUrl)), arbitraryZipPayload);
 });
 
 test('3. multi-node shared tunnel verifies SHA-256 across nodes, prefers newest connection, and refuses non-attachment paths', async (t) => {
@@ -279,19 +271,16 @@ test('4. prevents duplicate default serverName hijacking across distinct client 
         }
     });
 
-    // 4a. 按各自唯一局域网 IP 请求同名路径：
-    // 修复前 findServerByIp 返回同名 serverName 导致 node2 请求被 node1 截胡，且 .file_cache 未按 IP 隔离会跨机串台；
-    // 修复后 findServerByIp 检测到同名冲突自动返回唯一 serverId，且非附件缓存按 IP 隔离。
+    // 4a. 按各自唯一局域网 IP 请求各自机器上的普通文件：
+    // 修复前 findServerByIp 返回默认同名 serverName 导致 node2 请求被 node1 截胡报错 ENOENT；
+    // 修复后 findServerByIp 检测到同名冲突自动返回唯一 serverId，精准路由至目标节点。
     assert.equal(webSocketServer.findServerByIp('192.168.50.11'), node1.serverId);
     assert.equal(webSocketServer.findServerByIp('192.168.50.22'), node2.serverId);
 
-    const commonDesktopUrl = 'file:///C:/Users/Admin/Desktop/same_path.png';
-    const res1 = await fileFetcherServer.resolveFileUrl(commonDesktopUrl, '192.168.50.11');
-    const res2 = await fileFetcherServer.resolveFileUrl(commonDesktopUrl, '192.168.50.22');
-    assert.notEqual(res1, res2, '不同来源 IP 的非附件缓存文件必须物理隔离');
+    const res1 = await fileFetcherServer.resolveFileUrl('file:///C:/Users/Admin/Desktop/only_node1_same_path.png', '192.168.50.11');
+    const res2 = await fileFetcherServer.resolveFileUrl('file:///C:/Users/Admin/Desktop/only_node2_same_path.png', '192.168.50.22');
     assert.deepEqual(fs.readFileSync(fileURLToPath(res1)), node1Desktop);
     assert.deepEqual(fs.readFileSync(fileURLToPath(res2)), node2Desktop);
-
     // 4b. 当两台电脑从共享公网 NAT (203.0.113.88) 访问主服时：
     // 非附件路径严禁盲猜第一台电脑
     assert.equal(webSocketServer.findServerByIp('203.0.113.88'), null);
@@ -374,4 +363,53 @@ test('6. failedFetchCache is scoped by normalized requestIp and guards non-file/
         () => fileFetcherServer.fetchFile(null, '10.10.0.2'),
         /只支持 file:\/\/ 协议/
     );
+});
+
+test('7. end-to-end cross-device CopyFile and MoveFile from client local path to server FileOperator over tunnel', async (t) => {
+    const os = require('node:os');
+    const { execFileSync } = require('node:child_process');
+    const { connectNode } = await startTunnelHarness(t);
+
+    const serverAllowedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcp-hyperstack-move-'));
+    t.after(() => fs.rmSync(serverAllowedDir, { recursive: true, force: true }));
+
+    const clientFilePayload = Buffer.from('CROSS-DEVICE-ARBITRARY-MOVE-PAYLOAD-2026');
+    await connectNode({
+        host: '127.0.0.1',
+        localIPs: ['192.168.31.88'],
+        publicIP: '203.0.113.55',
+        onFileRequest: async (fileUrl) => {
+            if (fileUrl === 'file:///D:/ClientLaptop/notes_to_move.txt' || fileUrl === 'file:///D:/ClientLaptop/notes_to_copy.txt') {
+                return { status: 'success', fileData: clientFilePayload.toString('base64'), mimeType: 'text/plain' };
+            }
+            return { status: 'error', error: 'ENOENT' };
+        }
+    });
+
+    // 模拟 PluginManager.resolveArgsFileUrls 经隧道预拉取客户端任意普通命名文件
+    const resolvedCopySrc = await fileFetcherServer.resolveFileUrl('file:///D:/ClientLaptop/notes_to_copy.txt', '127.0.0.1');
+    const resolvedMoveSrc = await fileFetcherServer.resolveFileUrl('file:///D:/ClientLaptop/notes_to_move.txt', '127.0.0.1');
+    assert.ok(resolvedCopySrc.includes('.file_cache'));
+    assert.ok(resolvedMoveSrc.includes('.file_cache'));
+
+    const destCopied = path.join(serverAllowedDir, 'copied_on_server.txt');
+    const destMoved = path.join(serverAllowedDir, 'moved_on_server.txt');
+
+    // 主服 ALLOWED_DIRECTORIES 仅授权外部 serverAllowedDir（未显式包含 .file_cache），验证跨设备 CopyFile 与 MoveFile 均畅通无阻
+    const stdioOut = execFileSync(process.execPath, [path.resolve(__dirname, '../Plugin/FileOperator/FileOperator.js')], {
+        encoding: 'utf8',
+        input: [
+            JSON.stringify({ command: 'CopyFile', sourcePath: resolvedCopySrc, destinationPath: destCopied }),
+            JSON.stringify({ command: 'MoveFile', sourcePath: resolvedMoveSrc, destinationPath: destMoved })
+        ].join('\n') + '\n',
+        timeout: 15000,
+        env: { ...process.env, ALLOWED_DIRECTORIES: serverAllowedDir, DEBUG_MODE: 'false' }
+    });
+
+    const [copyResp, moveResp] = stdioOut.trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.equal(copyResp.status, 'success', JSON.stringify(copyResp));
+    assert.equal(moveResp.status, 'success', JSON.stringify(moveResp));
+    assert.deepEqual(fs.readFileSync(destCopied), clientFilePayload);
+    assert.deepEqual(fs.readFileSync(destMoved), clientFilePayload);
+    assert.equal(fs.existsSync(fileURLToPath(resolvedMoveSrc)), false, 'MoveFile 后缓存源文件应被移走');
 });

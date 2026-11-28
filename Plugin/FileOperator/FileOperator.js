@@ -14,6 +14,7 @@ require('dotenv').config({ path: path.join(__dirname, 'config.env') });
 
 // Configuration
 const CANVAS_DIRECTORY = process.env.CANVAS_DIRECTORY || path.join(__dirname, '..', '..', 'AppData', 'Canvas');
+const HYPERSTACK_CACHE_DIR = path.resolve(__dirname, '..', '..', '.file_cache');
 const ALLOWED_DIRECTORIES = (process.env.ALLOWED_DIRECTORIES || '')
   .split(',')
   .map(dir => dir.trim())
@@ -80,6 +81,12 @@ function getSourcePathParameter(parameters) {
 
 function getDestinationPathParameter(parameters) {
   return getParameterValue(parameters, 'destination', 'destinationPath');
+}
+
+function isHyperstackCachedFile(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  const rel = path.relative(HYPERSTACK_CACHE_DIR, path.resolve(targetPath));
+  return rel !== '' && !path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`);
 }
 
 function isPathAllowed(targetPath, operationType = 'generic') {
@@ -978,7 +985,8 @@ async function copyFile(sourcePath, destinationPath) {
     destinationPath = resolveAndNormalizePath(destinationPath);
     debugLog('Copying file', { sourcePath, destinationPath });
 
-    if (!isPathAllowed(sourcePath, 'CopyFile') || !isPathAllowed(destinationPath, 'CopyFile')) {
+    const sourceAllowed = isPathAllowed(sourcePath, 'CopyFile') || isHyperstackCachedFile(sourcePath);
+    if (!sourceAllowed || !isPathAllowed(destinationPath, 'CopyFile')) {
       throw new Error('Access denied: One or both paths are not in allowed directories');
     }
 
@@ -1025,13 +1033,32 @@ async function moveFile(sourcePath, destinationPath) {
     destinationPath = resolveAndNormalizePath(destinationPath);
     debugLog('Moving file', { sourcePath, destinationPath });
 
-    if (!isPathAllowed(sourcePath, 'MoveFile') || !isPathAllowed(destinationPath, 'MoveFile')) {
+    const sourceAllowed = isPathAllowed(sourcePath, 'MoveFile') || isHyperstackCachedFile(sourcePath);
+    if (!sourceAllowed || !isPathAllowed(destinationPath, 'MoveFile')) {
       throw new Error('Access denied: One or both paths are not in allowed directories');
     }
 
     const { newPath, renamed } = getUniqueFilePath(destinationPath);
 
-    await fs.rename(sourcePath, newPath);
+    try {
+      await fs.rename(sourcePath, newPath);
+    } catch (renameError) {
+      if (renameError && renameError.code === 'EXDEV') {
+        await fs.copyFile(sourcePath, newPath);
+        try {
+          await fs.unlink(sourcePath);
+        } catch (unlinkError) {
+          try {
+            await fs.unlink(newPath);
+          } catch {
+            // ignore rollback cleanup error
+          }
+          throw unlinkError;
+        }
+      } else {
+        throw renameError;
+      }
+    }
     const stats = await fs.stat(newPath);
 
     const message = renamed
