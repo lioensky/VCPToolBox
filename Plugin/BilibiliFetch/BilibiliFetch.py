@@ -20,6 +20,10 @@ if '*' not in current_no_proxy:
 import requests
 import logging
 import re
+import math
+import random
+import unicodedata
+from collections import defaultdict, deque
 # Removed FastMCP import
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -676,21 +680,270 @@ def resolve_short_url(url: str) -> str:
             logging.error(f"Error resolving short URL {url}: {e}")
     return url
 
-def fetch_danmaku(cid: str, num: int, headers: dict) -> list:
-    """Fetches danmaku (bullet comments) for a given cid."""
+DANMAKU_VIEW_URL = "https://api.bilibili.com/x/v2/dm/web/view"
+DANMAKU_SEGMENT_URL = "https://api.bilibili.com/x/v2/dm/web/seg.so"
+DANMAKU_XML_URL = "https://api.bilibili.com/x/v1/dm/list.so"
+DANMAKU_MERGE_WINDOW = 30
+
+
+class DanmakuResult(list):
+    """Keep the existing list contract while carrying collection/coverage information."""
+    def __init__(self, lines, summary, *, total_segments, completed_segments, warnings):
+        super().__init__(lines)
+        self.summary = summary
+        self.total_segments = total_segments
+        self.completed_segments = completed_segments
+        self.coverage_complete = total_segments > 0 and completed_segments == total_segments
+        self.warnings = tuple(warnings)
+
+
+def _protobuf_fields(data):
+    position = 0
+
+    def varint():
+        nonlocal position
+        value = 0
+        for shift in range(0, 70, 7):
+            if position >= len(data):
+                raise ValueError('truncated protobuf varint')
+            byte = data[position]
+            position += 1
+            if shift == 63 and byte > 1:
+                raise ValueError('protobuf varint overflow')
+            value |= (byte & 127) << shift
+            if not byte & 128:
+                return value
+        raise ValueError('invalid protobuf varint')
+
+    while position < len(data):
+        tag = varint()
+        number, wire = tag >> 3, tag & 7
+        if not number:
+            raise ValueError('invalid protobuf field number')
+        if wire == 0:
+            value = varint()
+        elif wire in (1, 2, 5):
+            size = varint() if wire == 2 else (8 if wire == 1 else 4)
+            end = position + size
+            if end > len(data):
+                raise ValueError('truncated protobuf field')
+            value, position = data[position:end], end
+        else:
+            raise ValueError('unsupported protobuf wire type')
+        yield number, wire, value
+
+
+def _parse_danmaku_segment(data):
+    entries = []
+    for number, wire, value in _protobuf_fields(data):
+        if number != 1 or wire != 2:
+            continue
+        fields = {(n, w): v for n, w, v in _protobuf_fields(value)}
+        text = fields.get((7, 2), b'').decode('utf-8', errors='replace').strip()
+        if not text:
+            continue
+        progress = fields.get((2, 0), 0)
+        # progress 是 int32 毫秒；负值在 varint 中以补码表示。
+        position = progress / 1000 if progress < (1 << 31) else None
+        dmid = fields.get((12, 2), b'').decode('utf-8', errors='replace')
+        dmid = dmid or str(fields.get((1, 0), 0))
+        entries.append({'time': position, 'text': text, 'id': dmid if dmid != '0' else ''})
+    return entries
+
+
+def _parse_danmaku_xml(data):
+    entries = []
+    for item in ET.fromstring(data).findall('d'):
+        if not item.text or not item.text.strip():
+            continue
+        fields = item.get('p', '').split(',')
+        try:
+            position = float(fields[0])
+            if not math.isfinite(position) or position < 0:
+                position = None
+        except ValueError:
+            position = None
+        entries.append({'time': position, 'text': item.text.strip(),
+                        'id': fields[7] if len(fields) > 7 and fields[7] != '0' else ''})
+    return entries
+
+
+def _normalize_danmaku(text):
+    # 参考 pakku：全半角、空格、尾标点归一；保留原文用于输出。
+    text = unicodedata.normalize('NFKC', text).casefold()
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'([\u3000-\u9fff]) (?=[\u3000-\u9fff])', r'\1', text)
+    trimmed = text.rstrip(' .,，。!?！？…~～、') or text
+    # 常见刷屏表达；数字组成的其他正文仍按原值比较。
+    if re.fullmatch(r'6{3,}', trimmed):
+        return '666'
+    if re.fullmatch(r'23{2,}', trimmed):
+        return '233'
+    return trimmed
+
+
+def _one_edit_apart(left, right):
+    """Conservative near-duplicate matching for longer text (at most one edit)."""
+    if min(len(left), len(right)) < 10 or abs(len(left) - len(right)) > 1:
+        return False
+    # 数值和否定词变化可能改变立场，交给独立组保留。
+    if re.findall(r'\d+|[不没无未非莫别]|\b(?:not|no|never)\b', left) != re.findall(
+            r'\d+|[不没无未非莫别]|\b(?:not|no|never)\b', right):
+        return False
+    if len(left) > len(right):
+        left, right = right, left
+    for index, (a, b) in enumerate(zip(left, right)):
+        if a != b:
+            return (left[index + 1:] == right[index + 1:] if len(left) == len(right)
+                    else left[index:] == right[index + 1:])
+    return True
+
+
+def _merge_danmaku(entries):
+    groups, active, seen_ids = [], deque(), set()
+    exact, fuzzy = defaultdict(set), defaultdict(set)
+
+    def keys(text):
+        return {(len(text), 'head', text[:2]), (len(text), 'tail', text[-2:])}
+
+    for entry in sorted(entries, key=lambda e: (e['time'] is None, e['time'] or 0)):
+        if entry['id']:
+            if entry['id'] in seen_ids:
+                continue
+            seen_ids.add(entry['id'])
+        position, text = entry['time'], _normalize_danmaku(entry['text'])
+        # 时间缺失时保留独立项，避免把未知时间的事件合并到一起。
+        if position is not None:
+            while active and position - groups[active[0]]['start'] > DANMAKU_MERGE_WINDOW:
+                old = active.popleft()
+                old_text = groups[old]['normalized']
+                exact[old_text].discard(old)
+                if not exact[old_text]:
+                    del exact[old_text]
+                for key in keys(old_text):
+                    fuzzy[key].discard(old)
+                    if not fuzzy[key]:
+                        del fuzzy[key]
+            candidates = set(exact.get(text, ()))
+            if not candidates and 10 <= len(text) <= 80:
+                for size in range(len(text) - 1, len(text) + 2):
+                    for side, part in [('head', text[:2]), ('tail', text[-2:])]:
+                        candidates.update(fuzzy.get((size, side, part), ()))
+                candidates = {i for i in candidates if _one_edit_apart(text, groups[i]['normalized'])}
+            if candidates:
+                group = groups[min(candidates)]
+                group['end'] = position
+                group['count'] += 1
+                continue
+        index = len(groups)
+        groups.append({'start': position, 'end': position, 'text': entry['text'],
+                       'normalized': text, 'count': 1})
+        if position is not None:
+            active.append(index)
+            exact[text].add(index)
+            if 9 <= len(text) <= 81:
+                for key in keys(text):
+                    fuzzy[key].add(index)
+    return groups
+
+
+def _danmaku_timestamp(position):
+    if position is None:
+        return '时间未知'
+    minutes, seconds = divmod(int(position), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:02d}:{seconds:02d}'
+
+
+def fetch_danmaku(cid: str, num: int, headers: dict, *, bvid: str | None = None) -> list:
+    """Fetch all available segments, merge nearby duplicates, then uniformly sample groups."""
     if not cid or num <= 0:
         return []
+    entries, warnings, failed = [], [], []
+    total = completed = 0
+    deadline = time.monotonic() + 40
+
+    def get_bytes(url, params):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('danmaku collection time budget exhausted')
+        response = requests.get(url, params=params, headers=headers, timeout=(3, min(8, remaining)))
+        response.raise_for_status()
+        return response.content
+
     try:
-        logging.info(f"Fetching up to {num} danmaku for CID: {cid}")
-        params = {'oid': cid}
-        resp = requests.get("https://api.bilibili.com/x/v1/dm/list.so", params=params, headers=headers, timeout=10)
-        content = resp.content.decode('utf-8', errors='ignore')
-        root = ET.fromstring(content)
-        danmaku_list = [d.text for d in root.findall('d') if d.text]
-        return danmaku_list[:num]
-    except Exception as e:
-        logging.error(f"Error fetching danmaku: {e}")
-        return []
+        metadata = get_bytes(DANMAKU_VIEW_URL, {'type': 1, 'oid': cid})
+        config = next((v for n, w, v in _protobuf_fields(metadata) if n == 4 and w == 2), None)
+        if config is None:
+            raise ValueError('missing danmaku segment configuration')
+        segment_config = {n: v for n, w, v in _protobuf_fields(config) if w == 0}
+        total = segment_config.get(2, 0)
+        # 部分视频的 total 固定为 100。只在这种情况下再查询所选 CID 的分 P 时长。
+        if total == 100 and bvid:
+            try:
+                payload = json.loads(get_bytes(PAGELIST_API_URL, {'bvid': bvid}))
+                pages = payload.get('data') if payload.get('code') == 0 else None
+                if not isinstance(pages, list):
+                    raise ValueError('invalid pagelist response')
+                duration = next((item.get('duration') for item in pages if isinstance(item, dict)
+                                 and str(item.get('cid')) == cid), None)
+                segment_ms = segment_config.get(1, 360000)
+                if segment_ms > 0 and isinstance(duration, int) and 0 < duration <= 10**7:
+                    total = math.ceil(duration * 1000 / segment_ms)
+            except (requests.RequestException, TimeoutError, ValueError, AttributeError) as error:
+                logging.warning('Could not refine danmaku segment count for CID %s: %s', cid, error)
+        if not 1 <= total <= 1000:
+            raise ValueError('invalid danmaku segment count')
+
+        def fetch_segment(index):
+            try:
+                data = get_bytes(DANMAKU_SEGMENT_URL, {'type': 1, 'oid': cid, 'segment_index': index})
+                return _parse_danmaku_segment(data), None
+            except Exception as error:
+                logging.warning('Danmaku segment %s/%s failed: %s', index, total, error)
+                return [], index
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            for segment_entries, failure in executor.map(fetch_segment, range(1, total + 1)):
+                entries.extend(segment_entries)
+                if failure is None:
+                    completed += 1
+                else:
+                    failed.append(failure)
+        if failed:
+            warnings.append(f'分段弹幕仅完成 {completed}/{total} 段，覆盖可能不完整')
+    except Exception as error:
+        logging.warning('Segmented danmaku unavailable for CID %s: %s', cid, error)
+        warnings.append('分段接口不可用，使用旧接口弹幕池，覆盖可能不完整')
+
+    if not total or failed or not completed:
+        try:
+            # 旧接口只补充缺失数据；同一时间/正文已在分段中出现的内容跳过。
+            response = requests.get(DANMAKU_XML_URL, params={'oid': cid}, headers=headers, timeout=8)
+            response.raise_for_status()
+            existing = {(e['time'], e['text']) for e in entries}
+            entries.extend(e for e in _parse_danmaku_xml(response.content)
+                           if (e['time'], e['text']) not in existing)
+        except Exception as error:
+            logging.warning('XML danmaku fallback failed for CID %s: %s', cid, error)
+            warnings.append('旧接口补充获取失败')
+
+    groups = _merge_danmaku(entries)
+    selected = random.sample(groups, num) if len(groups) > num else groups
+    selected = sorted(selected, key=lambda g: (g['start'] is None, g['start'] or 0))
+    lines = []
+    for group in selected:
+        stamp = _danmaku_timestamp(group['start'])
+        if group['end'] is not None and int(group['end']) != int(group['start']):
+            stamp += '~' + _danmaku_timestamp(group['end'])
+        count = f" （合并 {group['count']} 条）" if group['count'] > 1 else ''
+        lines.append(f"[{stamp}] {group['text']}{count}")
+    coverage = f'已读取全部 {total} 段当前可用弹幕' if completed == total and total else '已读取可用弹幕'
+    summary = f'{coverage}：获取 {len(entries)} 条，去重合并后 {len(groups)} 组，等概率随机选取 {len(lines)} 组，按视频时间排序。'
+    if warnings:
+        summary += '\n提示：' + '；'.join(warnings) + '。'
+    return DanmakuResult(lines, summary, total_segments=total, completed_segments=completed,
+                         warnings=warnings)
 
 def fetch_comments(aid: str, num: int, headers: dict) -> list:
     """Fetches hot comments for a given aid."""
@@ -980,7 +1233,7 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         future_subs = executor.submit(process_bilibili_url, resolved_url, lang_code) if need_subs else None
         
         # Fetch danmaku if requested
-        future_danmaku = executor.submit(fetch_danmaku, cid, danmaku_num, headers) if cid and danmaku_num > 0 else None
+        future_danmaku = executor.submit(fetch_danmaku, cid, danmaku_num, headers, bvid=bvid) if cid and danmaku_num > 0 else None
         
         # Fetch comments if requested
         future_comments = executor.submit(fetch_comments, aid, comment_num, headers) if aid and comment_num > 0 else None
@@ -1147,8 +1400,10 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         else:
             text_parts.append("\n（未获取到字幕内容）")
     
-    if results['danmaku']:
-        text_parts.append("\n\n【热门弹幕】\n" + "\n".join(results['danmaku']))
+    if results['danmaku'] or getattr(results['danmaku'], 'summary', ''):
+        summary = getattr(results['danmaku'], 'summary', '')
+        text_parts.append("\n\n【弹幕（去重合并后随机采样）】\n"
+                          + (summary + '\n' if summary else '') + "\n".join(results['danmaku']))
     
     if results['comments']:
         text_parts.append("\n\n【热门评论】\n" + "\n".join(results['comments']))
