@@ -73,6 +73,17 @@ test('admin HTTP accepts Rust preview token and commits before queuing training'
         assert.match(preview.token, /^[a-f0-9]{64}$/);
         assert.equal(preview.summary.orphanTagsToRemove, 1);
         assert.equal((await post('rag-tag-consistency/apply', { token: 'a'.repeat(48) })).status, 400);
+        // A normal diary write while vectors are being prepared must not discard
+        // an otherwise unchanged repair or cause unrelated new files to be lost.
+        fs.writeFileSync(path.join(root, 'new-note.txt'), 'Tag: keep');
+        await runtime.commitIngestionBatch(dbPath, JSON.stringify({
+            operationId: 'concurrent-diary', batchId: 'concurrent-diary',
+            dimension: 4, modelSig: 'route-test',
+            files: [{ path: 'new-note.txt', diaryName: 'Root', checksum: 'new',
+                mtime: 2, size: 9, expectedVersion: 0,
+                chunkStart: 0, chunkCount: 0, tagStart: 0, tagCount: 1 }],
+            chunks: [], tags: [{ name: 'keep', position: 1, vectorSlot: null }]
+        }), new Float32Array(), new Float32Array());
         const response = await post('rag-tag-consistency/apply', { token: preview.token });
         assert.equal(response.status, 200);
         const applied = await response.json();
@@ -80,6 +91,17 @@ test('admin HTTP accepts Rust preview token and commits before queuing training'
         assert.equal(applied.result.indexReady, true);
         assert.equal(applied.result.training.queued, true);
         assert.equal(queued, 1);
+        const completed = await (await fetch(`${base}/rag-tag-consistency/preview/status`)).json();
+        assert.equal(completed.task.preview, null);
+        assert.equal(completed.task.application.status, 'completed');
+        assert.equal(completed.task.application.result.factsCommitted, true);
+        assert.equal((await post('rag-tag-consistency/preview')).status, 202);
+        await service.previewTaskPromise;
+        const rescanned = await (await fetch(`${base}/rag-tag-consistency/preview/status`)).json();
+        assert.equal(rescanned.task.preview.requiresConfirmation, false);
+        assert.equal(rescanned.task.preview.summary.relationsToRemove, 0);
+        assert.equal(rescanned.task.preview.summary.totalDatabaseFiles, 2);
+        assert.equal(rescanned.task.application, null);
         const training = await (await post('rag-active-full-training')).json();
         assert.equal(training.result.queued, true);
         assert.equal(queued, 2);

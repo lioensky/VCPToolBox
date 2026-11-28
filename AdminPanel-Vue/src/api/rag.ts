@@ -116,6 +116,13 @@ export interface TagConsistencyPreviewTask {
     code?: string;
     message: string;
   } | null;
+  application?: {
+    status: "running" | "completed" | "failed";
+    startedAt: number;
+    finishedAt: number | null;
+    error: { code?: string; message: string; retryable: boolean } | null;
+    result: TagConsistencyApplyResult | null;
+  } | null;
 }
 
 export interface TagConsistencyPreviewResponse {
@@ -130,7 +137,7 @@ export interface TagConsistencyApplyResult {
   summary: TagConsistencySummary;
   factsCommitted?: boolean;
   indexReady?: boolean;
-  training?: ActiveFullTrainingResult;
+  training?: { queued: boolean; policy?: string; error?: string };
   indexUpdate: {
     mode:
       | "native-rust-delta"
@@ -143,7 +150,7 @@ export interface TagConsistencyApplyResult {
   };
   checkpointPublished: boolean;
   waveAssetsStale: boolean;
-  recommendedAction: "active-full-training";
+  recommendedAction: "active-full-training" | "automatic-threshold-refresh";
   message: string;
 }
 
