@@ -10,6 +10,16 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY; // Key for our own image server
 const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 // SiliconFlow API specific configurations
 const SILICONFLOW_API_CONFIG = {
@@ -77,14 +87,20 @@ async function generateImageAndSave(args) {
     if (!PROJECT_BASE_PATH) {
         throw new Error("FluxGen Plugin Error: PROJECT_BASE_PATH environment variable is required for saving images.");
     }
-    if (!SERVER_PORT) {
-        throw new Error("FluxGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
-    }
     if (!IMAGESERVER_IMAGE_KEY) {
         throw new Error("FluxGen Plugin Error: IMAGESERVER_IMAGE_KEY environment variable is required for constructing image URL.");
     }
-    if (!VAR_HTTP_URL) {
-        throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+    if (USE_PUBLIC_URL) {
+        if (!String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim()) {
+            throw new Error("FluxGen Plugin Error: VarHttpsUrl or VarHttpUrl environment variable is required when USE_PUBLIC_URL=true.");
+        }
+    } else {
+        if (!SERVER_PORT) {
+            throw new Error("FluxGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
+        }
+        if (!VAR_HTTP_URL) {
+            throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+        }
     }
 
     if (!isValidFluxGenArgs(args)) {
@@ -157,7 +173,7 @@ async function generateImageAndSave(args) {
     // Construct the URL accessible via our own ImageServer plugin
     // Ensure path separators are URL-friendly (/)
     const relativeServerPathForUrl = path.join('fluxgen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    const accessibleImageUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 
     const altText = args.prompt ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "") : (generatedFileName || "生成的图片");
     const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="300">`;
@@ -212,14 +228,20 @@ async function generateImageFromImage(args) {
     if (!PROJECT_BASE_PATH) {
         throw new Error("FluxGen Plugin Error: PROJECT_BASE_PATH environment variable is required for saving images.");
     }
-    if (!SERVER_PORT) {
-        throw new Error("FluxGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
-    }
     if (!IMAGESERVER_IMAGE_KEY) {
         throw new Error("FluxGen Plugin Error: IMAGESERVER_IMAGE_KEY environment variable is required for constructing image URL.");
     }
-    if (!VAR_HTTP_URL) {
-        throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+    if (USE_PUBLIC_URL) {
+        if (!String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim()) {
+            throw new Error("FluxGen Plugin Error: VarHttpsUrl or VarHttpUrl environment variable is required when USE_PUBLIC_URL=true.");
+        }
+    } else {
+        if (!SERVER_PORT) {
+            throw new Error("FluxGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
+        }
+        if (!VAR_HTTP_URL) {
+            throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+        }
     }
 
     if (!isValidFluxGenImg2ImgArgs(args)) {
@@ -285,7 +307,7 @@ async function generateImageFromImage(args) {
     await fs.writeFile(localImageServerPath, imageResponse.data);
 
     const relativeServerPathForUrl = path.join('fluxgen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    const accessibleImageUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 
     const imageBuffer = imageResponse.data;
     const responseBase64Image = Buffer.from(imageBuffer).toString('base64');

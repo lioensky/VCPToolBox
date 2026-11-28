@@ -54,6 +54,15 @@ const SERVER_PORT = process.env.SERVER_PORT || '5000';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || 'http://localhost';
 const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return SERVER_PORT ? `${localBase}:${SERVER_PORT}` : localBase;
+}
 
 const CACHE_FILE_PATH = path.join(__dirname, '.doubao_api_cache.json');
 const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -873,7 +882,7 @@ async function saveImageToLocal(imageUrl, imageBase64, expectedExt = 'png') {
         await fs.writeFile(localPath, imageBuffer);
 
         const relUrl = path.join('doubaogen', fileName).replace(/\\/g, '/');
-        const accessibleUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relUrl}`;
+        const accessibleUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relUrl}`;
 
         log('info', `图片已安全持久化: ${localPath}`);
         return {

@@ -1189,14 +1189,20 @@ def sanitize_filename(name: str, max_length: int = 80) -> str:
 def get_accessible_url(local_path: str) -> str:
     """Constructs an accessible URL for the image server."""
     var_http_url = get_config_priority('VarHttpUrl', ['VAR_HTTP_URL', 'VarHttpUrl'], 'http://localhost')
+    var_https_url = get_config_priority('VarHttpsUrl', ['VAR_HTTPS_URL', 'VarHttpsUrl'], '')
+    use_public_url = str(get_config_priority('USE_PUBLIC_URL', ['USE_PUBLIC_URL'], 'false')).strip().lower() in ('true', '1')
     server_port = get_config_priority('PORT', ['SERVER_PORT', 'PORT'], '6005')
     image_key = get_config_priority('Image_Key', ['IMAGESERVER_IMAGE_KEY', 'Image_Key'])
     project_base_path = get_config_priority('PROJECT_BASE_PATH', ['PROJECT_BASE_PATH'])
     if not project_base_path:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_base_path = os.path.abspath(os.path.join(script_dir, '..', '..'))
-    
-    if all([var_http_url, server_port, image_key, project_base_path]):
+
+    public_base = str(var_https_url or var_http_url or '').strip().rstrip('/')
+    base_url = str(var_http_url or '').strip().rstrip('/')
+    has_base_config = bool(public_base) if use_public_url else bool(base_url and server_port)
+
+    if has_base_config and image_key and project_base_path:
         # Calculate relative path from PROJECT_BASE_PATH/image/
         try:
             norm_local = os.path.abspath(os.path.normpath(local_path))
@@ -1210,8 +1216,9 @@ def get_accessible_url(local_path: str) -> str:
             # URL 路径必须按 UTF-8 百分号编码；仅保留目录分隔符。
             encoded_rel_path = urllib.parse.quote(rel_path, safe='/')
             encoded_image_key = urllib.parse.quote(str(image_key), safe='')
-            base_url = str(var_http_url).rstrip('/')
 
+            if use_public_url:
+                return f"{public_base}/pw={encoded_image_key}/images/{encoded_rel_path}"
             return f"{base_url}:{server_port}/pw={encoded_image_key}/images/{encoded_rel_path}"
         except Exception as e:
             logging.error(f"Error calculating relative path for URL: {e}")

@@ -15,7 +15,8 @@
     "timeout": 45000
   },
   "configSchema": {
-    "HF_TOKEN": "string (可选，用于私有Space或更高速率限制)"
+    "HF_TOKEN": "string (可选，用于私有Space或更高速率限制)",
+    "USE_PUBLIC_URL": "string(可选)，是否使用公网地址返回图片/文件URL，true 使用 VarHttpsUrl（不带端口，适用于反代），false 使用 VarHttpUrl:端口（局域网），默认 false"
   },
   "capabilities": {
     "invocationCommands": [

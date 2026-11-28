@@ -57,6 +57,16 @@ function getTimeFactorsInTimezone(date, timezone) {
 const SERVER_PORT = process.env.PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.Image_Key;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+  if (USE_PUBLIC_URL) {
+    return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+  }
+  const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+  return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 // --- Helper Functions ---
 
@@ -933,7 +943,7 @@ async function processDrawnCard(card, random, divinationFactors, origin) {
   }
 
   const relativeServerPathForUrl = path.join('tarotcards', imageName).replace(/\\/g, '/');
-  const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+  const accessibleImageUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
   const imageMimeType = `image/${path.extname(card.image).substring(1)}`;
 
   return {
@@ -980,9 +990,9 @@ async function handleRequest(args) {
     };
   }
 
-  if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
+  if (!PROJECT_BASE_PATH || !IMAGESERVER_IMAGE_KEY || !buildServerBaseUrl()) {
     throw new Error(
-      'One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl) are not set.',
+      'One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl/VarHttpsUrl) are not set.',
     );
   }
 
@@ -1135,7 +1145,7 @@ async function handleRequest(args) {
   // Add card back URL for AI
   const cardBackImageName = '牌背.jpeg';
   const cardBackRelativePath = 'tarotcards/' + encodeURIComponent(cardBackImageName);
-  const cardBackUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${cardBackRelativePath}`;
+  const cardBackUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${cardBackRelativePath}`;
   contentForAI.push({ type: 'text', text: `牌背图片URL: ${cardBackUrl}` });
 
   return {

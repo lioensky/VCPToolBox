@@ -60,6 +60,10 @@ async function loadConfiguration() {
     config.SERVER_PORT = process.env.SERVER_PORT;
     config.IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
     config.VAR_HTTP_URL = process.env.VarHttpUrl;
+    config.VAR_HTTPS_URL = process.env.VarHttpsUrl || '';
+    config.USE_PUBLIC_URL = ['true', '1'].includes(
+        String(process.env.USE_PUBLIC_URL ?? config.userSettings?.usePublicUrl ?? 'false').trim().toLowerCase()
+    );
     
     return config;
 }
@@ -608,7 +612,10 @@ async function saveImagesToLocal(images, config) {
         
         // 构建访问URL
         const relativeServerPathForUrl = path.join('comfyuigen', generatedFileName).replace(/\\/g, '/');
-        const accessibleImageUrl = `${config.VAR_HTTP_URL}:${config.SERVER_PORT}/pw=${config.IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+        const serverBaseUrl = config.USE_PUBLIC_URL
+            ? String(config.VAR_HTTPS_URL || config.VAR_HTTP_URL || '').trim().replace(/\/+$/, '')
+            : `${String(config.VAR_HTTP_URL || '').trim().replace(/\/+$/, '')}:${config.SERVER_PORT}`;
+        const accessibleImageUrl = `${serverBaseUrl}/pw=${config.IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
         
         savedImages.push({
             filename: generatedFileName,
@@ -644,11 +651,15 @@ async function generateImageAndSave(args) {
     if (!config.PROJECT_BASE_PATH) {
         throw new Error("ComfyUI Plugin Error: PROJECT_BASE_PATH environment variable is required.");
     }
-    if (!config.SERVER_PORT || !config.IMAGESERVER_IMAGE_KEY || !config.VAR_HTTP_URL) {
+    const hasServerBase = config.USE_PUBLIC_URL
+        ? Boolean(String(config.VAR_HTTPS_URL || config.VAR_HTTP_URL || '').trim())
+        : Boolean(config.SERVER_PORT && config.VAR_HTTP_URL);
+    if (!config.IMAGESERVER_IMAGE_KEY || !hasServerBase) {
         const missing = [];
-        if (!config.SERVER_PORT) missing.push('SERVER_PORT');
+        if (!config.USE_PUBLIC_URL && !config.SERVER_PORT) missing.push('SERVER_PORT');
         if (!config.IMAGESERVER_IMAGE_KEY) missing.push('IMAGESERVER_IMAGE_KEY');
-        if (!config.VAR_HTTP_URL) missing.push('VAR_HTTP_URL');
+        if (config.USE_PUBLIC_URL && !String(config.VAR_HTTPS_URL || config.VAR_HTTP_URL || '').trim()) missing.push('VarHttpsUrl/VarHttpUrl');
+        if (!config.USE_PUBLIC_URL && !config.VAR_HTTP_URL) missing.push('VAR_HTTP_URL');
         throw new Error(`ComfyUI Plugin Error: Missing environment variables: ${missing.join(', ')}. Available env vars: ${Object.keys(process.env).filter(k => k.includes('HTTP') || k.includes('PORT') || k.includes('IMAGE')).join(', ')}`);
     }
 

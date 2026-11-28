@@ -14,7 +14,16 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY; // Key for our own image server
 const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
-const VAR_HTTPS_URL = process.env.VarHttpsUrl; // Read VarHttps Url from env
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || ''; // Read VarHttpsUrl from env
+const USE_PUBLIC_URL = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return localBase && SERVER_PORT ? `${localBase}:${SERVER_PORT}` : '';
+}
 
 // API specific configurations for DMXAPI
 const DMX_API_CONFIG = {
@@ -312,14 +321,20 @@ async function generateImageAndSave(args) {
     if (!PROJECT_BASE_PATH) {
         throw new Error("DoubaoGen Plugin Error: PROJECT_BASE_PATH environment variable is required for saving images.");
     }
-    if (!SERVER_PORT) {
-        throw new Error("DoubaoGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
-    }
     if (!IMAGESERVER_IMAGE_KEY) {
         throw new Error("DoubaoGen Plugin Error: IMAGESERVER_IMAGE_KEY environment variable is required for constructing image URL.");
     }
-    if (!VAR_HTTP_URL) {
-        throw new Error("DoubaoGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+    if (USE_PUBLIC_URL) {
+        if (!String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim()) {
+            throw new Error("DoubaoGen Plugin Error: VarHttpsUrl or VarHttpUrl environment variable is required when USE_PUBLIC_URL=true.");
+        }
+    } else {
+        if (!SERVER_PORT) {
+            throw new Error("DoubaoGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
+        }
+        if (!VAR_HTTP_URL) {
+            throw new Error("DoubaoGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+        }
     }
 
     args = normalizeDoubaoArgs(args);
@@ -493,8 +508,8 @@ async function generateImageAndSave(args) {
     // console.error(`[DoubaoGen Plugin] Image saved to: ${localImageServerPath}`);
 
     const relativeServerPathForUrl = path.join('doubaogen', generatedFileName).replace(/\\\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-    // const accessibleImageUrl = `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    const serverBaseUrl = buildServerBaseUrl();
+    const accessibleImageUrl = `${serverBaseUrl}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 
     const altText = args.prompt ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "") : (generatedFileName || "生成的图片");
     const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="300">`;

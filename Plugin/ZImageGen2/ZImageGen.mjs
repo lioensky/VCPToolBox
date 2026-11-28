@@ -12,15 +12,27 @@ const {
     PROJECT_BASE_PATH,
     SERVER_PORT,
     IMAGESERVER_IMAGE_KEY,
-    VAR_HTTP_URL
+    VAR_HTTP_URL,
+    VAR_HTTPS_URL,
+    USE_PUBLIC_URL
 } = (() => {
     return {
         PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH || '.',
         SERVER_PORT: process.env.SERVER_PORT || '3000',
         IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY || 'default_key',
-        VAR_HTTP_URL: process.env.VarHttpUrl || 'http://localhost'
+        VAR_HTTP_URL: process.env.VarHttpUrl || 'http://localhost',
+        VAR_HTTPS_URL: process.env.VarHttpsUrl || '',
+        USE_PUBLIC_URL: ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase())
     };
 })();
+
+function buildServerBaseUrl() {
+    if (USE_PUBLIC_URL) {
+        return String(VAR_HTTPS_URL || VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    }
+    const localBase = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return SERVER_PORT ? `${localBase}:${SERVER_PORT}` : localBase;
+}
 
 const API_BASE_URL = 'https://aisudo-z-image-base.hf.space/gradio_api';
 
@@ -337,7 +349,7 @@ async function saveImage(imageUrl) {
     await fs.writeFile(localImagePath, buffer);
 
     const relativePathForUrl = path.join('zimagegen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    const accessibleImageUrl = `${buildServerBaseUrl()}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
     return {
         serverPath: `image/zimagegen/${generatedFileName}`,

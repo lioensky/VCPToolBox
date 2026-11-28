@@ -6,6 +6,7 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || path.join(__dirname, 
 const SERVER_PORT = process.env.SERVER_PORT || process.env.PORT || '';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || process.env.VAR_HTTP_URL || 'http://127.0.0.1';
+const VAR_HTTPS_URL = process.env.VarHttpsUrl || process.env.VAR_HTTPS_URL || '';
 
 const DEFAULT_OPTIONS = Object.freeze({
   migrateMultimodal: true,
@@ -85,10 +86,21 @@ function getImageExtension(mimeType) {
 
 function buildImageUrl(relativePath) {
   const normalizedRelativePath = String(relativePath || '').replace(/\\/g, '/');
-  if (!SERVER_PORT || !IMAGESERVER_IMAGE_KEY) {
+  const imageKey = process.env.IMAGESERVER_IMAGE_KEY || IMAGESERVER_IMAGE_KEY;
+  if (!imageKey) {
     return `image/${normalizedRelativePath}`;
   }
-  return `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${normalizedRelativePath}`;
+  const usePublicUrl = ['true', '1'].includes(String(process.env.USE_PUBLIC_URL || 'false').trim().toLowerCase());
+  const httpBase = String(process.env.VarHttpUrl ?? process.env.VAR_HTTP_URL ?? VAR_HTTP_URL ?? '').trim().replace(/\/+$/, '');
+  const httpsBase = String(process.env.VarHttpsUrl ?? process.env.VAR_HTTPS_URL ?? VAR_HTTPS_URL ?? '').trim().replace(/\/+$/, '');
+  const port = process.env.SERVER_PORT || process.env.PORT || SERVER_PORT;
+  const serverBaseUrl = usePublicUrl
+    ? (httpsBase || httpBase)
+    : (port && httpBase ? `${httpBase}:${port}` : '');
+  if (!serverBaseUrl) {
+    return `image/${normalizedRelativePath}`;
+  }
+  return `${serverBaseUrl}/pw=${imageKey}/images/${normalizedRelativePath}`;
 }
 
 function persistDataImage(dataUri, recordId, index) {
