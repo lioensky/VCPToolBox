@@ -6,7 +6,7 @@
 
 VCP 由四个核心仓库协同演进，每日持续迭代。官网汇总了各仓库的[更新日志](https://www.vcptoolbox.com/?page=changelog)，也提供了查阅整个 VCP 项目[技术文档](https://www.vcptoolbox.com/?page=learn-vcp)的统一入口。
 
-[English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
+[English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md) | [Türkçe](README_tr.md)
 
 ---
 
