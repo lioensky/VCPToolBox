@@ -669,15 +669,42 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
 
 
 def resolve_short_url(url: str) -> str:
-    """Resolves b23.tv short URLs to long ones."""
-    if 'b23.tv' in url:
-        try:
-            # Use stream=True to follow redirects without downloading the body
-            resp = requests.get(url, allow_redirects=True, timeout=5, stream=True)
-            logging.info(f"Resolved short URL {url} to {resp.url}")
-            return resp.url
-        except Exception as e:
-            logging.error(f"Error resolving short URL {url}: {e}")
+    """Resolves b23.tv short URLs into canonical https://www.bilibili.com/video/BV... URLs."""
+    text = str(url or '').strip()
+    if 'b23.tv' not in text.lower():
+        return url
+
+    target_url = text
+    short_match = re.search(r'(?:https?://)?[^\s]*b23\.tv/[^\s]+', text, re.IGNORECASE)
+    if short_match:
+        target_url = short_match.group(0).rstrip('.,;!?)>]】」》"\'')
+    if not re.match(r'^https?://', target_url, re.IGNORECASE):
+        target_url = 'https://' + target_url
+
+    try:
+        short_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        # Use stream=True inside a context manager to follow redirects and close the connection cleanly
+        with requests.get(target_url, headers=short_headers, allow_redirects=True, timeout=10, stream=True) as resp:
+            resolved = resp.url
+        logging.info(f"Resolved short URL {target_url} to {resolved}")
+
+        bv_match = (
+            re.search(r'bilibili\.com/(?:[^/?#]+/)*video/(BV[a-zA-Z0-9]+)', resolved, re.IGNORECASE)
+            or re.search(r'[?&]bvid=(BV[a-zA-Z0-9]+)', resolved, re.IGNORECASE)
+        )
+        if bv_match:
+            bvid = bv_match.group(1)
+            page_match = re.search(r'[?&]p=(\d+)', resolved)
+            page = int(page_match.group(1)) if page_match else 1
+            canonical = f"{BILIBILI_VIDEO_BASE_URL}{bvid}" + (f"?p={page}" if page > 1 else "")
+            if canonical != resolved:
+                logging.info(f"Converted short URL target to {canonical}")
+            return canonical
+        return resolved
+    except Exception as e:
+        logging.error(f"Error resolving short URL {target_url}: {e}")
     return url
 
 DANMAKU_VIEW_URL = "https://api.bilibili.com/x/v2/dm/web/view"
